@@ -56,6 +56,64 @@ pub(crate) mod file_content_gateway_tests {
     }
 
     #[test]
+    fn test_内容同一性_indexとmerge_baseではなく指定refの先端と作業ツリーを比べる() {
+        // Given
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let first = add_and_commit(&repo, "file.bin", "AAA", "original");
+        let file = workdir_file(&repo, "file.bin");
+        std::fs::write(&file, "BBB").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("file.bin")).unwrap();
+        index.write().unwrap();
+        std::fs::write(&file, "AAA").unwrap();
+        let gateway = FileContentGateway;
+        // When / Then
+        assert!(gateway
+            .review_working_tree_matches_ref(&file, "HEAD")
+            .unwrap());
+        assert_eq!(
+            gateway.review_staged_bytes(&file).unwrap(),
+            ReviewSideBytes::Present(b"BBB".to_vec())
+        );
+        // Given
+        let tip = add_and_commit(&repo, "file.bin", "BBB", "base-only change");
+        std::fs::write(&file, "AAA").unwrap();
+        // When / Then
+        assert!(gateway
+            .review_working_tree_matches_ref(&file, &first.to_string())
+            .unwrap());
+        assert!(!gateway
+            .review_working_tree_matches_ref(&file, &tip.to_string())
+            .unwrap());
+        std::fs::remove_file(&file).unwrap();
+        assert!(!gateway
+            .review_working_tree_matches_ref(&file, "HEAD")
+            .unwrap());
+        let missing = workdir_file(&repo, "absent.bin");
+        assert!(gateway
+            .review_working_tree_matches_ref(&missing, "HEAD")
+            .unwrap());
+        assert!(gateway
+            .review_working_tree_matches_ref(&missing, "missing-ref")
+            .is_err());
+    }
+
+    #[test]
+    fn test_内容同一性_初回commit前のhead欠損は作業ツリーとの不一致を返す() {
+        // Given
+        let (_dir, repo) = create_test_repo();
+        let file = workdir_file(&repo, "new.bin");
+        std::fs::write(&file, "new").unwrap();
+        // When
+        let matches = FileContentGateway
+            .review_working_tree_matches_ref(&file, "HEAD")
+            .unwrap();
+        // Then
+        assert!(!matches);
+    }
+
+    #[test]
     pub fn review_metadata_at_ref_missing_blob_returns_missing() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);
@@ -185,6 +243,30 @@ pub(crate) mod file_content_gateway_tests {
 
         assert_eq!(metadata, ReviewSideMetadata::Missing);
         assert_eq!(bytes, ReviewSideBytes::Missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_作業ツリー読取_fifoを開かず欠損として返す() {
+        // Given
+        let (_dir, repo) = create_test_repo();
+        let fifo = repo.workdir().unwrap().join("pipe");
+        let path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let gateway = FileContentGateway;
+        // When / Then
+        assert_eq!(
+            gateway
+                .review_working_tree_metadata(fifo.to_str().unwrap())
+                .unwrap(),
+            ReviewSideMetadata::Missing
+        );
+        assert_eq!(
+            gateway
+                .review_working_tree_bytes(fifo.to_str().unwrap())
+                .unwrap(),
+            ReviewSideBytes::Missing
+        );
     }
 
     #[test]

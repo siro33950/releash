@@ -371,6 +371,8 @@ impl WorkspaceStateReads {
                 StateValue::Worktrees(self.repository.list_worktrees(p).map_err(error)?)
             }
             T::StartupRepository => StateValue::StartupRepository(self.repository.startup_worktree().map_err(error)?),
+            T::Directory(path, directory) => StateValue::Directory(self.review.directory_entries(path, directory).map_err(error)?),
+            T::FileTab(path, file, base) => StateValue::FileTab(self.review.get_file_tab_view(path, file, base.as_str()).map_err(error)?),
             T::ReviewSnapshot(path, base) => StateValue::ReviewSnapshot(
                 self.review
                     .get_review_snapshot(path, base.as_str())
@@ -381,6 +383,11 @@ impl WorkspaceStateReads {
                     .get_review_file_view(path, file, section.as_str(), base.as_str())
                     .map_err(error)?,
             ),
+            T::FileThreads(path, file) => {
+                let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::ReviewActor::human()).map_err(error)?;
+                let count = crate::domain::comment::unresolved_thread_count(&threads);
+                StateValue::FileThreads(threads, count)
+            }
             T::ReviewThreads(name) => StateValue::ReviewThreads(
                 self.comments
                     .list_threads(

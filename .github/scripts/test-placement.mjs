@@ -65,7 +65,7 @@ function placementErrors(path, source) {
   if (auxiliary) return testFile || testAttribute ? [`${path}: 補助ファイルの置き場所にテストを置かないでください`] : [];
   const rustIntegration = /^(?:server|clients\/(?:desktop|cli))\/tests\//.test(path);
   const errors = [];
-  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) && !(path.startsWith("clients/desktop/src/") && /\.test\.tsx?$/.test(path)) && !/^clients\/desktop\/tests\/(?:integration|behavior)\//.test(path)) errors.push("フロントのテストの置き場所が規約と一致しません");
+  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) && !(path.startsWith("clients/desktop/src/") && /\.test\.tsx?$/.test(path)) && !/^clients\/desktop\/tests\/(?:integration|behavior)\//.test(path) && !/^clients\/macos\/FileViewer\/[^/]+\.test\.js$/.test(path)) errors.push("フロントのテストの置き場所が規約と一致しません");
   if (path.endsWith("_test.rs") && !rustSource && !rustIntegration) errors.push("Rust テストの置き場所が規約と一致しません");
   if (path.endsWith(".rs") && testAttribute && !rustIntegration && !(rustSource && path.endsWith("_test.rs"))) errors.push("#[test] は *_test.rs または Rust の tests/ に置いてください");
   if (rustSource && path.endsWith("_test.rs")) {

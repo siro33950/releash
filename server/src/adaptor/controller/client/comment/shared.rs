@@ -33,6 +33,8 @@ pub(crate) fn register_shared(
                                     file_path: optional(args.file_path)?,
                                     line_number: optional(args.line_number)?,
                                     end_line: optional(args.end_line)?,
+                                    side: None,
+                                    end_side: None,
                                 },
                                 convert(required(args.content, "content")?)?,
                             )
@@ -148,6 +150,8 @@ pub(crate) fn register_shared(
                                     file_path: optional(args.file_path)?,
                                     line_number: optional(args.line_number)?,
                                     end_line: optional(args.end_line)?,
+                                    side: optional(args.side)?,
+                                    end_side: optional(args.end_side)?,
                                 },
                                 convert(required(args.content, "content")?)?,
                             )

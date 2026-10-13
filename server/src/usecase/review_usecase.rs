@@ -11,9 +11,11 @@ use crate::domain::code::services::hunk::{
     assign_stable_group_ids_for_side, assign_stable_hunk_ids_for_side, StableGroupIdSide,
 };
 use crate::domain::code::{
-    ChangeGroup, CodeError, DiffFileEntry, Hunk, ReviewBase, ReviewBlobContentType, ReviewBlobSide,
-    ReviewLimitReason, ReviewSection, ReviewSideBytes, ReviewSideMetadata, ReviewThresholds,
+    ChangeGroup, CodeError, DiffFileEntry, Hunk, ReviewBase, ReviewBlobSide, ReviewLimitReason,
+    ReviewSection, ReviewSideBytes, ReviewSideMetadata, ReviewThresholds,
 };
+
+use crate::domain::code::value_objects::review::ReviewPresentation;
 
 use super::code_dto::{
     BranchDiffSummaryDto, ChangeGroupDto, DiffHunksResultDto, DiffTreeNodeDto, HunkDto,
@@ -61,6 +63,14 @@ struct ReviewBlobViewContext<'a> {
 #[async_trait::async_trait]
 
 trait ReviewCodePort: Send + Sync {
+    fn file_target(&self, worktree: &str, file: &str) -> Result<String, CodeUsecaseError>;
+    fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+        statuses: &[FileStatusDto],
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError>;
+
     fn get_branch_diff_summary(
         &self,
         repo_path: &str,
@@ -84,6 +94,11 @@ trait ReviewCodePort: Send + Sync {
     ) -> Result<ReviewSideBytes, CodeUsecaseError>;
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError>;
+    fn review_working_tree_matches_source(
+        &self,
+        file_path: &str,
+        source: ReviewContentSource,
+    ) -> Result<bool, CodeUsecaseError>;
 
     fn compute_diff_hunks(
         &self,
@@ -102,6 +117,19 @@ trait ReviewCodePort: Send + Sync {
 #[async_trait::async_trait]
 
 impl ReviewCodePort for CodeUsecase {
+    fn file_target(&self, worktree: &str, file: &str) -> Result<String, CodeUsecaseError> {
+        CodeUsecase::file_target(self, worktree, file)
+    }
+
+    fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+        statuses: &[FileStatusDto],
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+        CodeUsecase::directory_entries(self, worktree, directory, statuses)
+    }
+
     fn get_branch_diff_summary(
         &self,
         repo_path: &str,
@@ -130,6 +158,14 @@ impl ReviewCodePort for CodeUsecase {
         source: ReviewContentSource,
     ) -> Result<ReviewSideBytes, CodeUsecaseError> {
         CodeUsecase::read_review_source_bytes(self, file_path, source)
+    }
+
+    fn review_working_tree_matches_source(
+        &self,
+        file_path: &str,
+        source: ReviewContentSource,
+    ) -> Result<bool, CodeUsecaseError> {
+        CodeUsecase::review_working_tree_matches_source(self, file_path, source)
     }
 
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError> {
@@ -183,6 +219,16 @@ impl ReviewUsecase {
             repository_state,
             code,
         }
+    }
+
+    pub fn directory_entries(
+        &self,
+        worktree: &str,
+        directory: &str,
+    ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
+        let snapshot = self.snapshot(worktree)?;
+        self.code
+            .directory_entries(worktree, directory, &snapshot.status)
     }
 
     pub fn get_review_snapshot(
@@ -256,7 +302,13 @@ impl ReviewUsecase {
             ));
         }
 
-        if ReviewBlobContentType::image_from_path(&relative_path).is_some() {
+        if ReviewPresentation::classify(
+            &relative_path,
+            false,
+            &ReviewSideBytes::Missing,
+            &ReviewSideBytes::Missing,
+        ) == ReviewPresentation::Image
+        {
             let mime = review_blob_mime_for_path(&relative_path);
             return Ok(ReviewFileViewDto::Image(ReviewImageDto {
                 version,
@@ -269,7 +321,14 @@ impl ReviewUsecase {
             }));
         }
 
-        if self.code.review_binary_by_attributes(&file_path)? {
+        let binary_attribute = self.code.review_binary_by_attributes(&file_path)?;
+        if ReviewPresentation::classify(
+            &relative_path,
+            binary_attribute,
+            &ReviewSideBytes::Missing,
+            &ReviewSideBytes::Missing,
+        ) == ReviewPresentation::Binary
+        {
             return Ok(binary_view(
                 blob_context,
                 stale,
@@ -285,7 +344,13 @@ impl ReviewUsecase {
             .code
             .read_review_source_bytes(&file_path, modified_source.source)?;
 
-        if side_bytes_look_binary(&original_bytes) || side_bytes_look_binary(&modified_bytes) {
+        if ReviewPresentation::classify(
+            &relative_path,
+            binary_attribute,
+            &original_bytes,
+            &modified_bytes,
+        ) == ReviewPresentation::Binary
+        {
             return Ok(binary_view(
                 blob_context,
                 stale,
@@ -310,6 +375,127 @@ impl ReviewUsecase {
         )
     }
 
+    pub fn get_file_tab_view(
+        &self,
+        worktree_path: &str,
+        path: &str,
+        base: &str,
+    ) -> Result<super::code_dto::FileTabViewDto, CodeUsecaseError> {
+        use super::code_dto::FileTabViewDto;
+        let base = ReviewBase::parse(base)?;
+        let relative_path = resolve_review_target(worktree_path, path)?;
+        let file_path = self.code.file_target(worktree_path, &relative_path)?;
+        let snapshot = self.snapshot(worktree_path)?;
+        let original_source = self.code.select_review_side_source(
+            &file_path,
+            ReviewBlobSide::Original,
+            ReviewSection::FileTab,
+            base,
+        )?;
+        let modified_source = self.code.select_review_side_source(
+            &file_path,
+            ReviewBlobSide::Modified,
+            ReviewSection::FileTab,
+            base,
+        )?;
+        if original_source.metadata.is_missing() && modified_source.metadata.is_missing() {
+            return Err(CodeError::Rule(format!("file target not found: {relative_path}")).into());
+        }
+        let binary_attribute =
+            if crate::domain::code::value_objects::review::ReviewBlobContentType::image_from_path(
+                &relative_path,
+            )
+            .is_none()
+            {
+                self.code.review_binary_by_attributes(&file_path)?
+            } else {
+                false
+            };
+        let initial_mode = ReviewPresentation::initial_file_mode(
+            self.code
+                .review_working_tree_matches_source(&file_path, original_source.source)?,
+        );
+        let (original_bytes, modified_bytes) = if binary_attribute {
+            (ReviewSideBytes::Missing, ReviewSideBytes::Missing)
+        } else {
+            (
+                self.code
+                    .read_review_source_bytes(&file_path, original_source.source)?,
+                self.code
+                    .read_review_source_bytes(&file_path, modified_source.source)?,
+            )
+        };
+        let context = ReviewBlobViewContext {
+            relative_path: &relative_path,
+            file_path: &file_path,
+            version: snapshot.version,
+        };
+        let mut dto = FileTabViewDto {
+            view: binary_view(
+                context,
+                snapshot.flags.stale,
+                original_source.metadata,
+                modified_source.metadata,
+            ),
+            initial_mode,
+            patch: String::new(),
+        };
+        if ReviewPresentation::classify(&relative_path, false, &original_bytes, &modified_bytes)
+            == ReviewPresentation::Image
+        {
+            let mime = review_blob_mime_for_path(&relative_path);
+            dto.view = ReviewFileViewDto::Image(ReviewImageDto {
+                version: snapshot.version,
+                stale: snapshot.flags.stale,
+                file_id: relative_path.clone(),
+                path: relative_path,
+                original_url: side_data_url(&original_bytes, mime),
+                modified_url: side_data_url(&modified_bytes, mime),
+                mime: mime.into(),
+            });
+            return Ok(dto);
+        }
+        if ReviewPresentation::classify(
+            &relative_path,
+            binary_attribute,
+            &original_bytes,
+            &modified_bytes,
+        ) == ReviewPresentation::Binary
+        {
+            return Ok(dto);
+        }
+        let original = decode_side_text(&original_bytes)?;
+        let modified = decode_side_text(&modified_bytes)?;
+        let hunks = self.compute_review_diff_hunks(
+            &original,
+            &modified,
+            Some(&relative_path),
+            ReviewSection::Changes,
+        )?;
+        let display_hunks: Vec<_> = hunks.hunks.iter().map(hunk_dto_to_domain).collect();
+        dto.patch = crate::domain::code::services::file_hunk::patch(
+            &relative_path,
+            &display_hunks,
+            &original,
+            &modified,
+        );
+        let total_lines = line_count(&original).max(line_count(&modified)) as u32;
+        dto.view = ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
+            version: snapshot.version,
+            stale: snapshot.flags.stale,
+            file_id: relative_path.clone(),
+            path: relative_path,
+            source: text_source(&original_bytes, &modified_bytes),
+            original,
+            modified,
+            hunks: hunks.hunks,
+            change_groups: Vec::new(),
+            limited: false,
+            total_lines,
+        });
+        Ok(dto)
+    }
+
     pub async fn git_stage_review_group(
         &self,
         worktree_path: &str,
@@ -318,11 +504,12 @@ impl ReviewUsecase {
         base: &str,
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
+        let section = ReviewSection::parse(section)?;
         let snapshot = self.snapshot(worktree_path)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
             path,
-            section,
+            section.as_str(),
             base,
             group_id,
             snapshot.as_ref(),
@@ -338,11 +525,12 @@ impl ReviewUsecase {
         base: &str,
         group_id: &str,
     ) -> Result<(), CodeUsecaseError> {
+        let section = ReviewSection::parse(section)?;
         let snapshot = self.snapshot(worktree_path)?;
         let patch = self.generate_review_group_patch(
             worktree_path,
             path,
-            section,
+            section.as_str(),
             base,
             group_id,
             snapshot.as_ref(),
@@ -791,25 +979,22 @@ fn review_snapshot_contains_target(
     section: ReviewSection,
     base: ReviewBase,
 ) -> bool {
-    if base.is_branch_base() {
-        return !section.is_staged()
-            && snapshot
-                .files
-                .iter()
-                .any(|entry| review_file_entry_matches(entry, relative_path));
-    }
-
-    if section.is_staged() {
-        return snapshot
+    crate::domain::code::value_objects::review::review_target_is_available(
+        section,
+        base,
+        snapshot
+            .files
+            .iter()
+            .any(|entry| review_file_entry_matches(entry, relative_path)),
+        snapshot
             .staged_files
             .iter()
-            .any(|entry| entry.path == relative_path);
-    }
-
-    snapshot
-        .changed_files
-        .iter()
-        .any(|entry| entry.path == relative_path)
+            .any(|entry| entry.path == relative_path),
+        snapshot
+            .changed_files
+            .iter()
+            .any(|entry| entry.path == relative_path),
+    )
 }
 
 fn review_file_entry_matches(entry: &ReviewFileEntryDto, relative_path: &str) -> bool {
@@ -874,15 +1059,6 @@ fn decode_side_text(bytes: &ReviewSideBytes) -> Result<String, CodeUsecaseError>
             .map_err(CodeError::from)?
             .to_string()),
         ReviewSideBytes::Missing => Ok(String::new()),
-    }
-}
-
-fn side_bytes_look_binary(bytes: &ReviewSideBytes) -> bool {
-    match bytes {
-        ReviewSideBytes::Present(bytes) => {
-            looks_binary(bytes) || std::str::from_utf8(bytes).is_err()
-        }
-        ReviewSideBytes::Missing => false,
     }
 }
 
@@ -1040,10 +1216,6 @@ fn limit_reason_to_dto(reason: ReviewLimitReason) -> ReviewLimitReasonDto {
     }
 }
 
-fn looks_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0)
-}
-
 fn review_blob_mime_for_path(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -1071,3 +1243,14 @@ fn repository_state_error(error: RepositoryStateError) -> CodeUsecaseError {
 #[cfg(test)]
 #[path = "review_usecase_test.rs"]
 mod review_usecase_tests;
+
+fn side_data_url(bytes: &ReviewSideBytes, mime: &str) -> Option<String> {
+    use base64::Engine;
+    match bytes {
+        ReviewSideBytes::Present(bytes) => Some(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )),
+        ReviewSideBytes::Missing => None,
+    }
+}

@@ -147,6 +147,8 @@ pub(crate) mod tests {
             file_path: None,
             line_number: None,
             end_line: None,
+            side: None,
+            end_side: None,
         }
     }
 
@@ -155,6 +157,8 @@ pub(crate) mod tests {
             file_path: Some(file_path.to_string()),
             line_number: Some(line_number),
             end_line: None,
+            side: None,
+            end_side: None,
         }
     }
 

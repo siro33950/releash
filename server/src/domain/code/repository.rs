@@ -56,6 +56,11 @@ pub trait FileContentRepository: Send + Sync {
     ) -> Result<ReviewSideMetadata, CodeError>;
     fn review_working_tree_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError>;
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeError>;
+    fn review_working_tree_matches_ref(
+        &self,
+        file_path: &str,
+        git_ref: &str,
+    ) -> Result<bool, CodeError>;
 }
 
 /// 差分の Approve（staging）に関わる index 書き込み操作。

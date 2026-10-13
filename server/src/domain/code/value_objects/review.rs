@@ -2,6 +2,37 @@
 
 use crate::domain::code::CodeError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMode {
+    File,
+    Diff,
+}
+
+impl FileMode {
+    pub fn for_change(changed: bool) -> Self {
+        if changed {
+            Self::Diff
+        } else {
+            Self::File
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, CodeError> {
+        match value {
+            "file" => Ok(Self::File),
+            "diff" => Ok(Self::Diff),
+            other => Err(CodeError::Rule(format!("invalid file mode: {other}"))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Diff => "diff",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReviewBase {
     Head,
@@ -33,6 +64,7 @@ impl ReviewBase {
 pub enum ReviewSection {
     Changes,
     Staged,
+    FileTab,
 }
 
 impl ReviewSection {
@@ -40,6 +72,7 @@ impl ReviewSection {
         match value {
             "changes" => Ok(Self::Changes),
             "staged" => Ok(Self::Staged),
+            "file-tab" => Ok(Self::FileTab),
             other => Err(CodeError::Rule(format!("invalid review section: {other}"))),
         }
     }
@@ -48,11 +81,98 @@ impl ReviewSection {
         match self {
             Self::Changes => "changes",
             Self::Staged => "staged",
+            Self::FileTab => "file-tab",
         }
     }
 
     pub fn is_staged(self) -> bool {
         matches!(self, Self::Staged)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewContentSource {
+    BranchBase,
+    BranchBaseTip,
+    Head,
+    Staged,
+    WorkingTree,
+}
+
+impl ReviewContentSource {
+    pub fn select(
+        side: super::super::ReviewBlobSide,
+        section: ReviewSection,
+        base: ReviewBase,
+    ) -> Self {
+        use super::super::ReviewBlobSide as Side;
+        match (base, section, side) {
+            (ReviewBase::BranchBase, ReviewSection::FileTab, Side::Original) => Self::BranchBaseTip,
+            (ReviewBase::BranchBase, _, Side::Original) => Self::BranchBase,
+            (ReviewBase::BranchBase, _, Side::Modified) => Self::WorkingTree,
+            (_, ReviewSection::Staged, Side::Original) => Self::Head,
+            (_, ReviewSection::Staged, Side::Modified) => Self::Staged,
+            (_, ReviewSection::FileTab, Side::Original) => Self::Head,
+            (_, ReviewSection::FileTab, Side::Modified) => Self::WorkingTree,
+            (_, ReviewSection::Changes, Side::Original) => Self::Staged,
+            (_, ReviewSection::Changes, Side::Modified) => Self::WorkingTree,
+        }
+    }
+}
+
+pub fn review_target_is_available(
+    section: ReviewSection,
+    base: ReviewBase,
+    in_files: bool,
+    in_staged: bool,
+    in_changes: bool,
+) -> bool {
+    match (base, section) {
+        (_, ReviewSection::FileTab) => false,
+        (ReviewBase::BranchBase, ReviewSection::Changes) => in_files,
+        (ReviewBase::BranchBase, ReviewSection::Staged) => false,
+        (ReviewBase::Head, ReviewSection::Staged) => in_staged,
+        (ReviewBase::Head, ReviewSection::Changes) => in_changes,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewPresentation {
+    Image,
+    Binary,
+    Text,
+}
+
+impl ReviewPresentation {
+    pub fn initial_file_mode(matches: bool) -> FileMode {
+        FileMode::for_change(!matches)
+    }
+
+    pub fn classify(
+        path: &str,
+        binary_attribute: bool,
+        original: &super::super::ReviewSideBytes,
+        modified: &super::super::ReviewSideBytes,
+    ) -> Self {
+        if ReviewBlobContentType::image_from_path(path).is_some() {
+            Self::Image
+        } else if binary_attribute
+            || review_bytes_are_binary(original)
+            || review_bytes_are_binary(modified)
+        {
+            Self::Binary
+        } else {
+            Self::Text
+        }
+    }
+}
+
+pub fn review_bytes_are_binary(bytes: &super::super::ReviewSideBytes) -> bool {
+    match bytes {
+        super::super::ReviewSideBytes::Present(bytes) => {
+            bytes.iter().take(8192).any(|byte| *byte == 0) || std::str::from_utf8(bytes).is_err()
+        }
+        super::super::ReviewSideBytes::Missing => false,
     }
 }
 

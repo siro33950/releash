@@ -488,6 +488,10 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
                 .is_some_and(|target| target.snapshot.is_none())
     }
 
+    pub fn snapshot(&self, target: &str) -> Option<&T> {
+        self.targets.get(target)?.snapshot.as_deref()
+    }
+
     pub fn current_version(&self, target: &str) -> Option<Version> {
         self.targets
             .get(target)

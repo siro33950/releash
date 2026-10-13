@@ -91,6 +91,8 @@ async fn test_review作成_存在しないsessionはnotfoundとなりstoreを変
                 file_path: None,
                 line_number: None,
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             "content".into(),
         )
@@ -141,6 +143,8 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
                 file_path: None,
                 line_number: None,
                 end_line: None,
+                side: None,
+                end_side: None,
             },
             "first".into(),
         )

@@ -69,6 +69,36 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [execution], timeout: 30), .completed, app.debugDescription)
   }
 
+  @MainActor func testFilesPanelOpensFileTabAndShowsDiff() async throws {
+    try await fixture.startServer()
+    let repository = try await fixture.repository("file-repository")
+    let path = repository.appendingPathComponent("file.swift")
+    try "let before = 1\n".write(to: path, atomically: true, encoding: .utf8)
+    let git = URL(fileURLWithPath: "/usr/bin/git")
+    try fixture.process(git, ["add", "file.swift"], at: repository)
+    try fixture.process(git, ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "file"], at: repository)
+    try "let after = 2\n".write(to: path, atomically: true, encoding: .utf8)
+    launch()
+    app.buttons["worktree:main"].firstMatch.click()
+    app.buttons["ファイル"].click()
+    let file = app.descendants(matching: .any).matching(identifier: "file:file.swift").firstMatch
+    XCTAssertTrue(file.waitForExistence(timeout: 30), app.debugDescription)
+    file.click()
+    XCTAssertTrue(app.buttons["file.swift"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+    let after = app.webViews.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "after")).firstMatch
+    let before = app.webViews.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "before")).firstMatch
+    XCTAssertTrue(after.waitForExistence(timeout: 30), app.debugDescription)
+    XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
+    let mode = app.descendants(matching: .any).matching(identifier: "file-mode").firstMatch
+    mode.click()
+    XCTAssertTrue(after.waitForExistence(timeout: 10), app.debugDescription)
+    let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: before)
+    XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, app.debugDescription)
+    mode.click()
+    XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
+
+  }
+
   @MainActor func testSplitAndMoveTab() async throws {
     try await fixture.startServer()
     _ = try await fixture.repository("pane-repository")

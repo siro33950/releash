@@ -81,6 +81,34 @@ struct StoredReviewTarget {
     file_path: Option<String>,
     line_number: Option<u32>,
     end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    side: Option<StoredReviewLineSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end_side: Option<StoredReviewLineSide>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredReviewLineSide {
+    Additions,
+    Deletions,
+}
+
+impl From<crate::domain::comment::ReviewLineSide> for StoredReviewLineSide {
+    fn from(side: crate::domain::comment::ReviewLineSide) -> Self {
+        match side {
+            crate::domain::comment::ReviewLineSide::Additions => Self::Additions,
+            crate::domain::comment::ReviewLineSide::Deletions => Self::Deletions,
+        }
+    }
+}
+impl From<StoredReviewLineSide> for crate::domain::comment::ReviewLineSide {
+    fn from(side: StoredReviewLineSide) -> Self {
+        match side {
+            StoredReviewLineSide::Additions => Self::Additions,
+            StoredReviewLineSide::Deletions => Self::Deletions,
+        }
+    }
 }
 
 impl From<&ReviewTarget> for StoredReviewTarget {
@@ -89,6 +117,8 @@ impl From<&ReviewTarget> for StoredReviewTarget {
             file_path: target.file_path.clone(),
             line_number: target.line_number,
             end_line: target.end_line,
+            side: target.side.map(Into::into),
+            end_side: target.end_side.map(Into::into),
         }
     }
 }
@@ -99,6 +129,8 @@ impl From<StoredReviewTarget> for ReviewTarget {
             file_path: target.file_path,
             line_number: target.line_number,
             end_line: target.end_line,
+            side: target.side.map(Into::into),
+            end_side: target.end_side.map(Into::into),
         }
     }
 }

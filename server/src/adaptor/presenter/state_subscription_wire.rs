@@ -84,6 +84,22 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::Directory(entries) => wire::state_payload::Value::Directory(wire::DirectorySnapshot {
+                entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: match entry.status {
+                    crate::domain::code::services::directory::GitStatus::None => "none",
+                    crate::domain::code::services::directory::GitStatus::New => "new",
+                    crate::domain::code::services::directory::GitStatus::Modified => "modified",
+                    crate::domain::code::services::directory::GitStatus::Renamed => "renamed",
+                    crate::domain::code::services::directory::GitStatus::Deleted => "deleted",
+                    crate::domain::code::services::directory::GitStatus::Conflicted => "conflicted",
+                }.into() }).collect(),
+                removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
+            }),
+            StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
+                view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
+                patch: value.patch.clone(),
+                initial_mode: value.initial_mode.as_str().into(),
+            }),
             StateValue::ReviewSnapshot(value) => wire::state_payload::Value::ReviewSnapshot(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -92,6 +108,9 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::FileThreads(threads, count) => wire::state_payload::Value::FileThreads(wire::FileThreadsSnapshot {
+                threads: Some(crate::adaptor::presenter::client::value(threads.clone()).map_err(crate::adaptor::presenter::connect::command_error)?), unresolved_count: *count,
+            }),
             StateValue::ReviewThreads(value) => wire::state_payload::Value::ReviewThreads(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,

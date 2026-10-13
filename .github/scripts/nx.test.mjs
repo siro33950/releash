@@ -66,10 +66,10 @@ test("native selection propagates the Release configuration to helpers", () => {
   const { tasks, dependencies } = graph("clients/macos/project.yml",
     "--exclude=server,cli,desktop,workspace", "--configuration=release");
   assert.deepEqual(Object.keys(tasks).sort(), [
-    "macos:build:release", "macos:generate", "macos:helpers:release", "macos:test:release",
+    "macos:build:release", "macos:file-viewer", "macos:generate", "macos:helpers:release", "macos:test:release",
   ]);
   for (const target of ["build", "test"]) {
-    assert.deepEqual(dependencies[`macos:${target}:release`].sort(), ["macos:generate", "macos:helpers:release"]);
+    assert.deepEqual(dependencies[`macos:${target}:release`].sort(), ["macos:file-viewer", "macos:generate", "macos:helpers:release"]);
   }
 });
 

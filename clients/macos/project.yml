@@ -31,6 +31,9 @@ targets:
     platform: macOS
     sources:
       - Sources
+      - path: .build/FileViewer
+        type: folder
+        buildPhase: resources
       - path: Resources/Lucide-LICENSE
         buildPhase: resources
       - path: Resources/SwiftTerm-LICENSE
@@ -61,6 +64,7 @@ targets:
       base:
         INFOPLIST_FILE: Info.plist
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.releash.macos.dev

@@ -89,11 +89,19 @@ pub enum ReviewThreadState {
     Resolved,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewLineSide {
+    Additions,
+    Deletions,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewTarget {
     pub file_path: Option<String>,
     pub line_number: Option<u32>,
     pub end_line: Option<u32>,
+    pub side: Option<ReviewLineSide>,
+    pub end_side: Option<ReviewLineSide>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,6 +134,13 @@ pub struct ReviewThread {
     pub updated_at: f64,
     pub version: u64,
     pub can_resolve: bool,
+}
+
+pub fn unresolved_thread_count(threads: &[ReviewThread]) -> u32 {
+    threads
+        .iter()
+        .filter(|thread| thread.state == ReviewThreadState::Open)
+        .count() as u32
 }
 
 /// `ReviewThreadFilter.author` の値。spec issues-1022 design.md List contract:
@@ -364,6 +379,13 @@ pub(crate) fn validate_content(content: &str, label: &str) -> Result<(), ReviewE
 pub(crate) fn validate_target(target: &ReviewTarget) -> Result<(), ReviewError> {
     if let Some(file_path) = target.file_path.as_deref() {
         validate_review_file_path(file_path)?;
+    }
+    if (target.side.is_some() && (target.file_path.is_none() || target.line_number.is_none()))
+        || (target.end_side.is_some() && (target.side.is_none() || target.end_line.is_none()))
+    {
+        return Err(ReviewError::InvalidInput(
+            "line sides require a file and their line numbers".into(),
+        ));
     }
     validate_line_range(target.line_number, target.end_line)
 }

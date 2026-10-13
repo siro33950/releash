@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RightPanelView: View {
   @Binding var expanded: Bool
+  var model: AppModel
   @State private var selected = Panel.files
   enum Panel: String, CaseIterable, Identifiable {
     case files, sourceControl, threads, tasks
@@ -28,15 +29,11 @@ struct RightPanelView: View {
       HStack(spacing: UIStyle.rowSpacing) {
         if expanded {
           ForEach(Panel.allCases) { panel in
-            Button {
-              selected = panel
-            } label: {
+            Toggle(isOn: Binding(get: { selected == panel }, set: { if $0 { selected = panel } })) {
               Image(systemName: panel.icon)
-                .frame(width: UIStyle.panelButtonSize, height: UIStyle.panelButtonSize)
-                .background(
-                  selected == panel ? Color(nsColor: .quaternaryLabelColor) : .clear,
-                  in: RoundedRectangle(cornerRadius: UIStyle.panelButtonCornerRadius))
             }
+            .toggleStyle(IconToggleStyle())
+            .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
             .help(panel.title).accessibilityLabel(panel.title)
             .accessibilityAddTraits(selected == panel ? .isSelected : [])
           }
@@ -47,20 +44,17 @@ struct RightPanelView: View {
         } label: {
           Image(systemName: "sidebar.right")
         }
+        .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
         .help(expanded ? "右パネルを閉じる" : "右パネルを開く")
         .accessibilityLabel(expanded ? "右パネルを閉じる" : "右パネルを開く")
       }
-      .buttonStyle(.borderless)
+      .buttonStyle(.accessoryBar)
       .padding(.horizontal, UIStyle.spacing)
       .frame(height: UIStyle.tabBarHeight)
       Divider()
-      if expanded {
-        Text(selected.title).font(.headline)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(UIStyle.padding)
-          .accessibilityIdentifier("right-panel-title")
-      }
-      Spacer(minLength: 0)
+      if expanded, selected == .files, let path = model.selectedWorktree {
+        FileTreeView(model: model, worktree: path).id(path)
+      } else { Spacer(minLength: 0) }
     }
     .frame(
       minWidth: expanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth,
@@ -68,6 +62,5 @@ struct RightPanelView: View {
       maxWidth: expanded ? UIStyle.sidebarMaximumWidth : UIStyle.collapsedPanelWidth
     )
     .frame(maxHeight: .infinity)
-    .background(Color(nsColor: .controlBackgroundColor))
   }
 }

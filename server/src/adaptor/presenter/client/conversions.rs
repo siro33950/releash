@@ -1358,6 +1358,32 @@ impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapsh
     }
 }
 
+impl TryFrom<crate::domain::comment::ReviewLineSide> for wire::ReviewLineSideDto {
+    type Error = String;
+    fn try_from(value: crate::domain::comment::ReviewLineSide) -> Result<Self, String> {
+        use crate::domain::comment::ReviewLineSide;
+        use wire::review_line_side_dto::Value;
+        Ok(Self {
+            value: Some(match value {
+                ReviewLineSide::Additions => Value::Additions,
+                ReviewLineSide::Deletions => Value::Deletions,
+            } as i32),
+        })
+    }
+}
+impl TryFrom<wire::ReviewLineSideDto> for crate::domain::comment::ReviewLineSide {
+    type Error = String;
+    fn try_from(value: wire::ReviewLineSideDto) -> Result<Self, String> {
+        use wire::review_line_side_dto::Value;
+        match Value::try_from(req(value.value, "value")?)
+            .map_err(|_| "Invalid ReviewLineSideDto")?
+        {
+            Value::Additions => Ok(Self::Additions),
+            Value::Deletions => Ok(Self::Deletions),
+        }
+    }
+}
+
 impl TryFrom<crate::domain::comment::ReviewTarget> for wire::ReviewTargetWireDto {
     type Error = String;
     fn try_from(value: crate::domain::comment::ReviewTarget) -> Result<Self, String> {
@@ -1365,6 +1391,8 @@ impl TryFrom<crate::domain::comment::ReviewTarget> for wire::ReviewTargetWireDto
             file_path: value.file_path.map(cv).transpose()?,
             line_number: value.line_number.map(cv).transpose()?,
             end_line: value.end_line.map(cv).transpose()?,
+            side: value.side.map(cv).transpose()?,
+            end_side: value.end_side.map(cv).transpose()?,
         })
     }
 }
@@ -2132,6 +2160,9 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                         .iter()
                         .map(|tab| wire::PaneTab {
                             id: tab.id.clone(),
+                            file_path: tab.file_path.clone(),
+                            file_mode: tab.file_mode.map(|mode| mode.as_str().into()),
+                            file_base: tab.file_base.map(|base| base.as_str().into()),
                             kind: match tab.kind {
                                 PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
                                 PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
@@ -2187,6 +2218,19 @@ impl TryFrom<wire::PaneLayout>
                     .map(|tab| {
                         Ok(PaneTab {
                             id: tab.id,
+                            file_path: tab.file_path,
+                            file_mode: tab
+                                .file_mode
+                                .as_deref()
+                                .map(crate::domain::code::value_objects::review::FileMode::parse)
+                                .transpose()
+                                .map_err(|error| error.to_string())?,
+                            file_base: tab
+                                .file_base
+                                .as_deref()
+                                .map(crate::domain::code::ReviewBase::parse)
+                                .transpose()
+                                .map_err(|error| error.to_string())?,
                             kind: match wire::PaneTabKind::try_from(tab.kind) {
                                 Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
                                 Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,

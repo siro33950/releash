@@ -26,13 +26,15 @@ enum UIStyle {
   static let windowControlsWidth: CGFloat = 68
   static let windowControlSpacing: CGFloat = 22
   static let tabBarHeight: CGFloat = 33
-  static let panelButtonSize: CGFloat = 24
-  static let panelButtonCornerRadius: CGFloat = 4
+  static let iconButtonWidth: CGFloat = 28
+  static let iconButtonHeight: CGFloat = 24
   static let collapsedPanelWidth: CGFloat = 36
   static let footerHeight: CGFloat = 24
   static let statusSize: CGFloat = 8
   static let tabSelection = Color(nsColor: .secondaryLabelColor)
-  static let sidebarSelection = Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+  static let sidebarSelection = Color(nsColor: .selectedContentBackgroundColor)
+  static let sidebarSelectionText = Color(nsColor: .alternateSelectedControlTextColor)
+  static let iconButtonCornerRadius: CGFloat = 5
   static let attention = Color.yellow
   static let active = Color.blue
   static let idle = Color.green
@@ -45,5 +47,19 @@ enum UIStyle {
     case "active": active
     default: idle
     }
+  }
+}
+
+/// アイコンだけのトグル。off は accessoryBar のボタンと同じ見た目で、on は worktree の選択と同じ色にする
+struct IconToggleStyle: ToggleStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    Button { configuration.isOn.toggle() } label: {
+      configuration.label.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    .buttonStyle(.accessoryBar)
+    .background(
+      configuration.isOn ? UIStyle.sidebarSelection : .clear,
+      in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius))
+    .foregroundStyle(configuration.isOn ? UIStyle.sidebarSelectionText : .primary)
   }
 }

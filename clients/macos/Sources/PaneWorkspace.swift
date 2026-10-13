@@ -16,6 +16,7 @@ import SwiftUI
     for id in controller.allTabIds { controller.closeTab(id) }
     controller.delegate = self
     controller.configuration.appearance.showSplitButtons = false
+    controller.configuration.contentViewLifecycle = .keepAllAlive
     controller.configuration.appearance.selectedTabIndicatorColor = UIStyle.tabSelection
   }
 
@@ -40,7 +41,7 @@ import SwiftUI
         let values = tabs.map { tab -> ExternalTab in
           let id = identifier(tab.id)
           restoredTabs[id] = tab
-          let title = tab.kind == .terminal ? "Terminal \(terminalNumber)" : tab.kind.title
+          let title = tab.kind == .terminal ? "Terminal \(terminalNumber)" : tab.title
           if tab.kind == .terminal { terminalNumber += 1 }
           metadata.append(
             Bonsplit.Tab(
@@ -137,6 +138,23 @@ import SwiftUI
     return false
   }
 
+  func openFile(_ path: String, base: String) {
+    guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
+    if let existing = controller.tabs(inPane: pane).first(where: { tabs[$0.id.id.uuidString]?.filePath == path }) {
+      controller.selectTab(existing.id)
+      return
+    }
+    guard let id = controller.createTab(title: URL(fileURLWithPath: path).lastPathComponent, icon: PaneTab.Kind.file.icon, inPane: pane) else { return }
+    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: .file, filePath: path, fileBase: base)
+  }
+
+  func setFilePresentation(_ id: TabID, mode: String?, base: String?) {
+    guard var tab = tabs[id.id.uuidString] else { return }
+    if let mode { tab.fileMode = mode }
+    if let base { tab.fileBase = base }
+    tabs[id.id.uuidString] = tab
+  }
+
   func closeCurrentTab() {
     guard let pane = controller.focusedPaneId, let tab = controller.selectedTab(inPane: pane) else {
       return
@@ -157,6 +175,8 @@ struct WorkspacePaneView: View {
     BonsplitView(controller: model.panes.controller) { tab, pane in
       if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal, let path = model.selectedWorktree {
         TerminalPane(session: model.terminal(path: path, id: value.id), focused: model.panes.controller.focusedPaneId == pane).id(path + value.id)
+      } else if let file = model.panes.tab(tab.id), let path = file.filePath, let worktree = model.selectedWorktree {
+        FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree).id("\(worktree):\(tab.id):\(path)")
       } else {
         Text(tab.title).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, maxHeight: .infinity)

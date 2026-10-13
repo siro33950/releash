@@ -961,6 +961,7 @@ pub async fn test_一般設定保存_必須入力の欠落ではどの設定も�
 }
 
 struct ClientTestDependencies {
+    data_dir: std::path::PathBuf,
     client: releashd::test_support::integration::transport::ClientDependencies,
     dispatch: Option<Arc<ClientCommandDispatch>>,
 }
@@ -973,10 +974,54 @@ fn make_client_dependencies() -> (
         crate::adaptor_controller_client_workflow_mod::tests::make_read_only_app();
     (
         ClientTestDependencies {
+            data_dir: data_dir.clone(),
             client: dependencies.client,
             dispatch: None,
         },
         data_dir,
         store,
     )
+}
+
+#[tokio::test]
+pub async fn test_行threadの側_protoと保存復元で前後の側を保持する() {
+    for side in ["deletions", "additions"] {
+        // Given
+        let (app, dispatch) = parity_app();
+        let args = json!({"worktreeName":"repository","filePath":"file.rs","lineNumber":2,"endLine":3,
+            "side":side,"endSide":side,"content":"selected line"});
+        // When
+        let request = wire::command_request_from_value("create_review_thread", args).unwrap();
+        let response = dispatch.dispatch(request.command.unwrap()).await.unwrap();
+        let result =
+            releashd::test_support::integration::transport::from_value(wire::CommandResult {
+                command: Some(response),
+            })
+            .unwrap();
+        // Then
+        assert_eq!(result["target"]["side"], side);
+        assert_eq!(result["target"]["endSide"], side);
+        let threads = app
+            .client
+            .review_comment_usecase
+            .as_ref()
+            .unwrap()
+            .list_threads(
+                &app.data_dir,
+                "repository",
+                None,
+                releashd::test_support::integration::platform::ReviewActor::human(),
+            )
+            .unwrap();
+        let target = wire::ReviewThreadDto::try_from(threads[0].clone())
+            .unwrap()
+            .target
+            .unwrap();
+        assert_eq!(
+            target.side.unwrap().value,
+            Some(if side == "deletions" { 1 } else { 0 })
+        );
+        assert_eq!(target.line_number, Some(2));
+        assert_eq!(target.end_line, Some(3));
+    }
 }

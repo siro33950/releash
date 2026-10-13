@@ -78,14 +78,10 @@ fn resolve_blob_at_branch_base<T>(
 ) -> Result<Option<T>, CodeError> {
     let path = Path::new(file_path);
     let repo = discover_repo(path)?;
-    let relative_path = open_relative(path, &repo)?;
-
     let merge_base_commit = super::resolve_merge_base_commit(&repo, base_commit_oid)?;
-    let tree = git_operation::run(|| merge_base_commit.tree())?;
-    let entry = match git_operation::run(|| tree.get_path(relative_path)) {
-        Ok(entry) => entry,
-        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
-        Err(e) => return Err(CodeError::from(e)),
+    let Some(entry) = resolve_entry_at_ref(&repo, path, &merge_base_commit.id().to_string())?
+    else {
+        return Ok(None);
     };
     let blob = git_operation::run(|| repo.find_blob(entry.id()))?;
     Ok(Some(present(&blob)))
@@ -116,7 +112,19 @@ fn resolve_blob_at_ref<T>(
 ) -> Result<Option<T>, CodeError> {
     let path = Path::new(file_path);
     let repo = discover_repo(path)?;
-    let relative_path = open_relative(path, &repo)?;
+    let Some(entry) = resolve_entry_at_ref(&repo, path, git_ref)? else {
+        return Ok(None);
+    };
+    let blob = git_operation::run(|| repo.find_blob(entry.id()))?;
+    Ok(Some(present(&blob)))
+}
+
+fn resolve_entry_at_ref(
+    repo: &Repository,
+    path: &Path,
+    git_ref: &str,
+) -> Result<Option<git2::TreeEntry<'static>>, CodeError> {
+    let relative_path = open_relative(path, repo)?;
 
     let obj = match git_operation::run(|| repo.revparse_single(git_ref)) {
         Ok(obj) => obj,
@@ -130,8 +138,7 @@ fn resolve_blob_at_ref<T>(
         Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
         Err(e) => return Err(CodeError::from(e)),
     };
-    let blob = git_operation::run(|| repo.find_blob(entry.id()))?;
-    Ok(Some(present(&blob)))
+    Ok(Some(entry))
 }
 
 fn is_missing_head_ref(error: &git_operation::GitOperationError, git_ref: &str) -> bool {
@@ -204,7 +211,7 @@ pub fn review_working_tree_bytes(file_path: &str) -> Result<ReviewSideBytes, Cod
 
 fn regular_working_tree_metadata(file_path: &str) -> Result<Option<std::fs::Metadata>, CodeError> {
     match std::fs::symlink_metadata(file_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Ok(None),
+        Ok(metadata) if !metadata.is_file() => Ok(None),
         Ok(metadata) => Ok(Some(metadata)),
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CodeError::from(e)),
@@ -277,6 +284,23 @@ impl FileContentRepository for FileContentGateway {
     }
     fn review_working_tree_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError> {
         review_working_tree_bytes(file_path)
+    }
+    fn review_working_tree_matches_ref(
+        &self,
+        file_path: &str,
+        git_ref: &str,
+    ) -> Result<bool, CodeError> {
+        let path = Path::new(file_path);
+        let repo = discover_repo(path)?;
+        let original = resolve_entry_at_ref(&repo, path, git_ref)?.map(|entry| entry.id());
+        let working = if regular_working_tree_metadata(file_path)?.is_some() {
+            Some(git_operation::run(|| {
+                git2::Oid::hash_file(git2::ObjectType::Blob, path)
+            })?)
+        } else {
+            None
+        };
+        Ok(original == working)
     }
     fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeError> {
         binary_by_attributes(file_path)

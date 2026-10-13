@@ -121,6 +121,26 @@ impl CodeQueryService {
             .review_file_bytes_at_branch_base(file_path, base_oid.as_deref())?)
     }
 
+    pub fn review_file_metadata_at_branch_base_tip(
+        &self,
+        file_path: &str,
+    ) -> Result<ReviewSideMetadata, CodeUsecaseError> {
+        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
+        Ok(self
+            .file_content
+            .review_file_metadata_at_ref(file_path, base_oid.as_deref().unwrap_or("HEAD"))?)
+    }
+
+    pub fn review_file_bytes_at_branch_base_tip(
+        &self,
+        file_path: &str,
+    ) -> Result<ReviewSideBytes, CodeUsecaseError> {
+        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
+        Ok(self
+            .file_content
+            .review_file_bytes_at_ref(file_path, base_oid.as_deref().unwrap_or("HEAD"))?)
+    }
+
     pub fn review_staged_metadata(
         &self,
         file_path: &str,
@@ -147,6 +167,29 @@ impl CodeQueryService {
         file_path: &str,
     ) -> Result<ReviewSideBytes, CodeUsecaseError> {
         Ok(self.file_content.review_working_tree_bytes(file_path)?)
+    }
+
+    pub fn review_working_tree_matches_source(
+        &self,
+        file_path: &str,
+        source: crate::domain::code::value_objects::review::ReviewContentSource,
+    ) -> Result<bool, CodeUsecaseError> {
+        use crate::domain::code::value_objects::review::ReviewContentSource;
+        let git_ref = match source {
+            ReviewContentSource::Head => "HEAD".to_owned(),
+            ReviewContentSource::BranchBaseTip => self
+                .resolve_base_commit_oid_for(file_path)?
+                .unwrap_or_else(|| "HEAD".into()),
+            _ => {
+                return Err(crate::domain::code::CodeError::Rule(
+                    "file comparison requires HEAD or branch base tip".into(),
+                )
+                .into())
+            }
+        };
+        Ok(self
+            .file_content
+            .review_working_tree_matches_ref(file_path, &git_ref)?)
     }
 
     pub fn review_binary_by_attributes(&self, file_path: &str) -> Result<bool, CodeUsecaseError> {

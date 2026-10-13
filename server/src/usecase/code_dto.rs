@@ -282,3 +282,10 @@ pub enum ReviewLimitReasonDto {
 #[cfg(test)]
 #[path = "code_dto_test.rs"]
 mod code_dto_tests;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileTabViewDto {
+    pub view: ReviewFileViewDto,
+    pub initial_mode: crate::domain::code::value_objects::review::FileMode,
+    pub patch: String,
+}

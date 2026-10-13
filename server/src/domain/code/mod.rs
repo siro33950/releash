@@ -21,6 +21,6 @@ pub use repository::{
 };
 pub use value_objects::{
     ChangeGroup, DiffFileEntry, DiffRange, DiffRangeKind, DiffSide, DiffTreeNode, HiddenRange,
-    Hunk, InlineChunk, InlineChunkKind, ReviewBase, ReviewBlobContentType, ReviewLimitReason,
-    ReviewSection, ReviewThresholds, SplitRow, SplitRowKind, VisibleBlock,
+    Hunk, InlineChunk, InlineChunkKind, ReviewBase, ReviewLimitReason, ReviewSection,
+    ReviewThresholds, SplitRow, SplitRowKind, VisibleBlock,
 };

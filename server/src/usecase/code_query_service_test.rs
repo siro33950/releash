@@ -57,6 +57,13 @@ mod code_query_service_tests {
         ) -> Result<ReviewSideBytes, CodeError> {
             Ok(ReviewSideBytes::Present(b"working".to_vec()))
         }
+        fn review_working_tree_matches_ref(
+            &self,
+            file_path: &str,
+            git_ref: &str,
+        ) -> Result<bool, CodeError> {
+            Ok(file_path == git_ref)
+        }
         fn review_binary_by_attributes(&self, _file_path: &str) -> Result<bool, CodeError> {
             Ok(false)
         }
@@ -124,6 +131,49 @@ mod code_query_service_tests {
             Arc::new(FakeBranchDiff),
             Arc::new(FakeBranchBase),
         )
+    }
+
+    #[test]
+    fn test_内容同一性_headとbaseの先端を比較元へ渡す() {
+        // Given
+        let service = service();
+        // When / Then
+        assert!(service
+            .review_working_tree_matches_source(
+                "HEAD",
+                crate::domain::code::value_objects::review::ReviewContentSource::Head
+            )
+            .unwrap());
+        assert!(service
+            .review_working_tree_matches_source(
+                "main",
+                crate::domain::code::value_objects::review::ReviewContentSource::BranchBaseTip
+            )
+            .unwrap());
+        assert!(!service
+            .review_working_tree_matches_source(
+                "HEAD",
+                crate::domain::code::value_objects::review::ReviewContentSource::BranchBaseTip
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn test_内容同一性_ファイルタブの比較元以外を拒否する() {
+        use crate::domain::code::value_objects::review::ReviewContentSource;
+        // Given
+        let service = service();
+        // When / Then
+        for source in [
+            ReviewContentSource::BranchBase,
+            ReviewContentSource::Staged,
+            ReviewContentSource::WorkingTree,
+        ] {
+            assert!(matches!(
+                service.review_working_tree_matches_source("file", source),
+                Err(CodeUsecaseError::Code(CodeError::Rule(_)))
+            ));
+        }
     }
 
     #[test]
@@ -220,5 +270,23 @@ mod code_query_service_tests {
     fn test_language判定を委譲する() {
         let s = service();
         assert_eq!(s.get_language_from_path("main.rs"), "rust");
+    }
+    #[test]
+    fn test_ファイルタブbase比較_merge_base経路を使わずbaseの先端を読む() {
+        // Given
+        let service = service();
+        // When / Then
+        assert_eq!(
+            service
+                .review_file_bytes_at_branch_base_tip("file.rs")
+                .unwrap(),
+            ReviewSideBytes::Present(b"file.rs@main".to_vec())
+        );
+        assert_eq!(
+            service
+                .review_file_metadata_at_branch_base_tip("file.rs")
+                .unwrap(),
+            ReviewSideMetadata::Present { size_bytes: 4 }
+        );
     }
 }
