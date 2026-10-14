@@ -115,6 +115,8 @@ impl RunningCommand {
     }
 }
 
+pub const COMMAND_SHELL: &str = "/bin/sh";
+
 pub fn spawn_shell_command(
     cwd: impl AsRef<Path>,
     shell_command: &str,
@@ -123,7 +125,7 @@ pub fn spawn_shell_command(
     output_limit: OutputLimit,
 ) -> Result<RunningCommand, CommandRunnerError> {
     let cwd = cwd.as_ref().to_path_buf();
-    let mut command = Command::new("/bin/sh");
+    let mut command = Command::new(COMMAND_SHELL);
     command
         .arg("-c")
         .arg(shell_command)

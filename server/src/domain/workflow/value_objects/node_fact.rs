@@ -257,6 +257,8 @@ pub struct SessionContinuationAdmittedFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSpawnedFact {
     pub display_command: String,
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

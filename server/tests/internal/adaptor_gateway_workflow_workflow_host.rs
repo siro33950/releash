@@ -3136,6 +3136,8 @@ pub async fn test_abort競合_外部writerの追記後も最新記録を中止�
         &NodeFact::CommandSpawned(
             releashd::test_support::integration::workflow::CommandSpawnedFact {
                 display_command: "external".into(),
+                shell: None,
+                cwd: None,
             },
         ),
         2000,
@@ -3203,6 +3205,8 @@ pub async fn test_command結果競合_最新記録で成功を保存し終端な
                 NodeFact::CommandSpawned(
                     releashd::test_support::integration::workflow::CommandSpawnedFact {
                         display_command: "external".into(),
+                        shell: None,
+                        cwd: None,
                     },
                 )
             },
@@ -3312,6 +3316,8 @@ pub async fn test_操作競合_abortとcommand結果は4回を超えて収束し
                 &NodeFact::CommandSpawned(
                     releashd::test_support::integration::workflow::CommandSpawnedFact {
                         display_command: format!("external-{attempt}"),
+                        shell: None,
+                        cwd: None,
                     },
                 ),
                 2000 + attempt as i64 * 1000,
@@ -3425,6 +3431,8 @@ pub async fn test_command起動失敗競合_最新attemptへ保存し終端や�
                     execution_id: input.test_execution_id().clone(),
                     node_execution_id: input.test_node_execution_id().clone(),
                     display_command: "external".into(),
+                    shell: None,
+                    cwd: None,
                     timestamp,
                 }],
             };
@@ -3536,6 +3544,8 @@ pub async fn test_command起動失敗競合_上限で不反映理由を残し競
                     execution_id: input.test_execution_id().clone(),
                     node_execution_id: input.test_node_execution_id().clone(),
                     display_command: format!("external-{attempt}"),
+                    shell: None,
+                    cwd: None,
                     timestamp: current_timestamp(),
                 }],
             )
@@ -3645,6 +3655,8 @@ pub async fn test_session準備競合_最新記録で紐付けを再評価し準
                         execution_id: snapshot.execution_id.clone(),
                         node_execution_id: sibling.id.clone(),
                         display_command: format!("external-{attempt}"),
+                        shell: None,
+                        cwd: None,
                         timestamp: current_timestamp(),
                     },
                 }],
@@ -3774,6 +3786,8 @@ pub async fn test_自動再起動競合_最新記録で再評価し上限まで�
                         execution_id: snapshot.execution_id.clone(),
                         node_execution_id: sibling.id.clone(),
                         display_command: format!("external-{attempt}"),
+                        shell: None,
+                        cwd: None,
                         timestamp: current_timestamp(),
                     }
                 }],

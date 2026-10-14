@@ -40,6 +40,11 @@ targets:
         buildPhase: resources
       - path: Resources/Bonsplit-LICENSE
         buildPhase: resources
+      - path: Resources/SarasaGothic-LICENSE
+        buildPhase: resources
+      - path: Resources/Fonts
+        type: folder
+        buildPhase: resources
       - path: Generated
         excludes: [client-descriptor.bin]
       - path: Generated/client-descriptor.bin

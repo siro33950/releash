@@ -277,6 +277,7 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         execution: &execution,
         session_activities: &folded.session_activities,
         session_display_names: &folded.session_display_names,
+        command_failure_reasons: &folded.command_failure_reasons,
     })
     .unwrap()
     .into_iter()

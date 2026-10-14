@@ -262,6 +262,8 @@ pub(crate) mod tests {
                 status: NodeExecutionStatus::Running,
                 session_id: None,
                 display_command: None,
+                shell: None,
+                cwd: None,
                 result_summary: None,
                 artifact: None,
                 token_usage: None,

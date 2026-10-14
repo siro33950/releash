@@ -22,6 +22,8 @@ pub(crate) mod tests {
             status: workflow::NodeExecutionStatus::WaitingApproval,
             session_id: Some("session-1".to_string()),
             display_command: None,
+            shell: None,
+            cwd: None,
             result_summary: None,
             artifact: Some(artifact("review")),
             token_usage: Some(workflow::TokenUsage {

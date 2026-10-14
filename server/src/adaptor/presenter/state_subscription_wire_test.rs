@@ -268,6 +268,8 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::NodeDetail(Some(WorkspaceNodeDetailDto {
+                execution_id: None,
+                can_abort: false,
                 process_presence: "live",
                 worktree: None,
                 id: "node".into(),
@@ -291,6 +293,8 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             })),
             W::NodeDetail(wire::NullableWorkspaceNodeDetailDto {
                 value: Some(wire::WorkspaceNodeDetailDto {
+                    execution_id: None,
+                    can_abort: Some(false),
                     process_presence: Some(wire::NodeProcessPresence {
                         value: Some(wire::node_process_presence::Value::Live as i32),
                     }),
@@ -323,27 +327,30 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::AgentSession(Some(AgentSessionItemDto {
-                id: "session".into(),
-                workspace_identity: "/repo".into(),
-                worktree_path: "/repo/worktree".into(),
-                workspace_worktree_path: "/repo/worktree".into(),
-                provider: AgentSessionProviderDto::Codex,
-                tree_location: AgentSessionTreeLocationDto {
-                    tree_id: "tree".into(),
-                    node_execution_id: "node".into(),
+            StateValue::AgentSession(Some((
+                AgentSessionItemDto {
+                    id: "session".into(),
+                    workspace_identity: "/repo".into(),
+                    worktree_path: "/repo/worktree".into(),
+                    workspace_worktree_path: "/repo/worktree".into(),
+                    provider: AgentSessionProviderDto::Codex,
+                    tree_location: AgentSessionTreeLocationDto {
+                        tree_id: "tree".into(),
+                        node_execution_id: "node".into(),
+                    },
+                    lifecycle: AgentSessionLifecycleDto::Open,
+                    provider_session_id: Some("provider-session".into()),
+                    transcript_ref: None,
+                    operations: AgentSessionOperationsDto {
+                        can_archive: true,
+                        can_restore: false,
+                        can_delete: false,
+                    },
+                    last_exit_abnormal: false,
+                    terminal_presence: None,
                 },
-                lifecycle: AgentSessionLifecycleDto::Open,
-                provider_session_id: Some("provider-session".into()),
-                transcript_ref: None,
-                operations: AgentSessionOperationsDto {
-                    can_archive: true,
-                    can_restore: false,
-                    can_delete: false,
-                },
-                last_exit_abnormal: false,
-                terminal_presence: None,
-            })),
+                crate::domain::agent_session::aggregates::AgentSessionAvailability::Open,
+            ))),
             W::AgentSession(wire::NullableAgentSessionItemDto {
                 value: Some(wire::AgentSessionItemDto {
                     id: Some("session".into()),
@@ -367,6 +374,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     }),
                     last_exit_abnormal: Some(false),
                     terminal_presence: None,
+                    availability: Some(wire::AgentSessionAvailability::Open as i32),
                 }),
             }),
         ),

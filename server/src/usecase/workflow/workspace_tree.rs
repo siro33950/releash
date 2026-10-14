@@ -27,6 +27,8 @@ pub struct NodeWorktreeDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceNodeDetailDto {
+    pub execution_id: Option<String>,
+    pub can_abort: bool,
     pub process_presence: &'static str,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<NodeWorktreeDto>,
@@ -64,6 +66,8 @@ pub struct WorkspaceSessionNodeContentDto {
 pub struct WorkspaceCommandNodeContentDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_command: Option<String>,
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<WorkspaceCommandResultDto>,
 }

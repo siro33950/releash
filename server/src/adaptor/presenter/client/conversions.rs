@@ -1,4 +1,5 @@
 use super as wire;
+use crate::domain::agent_session::aggregates::AgentSessionAvailability;
 
 pub(super) fn cv<T, U: TryFrom<T>>(value: T) -> Result<U, String>
 where
@@ -67,6 +68,7 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionItemDto> for wire::Agent
             operations: Some(cv(value.operations)?),
             last_exit_abnormal: Some(cv(value.last_exit_abnormal)?),
             terminal_presence: value.terminal_presence,
+            availability: None,
         })
     }
 }
@@ -1829,6 +1831,8 @@ impl TryFrom<crate::usecase::workflow::WorkspaceCommandNodeContentDto>
     ) -> Result<Self, String> {
         Ok(Self {
             display_command: value.display_command.map(cv).transpose()?,
+            shell: value.shell,
+            cwd: value.cwd,
             result: value.result.map(cv).transpose()?,
         })
     }
@@ -1924,6 +1928,8 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::Workspa
     type Error = String;
     fn try_from(value: crate::usecase::workflow::WorkspaceNodeDetailDto) -> Result<Self, String> {
         Ok(Self {
+            execution_id: value.execution_id,
+            can_abort: Some(value.can_abort),
             process_presence: Some(cv(value.process_presence)?),
             worktree: value.worktree.map(cv).transpose()?,
             id: Some(cv(value.id)?),
@@ -2160,6 +2166,7 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                         .iter()
                         .map(|tab| wire::PaneTab {
                             id: tab.id.clone(),
+                            node_id: tab.node_id.clone(),
                             file_path: tab.file_path.clone(),
                             file_mode: tab.file_mode.map(|mode| mode.as_str().into()),
                             file_base: tab.file_base.map(|base| base.as_str().into()),
@@ -2168,6 +2175,7 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                                 PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
                                 PaneTabKind::File => wire::PaneTabKind::File,
                                 PaneTabKind::Session => wire::PaneTabKind::Session,
+                                PaneTabKind::Command => wire::PaneTabKind::Command,
                             } as i32,
                         })
                         .collect(),
@@ -2218,6 +2226,7 @@ impl TryFrom<wire::PaneLayout>
                     .map(|tab| {
                         Ok(PaneTab {
                             id: tab.id,
+                            node_id: tab.node_id,
                             file_path: tab.file_path,
                             file_mode: tab
                                 .file_mode
@@ -2236,6 +2245,7 @@ impl TryFrom<wire::PaneLayout>
                                 Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,
                                 Ok(wire::PaneTabKind::File) => PaneTabKind::File,
                                 Ok(wire::PaneTabKind::Session) => PaneTabKind::Session,
+                                Ok(wire::PaneTabKind::Command) => PaneTabKind::Command,
                                 _ => return Err("Unknown pane tab kind".to_owned()),
                             },
                         })
@@ -2269,5 +2279,35 @@ impl From<crate::domain::provider_lifecycle::ProviderKind> for wire::AgentSessio
                 ProviderKind::Codex => wire::agent_session_provider_dto::Value::Codex,
             } as i32),
         }
+    }
+}
+
+impl From<AgentSessionAvailability> for wire::AgentSessionAvailability {
+    fn from(value: AgentSessionAvailability) -> Self {
+        match value {
+            AgentSessionAvailability::Open => Self::Open,
+            AgentSessionAvailability::Paused => Self::Paused,
+            AgentSessionAvailability::Indeterminate => Self::Indeterminate,
+            AgentSessionAvailability::Archived => Self::Archived,
+        }
+    }
+}
+
+impl
+    TryFrom<(
+        crate::usecase::agent_session::AgentSessionItemDto,
+        AgentSessionAvailability,
+    )> for wire::AgentSessionItemDto
+{
+    type Error = String;
+    fn try_from(
+        (item, availability): (
+            crate::usecase::agent_session::AgentSessionItemDto,
+            AgentSessionAvailability,
+        ),
+    ) -> Result<Self, String> {
+        let mut value = Self::try_from(item)?;
+        value.availability = Some(wire::AgentSessionAvailability::from(availability) as i32);
+        Ok(value)
     }
 }

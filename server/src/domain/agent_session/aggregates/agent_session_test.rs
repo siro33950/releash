@@ -1,8 +1,9 @@
 use super::{
-    AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
-    AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, AgentSessionTreeLocation, ManagedPtyPresence,
+    AgentSession, AgentSessionArchiveOutcome, AgentSessionAvailability,
+    AgentSessionInitialInstructionOutcome, AgentSessionLifecycle, AgentSessionLifecycleEvent,
+    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionOperations,
+    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionTreeLocation,
+    ManagedPtyPresence,
 };
 use super::{
     AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
@@ -1391,10 +1392,16 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
     open.complete_resume(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
     open.archive().unwrap();
-    assert_eq!(
-        open.open_action(ManagedPtyPresence::ConfirmedAbsent),
-        AgentSessionOpenAction::Restore
-    );
+    for presence in [
+        ManagedPtyPresence::ConfirmedAbsent,
+        ManagedPtyPresence::Live,
+        ManagedPtyPresence::Unknown,
+    ] {
+        assert_eq!(
+            open.open_action(presence),
+            AgentSessionOpenAction::RemainArchived
+        );
+    }
 }
 
 #[test]
@@ -1661,5 +1668,48 @@ fn test_agent_session_gc_archiveとrestore後の未知provider記録を削除し
         ));
         assert_eq!(session.lifecycle(), lifecycle);
         assert!(session.uncommitted_events().is_empty());
+    }
+}
+
+#[test]
+fn test_session表示状態_archiveを優先し端末の在否を判定する() {
+    // Given / When / Then
+    for (lifecycle, presence, expected) in [
+        (
+            AgentSessionLifecycle::Open,
+            ManagedPtyPresence::Live,
+            AgentSessionAvailability::Open,
+        ),
+        (
+            AgentSessionLifecycle::Paused,
+            ManagedPtyPresence::ConfirmedAbsent,
+            AgentSessionAvailability::Paused,
+        ),
+        (
+            AgentSessionLifecycle::Open,
+            ManagedPtyPresence::Unknown,
+            AgentSessionAvailability::Indeterminate,
+        ),
+        (
+            AgentSessionLifecycle::Archived,
+            ManagedPtyPresence::Live,
+            AgentSessionAvailability::Archived,
+        ),
+        (
+            AgentSessionLifecycle::Archived,
+            ManagedPtyPresence::Unknown,
+            AgentSessionAvailability::Archived,
+        ),
+    ] {
+        let mut session = AgentSession::create(
+            "availability",
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Claude,
+            standalone_location("availability"),
+        )
+        .unwrap();
+        session.lifecycle = lifecycle;
+        assert_eq!(session.availability(presence), expected);
     }
 }

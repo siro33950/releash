@@ -199,6 +199,12 @@ impl<'a> WorkspaceVisibleNode<'a> {
             .filter(|session| session.id() == session_id)
     }
 
+    pub(crate) fn provider(&self) -> Option<crate::domain::provider_lifecycle::ProviderKind> {
+        self.session()
+            .map(AgentSession::provider)
+            .or(self.node.provider)
+    }
+
     pub fn children(&self) -> Vec<WorkspaceVisibleNode<'a>> {
         self.visible.items(Some(&self.node.id))
     }

@@ -27,6 +27,7 @@ pub struct FoldedTree {
     /// root started に記録された木の実行構成。
     pub root: TreeRootFact,
     pub artifact_contracts: HashMap<String, String>,
+    pub command_failure_reasons: HashMap<String, String>,
     /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
     pub session_activities: HashMap<String, AgentSessionActivity>,
     /// Session Node ごとに、同じ事実走査から導出した表示名の入力。
@@ -133,6 +134,7 @@ impl TreeFold {
                 aggregate: restore_aggregate(tree_id, &root, started_at),
                 root,
                 artifact_contracts: HashMap::new(),
+                command_failure_reasons: HashMap::new(),
                 session_activities: HashMap::new(),
                 session_display_names: HashMap::new(),
                 sessions: HashMap::new(),
@@ -180,6 +182,22 @@ impl TreeFold {
             NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
         );
         if before_terminal || tree_archive {
+            if record.meta.kind == NodeKindName::Command {
+                match &record.fact {
+                    NodeFact::RuntimeFailureObserved(failure) => {
+                        self.folded.command_failure_reasons.insert(
+                            record.meta.node_execution_id.clone(),
+                            failure.reason.clone(),
+                        );
+                    }
+                    NodeFact::CommandSpawned(_) => {
+                        self.folded
+                            .command_failure_reasons
+                            .remove(&record.meta.node_execution_id);
+                    }
+                    _ => {}
+                }
+            }
             if let NodeFact::ArtifactProduced(fact) = &record.fact {
                 if let Some(contract) = &fact.contract {
                     self.folded
@@ -556,6 +574,8 @@ fn read_model_node(
         process_presence: Default::default(),
         session_id: node.session_id.clone(),
         display_command: node.display_command.clone(),
+        shell: node.shell.clone(),
+        cwd: node.cwd.clone(),
         result_summary,
         artifact: node.artifact.clone().map(|value| Artifact {
             node_name: node.node_name.clone(),
@@ -617,8 +637,13 @@ pub(super) fn apply_record(
             Ok(())
         }
         NodeFact::CommandSpawned(fact) => {
-            let _ =
-                aggregate.record_node_display_command(id, fact.display_command.clone(), timestamp);
+            let _ = aggregate.record_node_display_command(
+                id,
+                fact.display_command.clone(),
+                fact.shell.clone(),
+                fact.cwd.clone(),
+                timestamp,
+            );
             Ok(())
         }
         NodeFact::ProcessExited(fact) => match record.meta.kind {

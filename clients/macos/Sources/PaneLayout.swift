@@ -3,18 +3,20 @@ import Foundation
 struct PaneTab: Equatable, Identifiable {
   var id: String = UUID().uuidString
   var kind: Kind
+  var nodeID: String?
   var filePath: String?
   var fileMode: String?
   var fileBase: String?
   var title: String { filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title }
   enum Kind: String, CaseIterable {
-    case terminal, workflow, file, session
+    case terminal, workflow, file, session, command
     var icon: String {
       switch self {
       case .terminal: "terminal"
       case .workflow: "list.bullet.rectangle"
       case .file: "doc"
       case .session: "sparkle"
+      case .command: "terminal"
       }
     }
     var title: String {
@@ -23,6 +25,7 @@ struct PaneTab: Equatable, Identifiable {
       case .workflow: "Workflow 管理"
       case .file: "ファイル"
       case .session: "Session"
+      case .command: "Command"
       }
     }
   }
@@ -48,9 +51,11 @@ indirect enum PaneLayout: Equatable {
         case .workflow: kind = .workflow
         case .file: kind = .file
         case .session: kind = .session
+        case .command: kind = .command
         default: throw CLIFailure(message: "Unknown pane tab kind")
         }
         return PaneTab(id: tab.id, kind: kind,
+          nodeID: tab.hasNodeID ? tab.nodeID : nil,
           filePath: tab.hasFilePath ? tab.filePath : nil,
           fileMode: tab.hasFileMode ? tab.fileMode : nil,
           fileBase: tab.hasFileBase ? tab.fileBase : nil)
@@ -79,6 +84,7 @@ indirect enum PaneLayout: Equatable {
       pane.tabs = tabs.map { tab in
         var value = Releash_Client_V1_PaneTab()
         value.id = tab.id
+        if let nodeID = tab.nodeID { value.nodeID = nodeID }
         if let path = tab.filePath { value.filePath = path }
         if let mode = tab.fileMode { value.fileMode = mode }
         if let base = tab.fileBase { value.fileBase = base }
@@ -87,6 +93,7 @@ indirect enum PaneLayout: Equatable {
         case .workflow: value.kind = .workflow
         case .file: value.kind = .file
         case .session: value.kind = .session
+        case .command: value.kind = .command
         }
         return value
       }

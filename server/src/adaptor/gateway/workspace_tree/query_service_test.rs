@@ -34,12 +34,15 @@ fn node() -> WorkspaceTreeNode {
         completion_signals: Default::default(),
         has_artifact: false,
         session_id: None,
+        provider: None,
         can_rename: false,
         can_approve: true,
         can_retry: false,
         can_abort: false,
         can_archive: false,
         display_command: None,
+        shell: None,
+        cwd: None,
         command_result: None,
         dynamic_fanout: false,
     }
@@ -72,7 +75,7 @@ fn test_workflow_session_node_detail_session_surfaceを公開する() {
     let mut workflow_session = node();
     workflow_session.session_id = Some("agent-session-1".to_string());
 
-    let detail = serde_json::to_value(node_detail(workflow_session)).unwrap();
+    let detail = serde_json::to_value(node_detail(workflow_session, false)).unwrap();
 
     assert_eq!(
         detail["content"]["kind"],
@@ -97,7 +100,7 @@ fn workflow_node_detail_exposes_backend_owned_signal_and_capabilities_without_at
     workflow_session.can_retry = true;
     workflow_session.can_rename = true;
 
-    let detail = serde_json::to_value(node_detail(workflow_session)).unwrap();
+    let detail = serde_json::to_value(node_detail(workflow_session, false)).unwrap();
 
     assert!(detail.get("attempt").is_none());
     assert_eq!(detail["submitReceived"], false);
@@ -110,7 +113,7 @@ fn workflow_node_detail_exposes_backend_owned_signal_and_capabilities_without_at
 
 #[test]
 fn test_workspaceノード詳細契約_状態アイコン用分類を返さない() {
-    let detail = serde_json::to_value(node_detail(node())).unwrap();
+    let detail = serde_json::to_value(node_detail(node(), false)).unwrap();
     assert_eq!(detail["status"], "waiting");
     assert!(detail.get("statusClassification").is_none());
 }
@@ -170,7 +173,7 @@ fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを
         node.status = status;
         node.worktree = Some(expected.clone());
         // When
-        let detail = serde_json::to_value(node_detail(node)).unwrap();
+        let detail = serde_json::to_value(node_detail(node, false)).unwrap();
         // Then
         assert_eq!(detail["worktree"]["branch"], expected.branch);
         assert_eq!(detail["worktree"]["path"], expected.path);
@@ -246,4 +249,65 @@ fn test_store問い合わせエラー_停止の分類を保持する() {
         );
         assert!(matches!(error, WorkflowError::Technical(value) if value == stopped.into()));
     }
+}
+
+#[test]
+fn test_command詳細_実行時のshellとcwdとabort対象を配る() {
+    // Given
+    let mut command = node();
+    command.kind = WorkspaceNodeKind::WorkflowCommand;
+    command.shell = Some("/bin/sh".into());
+    command.cwd = Some("/repo/feature".into());
+    command.display_command = Some("printf hello".into());
+    command.execution_id = Some("execution".into());
+    command.command_result = Some(crate::domain::workspace_tree::WorkspaceCommandResult {
+        exit_code: 2,
+        duration: 1,
+        stdout: "out".into(),
+        stderr: "err".into(),
+    });
+    // When
+    let mut workflow = node();
+    workflow.kind = WorkspaceNodeKind::Workflow;
+    workflow.can_abort = true;
+    let detail = node_detail_with_workflow(command, Some(&workflow));
+    // Then
+    assert_eq!(detail.execution_id.as_deref(), Some("execution"));
+    assert!(detail.can_abort);
+    assert_eq!(
+        detail.error_reason.as_deref(),
+        Some("Command exited with code 2")
+    );
+    let WorkspaceNodeContentDto::Command(content) = detail.content else {
+        panic!("command expected")
+    };
+    assert_eq!(content.shell.as_deref(), Some("/bin/sh"));
+    assert_eq!(content.cwd.as_deref(), Some("/repo/feature"));
+}
+
+#[test]
+fn test_node詳細_workflowの節が無くても詳細を返しabort不可とする() {
+    // Given
+    let mut node = node();
+    node.execution_id = Some("missing-execution".into());
+    // When
+    let detail = node_detail_with_workflow(node, None);
+    // Then
+    assert_eq!(detail.id, "node");
+    assert_eq!(detail.execution_id.as_deref(), Some("missing-execution"));
+    assert!(!detail.can_abort);
+}
+
+#[test]
+fn test_node詳細_完了したworkflowの節のabort不可を配る() {
+    // Given
+    let mut workflow = node();
+    workflow.kind = WorkspaceNodeKind::Workflow;
+    workflow.status = WorkspaceNodeStatus::Completed;
+    workflow.can_abort = false;
+    // When
+    let detail = node_detail_with_workflow(node(), Some(&workflow));
+    // Then
+    assert_eq!(detail.id, "node");
+    assert!(!detail.can_abort);
 }

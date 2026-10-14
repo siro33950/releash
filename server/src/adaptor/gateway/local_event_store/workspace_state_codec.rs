@@ -279,6 +279,8 @@ struct StoredPaneTab {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_base: Option<String>,
@@ -290,6 +292,7 @@ enum StoredPaneTabKind {
     Workflow,
     File,
     Session,
+    Command,
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -370,6 +373,7 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTab> f
             id: value.id,
             kind: value.kind.into(),
             file_path: value.file_path,
+            node_id: value.node_id,
             file_mode: value.file_mode.map(|mode| mode.as_str().into()),
             file_base: value.file_base.map(|base| base.as_str().into()),
         }
@@ -384,6 +388,7 @@ impl TryFrom<StoredPaneTab>
             id: value.id,
             kind: value.kind.into(),
             file_path: value.file_path,
+            node_id: value.node_id,
             file_mode: value
                 .file_mode
                 .as_deref()
@@ -415,6 +420,9 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTabKin
             crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::File => {
                 Self::File
             }
+            crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Command => {
+                Self::Command
+            }
             crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Session => {
                 Self::Session
             }
@@ -430,6 +438,7 @@ impl From<StoredPaneTabKind>
             StoredPaneTabKind::Workflow => Self::Workflow,
             StoredPaneTabKind::File => Self::File,
             StoredPaneTabKind::Session => Self::Session,
+            StoredPaneTabKind::Command => Self::Command,
         }
     }
 }

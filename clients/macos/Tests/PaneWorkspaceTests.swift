@@ -129,3 +129,42 @@ extension PaneWorkspaceTests {
     XCTAssertEqual(workspace.controller.allPaneIds, [other])
   }
 }
+
+extension PaneWorkspaceTests {
+  @MainActor func testNodeTabsSelectExistingNodeRenameAndCloseWithoutStopping() throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    workspace.openNode(.session, id: "session-node", title: "before")
+    workspace.openNode(.command, id: "command-node", title: "command")
+    workspace.openNode(.session, id: "session-node", title: "before")
+    XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+    workspace.renameNode("session-node", title: "after")
+    let pane = try XCTUnwrap(workspace.controller.focusedPaneId)
+    XCTAssertEqual(workspace.controller.selectedTab(inPane: pane)?.title, "after")
+    var called = false
+    workspace.requestClose = { _ in called = true; return false }
+    workspace.closeCurrentTab()
+    XCTAssertFalse(called)
+    XCTAssertEqual(try workspace.layout().tabs.map(\.nodeID), ["command-node"])
+  }
+}
+
+extension PaneWorkspaceTests {
+  @MainActor func testTerminalFocusFollowsSelectedTabAndFocusedPane() throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    let pane = try XCTUnwrap(workspace.controller.allPaneIds.first)
+    workspace.open(.terminal, in: pane)
+    let terminal = try XCTUnwrap(workspace.controller.selectedTab(inPane: pane)?.id)
+    workspace.openNode(.session, id: "session", title: "Session", in: pane)
+    let session = try XCTUnwrap(workspace.controller.selectedTab(inPane: pane)?.id)
+    XCTAssertFalse(workspace.isFocused(terminal, in: pane))
+    XCTAssertTrue(workspace.isFocused(session, in: pane))
+    workspace.controller.selectTab(terminal)
+    XCTAssertTrue(workspace.isFocused(terminal, in: pane))
+    XCTAssertFalse(workspace.isFocused(session, in: pane))
+    let other = try XCTUnwrap(workspace.controller.splitPane(pane, orientation: .vertical))
+    workspace.controller.focusPane(other)
+    XCTAssertFalse(workspace.isFocused(terminal, in: pane))
+  }
+}

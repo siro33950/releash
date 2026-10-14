@@ -273,6 +273,10 @@ struct SessionContinuationAdmittedFactDetail {
 #[serde(rename_all = "camelCase")]
 struct CommandSpawnedFactDetail {
     pub display_command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

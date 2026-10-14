@@ -76,6 +76,8 @@ pub enum WorkflowEvent {
         execution_id: String,
         node_execution_id: String,
         display_command: String,
+        shell: Option<String>,
+        cwd: Option<String>,
         timestamp: f64,
     },
     ArtifactProduced {

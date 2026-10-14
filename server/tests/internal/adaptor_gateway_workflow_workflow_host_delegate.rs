@@ -2025,6 +2025,8 @@ pub async fn test_delegate_結果注入が競合しても同じ回の他leafを�
                 execution_id: tree.clone(),
                 node_execution_id: writer.clone(),
                 display_command: "external".into(),
+                shell: None,
+                cwd: None,
                 timestamp: current_timestamp(),
             }],
         )

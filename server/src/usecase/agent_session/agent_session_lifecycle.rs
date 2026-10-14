@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
-    ManagedPtyPresence,
+    AgentSessionArchiveOutcome, AgentSessionAvailability, AgentSessionLifecycle,
+    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionProcessExitOutcome,
+    AgentSessionRecoveryResult, ManagedPtyPresence,
 };
 use crate::domain::agent_session::{
     ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
@@ -25,6 +25,7 @@ pub enum AgentSessionOpenOutcome {
     Attached,
     Resumed,
     Restored,
+    Archived,
     Paused,
     Indeterminate,
     GarbageCollected,
@@ -126,14 +127,17 @@ impl AgentSessionLifecycleUsecase {
         }
     }
 
-    pub(crate) async fn terminal_presence(
+    pub(crate) async fn terminal_availability(
         &self,
         id: &str,
-    ) -> Result<ManagedPtyPresence, AgentSessionLifecycleUsecaseError> {
+    ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
+    {
         let session = self.required(id).await?;
-        self.terminal
+        let presence = self
+            .terminal
             .presence(&session.session().terminal_surface_owner())
-            .map_err(AgentSessionLifecycleUsecaseError::Terminal)
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
+        Ok((presence, session.session().availability(presence)))
     }
 
     pub async fn open(
@@ -184,10 +188,7 @@ impl AgentSessionLifecycleUsecase {
             AgentSessionOpenAction::Attach => Ok(AgentSessionOpenOutcome::Attached),
             AgentSessionOpenAction::Indeterminate => Ok(AgentSessionOpenOutcome::Indeterminate),
             AgentSessionOpenAction::RemainPaused => Ok(AgentSessionOpenOutcome::Paused),
-            AgentSessionOpenAction::Restore => {
-                self.restore_locked(agent_session_id, rows, cols, caller_request_id)
-                    .await
-            }
+            AgentSessionOpenAction::RemainArchived => Ok(AgentSessionOpenOutcome::Archived),
             AgentSessionOpenAction::GarbageCollect => {
                 let tree_id = session.session().tree_location().tree_id().to_string();
                 self.remove_gc(

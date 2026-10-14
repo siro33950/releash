@@ -1,10 +1,12 @@
 import AppKit
+import Bonsplit
 import Connect
 import Foundation
 import Observation
 import SwiftProtobuf
 
 @MainActor @Observable final class AppModel {
+  var pendingRoots: [String: String] = [:]
   var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
   var collapsed: [String: Bool] = [:]
   var selectedWorktree: String?
@@ -95,6 +97,8 @@ import SwiftProtobuf
           collapsed.removeValue(forKey: repo.path)
         }
         repositories = value.repositories.items
+        openPendingRoot()
+        syncNodeTabTitles()
         for repo in value.repositories.items where groupSubscriptions[repo.path] == nil {
           groupSubscriptions[repo.path] = self.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
             if case .repositoryGroupState(let group) = payload.value {
@@ -192,6 +196,9 @@ import SwiftProtobuf
   }
   private func register(_ key: String, clientID: String) async throws {
     guard let client, let (target, args) = targets[key] else { return }
+    if target == "terminal", args.count == 2 {
+      terminals[key]?.disconnect()
+    }
     if target == "workspace-terminal", args.count == 2 {
       terminals[key]?.disconnect()
       var spawn = Releash_Client_V1_GetOrSpawnTerminalSurfaceRequest()
@@ -228,6 +235,13 @@ import SwiftProtobuf
         return
       }
       if key == subscriptionKey("provider-usage", []) {
+        failure = failureMessage(error)
+        return
+      }
+      if target == "terminal", args.count == 2,
+        let connectError = error as? ConnectError, connectError.code == .notFound
+      {
+        desiredTargets.removeValue(forKey: key)
         failure = failureMessage(error)
         return
       }
@@ -430,6 +444,8 @@ import SwiftProtobuf
     }
     layoutLoaded = true
     syncTerminalTabs(layout)
+    syncNodeTabTitles()
+    openPendingRoot()
   }
   func editLayout(_ edit: (inout PaneLayout) -> Void) {
     guard layoutLoaded, let path = selectedWorktree, let client else { return }
@@ -462,18 +478,23 @@ import SwiftProtobuf
       }
     }
   }
-  func terminal(path: String, id: String) -> TerminalSession {
-    let key = subscriptionKey("workspace-terminal", [path, id])
+  func terminal(path: String, id: String, agent: Bool = false) -> TerminalSession {
+    let key = subscriptionKey(agent ? "terminal" : "workspace-terminal", [path, id])
     if let session = terminals[key] { return session }
-    let session = TerminalSession(model: self, path: path, id: id)
+    let session = TerminalSession(model: self, path: path, id: id, agent: agent)
     terminals[key] = session
     return session
+  }
+
+  func releaseAgentTerminal(path: String, id: String) {
+    let key = subscriptionKey("terminal", [path, id])
+    terminals.removeValue(forKey: key)?.stop()
   }
 
   func syncTerminalTabs(_ layout: PaneLayout) {
     guard let path = selectedWorktree else { return }
     let ids = Set(layout.tabs.filter { $0.kind == .terminal }.map(\.id))
-    for (key, session) in terminals where !ids.contains(session.id) { session.stop(); terminals.removeValue(forKey: key) }
+    for (key, session) in terminals where !session.agent && !ids.contains(session.id) { session.stop(); terminals.removeValue(forKey: key) }
     for id in ids { _ = terminal(path: path, id: id) }
   }
 
@@ -482,13 +503,13 @@ import SwiftProtobuf
     terminals.removeAll()
   }
 
-  func terminalAttachment(path: String, id: String) -> String? {
-    subscriptionIDs.id(for: subscriptionKey("workspace-terminal", [path, id]))
+  func terminalAttachment(path: String, id: String, agent: Bool = false) -> String? {
+    subscriptionIDs.id(for: subscriptionKey(agent ? "terminal" : "workspace-terminal", [path, id]))
   }
 
-  func restartTerminalSubscription(path: String, id: String) {
+  func restartTerminalSubscription(path: String, id: String, agent: Bool = false) {
     guard let clientID else { return }
-    let key = subscriptionKey("workspace-terminal", [path, id])
+    let key = subscriptionKey(agent ? "terminal" : "workspace-terminal", [path, id])
     perform { try await self.register(key, clientID: clientID) }
   }
 
@@ -507,6 +528,12 @@ import SwiftProtobuf
       session.stop()
       return true
     } catch { failure = failureMessage(error); return false }
+  }
+
+  func openPendingRoot() {
+    guard layoutLoaded, let path = selectedWorktree, let pendingRoot = pendingRoots[path], let root = repositories.flatMap(\.worktrees.items).first(where: { $0.path == path })?.snapshot.nodes.items.first(where: { $0.rootID == pendingRoot }) else { return }
+    pendingRoots[path] = nil
+    openRoot(root)
   }
 
   func openFile(_ path: String) {
@@ -550,5 +577,50 @@ import SwiftProtobuf
     perform {
       _ = try await client.addRepoPath(request: request, headers: self.headers).result.get()
     }
+  }
+}
+
+extension AppModel {
+  func openNode(_ kind: PaneTab.Kind, id: String, title: String, in pane: PaneID? = nil) {
+    panes.openNode(kind, id: id, title: title, in: pane)
+    savePaneLayout()
+  }
+
+  private func syncNodeTabTitles() {
+    let roots = repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes.items ?? []
+    for root in roots { panes.renameNode(root.rootID, title: root.rootTabTitle) }
+  }
+
+  func startSession(provider: String, path: String) async throws {
+    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_CreateAgentSessionRequest()
+    request.provider = provider
+    request.workspaceIdentity = path
+    request.worktreePath = path
+    request.rows = UIStyle.terminalRows
+    request.cols = UIStyle.terminalColumns
+    request.callerRequestID = UUID().uuidString
+    let selection = try await client.createAgentSession(request: request, headers: headers).result.get()
+    openNode(.session, id: selection.nodeID, title: "Session")
+  }
+
+  func startWorkflow(name: String, path: String) async throws {
+    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_StartWorkflowRequest()
+    request.workflowName = name
+    request.worktreePath = path
+    let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
+    pendingRoots[path] = execution.value
+    openPendingRoot()
+  }
+
+  func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
+    openNode(root.rootKind, id: root.rootID, title: root.rootTabTitle)
+  }
+  func resumeNode(path: String, id: String) {
+    guard let client else { return }
+    var request = Releash_Client_V1_ResumeWorkspaceSessionNodeRequest()
+    request.worktreePath = path; request.nodeID = id
+    perform { _ = try await client.resumeWorkspaceSessionNode(request: request, headers: self.headers).result.get() }
   }
 }

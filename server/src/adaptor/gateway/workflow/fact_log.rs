@@ -333,11 +333,15 @@ fn fact_rows_for_events(
             WorkflowEvent::CommandSpawned {
                 node_execution_id,
                 display_command,
+                shell,
+                cwd,
                 ..
             } => {
                 let meta = resolve(&batch_meta, node_execution_id)?;
                 let fact = NodeFact::CommandSpawned(CommandSpawnedFact {
                     display_command: display_command.clone(),
+                    shell: shell.clone(),
+                    cwd: cwd.clone(),
                 });
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }

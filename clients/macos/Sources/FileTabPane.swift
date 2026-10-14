@@ -81,14 +81,14 @@ struct FileTabPane: View {
           ("unified", "上下に並べる", "rectangle.split.1x2"), ("split", "左右に並べる", "rectangle.split.2x1"),
         ]).accessibilityIdentifier("file-style")
         Toggle(isOn: settings.$full) { Label("全文", systemImage: "rectangle.expand.vertical") }
-          .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).fixedSize().help("全文").accessibilityIdentifier("file-full")
+          .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("全文").accessibilityIdentifier("file-full")
       }
       Toggle(isOn: Binding(get: { mode == "diff" }, set: { setPresentation(mode: $0 ? "diff" : "file") })) { Label("Diff", systemImage: "plus.forwardslash.minus") }
-        .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).fixedSize().help("Diff 表示").accessibilityIdentifier("file-mode")
+        .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("Diff 表示").accessibilityIdentifier("file-mode")
       Button(action: openInEditor) {
-        Label("外部エディタで開く", systemImage: "arrow.up.forward.app").frame(maxWidth: .infinity, maxHeight: .infinity)
+        Label("外部エディタで開く", systemImage: "arrow.up.forward.app")
       }
-      .labelStyle(.iconOnly).buttonStyle(.accessoryBar).frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).help("外部エディタで開く").fixedSize().accessibilityIdentifier("file-open-editor")
+      .labelStyle(.iconOnly).buttonStyle(IconButtonStyle()).iconButtonFrame().help("外部エディタで開く").accessibilityIdentifier("file-open-editor")
     }.padding(8).frame(height: 44)
   }
   /// アプリのアクセントカラーを、外観に合わせて解決した 16 進の文字列にする。viewer の行選択と Thread の範囲の印が使う
@@ -298,7 +298,7 @@ struct IconChoice<Value: Hashable>: View {
           Label(option.title, systemImage: option.symbol)
         }
         .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly)
-        .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
+        .iconButtonFrame()
         .help(option.title).accessibilityLabel(option.title)
       }
     }

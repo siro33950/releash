@@ -6,6 +6,8 @@ import SwiftTerm
 @MainActor @Observable final class TerminalSession: NSObject, @preconcurrency TerminalViewDelegate {
   let path: String
   let id: String
+  let agent: Bool
+  var target: String { agent ? "terminal" : "workspace-terminal" }
   let screen = TerminalScreen(frame: .zero)
   var cwd: String?
   var hasForegroundProcess: Bool?
@@ -24,18 +26,20 @@ import SwiftTerm
   @ObservationIgnored private let openLink: (URL) -> Void
   @ObservationIgnored private var tail: Task<Void, Never>?
 
-  init(model: AppModel, path: String, id: String, openLink: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
+  init(model: AppModel, path: String, id: String, agent: Bool = false, openLink: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
     self.openLink = openLink
     self.model = model
     self.path = path
     self.id = id
+    self.agent = agent
     super.init()
     screen.terminalDelegate = self
+    if let font = NSFont(name: UIStyle.terminalFontName, size: NSFont.systemFontSize) { screen.font = font }
     screen.nativeBackgroundColor = .textBackgroundColor
     screen.nativeForegroundColor = .textColor
     screen.setAccessibilityIdentifier("terminal:\(id)")
     screen.clearAction = { [weak self] in self?.clear() }
-    subscriber = model.subscribe("workspace-terminal", [path, id]) { [weak self] payload in
+    subscriber = model.subscribe(target, [path, id]) { [weak self] payload in
       guard case .terminal(let event) = payload.value else { return }
       self?.receive(event)
     }
@@ -43,8 +47,8 @@ import SwiftTerm
 
   var owner: Releash_Client_V1_TerminalSurfaceOwnerV1 {
     var owner = Releash_Client_V1_TerminalSurfaceOwnerV1()
-    owner.workspaceTerminal.workspacePath = path
-    owner.workspaceTerminal.terminalID = id
+    if agent { owner.session.workspacePath = path; owner.session.sessionID = id }
+    else { owner.workspaceTerminal.workspacePath = path; owner.workspaceTerminal.terminalID = id }
     return owner
   }
 
@@ -63,7 +67,7 @@ import SwiftTerm
   }
 
   func receive(_ event: Releash_Client_V1_TerminalEvent) {
-    guard let model, let current = model.terminalAttachment(path: path, id: id) else { return }
+    guard let model, let current = model.terminalAttachment(path: path, id: id, agent: agent) else { return }
     applying = true
     defer { applying = false }
     switch event.item {
@@ -167,7 +171,7 @@ import SwiftTerm
         guard self.attachment == attachment else { return }
         failure = model.failureMessage(error)
         disconnect()
-        model.restartTerminalSubscription(path: path, id: id)
+        model.restartTerminalSubscription(path: path, id: id, agent: agent)
       }
     }
   }
@@ -225,6 +229,7 @@ final class TerminalScreen: TerminalView {
     let gained = value && !focused
     focused = value
     if gained { window?.makeFirstResponder(self) }
+    else if !value, window?.firstResponder === self { window?.makeFirstResponder(nil) }
   }
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()

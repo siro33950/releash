@@ -47,6 +47,7 @@ use releashd::test_support::integration::platform::AgentSessionProviderDto;
 use releashd::test_support::integration::platform::GitHostUsecase;
 use releashd::test_support::integration::platform::RepoPathsUsecase;
 use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::sessions::AgentSessionAvailability;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionPort;
 use releashd::test_support::integration::sessions::AgentSessionHistoryCandidateDto;
@@ -97,14 +98,29 @@ impl AgentSessionQueryService for Sessions {
 }
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for Sessions {
-    async fn terminal_presence(
+    async fn terminal_availability(
         &self,
         _: &str,
     ) -> Result<
-        releashd::test_support::integration::sessions::ManagedPtyPresence,
+        (
+            releashd::test_support::integration::sessions::ManagedPtyPresence,
+            AgentSessionAvailability,
+        ),
         AgentSessionLifecycleUsecaseError,
     > {
-        Ok(releashd::test_support::integration::sessions::ManagedPtyPresence::Live)
+        let item = self.item.lock();
+        let Some(item) = item.as_ref() else {
+            return Err(AgentSessionLifecycleUsecaseError::NotFound);
+        };
+        let availability = if item.lifecycle == AgentSessionLifecycleDto::Archived {
+            AgentSessionAvailability::Archived
+        } else {
+            AgentSessionAvailability::Open
+        };
+        Ok((
+            releashd::test_support::integration::sessions::ManagedPtyPresence::Live,
+            availability,
+        ))
     }
     async fn reconcile_garbage_collection(
         &self,
@@ -1070,8 +1086,9 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
     start_read(&fixture.subscriptions, "client", &target, None)
         .await
         .unwrap();
+    let expected = (item.clone(), AgentSessionAvailability::Open);
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(item.clone()))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(expected))))
     );
     stream.next().await;
     // When / Then
@@ -1090,6 +1107,14 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             },
             ..item.clone()
         });
+        let expected = next.clone().map(|value| {
+            let availability = if value.lifecycle == AgentSessionLifecycleDto::Archived {
+                AgentSessionAvailability::Archived
+            } else {
+                AgentSessionAvailability::Open
+            };
+            (value, availability)
+        });
         let before = fixture.sessions.calls.lock().len();
         *fixture.sessions.item.lock() = next.clone();
         fixture
@@ -1099,7 +1124,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             .await
             .unwrap();
         assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releashd::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(next)))
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releashd::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(expected)))
         );
         assert_eq!(fixture.sessions.calls.lock().len(), before + 1);
         assert!(fixture
@@ -1251,6 +1276,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     let panes = PaneLayout::pane(
         "pane".into(),
         vec![PaneTab {
+            node_id: None,
             id: "workflow".into(),
             kind: PaneTabKind::Workflow,
             file_path: None,

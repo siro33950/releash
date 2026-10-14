@@ -152,6 +152,8 @@ fn runtime_node_execution_to_domain(
         },
         session_id: execution.session_id,
         display_command: execution.display_command,
+        shell: execution.shell,
+        cwd: execution.cwd,
         result_summary: None,
         artifact: execution
             .artifact

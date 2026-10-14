@@ -1,3 +1,4 @@
+use crate::domain::agent_session::aggregates::{AgentSessionAvailability, ManagedPtyPresence};
 use std::sync::Arc;
 
 use super::{
@@ -7,13 +8,10 @@ use super::{
 
 #[async_trait::async_trait]
 pub trait AgentSessionGarbageCollectionPort: Send + Sync {
-    async fn terminal_presence(
+    async fn terminal_availability(
         &self,
         agent_session_id: &str,
-    ) -> Result<
-        crate::domain::agent_session::aggregates::ManagedPtyPresence,
-        AgentSessionLifecycleUsecaseError,
-    >;
+    ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>;
 
     async fn reconcile_garbage_collection(
         &self,
@@ -24,14 +22,12 @@ pub trait AgentSessionGarbageCollectionPort: Send + Sync {
 
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for AgentSessionLifecycleUsecase {
-    async fn terminal_presence(
+    async fn terminal_availability(
         &self,
         id: &str,
-    ) -> Result<
-        crate::domain::agent_session::aggregates::ManagedPtyPresence,
-        AgentSessionLifecycleUsecaseError,
-    > {
-        self.terminal_presence(id).await
+    ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
+    {
+        self.terminal_availability(id).await
     }
     async fn reconcile_garbage_collection(
         &self,
@@ -78,7 +74,8 @@ impl AgentSessionReadUsecase {
     pub(crate) async fn get(
         &self,
         agent_session_id: &str,
-    ) -> Result<Option<AgentSessionItemDto>, AgentSessionReadUsecaseError> {
+    ) -> Result<Option<(AgentSessionItemDto, AgentSessionAvailability)>, AgentSessionReadUsecaseError>
+    {
         let Some(mut item) = self
             .query
             .get(agent_session_id)
@@ -95,22 +92,39 @@ impl AgentSessionReadUsecase {
             )
             .await
         {
-            Ok(AgentSessionGarbageCollectionOutcome::Retained) => {
-                item.terminal_presence = Some(match self.garbage_collection.terminal_presence(agent_session_id).await.map_err(map_lifecycle_error)? {
-                    crate::domain::agent_session::aggregates::ManagedPtyPresence::Live => "live",
-                    crate::domain::agent_session::aggregates::ManagedPtyPresence::ConfirmedAbsent => "absent",
-                    crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown => "unknown",
-                }.into());
-                Ok(Some(item))
-            }
+            Ok(AgentSessionGarbageCollectionOutcome::Retained) => {}
             Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
-            | Err(AgentSessionLifecycleUsecaseError::NotFound) => Ok(self
-                .query
-                .get(agent_session_id)
-                .await
-                .map_err(map_query_error)?),
-            Err(error) => Err(map_lifecycle_error(error)),
+            | Err(AgentSessionLifecycleUsecaseError::NotFound) => {
+                let Some(current) = self
+                    .query
+                    .get(agent_session_id)
+                    .await
+                    .map_err(map_query_error)?
+                else {
+                    return Ok(None);
+                };
+                item = current;
+            }
+            Err(error) => return Err(map_lifecycle_error(error)),
         }
+        let (presence, availability) = match self
+            .garbage_collection
+            .terminal_availability(agent_session_id)
+            .await
+        {
+            Ok(value) => value,
+            Err(AgentSessionLifecycleUsecaseError::NotFound) => return Ok(None),
+            Err(error) => return Err(map_lifecycle_error(error)),
+        };
+        item.terminal_presence = Some(
+            match presence {
+                ManagedPtyPresence::Live => "live",
+                ManagedPtyPresence::ConfirmedAbsent => "absent",
+                ManagedPtyPresence::Unknown => "unknown",
+            }
+            .into(),
+        );
+        Ok(Some((item, availability)))
     }
 }
 

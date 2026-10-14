@@ -102,6 +102,25 @@ import SwiftUI
     if kind == .terminal { nextTerminalNumber += 1 }
   }
 
+  func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil) {
+    let live = Set(controller.allTabIds.map { $0.id.uuidString })
+    tabs = tabs.filter { live.contains($0.key) }
+    if let existing = controller.allTabIds.first(where: { tabs[$0.id.uuidString]?.nodeID == nodeID }) {
+      controller.selectTab(existing)
+      return
+    }
+    guard let id = controller.createTab(title: title, icon: kind.icon, inPane: pane ?? controller.focusedPaneId) else { return }
+    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: kind, nodeID: nodeID)
+  }
+
+  func renameNode(_ nodeID: String, title: String) {
+    for id in controller.allTabIds where tabs[id.id.uuidString]?.nodeID == nodeID { controller.updateTab(id, title: title) }
+  }
+
+  func isFocused(_ tab: TabID, in pane: PaneID) -> Bool {
+    controller.focusedPaneId == pane && controller.selectedTab(inPane: pane)?.id == tab
+  }
+
   func tab(_ id: TabID) -> PaneTab? { tabs[id.id.uuidString] }
 
   func splitTabBar(_ controller: BonsplitController, shouldCloseTab tab: Bonsplit.Tab, inPane pane: PaneID) -> Bool {
@@ -174,7 +193,9 @@ struct WorkspacePaneView: View {
   var body: some View {
     BonsplitView(controller: model.panes.controller) { tab, pane in
       if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal, let path = model.selectedWorktree {
-        TerminalPane(session: model.terminal(path: path, id: value.id), focused: model.panes.controller.focusedPaneId == pane).id(path + value.id)
+        TerminalPane(session: model.terminal(path: path, id: value.id), focused: model.panes.isFocused(tab.id, in: pane)).id(path + value.id)
+      } else if model.layoutLoaded, let value = model.panes.tab(tab.id), let nodeID = value.nodeID, let path = model.selectedWorktree, value.kind == .session || value.kind == .command {
+        NodePane(model: model, path: path, nodeID: nodeID, focused: model.panes.isFocused(tab.id, in: pane)).id(path + nodeID)
       } else if let file = model.panes.tab(tab.id), let path = file.filePath, let worktree = model.selectedWorktree {
         FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree).id("\(worktree):\(tab.id):\(path)")
       } else {

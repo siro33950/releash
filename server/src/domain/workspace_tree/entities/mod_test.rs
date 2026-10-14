@@ -1501,6 +1501,8 @@ mod workspace_tree_tests {
                     execution_id: execution_id.to_string(),
                     node_execution_id: "occurrence-1".to_string(),
                     display_command: "first command".to_string(),
+                    shell: None,
+                    cwd: None,
                     timestamp: 3.0,
                 },
                 WorkspaceStructureFact::NodeCompleted {
@@ -1521,6 +1523,8 @@ mod workspace_tree_tests {
                     execution_id: execution_id.to_string(),
                     node_execution_id: "occurrence-2".to_string(),
                     display_command: "second command".to_string(),
+                    shell: None,
+                    cwd: None,
                     timestamp: 6.0,
                 },
                 WorkspaceStructureFact::NodeApprovalRequested {

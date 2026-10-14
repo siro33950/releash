@@ -85,6 +85,8 @@ impl WorkflowRuntimeHost {
             candidate.record_node_display_command(
                 &input.node_execution_id,
                 display_command.clone(),
+                Some(workflow_command_runner::COMMAND_SHELL.into()),
+                Some(input.worktree_path.clone()),
                 timestamp,
             );
             self.commit_control_plane_candidate(
@@ -98,6 +100,8 @@ impl WorkflowRuntimeHost {
                         execution_id: input.execution_id.clone(),
                         node_execution_id: input.node_execution_id.clone(),
                         display_command: display_command.clone(),
+                        shell: Some(workflow_command_runner::COMMAND_SHELL.into()),
+                        cwd: Some(input.worktree_path.clone()),
                         timestamp,
                     }],
                     provider_events: Vec::new(),

@@ -168,6 +168,8 @@ pub struct RuntimeNodeExecution {
     pub status: RuntimeNodeExecutionStatus,
     pub session_id: Option<String>,
     pub display_command: Option<String>,
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
     pub artifact: Option<serde_json::Value>,
     /// 完了前に記録された結果 summary（親スコープを持たない root leaf でも
     /// 保持されるよう node 自身が持つ）。
@@ -211,14 +213,24 @@ impl RuntimeNodeExecution {
         presence.can_resume_session(self.kind)
     }
 
-    pub fn prepare_command(&mut self, display_command: String) -> TransitionOutcome {
-        if self.display_command.as_deref() == Some(display_command.as_str()) {
+    pub fn prepare_command(
+        &mut self,
+        display_command: String,
+        shell: Option<String>,
+        cwd: Option<String>,
+    ) -> TransitionOutcome {
+        if self.display_command.as_deref() == Some(display_command.as_str())
+            && self.shell == shell
+            && self.cwd == cwd
+        {
             return TransitionOutcome::AlreadyApplied;
         }
         if !self.status.is_active() {
             return TransitionOutcome::NotApplicable;
         }
         self.display_command = Some(display_command);
+        self.shell = shell;
+        self.cwd = cwd;
         TransitionOutcome::Applied
     }
 
@@ -1241,6 +1253,8 @@ impl ExecutionTree {
             status: RuntimeNodeExecutionStatus::Running,
             session_id: None,
             display_command: None,
+            shell: None,
+            cwd: None,
             artifact: None,
             result_summary: None,
             token_usage: None,
@@ -2210,6 +2224,8 @@ impl ExecutionTree {
             status: RuntimeNodeExecutionStatus::Running,
             session_id: None,
             display_command: None,
+            shell: None,
+            cwd: None,
             artifact: None,
             result_summary: None,
             token_usage: None,
@@ -2276,6 +2292,8 @@ impl ExecutionTree {
         &mut self,
         node_execution_id: &str,
         display_command: String,
+        shell: Option<String>,
+        cwd: Option<String>,
         timestamp: f64,
     ) -> TransitionOutcome {
         let Some(execution) = self
@@ -2286,7 +2304,7 @@ impl ExecutionTree {
         else {
             return TransitionOutcome::NotApplicable;
         };
-        let outcome = execution.prepare_command(display_command);
+        let outcome = execution.prepare_command(display_command, shell, cwd);
         if outcome == TransitionOutcome::Applied {
             self.runtime.updated_at = timestamp;
         }

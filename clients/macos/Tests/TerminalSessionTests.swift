@@ -463,3 +463,78 @@ extension TerminalSessionTests {
     await model.stop()
   }
 }
+
+extension TerminalSessionTests {
+  @MainActor func testAgentTerminalUsesSessionOwnerAndPreservesInputProtocol() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let terminal = model.terminal(path: "/repo", id: "agent-session", agent: true)
+    terminal.input("hello\r")
+    try await eventually { !http.requests("WriteTerminalSurface").isEmpty }
+    let write = try Releash_Client_V1_WriteTerminalSurfaceRequest(serializedBytes: XCTUnwrap(http.requests("WriteTerminalSurface").last?.message))
+    XCTAssertEqual(write.owner.session.sessionID, "agent-session")
+    XCTAssertEqual(write.owner.session.workspacePath, "/repo")
+    XCTAssertEqual(write.sequence, 0)
+    XCTAssertEqual(write.data, "hello\r")
+    model.releaseAgentTerminal(path: "/repo", id: "agent-session")
+    XCTAssertTrue(http.requests("KillTerminalSurface").isEmpty)
+    await model.stop()
+  }
+}
+
+extension TerminalSessionTests {
+  @MainActor func testHiddenTerminalRelinquishesKeyboardWithoutTakingOtherControlsFocus() {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: .titled, backing: .buffered, defer: false)
+    let screen = TerminalScreen(frame: window.contentView!.bounds)
+    window.contentView!.addSubview(screen)
+    screen.setFocused(true)
+    XCTAssertTrue(window.firstResponder === screen)
+    screen.setFocused(false)
+    XCTAssertFalse(window.firstResponder === screen)
+    screen.setFocused(true)
+    XCTAssertTrue(window.firstResponder === screen)
+    let other = NSTextView(frame: window.contentView!.bounds)
+    window.contentView!.addSubview(other)
+    window.makeFirstResponder(other)
+    screen.setFocused(false)
+    XCTAssertTrue(window.firstResponder === other)
+  }
+}
+
+extension TerminalSessionTests {
+  @MainActor func testDeletedAgentSessionDoesNotBlockOtherSubscriptionsDuringRecovery() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var session = Releash_Client_V1_AgentSessionItemDto(); session.id = "deleted"
+    http.state.withLock { $0.sessions["deleted"] = session }
+    let model = try await testModel(http)
+    var receivedSession = false
+    var receivedDeletion = false
+    let subscription = model.subscribe("agent-session", ["deleted"]) { payload in
+      if case .agentSession(let value) = payload.value {
+        receivedSession = value.hasValue
+        receivedDeletion = !value.hasValue
+      }
+    }
+    let terminal = model.terminal(path: "/repo", id: "deleted", agent: true)
+    try await eventually { receivedSession && terminal.hasForegroundProcess != nil }
+    let previous = try XCTUnwrap(model.terminalAttachment(path: "/repo", id: "deleted", agent: true))
+    let stream = http.state.withLock { state in
+      state.sessions.removeValue(forKey: "deleted")
+      state.failedMethod = "OpenAgentSession"
+      var repo = Releash_Client_V1_WorkspaceRepositoryList(); repo.path = "/recovered"
+      state.repositories = [repo]
+      return state.streams.last!
+    }
+    // When
+    stream.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    // Then
+    try await eventually {
+      receivedDeletion && model.repositories.first?.path == "/recovered" && !model.reconnecting
+        && model.terminalAttachment(path: "/repo", id: "deleted", agent: true) != previous
+    }
+    model.unsubscribe(subscription)
+    model.releaseAgentTerminal(path: "/repo", id: "deleted")
+    await model.stop()
+  }
+}

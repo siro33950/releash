@@ -4,9 +4,7 @@ use super::SqliteWorkspaceTreeRepository;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
-use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode, WorkspaceTreeRepository,
-};
+use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode};
 use crate::usecase::workflow::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceNodeCapabilitiesDto,
     WorkspaceNodeContentDto, WorkspaceNodeDetailDto, WorkspaceSessionNodeContentDto,
@@ -80,11 +78,15 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        self.repository
-            .load_node(workspace_identity, node_id)
+        let Some((node, workflow)) = self
+            .repository
+            .load_node_with_workflow(workspace_identity, node_id)
             .await
-            .map(|node| node.map(node_detail))
-            .map_err(query_error)
+            .map_err(query_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(node_detail_with_workflow(node, workflow.as_ref())))
     }
 
     async fn execution_summaries(
@@ -100,8 +102,16 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
     }
 }
 
-pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
+fn node_detail_with_workflow(
+    node: WorkspaceTreeNode,
+    workflow: Option<&WorkspaceTreeNode>,
+) -> WorkspaceNodeDetailDto {
+    node_detail(node, workflow.is_some_and(|workflow| workflow.can_abort))
+}
+
+pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
+    let error_reason = node.failure_reason();
     let submit_received = matches!(
         node.completion_signals,
         crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
@@ -122,6 +132,8 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         WorkspaceNodeKind::WorkflowCommand => {
             WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
                 display_command: node.display_command,
+                shell: node.shell,
+                cwd: node.cwd,
                 result: node.command_result.map(|result| WorkspaceCommandResultDto {
                     exit_code: result.exit_code,
                     duration: result.duration,
@@ -135,6 +147,8 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         }),
     };
     WorkspaceNodeDetailDto {
+        execution_id: node.execution_id,
+        can_abort,
         process_presence: node.process_presence.as_str(),
         worktree: node
             .worktree
@@ -149,7 +163,7 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         stop_received,
         waiting_for,
         has_artifact: node.has_artifact,
-        error_reason: node.error_reason,
+        error_reason,
         capabilities: WorkspaceNodeCapabilitiesDto {
             can_rename: node.can_rename,
             can_approve: node.can_approve,

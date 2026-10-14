@@ -82,6 +82,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
         "a".into(),
         vec![
             PaneTab {
+                node_id: None,
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
                 file_path: None,
@@ -89,6 +90,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: None,
             },
             PaneTab {
+                node_id: None,
                 id: "workflow".into(),
                 kind: PaneTabKind::Workflow,
                 file_path: None,
@@ -96,6 +98,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: None,
             },
             PaneTab {
+                node_id: None,
                 id: "file".into(),
                 kind: PaneTabKind::File,
                 file_path: Some("src/file.rs".into()),
@@ -103,8 +106,17 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: Some(crate::domain::code::ReviewBase::BranchBase),
             },
             PaneTab {
+                node_id: Some("session-node".into()),
                 id: "session".into(),
                 kind: PaneTabKind::Session,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
+            },
+            PaneTab {
+                node_id: Some("command-node".into()),
+                id: "command".into(),
+                kind: PaneTabKind::Command,
                 file_path: None,
                 file_mode: None,
                 file_base: None,
@@ -176,5 +188,23 @@ fn test_行の側_proto変換で前後を保持し不明な値を拒否する() 
     }
     for value in [None, Some(99)] {
         assert!(ReviewLineSide::try_from(wire::ReviewLineSideDto { value }).is_err());
+    }
+}
+
+#[test]
+fn test_session表示状態_全状態をwireのenumへ変換する() {
+    use crate::domain::agent_session::aggregates::AgentSessionAvailability;
+    use wire::AgentSessionAvailability as Value;
+    // Given / When / Then
+    for (availability, value) in [
+        (AgentSessionAvailability::Open, Value::Open),
+        (AgentSessionAvailability::Paused, Value::Paused),
+        (
+            AgentSessionAvailability::Indeterminate,
+            Value::Indeterminate,
+        ),
+        (AgentSessionAvailability::Archived, Value::Archived),
+    ] {
+        assert_eq!(wire::AgentSessionAvailability::from(availability), value);
     }
 }

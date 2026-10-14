@@ -317,7 +317,7 @@ pub async fn seed_unavailable_definition(
     });
     for (index, (meta, fact)) in [
         (command.clone(), started.clone()),
-        (command.clone(), NodeFact::CommandSpawned(CommandSpawnedFact { display_command: "printf kept".into() })),
+        (command.clone(), NodeFact::CommandSpawned(CommandSpawnedFact { display_command: "printf kept".into(), shell: Some("/bin/sh".into()), cwd: Some(workspace.into()) })),
         (command.clone(), NodeFact::ArtifactProduced(ArtifactProducedFact { contract: None, value: serde_json::json!({"stdout":"kept", "stderr":"", "exit_code":0, "duration":10}), request_id: None })),
         (command, NodeFact::ProcessExited(ProcessExitedFact { exit_code: Some(0), result_summary: None, failure_reason: None, failure_kind: None })),
         (session.clone(), started),
