@@ -476,7 +476,6 @@ extension TerminalSessionTests {
     XCTAssertEqual(write.owner.session.workspacePath, "/repo")
     XCTAssertEqual(write.sequence, 0)
     XCTAssertEqual(write.data, "hello\r")
-    XCTAssertFalse(http.requests("OpenAgentSession").isEmpty)
     model.releaseAgentTerminal(path: "/repo", id: "agent-session")
     XCTAssertTrue(http.requests("KillTerminalSurface").isEmpty)
     await model.stop()
@@ -499,5 +498,43 @@ extension TerminalSessionTests {
     window.makeFirstResponder(other)
     screen.setFocused(false)
     XCTAssertTrue(window.firstResponder === other)
+  }
+}
+
+extension TerminalSessionTests {
+  @MainActor func testDeletedAgentSessionDoesNotBlockOtherSubscriptionsDuringRecovery() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var session = Releash_Client_V1_AgentSessionItemDto(); session.id = "deleted"
+    http.state.withLock { $0.sessions["deleted"] = session }
+    let model = try await testModel(http)
+    var receivedSession = false
+    var receivedDeletion = false
+    let subscription = model.subscribe("agent-session", ["deleted"]) { payload in
+      if case .agentSession(let value) = payload.value {
+        receivedSession = value.hasValue
+        receivedDeletion = !value.hasValue
+      }
+    }
+    let terminal = model.terminal(path: "/repo", id: "deleted", agent: true)
+    try await eventually { receivedSession && terminal.hasForegroundProcess != nil }
+    let previous = try XCTUnwrap(model.terminalAttachment(path: "/repo", id: "deleted", agent: true))
+    let stream = http.state.withLock { state in
+      state.sessions.removeValue(forKey: "deleted")
+      state.failedMethod = "OpenAgentSession"
+      var repo = Releash_Client_V1_WorkspaceRepositoryList(); repo.path = "/recovered"
+      state.repositories = [repo]
+      return state.streams.last!
+    }
+    // When
+    stream.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    // Then
+    try await eventually {
+      receivedDeletion && model.repositories.first?.path == "/recovered" && !model.reconnecting
+        && model.terminalAttachment(path: "/repo", id: "deleted", agent: true) != previous
+    }
+    model.unsubscribe(subscription)
+    model.releaseAgentTerminal(path: "/repo", id: "deleted")
+    await model.stop()
   }
 }

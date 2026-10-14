@@ -25,7 +25,7 @@ extension Releash_Client_V1_WorkspaceTreeItem {
 struct RootListView: View {
   @Bindable var model: AppModel
   let path: String
-  @State private var launch: PaneOpenMenu.LaunchKind?
+  @State private var launch: LaunchKind?
   @State private var history = false
   @State private var archive: String?
   @State private var renaming: String?
@@ -99,15 +99,93 @@ struct RootListView: View {
   }
 }
 
-extension AppModel {
-  func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
-    panes.openNode(root.rootKind, id: root.rootID, title: root.rootTitle)
-    savePaneLayout()
+enum LaunchKind: String, Identifiable {
+  case session, workflow
+  var id: Self { self }
+}
+
+struct PaneLaunchView: View {
+  @Bindable var model: AppModel
+  let pane: PaneID
+  let path: String
+  let kind: LaunchKind
+  @Environment(\.dismiss) private var dismiss
+  @State private var provider = ""
+  @State private var workflow = ""
+  @State private var requestText = ""
+  @State private var starting = false
+  @State private var failure: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: UIStyle.padding) {
+      Text(kind == .session ? "Sessionを開始" : "Workflowを開始").font(.headline)
+      Form {
+        if kind == .session {
+          Picker("Provider", selection: $provider) {
+            Text("選択してください").tag("")
+            ForEach(model.providers, id: \.value) { item in
+              Text(item.displayName).tag(item.wireName)
+            }
+          }
+        } else {
+          WorkflowLaunchFields(
+            workflows: model.workflows, workflow: $workflow, requestText: $requestText)
+        }
+      }.disabled(starting)
+      if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
+      HStack {
+        if starting { ProgressView().controlSize(.small) }
+        Spacer()
+        Button("キャンセル") { dismiss() }.disabled(starting).keyboardShortcut(.cancelAction)
+        Button("開始") {
+          starting = true
+          failure = nil
+          Task {
+            failure = await start(provider: provider, workflow: workflow, requestText: requestText)
+            if failure == nil { dismiss() } else { starting = false }
+          }
+        }
+        .disabled(starting || (kind == .session ? provider.isEmpty : workflow.isEmpty))
+        .keyboardShortcut(.defaultAction)
+      }
+    }
+    .padding(UIStyle.padding)
+    .frame(width: UIStyle.createDialogWidth)
+    .interactiveDismissDisabled(starting)
   }
-  func resumeNode(path: String, id: String) {
-    guard let client else { return }
-    var request = Releash_Client_V1_ResumeWorkspaceSessionNodeRequest()
-    request.worktreePath = path; request.nodeID = id
-    perform { _ = try await client.resumeWorkspaceSessionNode(request: request, headers: self.headers).result.get() }
+
+  func start(provider: String, workflow: String, requestText: String) async -> String? {
+    do {
+      if kind == .session {
+        try await startSession(provider)
+      } else {
+        try await startWorkflow(name: workflow, requestText: requestText)
+      }
+      return nil
+    } catch { return model.failureMessage(error) }
+  }
+
+  func startSession(_ provider: String) async throws {
+    guard let client = model.client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_CreateAgentSessionRequest()
+    request.provider = provider
+    request.workspaceIdentity = path
+    request.worktreePath = path
+    request.rows = UIStyle.terminalRows
+    request.cols = UIStyle.terminalColumns
+    request.callerRequestID = UUID().uuidString
+    let selection = try await client.createAgentSession(request: request, headers: model.headers).result.get()
+    model.openNode(.session, id: selection.nodeID, title: "Session", in: pane)
+  }
+
+  func startWorkflow(name: String, requestText: String) async throws {
+    guard let client = model.client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_StartWorkflowRequest()
+    request.workflowName = name
+    request.worktreePath = path
+    request.request = requestText
+    let execution = try await client.startWorkflow(request: request, headers: model.headers).result.get()
+    model.pendingRoots[path] = execution.value
+    model.openPendingRoot()
   }
 }

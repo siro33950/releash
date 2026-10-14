@@ -67,7 +67,9 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionItemDto> for wire::Agent
             operations: Some(cv(value.operations)?),
             last_exit_abnormal: Some(cv(value.last_exit_abnormal)?),
             terminal_presence: value.terminal_presence,
-            availability: value.availability,
+            availability: value
+                .availability
+                .map(|value| wire::AgentSessionAvailability::from(value) as i32),
         })
     }
 }
@@ -2278,5 +2280,30 @@ impl From<crate::domain::provider_lifecycle::ProviderKind> for wire::AgentSessio
                 ProviderKind::Codex => wire::agent_session_provider_dto::Value::Codex,
             } as i32),
         }
+    }
+}
+
+impl From<crate::domain::agent_session::aggregates::AgentSessionAvailability>
+    for wire::AgentSessionAvailability
+{
+    fn from(value: crate::domain::agent_session::aggregates::AgentSessionAvailability) -> Self {
+        use crate::domain::agent_session::aggregates::AgentSessionAvailability;
+        match value {
+            AgentSessionAvailability::Open => Self::Open,
+            AgentSessionAvailability::Paused => Self::Paused,
+            AgentSessionAvailability::Indeterminate => Self::Indeterminate,
+            AgentSessionAvailability::Archived => Self::Archived,
+        }
+    }
+}
+
+impl serde::Serialize for crate::domain::agent_session::aggregates::AgentSessionAvailability {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::Open => "open",
+            Self::Paused => "paused",
+            Self::Indeterminate => "indeterminate",
+            Self::Archived => "archived",
+        })
     }
 }

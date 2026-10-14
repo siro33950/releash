@@ -190,3 +190,27 @@ fn test_行の側_proto変換で前後を保持し不明な値を拒否する() 
         assert!(ReviewLineSide::try_from(wire::ReviewLineSideDto { value }).is_err());
     }
 }
+
+#[test]
+fn test_session表示状態_全状態をenumとjsonへ変換する() {
+    use crate::domain::agent_session::aggregates::AgentSessionAvailability;
+    use wire::AgentSessionAvailability as Value;
+    // Given / When / Then
+    for (availability, value, json) in [
+        (AgentSessionAvailability::Open, Value::Open, "open"),
+        (AgentSessionAvailability::Paused, Value::Paused, "paused"),
+        (
+            AgentSessionAvailability::Indeterminate,
+            Value::Indeterminate,
+            "indeterminate",
+        ),
+        (
+            AgentSessionAvailability::Archived,
+            Value::Archived,
+            "archived",
+        ),
+    ] {
+        assert_eq!(wire::AgentSessionAvailability::from(availability), value);
+        assert_eq!(serde_json::to_value(availability).unwrap(), json);
+    }
+}

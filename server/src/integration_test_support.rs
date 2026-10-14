@@ -593,6 +593,7 @@ pub mod sessions {
     pub use crate::adaptor::gateway::agent_session::session_facts::SessionLocation;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSession;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionArchiveOutcome;
+    pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionAvailability;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionInitialInstructionOutcome;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionLifecycle;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionMutationOutcome;

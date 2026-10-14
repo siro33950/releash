@@ -337,3 +337,34 @@ fn test_archive済みworkflow_archiveの新しい順に返しsessionと未archiv
         vec!["exec-b", "exec-a"]
     );
 }
+
+#[test]
+fn test_provider_単独sessionの根はsessionを採りworkflowの節は定義の値を採る() {
+    // Given
+    let (mut nodes, session) = session_execution("session", false);
+    nodes[1].provider = Some(ProviderKind::Claude);
+    let mut workflow = workflow_nodes("workflow");
+    workflow[2].provider = Some(ProviderKind::Claude);
+    nodes.extend(workflow);
+    let tree = tree(
+        nodes,
+        vec![
+            session,
+            execution("workflow", ExecutionTreeLaunch::Workflow),
+        ],
+    );
+
+    // When
+    let visible = tree.visible();
+    let roots = visible.roots();
+
+    // Then
+    let session = roots.iter().find(|root| root.id() == "session").unwrap();
+    assert_eq!(session.provider(), Some(ProviderKind::Codex));
+    let workflow = roots.iter().find(|root| root.id() == "workflow").unwrap();
+    assert_eq!(
+        workflow.children()[0].provider(),
+        Some(ProviderKind::Claude)
+    );
+    assert_eq!(workflow.children()[1].provider(), None);
+}

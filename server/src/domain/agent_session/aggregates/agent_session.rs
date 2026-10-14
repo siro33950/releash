@@ -250,6 +250,14 @@ pub enum ManagedPtyPresence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSessionAvailability {
+    Open,
+    Paused,
+    Indeterminate,
+    Archived,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionOpenAction {
     Attach,
     Resume,
@@ -548,37 +556,34 @@ impl AgentSession {
     pub(crate) fn availability(
         lifecycle: AgentSessionLifecycle,
         presence: ManagedPtyPresence,
-    ) -> &'static str {
+    ) -> AgentSessionAvailability {
         if lifecycle == AgentSessionLifecycle::Archived {
-            return "archived";
+            return AgentSessionAvailability::Archived;
         }
         match presence {
-            ManagedPtyPresence::Live => "open",
-            ManagedPtyPresence::Unknown => "indeterminate",
-            ManagedPtyPresence::ConfirmedAbsent => "paused",
+            ManagedPtyPresence::Live => AgentSessionAvailability::Open,
+            ManagedPtyPresence::Unknown => AgentSessionAvailability::Indeterminate,
+            ManagedPtyPresence::ConfirmedAbsent => AgentSessionAvailability::Paused,
         }
     }
 
     pub(crate) fn open_action(&self, pty_presence: ManagedPtyPresence) -> AgentSessionOpenAction {
-        if self.lifecycle == AgentSessionLifecycle::Archived {
-            return AgentSessionOpenAction::RemainArchived;
-        }
-        match pty_presence {
-            ManagedPtyPresence::Live => AgentSessionOpenAction::Attach,
-            ManagedPtyPresence::Unknown => AgentSessionOpenAction::Indeterminate,
-            ManagedPtyPresence::ConfirmedAbsent => match self.lifecycle {
-                AgentSessionLifecycle::Paused => AgentSessionOpenAction::RemainPaused,
-                AgentSessionLifecycle::Archived => AgentSessionOpenAction::RemainArchived,
-                AgentSessionLifecycle::Open if self.provider_session_id.is_some() => {
-                    AgentSessionOpenAction::Resume
-                }
-                AgentSessionLifecycle::Open
-                    if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow =>
-                {
-                    AgentSessionOpenAction::RemainPaused
-                }
-                AgentSessionLifecycle::Open => AgentSessionOpenAction::GarbageCollect,
-            },
+        match Self::availability(self.lifecycle, pty_presence) {
+            AgentSessionAvailability::Open => AgentSessionOpenAction::Attach,
+            AgentSessionAvailability::Indeterminate => AgentSessionOpenAction::Indeterminate,
+            AgentSessionAvailability::Archived => AgentSessionOpenAction::RemainArchived,
+            AgentSessionAvailability::Paused if self.lifecycle == AgentSessionLifecycle::Paused => {
+                AgentSessionOpenAction::RemainPaused
+            }
+            AgentSessionAvailability::Paused if self.provider_session_id.is_some() => {
+                AgentSessionOpenAction::Resume
+            }
+            AgentSessionAvailability::Paused
+                if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow =>
+            {
+                AgentSessionOpenAction::RemainPaused
+            }
+            AgentSessionAvailability::Paused => AgentSessionOpenAction::GarbageCollect,
         }
     }
 

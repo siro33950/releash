@@ -115,22 +115,11 @@ impl AgentSessionReadUsecase {
             }
             Err(error) => return Err(map_lifecycle_error(error)),
         };
-        let lifecycle = match item.lifecycle {
-            super::AgentSessionLifecycleDto::Open => {
-                crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open
-            }
-            super::AgentSessionLifecycleDto::Paused => {
-                crate::domain::agent_session::aggregates::AgentSessionLifecycle::Paused
-            }
-            super::AgentSessionLifecycleDto::Archived => {
-                crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived
-            }
-        };
         item.availability = Some(
             crate::domain::agent_session::aggregates::AgentSession::availability(
-                lifecycle, presence,
-            )
-            .into(),
+                item.lifecycle.into(),
+                presence,
+            ),
         );
         item.terminal_presence = Some(
             match presence {

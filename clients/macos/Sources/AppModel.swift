@@ -1,4 +1,5 @@
 import AppKit
+import Bonsplit
 import Connect
 import Foundation
 import Observation
@@ -97,7 +98,7 @@ import SwiftProtobuf
         }
         repositories = value.repositories.items
         openPendingRoot()
-        for root in repositories.flatMap(\.worktrees.items).first(where: { $0.path == selectedWorktree })?.snapshot.nodes.items ?? [] { panes.renameNode(root.rootID, title: root.rootTitle) }
+        syncNodeTabTitles()
         for repo in value.repositories.items where groupSubscriptions[repo.path] == nil {
           groupSubscriptions[repo.path] = self.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
             if case .repositoryGroupState(let group) = payload.value {
@@ -197,9 +198,6 @@ import SwiftProtobuf
     guard let client, let (target, args) = targets[key] else { return }
     if target == "terminal", args.count == 2 {
       terminals[key]?.disconnect()
-      var open = Releash_Client_V1_OpenAgentSessionRequest()
-      open.agentSessionID = args[1]; open.rows = UIStyle.terminalRows; open.cols = UIStyle.terminalColumns; open.callerRequestID = UUID().uuidString
-      _ = try await client.openAgentSession(request: open, headers: headers).result.get()
     }
     if target == "workspace-terminal", args.count == 2 {
       terminals[key]?.disconnect()
@@ -571,5 +569,27 @@ import SwiftProtobuf
     perform {
       _ = try await client.addRepoPath(request: request, headers: self.headers).result.get()
     }
+  }
+}
+
+extension AppModel {
+  func openNode(_ kind: PaneTab.Kind, id: String, title: String, in pane: PaneID? = nil) {
+    panes.openNode(kind, id: id, title: title, in: pane)
+    savePaneLayout()
+  }
+
+  private func syncNodeTabTitles() {
+    let roots = repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes.items ?? []
+    for root in roots { panes.renameNode(root.rootID, title: root.rootTitle) }
+  }
+
+  func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
+    openNode(root.rootKind, id: root.rootID, title: root.rootTitle)
+  }
+  func resumeNode(path: String, id: String) {
+    guard let client else { return }
+    var request = Releash_Client_V1_ResumeWorkspaceSessionNodeRequest()
+    request.worktreePath = path; request.nodeID = id
+    perform { _ = try await client.resumeWorkspaceSessionNode(request: request, headers: self.headers).result.get() }
   }
 }

@@ -133,7 +133,10 @@ final class RootListViewTests: XCTestCase {
     tree.snapshot.nodes.items[0] = session; repo.worktrees.items = [tree]
     var payload = Releash_Client_V1_StatePayload(); payload.workspaces.repositories.items = [repo]
     try http.publish(payload, target: "workspaces")
-    try await Task.sleep(for: .milliseconds(100))
+    try await eventually {
+      guard case .node(let root) = model.repositories.first?.worktrees.items.first?.snapshot.nodes.items.first?.variant else { return false }
+      return root.capabilities.canRename
+    }
     try await host.menu("root:session-root", selecting: "Archive") { texts in
       for action in ["改名", "Resume", "Archive"] { XCTAssertTrue(texts.contains(action)) }
     }

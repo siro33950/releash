@@ -47,6 +47,7 @@ use releashd::test_support::integration::platform::AgentSessionProviderDto;
 use releashd::test_support::integration::platform::GitHostUsecase;
 use releashd::test_support::integration::platform::RepoPathsUsecase;
 use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::sessions::AgentSessionAvailability;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionPort;
 use releashd::test_support::integration::sessions::AgentSessionHistoryCandidateDto;
@@ -1072,7 +1073,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
         .await
         .unwrap();
     let mut expected = item.clone();
-    expected.availability = Some("open".into());
+    expected.availability = Some(AgentSessionAvailability::Open);
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(expected))))
     );
@@ -1094,14 +1095,11 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             ..item.clone()
         });
         let expected = next.clone().map(|mut value| {
-            value.availability = Some(
-                if value.lifecycle == AgentSessionLifecycleDto::Archived {
-                    "archived"
-                } else {
-                    "open"
-                }
-                .into(),
-            );
+            value.availability = Some(if value.lifecycle == AgentSessionLifecycleDto::Archived {
+                AgentSessionAvailability::Archived
+            } else {
+                AgentSessionAvailability::Open
+            });
             value
         });
         let before = fixture.sessions.calls.lock().len();

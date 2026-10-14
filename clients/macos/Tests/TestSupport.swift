@@ -83,6 +83,7 @@ final class TestHTTPClient: HTTPClientInterface {
           } else if subscription.target == "node-detail" {
             if let value = state.nodeDetails[subscription.args[1]] { payload.nodeDetail.value = value }
           } else if subscription.target == "agent-session" {
+            payload.agentSession = .init()
             if let value = state.sessions[subscription.args[0]] { payload.agentSession.value = value }
           } else if subscription.target == "session-history" {
             payload.sessionHistory = state.history

@@ -50,8 +50,8 @@ struct SessionHistoryView: View {
       defer { busy = false }
       do {
         if let selection = try await action() {
-          model.panes.openNode(.session, id: selection.nodeID, title: "Session")
-          model.savePaneLayout(); dismiss()
+          model.openNode(.session, id: selection.nodeID, title: "Session")
+          dismiss()
         }
       } catch { failure = model.failureMessage(error) }
     }

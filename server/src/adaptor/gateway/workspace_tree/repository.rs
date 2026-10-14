@@ -76,6 +76,39 @@ pub struct SqliteWorkspaceTreeRepository {
 }
 
 impl SqliteWorkspaceTreeRepository {
+    pub(super) async fn load_node_with_workflow(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        node_id: &str,
+    ) -> Result<Option<(WorkspaceTreeNode, Option<WorkspaceTreeNode>)>, LocalEventQueryError> {
+        let workspace = workspace_identity.as_str().to_string();
+        let trees = self.folded_workspace_trees(&workspace).await?;
+        for execution in &trees {
+            let (folded, record) = &**execution;
+            let nodes = self.tree_nodes(&workspace, folded, record)?;
+            let workflow = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == crate::domain::workspace_tree::WorkspaceNodeKind::Workflow
+                        && node.id == folded.aggregate.id
+                })
+                .cloned();
+            if folded.aggregate.id == node_id {
+                if let Some(mut node) =
+                    WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
+                        .map(|root| root.node().clone())
+                {
+                    node.id = node_id.to_string();
+                    return Ok(Some((node, workflow)));
+                }
+            }
+            if let Some(node) = nodes.iter().find(|node| node.id == node_id).cloned() {
+                return Ok(Some((node, workflow)));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::Live(store),
@@ -533,25 +566,10 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
-        let workspace = workspace_identity.as_str().to_string();
-        let trees = self.folded_workspace_trees(&workspace).await?;
-        for execution in &trees {
-            let (folded, record) = &**execution;
-            let nodes = self.tree_nodes(&workspace, folded, record)?;
-            if folded.aggregate.id == node_id {
-                if let Some(mut node) =
-                    WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
-                        .map(|root| root.node().clone())
-                {
-                    node.id = node_id.to_string();
-                    return Ok(Some(node));
-                }
-            }
-            if let Some(node) = nodes.iter().find(|node| node.id == node_id).cloned() {
-                return Ok(Some(node));
-            }
-        }
-        Ok(None)
+        Ok(self
+            .load_node_with_workflow(workspace_identity, node_id)
+            .await?
+            .map(|(node, _)| node))
     }
 }
 

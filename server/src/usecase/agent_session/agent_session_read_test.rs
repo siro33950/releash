@@ -229,9 +229,21 @@ async fn test_session読取_プロセス在否を購読用presenceへ写す() {
     }
     // Given
     for (presence, expected, availability) in [
-        (ManagedPtyPresence::Live, "live", "open"),
-        (ManagedPtyPresence::ConfirmedAbsent, "absent", "paused"),
-        (ManagedPtyPresence::Unknown, "unknown", "indeterminate"),
+        (
+            ManagedPtyPresence::Live,
+            "live",
+            crate::domain::agent_session::aggregates::AgentSessionAvailability::Open,
+        ),
+        (
+            ManagedPtyPresence::ConfirmedAbsent,
+            "absent",
+            crate::domain::agent_session::aggregates::AgentSessionAvailability::Paused,
+        ),
+        (
+            ManagedPtyPresence::Unknown,
+            "unknown",
+            crate::domain::agent_session::aggregates::AgentSessionAvailability::Indeterminate,
+        ),
     ] {
         let usecase = AgentSessionReadUsecase::new(
             Arc::new(crate::usecase::test_helpers::TestIdentity),
@@ -243,7 +255,7 @@ async fn test_session読取_プロセス在否を購読用presenceへ写す() {
         // When / Then
         let item = usecase.get("session").await.unwrap().unwrap();
         assert_eq!(item.terminal_presence.as_deref(), Some(expected));
-        assert_eq!(item.availability.as_deref(), Some(availability));
+        assert_eq!(item.availability, Some(availability));
     }
 }
 
@@ -284,5 +296,8 @@ async fn test_session読取_gc後に残ったarchive状態にも表示判定を�
     let item = usecase.get("session").await.unwrap().unwrap();
     // Then
     assert_eq!(item.lifecycle, AgentSessionLifecycleDto::Archived);
-    assert_eq!(item.availability.as_deref(), Some("archived"));
+    assert_eq!(
+        item.availability,
+        Some(crate::domain::agent_session::aggregates::AgentSessionAvailability::Archived)
+    );
 }

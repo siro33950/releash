@@ -22,7 +22,6 @@ struct NodePane: View {
       subscription = model.subscribe("node-detail", [path, nodeID]) { payload in
         if case .nodeDetail(let value) = payload.value {
           detail = value.hasValue ? value.value : nil
-          if value.hasValue { model.panes.renameNode(nodeID, title: value.value.title) }
         }
       }
     }
@@ -44,12 +43,12 @@ struct AgentSessionPane: View {
     VStack {
       if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
       switch session?.availability {
-      case "open": TerminalPane(session: model.terminal(path: path, id: sessionID, agent: true), focused: focused)
-      case "paused":
+      case .open: TerminalPane(session: model.terminal(path: path, id: sessionID, agent: true), focused: focused)
+      case .paused:
         Text("Sessionは停止しています")
         if canResume { Button("Resume") { model.resumeNode(path: path, id: nodeID) } }
-      case "archived": Text("SessionはArchiveされています")
-      case "indeterminate": Text("Sessionを開けるか判定できません")
+      case .archived: Text("SessionはArchiveされています")
+      case .indeterminate: Text("Sessionを開けるか判定できません")
       default: ProgressView()
       }
     }
@@ -57,7 +56,7 @@ struct AgentSessionPane: View {
       subscription = model.subscribe("agent-session", [sessionID]) { payload in
         if case .agentSession(let value) = payload.value {
           session = value.hasValue ? value.value : nil
-          if value.value.availability != "open" { model.releaseAgentTerminal(path: path, id: sessionID) }
+          if !value.hasValue || value.value.availability != .open { model.releaseAgentTerminal(path: path, id: sessionID) }
         }
       }
       guard let client = model.client else { return }
@@ -108,7 +107,7 @@ struct CommandPane: View {
         if !attempts.isEmpty {
           Text("過去の試行").font(.headline)
           ForEach(attempts, id: \.id) { attempt in
-            Button { model.panes.openNode(.command, id: attempt.id, title: attempt.title); model.savePaneLayout() } label: {
+            Button { model.openNode(.command, id: attempt.id, title: attempt.title) } label: {
               Text("\(Date(timeIntervalSince1970: attempt.updatedAt).formatted()) · \(attempt.errorReason)")
             }
           }

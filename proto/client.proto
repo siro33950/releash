@@ -896,7 +896,14 @@ message AgentSessionItemDto {
   optional AgentSessionOperationsDto operations = 10 [json_name = "operations", (json_required) = true];
   optional bool last_exit_abnormal = 11 [json_name = "lastExitAbnormal", (json_required) = true];
   optional string terminal_presence = 12 [json_name = "terminalPresence"];
-  optional string availability = 13 [json_name = "availability"];
+  optional AgentSessionAvailability availability = 13 [json_name = "availability"];
+}
+
+enum AgentSessionAvailability {
+  AGENT_SESSION_AVAILABILITY_OPEN = 0 [(json_enum_name) = "open"];
+  AGENT_SESSION_AVAILABILITY_PAUSED = 1 [(json_enum_name) = "paused"];
+  AGENT_SESSION_AVAILABILITY_INDETERMINATE = 2 [(json_enum_name) = "indeterminate"];
+  AGENT_SESSION_AVAILABILITY_ARCHIVED = 3 [(json_enum_name) = "archived"];
 }
 
 message AgentSessionProviderDto {

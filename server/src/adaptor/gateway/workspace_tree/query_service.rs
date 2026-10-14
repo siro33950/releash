@@ -4,9 +4,7 @@ use super::SqliteWorkspaceTreeRepository;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
-use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode, WorkspaceTreeRepository,
-};
+use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode};
 use crate::usecase::workflow::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceNodeCapabilitiesDto,
     WorkspaceNodeContentDto, WorkspaceNodeDetailDto, WorkspaceSessionNodeContentDto,
@@ -80,24 +78,15 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        let Some(node) = self
+        let Some((node, workflow)) = self
             .repository
-            .load_node(workspace_identity, node_id)
+            .load_node_with_workflow(workspace_identity, node_id)
             .await
             .map_err(query_error)?
         else {
             return Ok(None);
         };
-        let can_abort = if let Some(id) = node.execution_id.as_deref() {
-            let Some(execution) = self.repository.folded_tree(id).await.map_err(query_error)?
-            else {
-                return Ok(None);
-            };
-            execution.1.status.can_abort()
-        } else {
-            false
-        };
-        Ok(Some(node_detail(node, can_abort)))
+        Ok(Some(node_detail_with_workflow(node, workflow.as_ref())))
     }
 
     async fn execution_summaries(
@@ -111,6 +100,13 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .map(execution_summary)
             .collect()
     }
+}
+
+fn node_detail_with_workflow(
+    node: WorkspaceTreeNode,
+    workflow: Option<&WorkspaceTreeNode>,
+) -> WorkspaceNodeDetailDto {
+    node_detail(node, workflow.is_some_and(|workflow| workflow.can_abort))
 }
 
 pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDetailDto {

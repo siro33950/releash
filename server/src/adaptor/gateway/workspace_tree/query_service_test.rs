@@ -267,7 +267,10 @@ fn test_command詳細_実行時のshellとcwdとabort対象を配る() {
         stderr: "err".into(),
     });
     // When
-    let detail = node_detail(command, true);
+    let mut workflow = node();
+    workflow.kind = WorkspaceNodeKind::Workflow;
+    workflow.can_abort = true;
+    let detail = node_detail_with_workflow(command, Some(&workflow));
     // Then
     assert_eq!(detail.execution_id.as_deref(), Some("execution"));
     assert!(detail.can_abort);
@@ -280,4 +283,31 @@ fn test_command詳細_実行時のshellとcwdとabort対象を配る() {
     };
     assert_eq!(content.shell.as_deref(), Some("/bin/sh"));
     assert_eq!(content.cwd.as_deref(), Some("/repo/feature"));
+}
+
+#[test]
+fn test_node詳細_workflowの節が無くても詳細を返しabort不可とする() {
+    // Given
+    let mut node = node();
+    node.execution_id = Some("missing-execution".into());
+    // When
+    let detail = node_detail_with_workflow(node, None);
+    // Then
+    assert_eq!(detail.id, "node");
+    assert_eq!(detail.execution_id.as_deref(), Some("missing-execution"));
+    assert!(!detail.can_abort);
+}
+
+#[test]
+fn test_node詳細_完了したworkflowの節のabort不可を配る() {
+    // Given
+    let mut workflow = node();
+    workflow.kind = WorkspaceNodeKind::Workflow;
+    workflow.status = WorkspaceNodeStatus::Completed;
+    workflow.can_abort = false;
+    // When
+    let detail = node_detail_with_workflow(node(), Some(&workflow));
+    // Then
+    assert_eq!(detail.id, "node");
+    assert!(!detail.can_abort);
 }

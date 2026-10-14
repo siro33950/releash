@@ -7,7 +7,7 @@ import XCTest
 
 final class NodePaneTests: XCTestCase {
   @MainActor func testSessionSubscriptionControlsVisibilityAndResumeSuccessAndFailure() async throws {
-    for (availability, canResume, message) in [("paused", false, "Sessionは停止しています"), ("paused", true, "Sessionは停止しています"), ("indeterminate", true, "Sessionを開けるか判定できません"), ("archived", true, "SessionはArchiveされています")] {
+    for (availability, canResume, message) in [(Releash_Client_V1_AgentSessionAvailability.paused, false, "Sessionは停止しています"), (.paused, true, "Sessionは停止しています"), (.indeterminate, true, "Sessionを開けるか判定できません"), (.archived, true, "SessionはArchiveされています")] {
       let http = TestHTTPClient()
       var session = Releash_Client_V1_AgentSessionItemDto(); session.id = "agent"; session.availability = availability
       var node = Releash_Client_V1_WorkspaceNodeDetailDto()
@@ -18,9 +18,9 @@ final class NodePaneTests: XCTestCase {
       let host = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "node", focused: true))
       try await eventuallyView(host) { host.texts().contains(message) }
       XCTAssertNil(host.element("terminal:agent"))
-      XCTAssertEqual(host.element("Resume") != nil, availability == "paused" && canResume)
+      XCTAssertEqual(host.element("Resume") != nil, availability == .paused && canResume)
       try await eventually { !http.requests("OpenAgentSession").isEmpty }
-      if availability == "paused" && canResume {
+      if availability == .paused && canResume {
         http.state.withLock { $0.failedMethod = "ResumeWorkspaceSessionNode" }
         try await host.press("Resume")
         try await eventually { model.failure == "ResumeWorkspaceSessionNode failed" }
@@ -31,13 +31,75 @@ final class NodePaneTests: XCTestCase {
         let request = try Releash_Client_V1_ResumeWorkspaceSessionNodeRequest(serializedBytes: XCTUnwrap(http.requests("ResumeWorkspaceSessionNode").last?.message))
         XCTAssertEqual(request.nodeID, "node"); XCTAssertEqual(request.worktreePath, "/repo")
         XCTAssertNil(host.element("terminal:agent"))
-        var payload = Releash_Client_V1_StatePayload(); session.availability = "open"; payload.agentSession.value = session
+        var payload = Releash_Client_V1_StatePayload(); session.availability = .open; payload.agentSession.value = session
         try http.publish(payload, target: "agent-session")
         try await eventuallyView(host) { host.element("terminal:agent") != nil }
         try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" && $0.args == ["/repo", "agent"] } } }
         try await eventuallyView(host) { host.texts().contains { $0.contains("resumed-output") } }
+        XCTAssertEqual(http.requests("OpenAgentSession").count, 1)
+        payload.agentSession = .init()
+        try http.publish(payload, target: "agent-session")
+        try await eventuallyView(host) { host.element("terminal:agent") == nil }
+        try await eventually { model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil }
       }
       host.close(); await model.stop()
+    }
+  }
+
+  @MainActor func testNodeTabsSaveAndRestoreTheirSubscriptionsAndContent() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var session = Releash_Client_V1_AgentSessionItemDto()
+    session.id = "agent"; session.availability = .paused
+    var sessionNode = Releash_Client_V1_WorkspaceNodeDetailDto()
+    sessionNode.id = "session-node"; sessionNode.content.session.sessionID = "agent"
+    var commandNode = Releash_Client_V1_WorkspaceNodeDetailDto()
+    commandNode.id = "command-node"; commandNode.content.command.result.stdout = "saved command output"
+    http.state.withLock {
+      $0.sessions["agent"] = session
+      $0.nodeDetails = ["session-node": sessionNode, "command-node": commandNode]
+    }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo/a")
+    try await eventually { model.layoutLoaded }
+    let sessionTab = PaneTab(kind: .session, nodeID: "session-node")
+    let commandTab = PaneTab(kind: .command, nodeID: "command-node")
+    let layout = PaneLayout.split(
+      id: "split", axis: .horizontal, ratio: 0.5,
+      first: .pane(id: "session-pane", tabs: [sessionTab], active: sessionTab.id),
+      second: .pane(id: "command-pane", tabs: [commandTab], active: commandTab.id))
+    try model.panes.restore(layout)
+    model.savePaneLayout()
+    try await eventually { model.pendingSaves["/repo/a"] == nil }
+    let save = try Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
+    XCTAssertEqual(try PaneLayout(save.state.paneLayout), layout)
+
+    // When / Then: reselecting and restarting both restore the actual pane view.
+    model.selectWorktree("/repo/b")
+    try await eventually { model.layoutLoaded }
+    model.selectWorktree("/repo/a")
+    try await eventually { model.layoutLoaded && model.layout == layout }
+    for restarting in [false, true] {
+      let restored: AppModel
+      if restarting { await model.stop(); restored = try await testModel(http) }
+      else { restored = model }
+      restored.selectWorktree("/repo/a")
+      try await eventually { restored.layoutLoaded && restored.layout == layout }
+      XCTAssertEqual(try restored.panes.layout().tabs.map(\.nodeID), ["session-node", "command-node"])
+      http.state.withLock { $0.subscriptions.removeAll { $0.target == "node-detail" } }
+      let host = await ViewHarness(WorkspacePaneView(model: restored))
+      try await eventually {
+        http.state.withLock { state in
+          ["session-node", "command-node"].allSatisfy { id in
+            state.subscriptions.contains { $0.target == "node-detail" && $0.args == ["/repo/a", id] }
+          }
+        }
+      }
+      try await eventuallyView(host) {
+        host.texts().contains("Sessionは停止しています") && host.value(host.element("command-stdout")) == "saved command output"
+      }
+      host.close()
+      if restarting { await restored.stop() }
     }
   }
 

@@ -248,11 +248,7 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(wire::WorkspaceNode {
-        provider: item
-            .session()
-            .map(|session| session.provider())
-            .or(node.provider)
-            .map(Into::into),
+        provider: item.provider().map(Into::into),
         process_presence: Some(cv(node.process_presence.as_str())?),
         id: Some(item.id().to_owned()),
         title: Some(item.title().to_owned()),

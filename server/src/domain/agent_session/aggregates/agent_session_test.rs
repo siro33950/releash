@@ -1,8 +1,9 @@
 use super::{
-    AgentSession, AgentSessionArchiveOutcome, AgentSessionInitialInstructionOutcome,
-    AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, AgentSessionTreeLocation, ManagedPtyPresence,
+    AgentSession, AgentSessionArchiveOutcome, AgentSessionAvailability,
+    AgentSessionInitialInstructionOutcome, AgentSessionLifecycle, AgentSessionLifecycleEvent,
+    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionOperations,
+    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionTreeLocation,
+    ManagedPtyPresence,
 };
 use super::{
     AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
@@ -1677,27 +1678,27 @@ fn test_session表示状態_archiveを優先し端末の在否を判定する() 
         (
             AgentSessionLifecycle::Open,
             ManagedPtyPresence::Live,
-            "open",
+            AgentSessionAvailability::Open,
         ),
         (
             AgentSessionLifecycle::Paused,
             ManagedPtyPresence::ConfirmedAbsent,
-            "paused",
+            AgentSessionAvailability::Paused,
         ),
         (
             AgentSessionLifecycle::Open,
             ManagedPtyPresence::Unknown,
-            "indeterminate",
+            AgentSessionAvailability::Indeterminate,
         ),
         (
             AgentSessionLifecycle::Archived,
             ManagedPtyPresence::Live,
-            "archived",
+            AgentSessionAvailability::Archived,
         ),
         (
             AgentSessionLifecycle::Archived,
             ManagedPtyPresence::Unknown,
-            "archived",
+            AgentSessionAvailability::Archived,
         ),
     ] {
         assert_eq!(AgentSession::availability(lifecycle, presence), expected);

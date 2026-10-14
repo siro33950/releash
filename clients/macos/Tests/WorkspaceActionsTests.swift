@@ -13,7 +13,7 @@ final class WorkspaceActionsTests: XCTestCase {
     var detail = Releash_Client_V1_CommandError()
     detail.message.value = "開始できない理由"
     let packed = ConnectError.Detail(type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
-    for (kind, method) in [(PaneOpenMenu.LaunchKind.session, "CreateAgentSession"), (.workflow, "StartWorkflow")] {
+    for (kind, method) in [(LaunchKind.session, "CreateAgentSession"), (.workflow, "StartWorkflow")] {
       let launch = PaneLaunchView(model: model, pane: pane, path: "/repo/a", kind: kind)
       for serverDetail in [nil, packed] {
         http.state.withLock { $0.failedMethod = method; $0.failureDetail = serverDetail }
