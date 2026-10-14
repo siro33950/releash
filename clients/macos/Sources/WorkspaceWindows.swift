@@ -22,7 +22,7 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
     window.backgroundColor = .clear
     window.isMovableByWindowBackground = false
     window.minSize = NSSize(
-      width: UIStyle.windowMinimumWidth,
+      width: UIStyle.windowMinimumWidth + UIStyle.windowPadding * 2,
       height: UIStyle.windowMinimumHeight + UIStyle.windowPadding * 2)
     let content = NSHostingView(rootView: RootView(model: model))
     content.safeAreaRegions = []

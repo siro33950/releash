@@ -58,11 +58,6 @@ struct RightPanelView: View {
         FileTreeView(model: model, worktree: path).id(path)
       } else { Spacer(minLength: 0) }
     }
-    .frame(
-      minWidth: expanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth,
-      idealWidth: expanded ? UIStyle.centerInitialWidth : UIStyle.collapsedPanelWidth,
-      maxWidth: expanded ? .infinity : UIStyle.collapsedPanelWidth
-    )
     .frame(maxHeight: .infinity)
   }
 }

@@ -12,7 +12,7 @@ enum UIStyle {
   static let sidebarWidth: CGFloat = 280
   static let centerMinimumWidth = (windowMinimumWidth - sidebarWidth) / 2
   static let rightPanelMinimumWidth = centerMinimumWidth
-  static let centerInitialWidth = (windowWidth - sidebarWidth) / 2
+  static let centerInitialWidth = (windowWidth - windowPadding * 2 - sidebarWidth) / 2
   static let dividerWidth: CGFloat = 1
   static let dividerCursorWidth: CGFloat = 8
   static let sidebarMaximumWidth: CGFloat = 400

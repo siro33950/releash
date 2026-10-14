@@ -59,10 +59,7 @@ struct RootView: View {
             initialLeadingWidth: UIStyle.sidebarWidth
           ) {
             SidebarView(model: model, creating: $creating)
-              .frame(
-                minWidth: UIStyle.sidebarWidth, idealWidth: UIStyle.sidebarWidth,
-                maxWidth: UIStyle.sidebarMaximumWidth, maxHeight: .infinity
-              )
+              .frame(maxHeight: .infinity)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.width
               } action: {
@@ -91,7 +88,7 @@ struct RootView: View {
                   .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
               }
-              .frame(minWidth: UIStyle.centerMinimumWidth, idealWidth: UIStyle.centerInitialWidth, maxWidth: .infinity, maxHeight: .infinity)
+              .frame(maxWidth: .infinity, maxHeight: .infinity)
               .layoutPriority(1)
             } trailing: {
               RightPanelView(expanded: $rightPanelExpanded, model: model)
@@ -157,7 +154,7 @@ struct RootView: View {
     }
     .background(Color(nsColor: .controlBackgroundColor))
     .clipShape(RoundedRectangle(cornerRadius: UIStyle.contentCornerRadius))
-    .padding(.vertical, UIStyle.windowPadding)
+    .padding(UIStyle.windowPadding)
     .background(
       Color(nsColor: .underPageBackgroundColor),
       in: RoundedRectangle(cornerRadius: UIStyle.windowCornerRadius)
@@ -194,17 +191,23 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
   }
   func updateNSView(_ split: SplitView, context: Context) {
     let coordinator = context.coordinator
-    let previousFixedWidth = coordinator.parent.fixedTrailingWidth
+    let previous = coordinator.parent
     coordinator.parent = self
     (split.arrangedSubviews[0] as? NSHostingView<Leading>)?.rootView = leading()
     (split.arrangedSubviews[1] as? NSHostingView<Trailing>)?.rootView = trailing()
-    if previousFixedWidth != fixedTrailingWidth {
-      if let fixedTrailingWidth {
+    var proposed = split.arrangedSubviews[0].frame.width
+    if previous.fixedTrailingWidth != fixedTrailingWidth {
+      if fixedTrailingWidth != nil {
         coordinator.expandedTrailingWidth = split.arrangedSubviews[1].frame.width
-        split.setPosition(split.bounds.width - fixedTrailingWidth, ofDividerAt: 0)
       } else if let width = coordinator.expandedTrailingWidth {
-        split.setPosition(split.bounds.width - width, ofDividerAt: 0)
+        proposed = split.bounds.width - width
       }
+    }
+    if previous.minimumLeadingWidth != minimumLeadingWidth
+      || previous.maximumLeadingWidth != maximumLeadingWidth
+      || previous.minimumTrailingWidth != minimumTrailingWidth
+      || previous.fixedTrailingWidth != fixedTrailingWidth {
+      coordinator.layout(split, proposedLeadingWidth: proposed)
     }
   }
   final class SplitView: NSSplitView {
@@ -224,9 +227,13 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
       min(proposedMaximumPosition, parent.maximumLeadingWidth, splitView.bounds.width - parent.minimumTrailingWidth)
     }
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+      guard splitView.arrangedSubviews.count == 2 else { return }
+      let proposed = initialized ? splitView.arrangedSubviews[0].frame.width : (parent.initialLeadingWidth ?? splitView.bounds.width / 2)
+      layout(splitView, proposedLeadingWidth: proposed)
+    }
+    func layout(_ splitView: NSSplitView, proposedLeadingWidth proposed: CGFloat) {
       guard splitView.arrangedSubviews.count == 2, splitView.bounds.width > 0 else { return }
       let width = splitView.bounds.width
-      let proposed = initialized ? splitView.arrangedSubviews[0].frame.width : (parent.initialLeadingWidth ?? width / 2)
       let leadingWidth = parent.fixedTrailingWidth.map { width - $0 }
         ?? max(parent.minimumLeadingWidth, min(proposed, parent.maximumLeadingWidth, width - parent.minimumTrailingWidth))
       splitView.arrangedSubviews[0].frame = NSRect(x: 0, y: 0, width: leadingWidth, height: splitView.bounds.height)

@@ -17,7 +17,7 @@ final class RootViewTests: XCTestCase {
     let inner = try XCTUnwrap(splits(content).last)
     XCTAssertTrue(outer.isVertical); XCTAssertTrue(inner.isVertical)
     XCTAssertEqual(outer.arrangedSubviews.count, 2); XCTAssertEqual(inner.arrangedSubviews.count, 2)
-    let initialColumnWidth = (host.window.contentLayoutRect.width - 280) / 2
+    let initialColumnWidth = (host.window.contentLayoutRect.width - UIStyle.windowPadding * 2 - 280) / 2
     try await eventuallyView(host) {
       content.layoutSubtreeIfNeeded()
       return abs(outer.arrangedSubviews[0].frame.width - 280) < 0.5
@@ -58,12 +58,26 @@ final class RootViewTests: XCTestCase {
       content.layoutSubtreeIfNeeded()
       return abs(inner.arrangedSubviews[1].frame.width - 220) < 1
     }
-    host.window.setContentSize(NSSize(width: 720, height: 900))
+    host.window.setContentSize(NSSize(width: UIStyle.windowMinimumWidth + UIStyle.windowPadding * 2, height: 900))
     try await eventuallyView(host) {
       content.layoutSubtreeIfNeeded()
       return abs(outer.arrangedSubviews[0].frame.width - 280) < 0.5
         && abs(inner.arrangedSubviews[0].frame.width - 220) < 0.5
         && abs(inner.arrangedSubviews[1].frame.width - 220) < 0.5
+    }
+    try await host.press("右パネルを閉じる")
+    try await eventuallyView(host) { abs(inner.arrangedSubviews[1].frame.width - 36) < 0.5 }
+    outer.setPosition(400, ofDividerAt: 0)
+    try await eventuallyView(host) {
+      content.layoutSubtreeIfNeeded()
+      return abs(outer.arrangedSubviews[0].frame.width - 400) < 0.5
+    }
+    try await host.press("右パネルを開く")
+    try await eventuallyView(host) {
+      content.layoutSubtreeIfNeeded()
+      return abs(outer.arrangedSubviews[0].frame.width - 280) < 0.5
+        && inner.arrangedSubviews[0].frame.width >= UIStyle.centerMinimumWidth
+        && inner.arrangedSubviews[1].frame.width >= UIStyle.rightPanelMinimumWidth
     }
     await model.stop()
   }

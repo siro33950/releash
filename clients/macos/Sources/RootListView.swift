@@ -27,7 +27,6 @@ struct RootListView: View {
   @Bindable var model: AppModel
   let path: String
   @State private var selected: String?
-  @State private var tableSelection: String?
   @State private var expanded: Set<String> = []
   @State private var history = false
   @State private var archive: String?
@@ -60,13 +59,9 @@ struct RootListView: View {
       }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
       if model.pendingRoots[path] != nil { ProgressView("Rootの配信を待っています").controlSize(.small) }
       VSplitView {
-        Table(of: Releash_Client_V1_WorkspaceTreeItem.self, selection: Binding(get: { tableSelection }, set: { id in
-          tableSelection = id
+        Table(of: Releash_Client_V1_WorkspaceTreeItem.self, selection: Binding(get: { selected }, set: { id in
           if let id, let item = roots.lazy.compactMap({ $0.find(id) }).first {
             select(item)
-            if item.rootKind == nil {
-              DispatchQueue.main.async { tableSelection = selected }
-            }
           }
         })) {
           TableColumn("実行木") { item in nameCell(item, isRoot: rootIDs.contains(item.rootID)) }.width(min: 120, ideal: 240)
@@ -147,7 +142,7 @@ struct RootListView: View {
       }
       if item.canApprove { Button("Approve") { approve(item.rootID) }.controlSize(.small).accessibilityIdentifier("approve:\(item.rootID)") }
       if !item.pastAttempts.isEmpty {
-        Button { toggle("attempts:" + item.rootID) } label: {
+        Button { toggle(item.pastAttemptsExpansionKey) } label: {
           Image(systemName: "clock.arrow.circlepath")
         }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
       }
@@ -176,6 +171,7 @@ struct RootListView: View {
 }
 
 extension Releash_Client_V1_WorkspaceTreeItem {
+  var pastAttemptsExpansionKey: String { "attempts:" + rootID }
   var compositeKind: String { if case .fanout = variant { return "FANOUT" }; return "SEQ" }
   var children: [Self] {
     switch variant { case .node(let node): node.children.items; case .sequence(let node): node.children.items; case .fanout(let node): node.children.items; case nil: [] }
@@ -214,7 +210,7 @@ private struct WorkspaceTableRows: TableRowContent {
           WorkspaceTableRows(items: item.children, expanded: $expanded)
         }
       }
-      if expanded.contains("attempts:" + item.rootID) {
+      if expanded.contains(item.pastAttemptsExpansionKey) {
         WorkspaceTableRows(items: item.pastAttempts, expanded: $expanded)
       }
     }

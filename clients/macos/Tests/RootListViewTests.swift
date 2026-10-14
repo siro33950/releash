@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import SwiftProtobuf
 import XCTest
@@ -296,10 +297,15 @@ extension RootListViewTests {
     let before = http.state.withLock { $0.subscriptions.count }
     try await host.selectRow("root:parallel")
     try await eventuallyView(host) { host.element("root:leaf-0") == nil }
+    XCTAssertTrue(host.texts().contains("implementation_plan"))
     XCTAssertEqual(http.state.withLock { $0.subscriptions.count }, before)
     XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
     try await host.selectRow("root:parallel")
     try await eventuallyView(host) { host.element("approve:leaf-0") != nil }
+    var selected: CFTypeRef?
+    XCTAssertEqual(AXUIElementCopyAttributeValue(try host.tableRow("root:leaf-0"), kAXSelectedAttribute as CFString, &selected), .success)
+    XCTAssertEqual(selected as? Bool, true)
+    XCTAssertTrue(host.texts().contains("implementation_plan"))
     for id in ["flow", "parallel"] {
       XCTAssertNotNil(host.element("approve:" + id))
       let count = http.requests("ApproveWorkspaceNode").count
