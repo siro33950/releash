@@ -624,4 +624,16 @@ extension AppModel {
     request.worktreePath = path; request.nodeID = id
     perform { _ = try await client.resumeWorkspaceSessionNode(request: request, headers: self.headers).result.get() }
   }
+  func retryNode(path: String, id: String) {
+    guard let client else { return }
+    var request = Releash_Client_V1_RetryWorkspaceNodeRequest()
+    request.worktreePath = path; request.nodeID = id
+    perform { _ = try await client.retryWorkspaceNode(request: request, headers: self.headers).result.get() }
+  }
+  func abortExecution(id: String) {
+    guard let client else { return }
+    var request = Releash_Client_V1_AbortWorkflowRequest()
+    request.executionID = id
+    perform { _ = try await client.abortWorkflow(request: request, headers: self.headers).result.get() }
+  }
 }

@@ -81,14 +81,7 @@ impl SqliteWorkspaceTreeRepository {
         &self,
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
-    ) -> Result<
-        Option<(
-            WorkspaceTreeNode,
-            Option<WorkspaceTreeNode>,
-            Vec<crate::usecase::workflow::WorkspaceNodeAttemptDto>,
-        )>,
-        LocalEventQueryError,
-    > {
+    ) -> Result<Option<(WorkspaceTreeNode, Option<WorkspaceTreeNode>)>, LocalEventQueryError> {
         let workspace = workspace_identity.as_str().to_string();
         let trees = self.folded_workspace_trees(&workspace).await?;
         for execution in &trees {
@@ -111,18 +104,7 @@ impl SqliteWorkspaceTreeRepository {
                         node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
                     })
                     .cloned();
-                let attempts = node
-                    .past_attempt_ids
-                    .iter()
-                    .filter_map(|id| nodes.iter().find(|node| &node.id == id))
-                    .map(|node| crate::usecase::workflow::WorkspaceNodeAttemptDto {
-                        id: node.id.clone(),
-                        title: node.title.clone(),
-                        updated_at: node.updated_at(),
-                        error_reason: node.failure_reason(),
-                    })
-                    .collect();
-                return Ok(Some((node, workflow, attempts)));
+                return Ok(Some((node, workflow)));
             }
         }
         Ok(None)
@@ -589,7 +571,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         Ok(self
             .load_node_with_workflow(workspace_identity, node_id)
             .await?
-            .map(|(node, _, _)| node))
+            .map(|(node, _)| node))
     }
 }
 

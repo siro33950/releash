@@ -90,8 +90,8 @@ struct CommandPane: View {
             if command.hasResult { Text("Exit code: \(command.result.exitCode) · \(command.result.duration) ms").accessibilityIdentifier("command-result") }
           }.textSelection(.enabled)
           Spacer()
-          if detail.capabilities.canRetry { Button("Retry") { retry() } }
-          if detail.canAbort { Button("Abort") { abort() } }
+          if detail.capabilities.canRetry { Button("Retry") { model.retryNode(path: path, id: detail.id) } }
+          if detail.canAbort { Button("Abort") { if detail.hasExecutionID { model.abortExecution(id: detail.executionID) } } }
         }
         if detail.hasErrorReason { Text(detail.errorReason).foregroundStyle(.red).textSelection(.enabled) }
         Text("STDOUT").font(.headline)
@@ -108,17 +108,5 @@ struct CommandPane: View {
         }
       }.padding(UIStyle.padding).frame(maxWidth: .infinity, alignment: .leading)
     }
-  }
-  func retry() {
-    guard let client = model.client else { return }
-    var request = Releash_Client_V1_RetryWorkspaceNodeRequest()
-    request.worktreePath = path; request.nodeID = detail.id
-    model.perform { _ = try await client.retryWorkspaceNode(request: request, headers: model.headers).result.get() }
-  }
-  func abort() {
-    guard let client = model.client, detail.hasExecutionID else { return }
-    var request = Releash_Client_V1_AbortWorkflowRequest()
-    request.executionID = detail.executionID
-    model.perform { _ = try await client.abortWorkflow(request: request, headers: model.headers).result.get() }
   }
 }

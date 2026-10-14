@@ -210,3 +210,59 @@ fn test_session表示状態_全状態をwireのenumへ変換する() {
         assert_eq!(wire::AgentSessionAvailability::from(availability), value);
     }
 }
+
+#[test]
+fn test_node詳細の転送_分類と実行識別とmodelと過去の試行の値を保持する() {
+    use crate::usecase::workflow::*;
+    // Given
+    let detail = WorkspaceNodeDetailDto {
+        classification: "attention".into(),
+        node_execution_id: Some("visit".into()),
+        node_name: Some("review".into()),
+        model: Some("test-model".into()),
+        past_attempts: vec![WorkspaceNodeAttemptDto {
+            id: "previous".into(),
+            title: "Previous review".into(),
+            updated_at: 123.5,
+            error_reason: Some("Failed review".into()),
+        }],
+        execution_id: Some("execution".into()),
+        can_abort: true,
+        process_presence: "confirmed_absent",
+        worktree: None,
+        id: "current".into(),
+        title: "Review".into(),
+        status: "waiting".into(),
+        submit_received: false,
+        stop_received: false,
+        waiting_for: None,
+        has_artifact: true,
+        error_reason: None,
+        capabilities: WorkspaceNodeCapabilitiesDto {
+            can_rename: false,
+            can_approve: true,
+            can_retry: false,
+            can_resume_session: false,
+        },
+        updated_at: 124.0,
+        content: WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
+            session_id: None,
+        }),
+    };
+    // When
+    let wire = wire::WorkspaceNodeDetailDto::try_from(detail).unwrap();
+    // Then
+    assert_eq!(
+        wire.classification.unwrap().value,
+        Some(wire::workspace_status_classification::Value::Attention as i32)
+    );
+    assert_eq!(wire.node_execution_id.as_deref(), Some("visit"));
+    assert_eq!(wire.node_name.as_deref(), Some("review"));
+    assert_eq!(wire.model.as_deref(), Some("test-model"));
+    assert_eq!(wire.past_attempts.len(), 1);
+    let attempt = &wire.past_attempts[0];
+    assert_eq!(attempt.id.as_deref(), Some("previous"));
+    assert_eq!(attempt.title.as_deref(), Some("Previous review"));
+    assert_eq!(attempt.updated_at, Some(123.5));
+    assert_eq!(attempt.error_reason.as_deref(), Some("Failed review"));
+}

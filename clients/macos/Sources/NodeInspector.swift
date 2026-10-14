@@ -24,10 +24,10 @@ struct NodeInspector: View {
           Text(detail.model).font(.caption).foregroundStyle(.secondary)
           Spacer()
           if detail.capabilities.canRetry {
-            Button("Retry") { CommandPane(model: model, path: path, detail: detail, command: .init()).retry() }
+            Button("Retry") { model.retryNode(path: path, id: detail.id) }
           }
           if detail.canAbort {
-            Button("Abort") { CommandPane(model: model, path: path, detail: detail, command: .init()).abort() }
+            Button("Abort") { if detail.hasExecutionID { model.abortExecution(id: detail.executionID) } }
           }
         }.padding(UIStyle.spacing)
         if detail.hasErrorReason {
@@ -125,18 +125,21 @@ extension Releash_Client_V1_WorkflowValue {
     }
   }
   var displayFields: [ArtifactDisplayField] {
-    if case .objectValue(let object) = variant {
+    if case .objectValue(let object) = variant, !object.entries.isEmpty {
       return object.entries.keys.sorted().flatMap { key in
-        object.entries[key]!.fields(name: key, id: "/" + key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1"), depth: 0)
+        object.entries[key]!.fields(name: key, id: "/" + Self.pointerElement(key), depth: 0)
       }
     }
     return fields(name: "$", id: "$", depth: 0)
+  }
+  private static func pointerElement(_ key: String) -> String {
+    key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1")
   }
   private func fields(name: String, id: String, depth: Int) -> [ArtifactDisplayField] {
     switch variant {
     case .objectValue(let v):
       return [ArtifactDisplayField(id: id, name: name, value: v.entries.isEmpty ? "{}" : "", depth: depth)] + v.entries.keys.sorted().flatMap { key in
-        v.entries[key]!.fields(name: key, id: id + "/" + key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1"), depth: depth + 1)
+        v.entries[key]!.fields(name: key, id: id + "/" + Self.pointerElement(key), depth: depth + 1)
       }
     case .listValue(let v):
       return [ArtifactDisplayField(id: id, name: name, value: v.items.isEmpty ? "[]" : "", depth: depth)] + v.items.enumerated().flatMap { index, value in

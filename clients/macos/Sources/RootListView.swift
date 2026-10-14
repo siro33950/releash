@@ -26,7 +26,6 @@ extension Releash_Client_V1_WorkspaceTreeItem {
 struct RootListView: View {
   @Bindable var model: AppModel
   let path: String
-  @State private var treeViewportWidth: CGFloat?
   @State private var selected: String?
   @State private var expanded: Set<String> = []
   @State private var history = false
@@ -59,30 +58,14 @@ struct RootListView: View {
       }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
       if model.pendingRoots[path] != nil { ProgressView("Rootの配信を待っています").controlSize(.small) }
       VSplitView {
-        GeometryReader { geometry in
-          let fixedWidth: CGFloat = 80 + 24 + UIStyle.spacing * 4
-          let nameWidth = max(240, (treeViewportWidth ?? geometry.size.width) - UIStyle.scrollerSpace - fixedWidth)
-          let width = nameWidth + fixedWidth
-          ScrollView([.horizontal, .vertical]) {
-            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-              Section {
-                ForEach(roots, id: \.rootID) { root in
-                  treeRow(root, depth: 0, isRoot: true, nameWidth: nameWidth)
-                }
-              } header: {
-                VStack(spacing: 0) {
-                  HStack(spacing: UIStyle.spacing) {
-                    Text("実行木").frame(width: nameWidth, alignment: .leading)
-                    Text("MODEL").frame(width: 80, alignment: .trailing)
-                    Text("ART").frame(width: 24)
-                  }.font(.caption).foregroundStyle(.secondary).padding(.vertical, UIStyle.rowSpacing)
-                  Divider()
-                }.background(Color(nsColor: .textBackgroundColor))
-              }
-            }.padding(.horizontal, UIStyle.spacing).frame(minWidth: width, alignment: .leading)
-          }
-          .defaultScrollAnchor(.topLeading, for: .alignment)
-          .onScrollGeometryChange(for: CGFloat.self) { $0.visibleRect.width } action: { _, width in treeViewportWidth = width }
+        Table(of: Releash_Client_V1_WorkspaceTreeItem.self, selection: Binding(get: { selected }, set: { id in
+          if let id, let item = roots.lazy.compactMap({ $0.find(id) }).first { select(item) }
+        })) {
+          TableColumn("実行木") { item in nameCell(item) }.width(min: 120, ideal: 240)
+          TableColumn("MODEL") { item in modelCell(item) }.width(80)
+          TableColumn("ART") { item in artifactCell(item) }.width(24)
+        } rows: {
+          WorkspaceTableRows(items: roots, expanded: $expanded)
         }.frame(minHeight: 120)
         if let selected {
           NodeInspector(model: model, path: path, nodeID: selected).id(selected).frame(minHeight: 150)
@@ -109,77 +92,63 @@ struct RootListView: View {
       }
     }
   }
-  func treeRow(_ item: Releash_Client_V1_WorkspaceTreeItem, depth: Int, isRoot: Bool, nameWidth: CGFloat) -> AnyView {
-    AnyView(VStack(alignment: .leading, spacing: 0) {
-      HStack(alignment: .top, spacing: UIStyle.spacing) {
+  func modelCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
+    Button { select(item) } label: {
+      Text(item.nodeModel).font(.system(.caption, design: .monospaced)).frame(maxWidth: .infinity, alignment: .trailing)
+    }.buttonStyle(.plain).accessibilityIdentifier("node-model:\(item.rootID)")
+      .accessibilityLabel("\(item.rootTitle)を選択、MODEL \(item.nodeModel)")
+  }
+  func artifactCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
+    Button { select(item) } label: {
+      Text(item.hasArtifact ? "◆" : "").foregroundStyle(Color.accentColor).frame(maxWidth: .infinity)
+    }.buttonStyle(.plain).accessibilityLabel("\(item.rootTitle)を選択、Artifact\(item.hasArtifact ? "あり" : "なし")")
+      .accessibilityIdentifier("node-artifact:\(item.rootID)").accessibilityValue(item.hasArtifact ? "◆" : "")
+  }
+  func nameCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
+    HStack(spacing: UIStyle.rowSpacing) {
+      Button { select(item) } label: {
         HStack(spacing: UIStyle.rowSpacing) {
-          Button {
-          if item.rootKind != nil { selected = item.rootID }
-          else { toggle(item.rootID) }
-        } label: {
-          HStack(spacing: UIStyle.rowSpacing) {
-            Image(systemName: "circle.fill").font(.system(size: UIStyle.statusSize)).foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
-              .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
-            if item.rootKind == nil { Image(systemName: expanded.contains(item.rootID) ? "chevron.down" : "chevron.right") }
-            if isRoot, case .node(let node) = item.variant, node.hasProvider { Text(node.provider.displayName).fontWeight(.medium) }
-            VStack(alignment: .leading) {
-              HStack(spacing: UIStyle.rowSpacing) {
-                Text(item.rootTitle).lineLimit(1).fontWeight(item.rootKind == nil ? .semibold : .regular)
-                Text(item.rootKind?.title ?? item.compositeKind)
-                  .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, UIStyle.rowSpacing)
-                  .background(Color(nsColor: .quaternarySystemFill), in: RoundedRectangle(cornerRadius: 3))
-              }
-              if case .node(let node) = item.variant, node.hasErrorReason { Text(node.errorReason).font(.caption).lineLimit(1) }
-              if let worktree = item.isolatedWorktree { Text(worktree.branch + " · " + worktree.path).font(.caption).foregroundStyle(.secondary) }
+          Image(systemName: "circle.fill").font(.system(size: UIStyle.statusSize)).foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
+            .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
+          if roots.contains(where: { $0.rootID == item.rootID }), case .node(let node) = item.variant, node.hasProvider { Text(node.provider.displayName).fontWeight(.medium) }
+          VStack(alignment: .leading) {
+            HStack(spacing: UIStyle.rowSpacing) {
+              Text(item.rootTitle).lineLimit(1).fontWeight(item.rootKind == nil ? .semibold : .regular)
+              Text(item.rootKind?.title ?? item.compositeKind)
+                .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, UIStyle.rowSpacing)
+                .background(Color(nsColor: .quaternarySystemFill), in: RoundedRectangle(cornerRadius: 3))
             }
-          }.padding(.leading, CGFloat(depth) * UIStyle.padding).contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityIdentifier("root:\(item.rootID)")
-          .accessibilityValue(String(describing: item.rootStatus.value))
-          .contextMenu {
-            if isRoot {
-              if case .node(let node) = item.variant {
-                if node.capabilities.canRename { Button("Rename") { name = item.rootTitle; renaming = item.rootID } }
-                if node.capabilities.canResumeSession { Button("Resume") { model.resumeNode(path: path, id: item.rootID) } }
-              }
-              if item.workflowCapabilities.canArchive {
-                Button("Archive") {
-                  if item.workflowCapabilities.canAbort { archive = item.rootID } else { archiveRoot(item.rootID) }
-                }
+            if case .node(let node) = item.variant, node.hasErrorReason { Text(node.errorReason).font(.caption).lineLimit(1) }
+            if let worktree = item.isolatedWorktree { Text(worktree.branch + " · " + worktree.path).font(.caption).foregroundStyle(.secondary) }
+          }
+        }.contentShape(Rectangle())
+      }.buttonStyle(.plain).layoutPriority(-1).accessibilityIdentifier("root:\(item.rootID)")
+        .accessibilityValue(String(describing: item.rootStatus.value))
+        .contextMenu {
+          if roots.contains(where: { $0.rootID == item.rootID }) {
+            if case .node(let node) = item.variant {
+              if node.capabilities.canRename { Button("Rename") { name = item.rootTitle; renaming = item.rootID } }
+              if node.capabilities.canResumeSession { Button("Resume") { model.resumeNode(path: path, id: item.rootID) } }
+            }
+            if item.workflowCapabilities.canArchive {
+              Button("Archive") {
+                if item.workflowCapabilities.canAbort { archive = item.rootID } else { archiveRoot(item.rootID) }
               }
             }
           }
-          if item.rootKind != nil {
-            Button("▷") { model.openRoot(item) }.buttonStyle(.bordered).controlSize(.mini)
-              .accessibilityLabel("タブを開く").accessibilityIdentifier("open-node:\(item.rootID)")
-          }
-          if item.canApprove { Button("Approve") { approve(item.rootID) }.controlSize(.small).accessibilityIdentifier("approve:\(item.rootID)") }
-          if !item.pastAttempts.isEmpty {
-            Button { toggle("attempts:" + item.rootID) } label: {
-              Image(systemName: expanded.contains("attempts:" + item.rootID) ? "chevron.down" : "chevron.right")
-            }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
-          }
-          Spacer(minLength: 0).contentShape(Rectangle()).onTapGesture { select(item) }
-        }.frame(width: nameWidth, alignment: .leading)
-        Button { select(item) } label: {
-          Text(item.nodeModel).font(.system(.caption, design: .monospaced)).frame(width: 80, alignment: .trailing)
-        }.buttonStyle(.plain).accessibilityIdentifier("node-model:\(item.rootID)")
-          .accessibilityLabel("\(item.rootTitle)を選択、MODEL \(item.nodeModel)")
-        Button { select(item) } label: {
-          Text(item.hasArtifact ? "◆" : "").foregroundStyle(Color.accentColor).frame(width: 24)
-        }.buttonStyle(.plain).accessibilityLabel("\(item.rootTitle)を選択、Artifact\(item.hasArtifact ? "あり" : "なし")")
-          .accessibilityIdentifier("node-artifact:\(item.rootID)").accessibilityValue(item.hasArtifact ? "◆" : "")
-      }.padding(.vertical, UIStyle.rowSpacing)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected == item.rootID ? UIStyle.sidebarSelection : .clear)
-        .foregroundStyle(selected == item.rootID ? UIStyle.sidebarSelectionText : .primary)
-      Divider()
-      if item.rootKind != nil || expanded.contains(item.rootID) {
-        ForEach(item.children, id: \.rootID) { child in treeRow(child, depth: depth + 1, isRoot: false, nameWidth: nameWidth) }
+        }
+      if item.rootKind != nil {
+        Button("▷") { model.openRoot(item) }.buttonStyle(.bordered).controlSize(.mini)
+          .accessibilityLabel("タブを開く").accessibilityIdentifier("open-node:\(item.rootID)")
       }
-      if expanded.contains("attempts:" + item.rootID) {
-        ForEach(item.pastAttempts, id: \.rootID) { attempt in treeRow(attempt, depth: depth + 1, isRoot: false, nameWidth: nameWidth) }
+      if item.canApprove { Button("Approve") { approve(item.rootID) }.controlSize(.small).accessibilityIdentifier("approve:\(item.rootID)") }
+      if !item.pastAttempts.isEmpty {
+        Button { toggle(item.rootID) } label: {
+          Image(systemName: "clock.arrow.circlepath")
+        }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
       }
-    })
+    }.frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle()).onTapGesture { select(item) }
   }
   func select(_ item: Releash_Client_V1_WorkspaceTreeItem) {
     if item.rootKind != nil { selected = item.rootID }
@@ -221,5 +190,34 @@ extension Releash_Client_V1_WorkspaceTreeItem {
   }
   var isolatedWorktree: Releash_Client_V1_NodeWorktreeDto? {
     switch variant { case .sequence(let node): node.hasWorktree ? node.worktree : nil; case .fanout(let node): node.hasWorktree ? node.worktree : nil; default: nil }
+  }
+}
+
+private struct WorkspaceTableRows: TableRowContent {
+  typealias TableRowValue = Releash_Client_V1_WorkspaceTreeItem
+  let items: [Releash_Client_V1_WorkspaceTreeItem]
+  @Binding var expanded: Set<String>
+
+  @TableRowBuilder<Releash_Client_V1_WorkspaceTreeItem>
+  var tableRowBody: some TableRowContent<Releash_Client_V1_WorkspaceTreeItem> {
+    ForEach(items, id: \.rootID) { (item: Releash_Client_V1_WorkspaceTreeItem) in
+      if item.children.isEmpty && item.pastAttempts.isEmpty {
+        TableRow(item)
+      } else {
+        DisclosureTableRow(item, isExpanded: Binding(get: { expanded.contains(item.rootID) }, set: { value in
+          if value { expanded.insert(item.rootID) } else { expanded.remove(item.rootID) }
+        })) {
+          WorkspaceTableRows(items: item.children + item.pastAttempts, expanded: $expanded)
+        }
+      }
+    }
+  }
+}
+
+extension Releash_Client_V1_WorkspaceTreeItem: Identifiable {
+  public var id: String { rootID }
+  func find(_ id: String) -> Self? {
+    if rootID == id { return self }
+    return (children + pastAttempts).lazy.compactMap { $0.find(id) }.first
   }
 }

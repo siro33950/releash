@@ -4,7 +4,9 @@ use super::SqliteWorkspaceTreeRepository;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
-use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode};
+use crate::domain::workspace_tree::{
+    WorkspaceIdentity, WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTreeNode,
+};
 use crate::usecase::workflow::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceNodeCapabilitiesDto,
     WorkspaceNodeContentDto, WorkspaceNodeDetailDto, WorkspaceSessionNodeContentDto,
@@ -78,17 +80,50 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        let Some((node, workflow, attempts)) = self
+        let workspace = workspace_identity.as_str();
+        let trees = self
             .repository
-            .load_node_with_workflow(workspace_identity, node_id)
+            .folded_workspace_trees(workspace)
             .await
-            .map_err(query_error)?
-        else {
-            return Ok(None);
-        };
-        let mut detail = node_detail_with_workflow(node, workflow.as_ref());
-        detail.past_attempts = attempts;
-        Ok(Some(detail))
+            .map_err(query_error)?;
+        for execution in trees {
+            let (folded, record) = &*execution;
+            let nodes = self
+                .repository
+                .tree_nodes(workspace, folded, record)
+                .map_err(query_error)?;
+            let node = if folded.aggregate.id == node_id {
+                WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id).map(|root| {
+                    let mut node = root.node().clone();
+                    node.id = node_id.to_string();
+                    node
+                })
+            } else {
+                None
+            }
+            .or_else(|| nodes.iter().find(|node| node.id == node_id).cloned());
+            let Some(node) = node else { continue };
+            let attempts = node
+                .past_attempt_ids
+                .iter()
+                .filter_map(|id| nodes.iter().find(|attempt| &attempt.id == id))
+                .map(
+                    |attempt| crate::usecase::workflow::WorkspaceNodeAttemptDto {
+                        id: attempt.id.clone(),
+                        title: attempt.title.clone(),
+                        updated_at: attempt.updated_at(),
+                        error_reason: attempt.failure_reason(),
+                    },
+                )
+                .collect();
+            let workflow = nodes.iter().find(|node| {
+                node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
+            });
+            let mut detail = node_detail_with_workflow(node, workflow);
+            detail.past_attempts = attempts;
+            return Ok(Some(detail));
+        }
+        Ok(None)
     }
 
     async fn node_artifact(

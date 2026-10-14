@@ -8,22 +8,26 @@ final class NodeInspectorTests: XCTestCase {
     let http = TestHTTPClient()
     var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
     detail.id = "selected-child"; detail.title = "Selected child"; detail.executionID = "selected-execution"
+    detail.errorReason = "Selected node failed"
     detail.content.command = .init(); detail.capabilities.canRetry = true; detail.canAbort = true
     http.state.withLock { $0.nodeDetails[detail.id] = detail }
     let model = try await testModel(http)
     let host = await ViewHarness(NodeInspector(model: model, path: "/selected-worktree", nodeID: detail.id))
     defer { host.close() }
     try await eventuallyView(host) { host.element("Retry") != nil && host.element("Abort") != nil }
+    XCTAssertTrue(host.texts().contains("Selected node failed"))
     try await host.press("Retry"); try await host.press("Abort")
     try await eventually { !http.requests("RetryWorkspaceNode").isEmpty && !http.requests("AbortWorkflow").isEmpty }
     let retry = try Releash_Client_V1_RetryWorkspaceNodeRequest(serializedBytes: XCTUnwrap(http.requests("RetryWorkspaceNode").last?.message))
     XCTAssertEqual(retry.worktreePath, "/selected-worktree"); XCTAssertEqual(retry.nodeID, "selected-child")
     let abort = try Releash_Client_V1_AbortWorkflowRequest(serializedBytes: XCTUnwrap(http.requests("AbortWorkflow").last?.message))
     XCTAssertEqual(abort.executionID, "selected-execution")
+    detail.clearErrorReason()
     detail.capabilities.canRetry = false; detail.canAbort = false
     var payload = Releash_Client_V1_StatePayload(); payload.nodeDetail.value = detail
     try http.publish(payload, target: "node-detail")
     try await eventuallyView(host) { host.element("Retry") == nil && host.element("Abort") == nil }
+    XCTAssertFalse(host.texts().contains("Selected node failed"))
     await model.stop()
   }
 
@@ -47,6 +51,15 @@ final class NodeInspectorTests: XCTestCase {
     value.objectValue.entries["null", default: .init()].nullValue = .init()
     XCTAssertEqual(value.displayFields.map(\.name), ["array", "null", "object"])
     XCTAssertEqual(value.displayFields.map(\.value), ["[]", "null", "{}"])
+    value.objectValue = .init()
+    XCTAssertEqual(value.displayFields.map(\.name), ["$"])
+    XCTAssertEqual(value.displayFields.map(\.value), ["{}"])
+  }
+
+  func testArtifactFieldIDsEscapePointerElementsAtEveryDepth() {
+    var value = Releash_Client_V1_WorkflowValue()
+    value.objectValue.entries["a~/", default: .init()].objectValue.entries["b/~", default: .init()].stringValue.value = "value"
+    XCTAssertEqual(value.displayFields.map(\.id), ["/a~0~1", "/a~0~1/b~1~0"])
   }
 
   @MainActor func testInspectorSubscribesToSelectedExecutionAndReleasesSubscriptions() async throws {

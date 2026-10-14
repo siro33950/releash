@@ -49,8 +49,7 @@ final class RootListViewTests: XCTestCase {
     model.resumeNode(path: "/repo", id: "session-node")
     var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
     detail.id = "command-node"; detail.executionID = "execution"
-    let pane = CommandPane(model: model, path: "/repo", detail: detail, command: .init())
-    pane.retry(); pane.abort()
+    model.retryNode(path: "/repo", id: detail.id); model.abortExecution(id: detail.executionID)
     try await eventually { !http.requests("ArchiveWorkspaceWorkflowExecution").isEmpty && !http.requests("RetryWorkspaceNode").isEmpty && !http.requests("ResumeWorkspaceSessionNode").isEmpty && !http.requests("AbortWorkflow").isEmpty }
     let archive = try Releash_Client_V1_ArchiveWorkspaceWorkflowExecutionRequest(serializedBytes: XCTUnwrap(http.requests("ArchiveWorkspaceWorkflowExecution").first?.message))
     XCTAssertEqual(archive.executionID, "execution"); XCTAssertEqual(archive.worktreePath, "/repo")
@@ -61,7 +60,7 @@ final class RootListViewTests: XCTestCase {
     let abort = try Releash_Client_V1_AbortWorkflowRequest(serializedBytes: XCTUnwrap(http.requests("AbortWorkflow").first?.message))
     XCTAssertEqual(abort.executionID, "execution")
     http.state.withLock { $0.failedMethod = "AbortWorkflow" }
-    pane.abort()
+    model.abortExecution(id: detail.executionID)
     try await eventually { model.failure == "AbortWorkflow failed" }
     await model.stop()
   }
@@ -218,8 +217,8 @@ extension RootListViewTests {
 
   @MainActor func testTreeExpandsParallelChildrenAndDeepReentriesAndApproveUsesNode() async throws {
     let http = TestHTTPClient()
-    var root = Releash_Client_V1_WorkspaceTreeItem(); root.sequence.id = "flow"; root.sequence.title = "Flow"; root.sequence.status.value = .attention
-    var fanout = Releash_Client_V1_WorkspaceTreeItem(); fanout.fanout.id = "parallel"; fanout.fanout.title = "Parallel"; fanout.fanout.status.value = .attention
+    var root = Releash_Client_V1_WorkspaceTreeItem(); root.sequence.id = "flow"; root.sequence.title = "Flow"; root.sequence.status.value = .attention; root.sequence.canApprove = true
+    var fanout = Releash_Client_V1_WorkspaceTreeItem(); fanout.fanout.id = "parallel"; fanout.fanout.title = "Parallel"; fanout.fanout.status.value = .attention; fanout.fanout.canApprove = true
     for index in 0..<12 {
       var leaf = Releash_Client_V1_WorkspaceTreeItem(); leaf.node.id = "leaf-\(index)"; leaf.node.title = "loop"; leaf.node.nodeExecutionID = "visit-\(index)"; leaf.node.contentKind.value = .session
       leaf.node.status.value = index == 0 ? .attention : .idle; leaf.node.capabilities.canApprove = index == 0; leaf.node.model = "test-model"; leaf.node.hasArtifact_p = true
@@ -264,8 +263,18 @@ extension RootListViewTests {
     XCTAssertEqual(http.state.withLock { $0.subscriptions.count }, before)
     XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
     try await host.press("root:parallel")
+    for id in ["flow", "parallel"] {
+      XCTAssertNotNil(host.element("approve:" + id))
+      let count = http.requests("ApproveWorkspaceNode").count
+      try await host.press("approve:" + id)
+      try await eventually { http.requests("ApproveWorkspaceNode").count == count + 1 }
+      let request = try Releash_Client_V1_ApproveWorkspaceNodeRequest(serializedBytes: XCTUnwrap(http.requests("ApproveWorkspaceNode").last?.message))
+      XCTAssertEqual(request.nodeID, id); XCTAssertEqual(request.worktreePath, "/repo")
+    }
+    XCTAssertNil(host.element("approve:depth-1"))
+    let approveCount = http.requests("ApproveWorkspaceNode").count
     try await host.press("approve:leaf-0")
-    try await eventually { !http.requests("ApproveWorkspaceNode").isEmpty }
+    try await eventually { http.requests("ApproveWorkspaceNode").count == approveCount + 1 }
     let request = try Releash_Client_V1_ApproveWorkspaceNodeRequest(serializedBytes: XCTUnwrap(http.requests("ApproveWorkspaceNode").last?.message))
     XCTAssertEqual(request.nodeID, "leaf-0"); XCTAssertEqual(request.worktreePath, "/repo")
     XCTAssertNil(host.element("approve:leaf-1"))

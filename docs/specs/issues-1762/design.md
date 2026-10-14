@@ -7,7 +7,7 @@
 - 実行木の項目に出す値: 実行木の Node に、実行の ID、Node の実行の ID、Node 名、attempt、Artifact の有無、MODEL を出す。MODEL は、定義の Session の指定の model からサーバが導出する。根拠: R-003、R-004「model の指定が無い Session と、Command の行の MODEL は空欄である」、R-005。ルート: 委任
 - Node の実行ごとの Artifact の購読: Node の実行の ID を引数にとり、その Node の実行の Artifact だけを返す購読を足す。下段はこの購読で Artifact を受け取る。根拠: R-011「同じ名前の Node の周回は、それぞれの Node の実行の Artifact を出す」、R-021。ルート: 固定（固定するルートを参照）
 - 下段の詳細: 名前、種別、MODEL、失敗理由、FIELD / VALUE の表、JSON 表示の切り替え、Retry / Abort を出す。操作の可否はサーバの capability に従う。根拠: R-010、R-011、R-012、R-013。ルート: 委任
-- 行の Approve: 実行木の行に、サーバの capability が Approve を可とするときだけ Approve ボタンを出し、`ApproveWorkspaceNode` を呼ぶ。根拠: R-022。ルート: 委任
+- 行の Approve: 実行木の行に、サーバの capability が Approve を可とするときだけ Approve ボタンを出し、`ApproveWorkspaceNode` を呼ぶ。Sequence と Fanout も承認待ちになる（`server/src/domain/workflow/entities/workflow_execution/mod_test.rs:1030`）ので、wire の Sequence と Fanout の項目にも Approve の可否を出す。根拠: R-022。ルート: 委任
 - 面の上端と右クリックメニューの引き継ぎ: 今の「Root の一覧」の New Session / New Workflow、History、Root の行の Rename / Resume / Archive を Node 面へ移す。根拠: R-014。ルート: 委任
 - History への実行の復元: History に、`workflowHistory` の archive 済みの実行を並べ、選ぶと `RestoreWorkspaceWorkflowExecution` を呼ぶ。根拠: R-015。ルート: 委任
 - 右カラムと中央のカラムの幅: 右カラムの最大幅の制約を外し、中央のカラムに最小幅の定数を足す。根拠: R-016、R-017。ルート: 委任
@@ -26,5 +26,4 @@
 なし
 
 ## 未確定・リスク
-- Sequence と Fanout が承認待ちになるかは、実装で確かめていない。定義の構文は 4 種類すべてに承認の要求を許す（`docs/glossary/WORKFLOW.md:476-479`）。承認待ちに入る経路を確かめたのは Session（`domain/workflow/entities/workflow_execution/mod.rs:2826-2838`）と Command（`adaptor/gateway/workflow/workflow_host.rs:1767-1800`）だけである。wire の Sequence と Fanout は Approve の可否を持たない（`proto/client.proto:1756-1774`）。Sequence と Fanout が承認待ちになる場合、R-022 を満たすには Sequence と Fanout の項目に可否を足す必要がある。
-- SwiftUI の標準の部品で、数十から百数十行の実行木の開閉と選択が十分な速さで動くかは、確かめていない。着手時に macOS 15 で確かめる。遅い場合は R-002・R-007 を満たす部品の選び方を人と決め直す。
+なし
