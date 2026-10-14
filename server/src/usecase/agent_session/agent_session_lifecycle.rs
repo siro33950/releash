@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionLifecycle, AgentSessionMutationOutcome,
-    AgentSessionOpenAction, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
-    ManagedPtyPresence,
+    AgentSessionArchiveOutcome, AgentSessionAvailability, AgentSessionLifecycle,
+    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionProcessExitOutcome,
+    AgentSessionRecoveryResult, ManagedPtyPresence,
 };
 use crate::domain::agent_session::{
     ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
@@ -130,13 +130,8 @@ impl AgentSessionLifecycleUsecase {
     pub(crate) async fn terminal_availability(
         &self,
         id: &str,
-    ) -> Result<
-        (
-            ManagedPtyPresence,
-            crate::domain::agent_session::aggregates::AgentSessionAvailability,
-        ),
-        AgentSessionLifecycleUsecaseError,
-    > {
+    ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
+    {
         let session = self.required(id).await?;
         let presence = self
             .terminal
