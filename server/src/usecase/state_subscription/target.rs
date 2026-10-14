@@ -33,6 +33,7 @@ pub enum SubscriptionTarget {
     ReviewThreads(String),
     WorkflowExecution(String),
     WorkflowOutput(String, String),
+    NodeArtifact(String),
     ReviewSessionThreads(String, crate::domain::comment::ReviewThreadFilter),
     ReviewWorktreeThreads(String, crate::domain::comment::ReviewWorktreeFilter),
     ReviewSessionThread(String, String),
@@ -201,7 +202,8 @@ impl SubscriptionTarget {
                 | Self::AgentSession(_)
                 | Self::Workflows
                 | Self::WorkflowExecution(_)
-                | Self::WorkflowOutput(..) => true,
+                | Self::WorkflowOutput(..)
+                | Self::NodeArtifact(_) => true,
                 Self::Directory(p, _)
                 | Self::FileTab(p, _, _)
                 | Self::Selection(p, _)

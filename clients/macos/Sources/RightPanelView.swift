@@ -12,7 +12,7 @@ struct RightPanelView: View {
       case .files: "ファイル"
       case .sourceControl: "Source Control"
       case .threads: "Thread"
-      case .roots: "Root の一覧"
+      case .roots: "Node"
       }
     }
     var icon: String {
@@ -61,7 +61,7 @@ struct RightPanelView: View {
     .frame(
       minWidth: expanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth,
       idealWidth: expanded ? UIStyle.sidebarWidth : UIStyle.collapsedPanelWidth,
-      maxWidth: expanded ? UIStyle.sidebarMaximumWidth : UIStyle.collapsedPanelWidth
+      maxWidth: expanded ? .infinity : UIStyle.collapsedPanelWidth
     )
     .frame(maxHeight: .infinity)
   }

@@ -37,8 +37,8 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertEqual(workspace.controller.tabs(inPane: second), untouched)
     workspace.closeCurrentTab()
     XCTAssertEqual(workspace.controller.allPaneIds.count, 1)
-    workspace.open(.workflow, in: second)
-    XCTAssertEqual(try workspace.layout().tabs.map(\.kind), [.workflow])
+    workspace.open(.command, in: second)
+    XCTAssertEqual(try workspace.layout().tabs.map(\.kind), [.command])
   }
 
   @MainActor func testRestorationPreservesUnselectedTabsAndUUIDLetterCase() throws {

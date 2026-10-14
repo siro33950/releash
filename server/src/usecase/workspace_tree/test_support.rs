@@ -27,6 +27,13 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
+    async fn node_artifact(
+        &self,
+        _: &str,
+    ) -> Result<crate::usecase::workflow::WorkflowGetOutputResult, WorkflowError> {
+        Ok(crate::usecase::workflow::WorkflowGetOutputResult::NotSubmitted)
+    }
+
     async fn execution_summaries(
         &self,
         _workspace_identity: Option<&WorkspaceIdentity>,

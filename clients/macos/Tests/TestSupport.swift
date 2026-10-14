@@ -21,6 +21,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var daemonInfo = Releash_Client_V1_ServerInfo()
     var collapsed: [String: Bool] = [:]
     var terminalReplay = ""
+    var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
     var sessions: [String: Releash_Client_V1_AgentSessionItemDto] = [:]
     var history = Releash_Client_V1_AgentSessionHistoryPageDto()
@@ -83,6 +84,8 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.terminal.snapshot.status.hasForegroundProcess_p = false
           } else if subscription.target == "node-detail" {
             if let value = state.nodeDetails[subscription.args[1]] { payload.nodeDetail.value = value }
+          } else if subscription.target == "node-artifact" {
+            if let value = state.artifacts[subscription.args[0]] { payload.workflowOutput.value = value }
           } else if subscription.target == "agent-session" {
             payload.agentSession = .init()
             if let value = state.sessions[subscription.args[0]] { payload.agentSession.value = value }

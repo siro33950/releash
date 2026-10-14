@@ -78,7 +78,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        let Some((node, workflow)) = self
+        let Some((node, workflow, attempts)) = self
             .repository
             .load_node_with_workflow(workspace_identity, node_id)
             .await
@@ -86,7 +86,37 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         else {
             return Ok(None);
         };
-        Ok(Some(node_detail_with_workflow(node, workflow.as_ref())))
+        let mut detail = node_detail_with_workflow(node, workflow.as_ref());
+        detail.past_attempts = attempts;
+        Ok(Some(detail))
+    }
+
+    async fn node_artifact(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<crate::usecase::workflow::WorkflowGetOutputResult, WorkflowError> {
+        use crate::domain::workflow::NodeFact;
+        use crate::usecase::workflow::WorkflowGetOutputResult;
+        let record = crate::adaptor::gateway::workflow::fact_log::read_latest_record_for_node_with_event_types(
+            &self.repository.fact_backend(), node_execution_id, &["artifact_produced"],
+        ).await.map_err(WorkflowError::from)?;
+        Ok(match record {
+            Some(record) => match record.fact {
+                NodeFact::ArtifactProduced(artifact) => WorkflowGetOutputResult::Submitted {
+                    contract: artifact.contract,
+                    structured_output: artifact.value,
+                    submitted_at: Some(record.timestamp_ms as f64 / 1000.0),
+                    request_id: artifact.request_id,
+                    timestamp: record.timestamp_ms as f64 / 1000.0,
+                },
+                _ => {
+                    return Err(WorkflowError::CorruptStoredState(
+                        "Expected ArtifactProduced fact".into(),
+                    ))
+                }
+            },
+            None => WorkflowGetOutputResult::NotSubmitted,
+        })
     }
 
     async fn execution_summaries(
@@ -147,6 +177,11 @@ pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDet
         }),
     };
     WorkspaceNodeDetailDto {
+        classification: node.status_classification.as_public_str().into(),
+        node_execution_id: node.node_execution_id,
+        node_name: node.node_name,
+        model: node.model,
+        past_attempts: Vec::new(),
         execution_id: node.execution_id,
         can_abort,
         process_presence: node.process_presence.as_str(),

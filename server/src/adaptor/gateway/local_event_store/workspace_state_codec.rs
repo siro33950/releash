@@ -289,7 +289,8 @@ struct StoredPaneTab {
 #[serde(rename_all = "snake_case")]
 enum StoredPaneTabKind {
     Terminal,
-    Workflow,
+    #[serde(rename = "workflow", skip_serializing)]
+    LegacyWorkflow,
     File,
     Session,
     Command,
@@ -344,13 +345,19 @@ impl TryFrom<StoredPaneLayout>
                 id,
                 tabs,
                 active_tab,
-            } => Self::pane(
-                id,
-                tabs.into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()?,
-                active_tab,
-            ),
+            } => {
+                let removed_active = tabs.iter().any(|tab| {
+                    tab.kind == StoredPaneTabKind::LegacyWorkflow
+                        && active_tab.as_deref() == Some(tab.id.as_str())
+                });
+                let tabs: Vec<crate::domain::workspace_state::value_objects::pane_layout::PaneTab> =
+                    tabs.into_iter()
+                        .filter(|tab| tab.kind != StoredPaneTabKind::LegacyWorkflow)
+                        .map(TryInto::try_into)
+                        .collect::<Result<Vec<_>, _>>()?;
+                let active_tab = if removed_active { None } else { active_tab };
+                Self::pane(id, tabs, active_tab)
+            }
             StoredPaneLayout::Split {
                 id,
                 axis,
@@ -386,7 +393,13 @@ impl TryFrom<StoredPaneTab>
     fn try_from(value: StoredPaneTab) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
-            kind: value.kind.into(),
+            kind: match value.kind {
+                StoredPaneTabKind::Terminal => crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Terminal,
+                StoredPaneTabKind::File => crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::File,
+                StoredPaneTabKind::Session => crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Session,
+                StoredPaneTabKind::Command => crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Command,
+                StoredPaneTabKind::LegacyWorkflow => return Err(WorkspaceStateError::InvalidLayout),
+            },
             file_path: value.file_path,
             node_id: value.node_id,
             file_mode: value
@@ -414,9 +427,6 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTabKin
             crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Terminal => {
                 Self::Terminal
             }
-            crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Workflow => {
-                Self::Workflow
-            }
             crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::File => {
                 Self::File
             }
@@ -426,19 +436,6 @@ impl From<crate::domain::workspace_state::value_objects::pane_layout::PaneTabKin
             crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind::Session => {
                 Self::Session
             }
-        }
-    }
-}
-impl From<StoredPaneTabKind>
-    for crate::domain::workspace_state::value_objects::pane_layout::PaneTabKind
-{
-    fn from(value: StoredPaneTabKind) -> Self {
-        match value {
-            StoredPaneTabKind::Terminal => Self::Terminal,
-            StoredPaneTabKind::Workflow => Self::Workflow,
-            StoredPaneTabKind::File => Self::File,
-            StoredPaneTabKind::Session => Self::Session,
-            StoredPaneTabKind::Command => Self::Command,
         }
     }
 }

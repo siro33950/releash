@@ -38,6 +38,7 @@ pub(crate) mod tests {
             completion_signals: NodeCompletionSignalState::Pending,
             has_artifact: false,
             session_id: None,
+            model: None,
             provider: None,
             can_rename: false,
             can_approve: false,

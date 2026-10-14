@@ -1098,64 +1098,166 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
     use releashd::test_support::integration::workflow::{
         append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinition, WorkflowEvent,
     };
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(
-        directory.path().into(),
-        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    ))
-    .unwrap();
-    let tree_id = "00000000-0000-4000-8000-000000001205";
-    let old_id = format!("{tree_id}-command");
-    let new_id = format!("{tree_id}-command-retry");
-    let definition: WorkflowDefinition = serde_saphyr::from_str(
-        "name: retry\ndescription: test\nnodes:\n  main: {command: 'printf kept'}\n",
-    )
-    .unwrap();
-    append_facts_for_events(&store, &[
-        WorkflowEvent::ExecutionStarted { repository_root: None, execution_id: tree_id.into(), workflow_name: "retry".into(), worktree_path: "/repo".into(), created_from: ExecutionOrigin::DesktopUi, request: String::new(), definition, timestamp: 1.0 },
-        WorkflowEvent::NodeStarted { execution_id: tree_id.into(), node_execution_id: old_id.clone(), node_name: "main".into(), kind: NodeKindName::Command, attempt: 1, parent: None, worktree: None, timestamp: 2.0 },
-        WorkflowEvent::CommandSpawned { execution_id: tree_id.into(), node_execution_id: old_id.clone(), display_command: "printf kept".into(), shell: Some("/bin/sh".into()), cwd: Some("/repo".into()), timestamp: 3.0 },
-        WorkflowEvent::ArtifactProduced { execution_id: tree_id.into(), node_execution_id: old_id.clone(), node_name: "main".into(), contract: None, value: serde_json::json!({"stdout":"kept", "stderr":"", "exit_code":0, "duration":10}), request_id: None, submitted_at: None, timestamp: 4.0 },
-        WorkflowEvent::NodeRetryRequested { execution_id: tree_id.into(), node_execution_id: old_id.clone(), timestamp: 9.0 },
-        WorkflowEvent::NodeStarted { execution_id: tree_id.into(), node_execution_id: new_id.clone(), node_name: "main".into(), kind: NodeKindName::Command, attempt: 2, parent: None, worktree: None, timestamp: 10.0 },
-        WorkflowEvent::CommandSpawned { execution_id: tree_id.into(), node_execution_id: new_id.clone(), display_command: "printf retry".into(), shell: Some("/bin/sh".into()), cwd: Some("/repo".into()), timestamp: 11.0 },
-        WorkflowEvent::ArtifactProduced { execution_id: tree_id.into(), node_execution_id: new_id.clone(), node_name: "main".into(), contract: None, value: serde_json::json!({"stdout":"retry", "stderr":"failure", "exit_code":2, "duration":20}), request_id: None, submitted_at: None, timestamp: 12.0 },
-    ]).await.unwrap();
-    // When / Then
-    for repository in [
-        SqliteWorkspaceTreeRepository::new(store.clone()),
-        SqliteWorkspaceTreeRepository::new(store.clone()),
-    ] {
-        let workspace = WorkspaceIdentity::new("/repo");
-        for (id, stdout, exit_code, reason) in [
-            (&old_id, "kept", 0, "Workflow node aborted"),
-            (&new_id, "retry", 2, "Command exited with code 2"),
-        ] {
-            let node = releashd::test_support::integration::workspace::node_for_execution(
-                &*repository,
-                &workspace,
-                id,
+    for child in [false, true] {
+        // Given
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        ))
+        .unwrap();
+        let tree_id = "00000000-0000-4000-8000-000000001205";
+        let old_id = format!("{tree_id}-command");
+        let new_id = format!("{tree_id}-command-retry");
+        let parent_id = format!("{tree_id}-sequence");
+        let parent = child.then(|| {
+            releashd::test_support::integration::workflow::ExecutionParentRef::sequence_child(
+                parent_id.clone(),
             )
-            .await
-            .unwrap()
-            .unwrap();
-            let detail = service(&repository)
-                .node_detail(&workspace, &node.id)
+        });
+        let node_name = if child { "child" } else { "main" };
+        let source = if child {
+            "name: retry\ndescription: test\nnodes:\n  main: {sequence: {children: [{child: {}}]}}\n  child: {command: 'printf kept'}\n"
+        } else {
+            "name: retry\ndescription: test\nnodes:\n  main: {command: 'printf kept'}\n"
+        };
+        let definition: WorkflowDefinition = serde_saphyr::from_str(source).unwrap();
+        let mut events = vec![
+            WorkflowEvent::ExecutionStarted {
+                repository_root: None,
+                execution_id: tree_id.into(),
+                workflow_name: "retry".into(),
+                worktree_path: "/repo".into(),
+                created_from: ExecutionOrigin::DesktopUi,
+                request: String::new(),
+                definition,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: tree_id.into(),
+                node_execution_id: old_id.clone(),
+                node_name: node_name.into(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: parent.clone(),
+                worktree: None,
+                timestamp: 2.0,
+            },
+            WorkflowEvent::CommandSpawned {
+                execution_id: tree_id.into(),
+                node_execution_id: old_id.clone(),
+                display_command: "printf kept".into(),
+                shell: Some("/bin/sh".into()),
+                cwd: Some("/repo".into()),
+                timestamp: 3.0,
+            },
+            WorkflowEvent::ArtifactProduced {
+                execution_id: tree_id.into(),
+                node_execution_id: old_id.clone(),
+                node_name: node_name.into(),
+                contract: None,
+                value: serde_json::json!({"stdout":"kept", "stderr":"", "exit_code":0, "duration":10}),
+                request_id: None,
+                submitted_at: None,
+                timestamp: 4.0,
+            },
+            WorkflowEvent::NodeRetryRequested {
+                execution_id: tree_id.into(),
+                node_execution_id: old_id.clone(),
+                timestamp: 9.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: tree_id.into(),
+                node_execution_id: new_id.clone(),
+                node_name: node_name.into(),
+                kind: NodeKindName::Command,
+                attempt: 2,
+                parent: parent.clone(),
+                worktree: None,
+                timestamp: 10.0,
+            },
+            WorkflowEvent::CommandSpawned {
+                execution_id: tree_id.into(),
+                node_execution_id: new_id.clone(),
+                display_command: "printf retry".into(),
+                shell: Some("/bin/sh".into()),
+                cwd: Some("/repo".into()),
+                timestamp: 11.0,
+            },
+            WorkflowEvent::ArtifactProduced {
+                execution_id: tree_id.into(),
+                node_execution_id: new_id.clone(),
+                node_name: node_name.into(),
+                contract: None,
+                value: serde_json::json!({"stdout":"retry", "stderr":"failure", "exit_code":2, "duration":20}),
+                request_id: None,
+                submitted_at: None,
+                timestamp: 12.0,
+            },
+        ];
+        if child {
+            events.insert(
+                1,
+                WorkflowEvent::NodeStarted {
+                    execution_id: tree_id.into(),
+                    node_execution_id: parent_id,
+                    node_name: "main".into(),
+                    kind: NodeKindName::Sequence,
+                    attempt: 1,
+                    parent: None,
+                    worktree: None,
+                    timestamp: 1.5,
+                },
+            );
+        }
+        append_facts_for_events(&store, &events).await.unwrap();
+        // When / Then
+        for repository in [
+            SqliteWorkspaceTreeRepository::new(store.clone()),
+            SqliteWorkspaceTreeRepository::new(store.clone()),
+        ] {
+            let workspace = WorkspaceIdentity::new("/repo");
+            for (id, stdout, exit_code, reason) in [
+                (&old_id, "kept", 0, "Workflow node aborted"),
+                (&new_id, "retry", 2, "Command exited with code 2"),
+            ] {
+                let node = releashd::test_support::integration::workspace::node_for_execution(
+                    &*repository,
+                    &workspace,
+                    id,
+                )
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(detail.execution_id.as_deref(), Some(tree_id));
-            assert!(detail.can_abort);
-            assert_eq!(detail.error_reason.as_deref(), Some(reason));
-            let WorkspaceNodeContentDto::Command(content) = detail.content else {
-                panic!("command expected")
-            };
-            assert_eq!(content.shell.as_deref(), Some("/bin/sh"));
-            assert_eq!(content.cwd.as_deref(), Some("/repo"));
-            let result = content.result.unwrap();
-            assert_eq!(result.stdout, stdout);
-            assert_eq!(result.exit_code, exit_code);
+                let detail = service(&repository)
+                    .node_detail(&workspace, &node.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if id == &new_id {
+                    assert_eq!(detail.past_attempts.len(), 1);
+                    let old = releashd::test_support::integration::workspace::node_for_execution(
+                        &*repository,
+                        &workspace,
+                        &old_id,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!(detail.past_attempts[0].id, old.id);
+                }
+                assert_eq!(detail.execution_id.as_deref(), Some(tree_id));
+                assert!(detail.can_abort);
+                assert_eq!(detail.error_reason.as_deref(), Some(reason));
+                let WorkspaceNodeContentDto::Command(content) = detail.content else {
+                    panic!("command expected")
+                };
+                assert_eq!(content.shell.as_deref(), Some("/bin/sh"));
+                assert_eq!(content.cwd.as_deref(), Some("/repo"));
+                let result = content.result.unwrap();
+                assert_eq!(result.stdout, stdout);
+                assert_eq!(result.exit_code, exit_code);
+            }
         }
     }
 }
@@ -1362,4 +1464,72 @@ pub async fn test_command詳細_完了済み実行のabort不可をrepositoryか
     // Then
     assert_eq!(detail.execution_id.as_deref(), Some(tree_id));
     assert!(!detail.can_abort);
+}
+
+#[tokio::test]
+pub async fn test_node_artifact購読_同名の周回と再提出をnode実行idで分離する() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, ArtifactProducedFact, NodeFactMeta, NodeKindName,
+        WorkflowGetOutputResult,
+    };
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let meta = |id: &str| NodeFactMeta {
+        tree_id: "tree".into(),
+        node_execution_id: id.into(),
+        parent_id: Some("root".into()),
+        node_name: "loop".into(),
+        kind: NodeKindName::Session,
+        attempt: 1,
+    };
+    for (id, value, timestamp) in [
+        ("first", "old", 1000),
+        ("second", "second", 2000),
+        ("first", "first", 3000),
+    ] {
+        append_single_fact(
+            &store,
+            &meta(id),
+            &NodeFact::ArtifactProduced(ArtifactProducedFact {
+                contract: Some("result".into()),
+                value: serde_json::json!({"value":value}),
+                request_id: Some(value.into()),
+            }),
+            timestamp,
+        )
+        .await
+        .unwrap();
+    }
+    let query = service(&SqliteWorkspaceTreeRepository::new(store));
+    // When / Then
+    for (id, expected) in [("first", "first"), ("second", "second")] {
+        let WorkflowGetOutputResult::Submitted {
+            structured_output,
+            contract,
+            request_id,
+            ..
+        } = query.node_artifact(id).await.unwrap()
+        else {
+            panic!("Artifact missing")
+        };
+        assert_eq!(structured_output, serde_json::json!({"value":expected}));
+        assert_eq!(contract.as_deref(), Some("result"));
+        assert_eq!(request_id.as_deref(), Some(expected));
+    }
+    assert_eq!(
+        query.node_artifact("missing").await.unwrap(),
+        WorkflowGetOutputResult::NotSubmitted
+    );
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'first' AND event_type = 'artifact_produced'", []).unwrap();
+    assert!(matches!(
+        query.node_artifact("first").await,
+        Err(releashd::test_support::integration::workflow::WorkflowError::CorruptStoredState(_))
+    ));
 }

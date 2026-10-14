@@ -160,7 +160,7 @@ final class WorkspaceActionsTests: XCTestCase {
     tree.path = branch.worktreePath; tree.snapshot.nodes.items = [root]
     repository.worktrees.items = [tree]; model.repositories = [repository]
     try await model.startWorkflow(name: "review", path: branch.worktreePath)
-    XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session, .workflow])
+    XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session])
     model.panes.closeCurrentTab()
     model.panes.closeCurrentTab()
     XCTAssertTrue(http.requests("DeleteAgentSession").isEmpty)

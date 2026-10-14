@@ -1335,6 +1335,8 @@ async fn test_connect提出_worktreeなしで待機中nodeにartifactを記録�
             },
         )),
     };
+    let mut node_artifact = subscribe_state(&socket, "node-artifact", vec![node_id.clone()]).await;
+    expect_state(&mut node_artifact, "node artifact before submit", |state| matches!(state, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.as_ref().is_some_and(|output| matches!(output.variant, Some(wire::workflow_output_view::Variant::NotSubmitted(_)))))).await;
     // When
     request(
         &mut socket,
@@ -1357,7 +1359,8 @@ async fn test_connect提出_worktreeなしで待機中nodeにartifactを記録�
     )
     .await;
     expect_state(&mut output, "submitted output", |state| matches!(state, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.as_ref().is_some_and(|output| matches!(&output.variant, Some(wire::workflow_output_view::Variant::Submitted(output)) if output.contract.as_deref() == Some("result") && output.structured_output.as_ref() == Some(&value))))).await;
-    drop((execution, output));
+    expect_state(&mut node_artifact, "node artifact after submit", |state| matches!(state, wire::state_payload::Value::WorkflowOutput(snapshot) if snapshot.value.as_ref().is_some_and(|output| matches!(&output.variant, Some(wire::workflow_output_view::Variant::Submitted(output)) if output.structured_output.as_ref() == Some(&value))))).await;
+    drop((execution, output, node_artifact));
     quit(&mut daemon, &mut socket).await;
 }
 

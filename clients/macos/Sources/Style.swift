@@ -4,12 +4,16 @@ enum UIStyle {
   static let terminalRows: UInt32 = 24
   static let terminalColumns: UInt32 = 80
   static let terminalFontName = "Sarasa-Term-J-Regular"
+  static var scrollerSpace: CGFloat {
+    NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+  }
   static let spacing: CGFloat = 8
   static let padding: CGFloat = 12
   static let rowSpacing: CGFloat = 4
   static let statusSpacing: CGFloat = 3
   static let cardIconWidth: CGFloat = 14
   static let sidebarWidth: CGFloat = 280
+  static let centerMinimumWidth: CGFloat = 320
   static let rightPanelMinimumWidth: CGFloat = 200
   static let dividerWidth: CGFloat = 1
   static let dividerCursorWidth: CGFloat = 8

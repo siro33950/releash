@@ -268,6 +268,11 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::NodeDetail(Some(WorkspaceNodeDetailDto {
+                classification: "active".into(),
+                node_execution_id: None,
+                node_name: None,
+                model: None,
+                past_attempts: Vec::new(),
                 execution_id: None,
                 can_abort: false,
                 process_presence: "live",
@@ -293,6 +298,13 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             })),
             W::NodeDetail(wire::NullableWorkspaceNodeDetailDto {
                 value: Some(wire::WorkspaceNodeDetailDto {
+                    classification: Some(wire::WorkspaceStatusClassification {
+                        value: Some(wire::workspace_status_classification::Value::Active as i32),
+                    }),
+                    node_execution_id: None,
+                    node_name: None,
+                    model: None,
+                    past_attempts: Vec::new(),
                     execution_id: None,
                     can_abort: Some(false),
                     process_presence: Some(wire::NodeProcessPresence {

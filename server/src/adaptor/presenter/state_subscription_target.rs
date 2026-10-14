@@ -135,6 +135,7 @@ impl SubscriptionTarget {
             ("file-threads", [path, file]) => Ok(Self::FileThreads((*path).into(), (*file).into())),
             ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
             ("workflow-execution", [id]) => Ok(Self::WorkflowExecution((*id).into())),
+            ("node-artifact", [id]) => Ok(Self::NodeArtifact((*id).into())),
             ("workflow-output", [id, node]) => {
                 Ok(Self::WorkflowOutput((*id).into(), (*node).into()))
             }
@@ -253,6 +254,7 @@ impl SubscriptionTarget {
             Self::FileThreads(p, file) => ("file-threads", vec![p.clone(), file.clone()]),
             Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
             Self::WorkflowExecution(id) => ("workflow-execution", vec![id.clone()]),
+            Self::NodeArtifact(id) => ("node-artifact", vec![id.clone()]),
             Self::WorkflowOutput(id, node) => ("workflow-output", vec![id.clone(), node.clone()]),
             Self::ReviewSessionThreads(id, filter) => {
                 ("review-session-threads", review_filter_parts(id, filter))

@@ -358,7 +358,7 @@ extension AppModelTests {
     model.editLayout { $0 = testLayout(.terminal) }
     try await eventually { http.state.withLock { $0.pendingSave != nil } }
     model.editLayout { $0 = testLayout(.file) }
-    model.editLayout { $0 = testLayout(.workflow) }
+    model.editLayout { $0 = testLayout(.command) }
     let last = model.layout
     XCTAssertEqual(http.requests("SaveWorkspaceState").count, 1)
     XCTAssertEqual(model.pendingSaves[path], 3)
@@ -388,7 +388,7 @@ extension AppModelTests {
       try Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: $0.message!)
     }
     XCTAssertEqual(saves.count, 3)
-    for (request, kind) in zip(saves, [PaneTab.Kind.terminal, .file, .workflow]) {
+    for (request, kind) in zip(saves, [PaneTab.Kind.terminal, .file, .command]) {
       guard case .pane(_, let tabs, _) = try PaneLayout(request.state.paneLayout) else {
         return XCTFail("Saved pane missing")
       }

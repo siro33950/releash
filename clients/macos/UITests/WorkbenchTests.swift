@@ -254,9 +254,9 @@ extension WorkbenchTests {
     launch()
     let worktree = app.buttons["worktree:main"].firstMatch
     XCTAssertTrue(worktree.waitForExistence(timeout: 30), app.debugDescription); worktree.click()
-    let panel = app.checkBoxes["Root の一覧"]
+    let panel = app.checkBoxes["Node"]
     XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
-    let root = app.buttons["root:\(rootID)"]
+    let root = app.buttons["open-node:\(rootID)"]
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription); root.click()
     let terminal = app.textViews["terminal:\(selection.agentSessionID)"]
     XCTAssertTrue(terminal.waitForExistence(timeout: 30), app.debugDescription)
@@ -289,10 +289,12 @@ extension WorkbenchTests {
     launch()
     let worktree = app.buttons["worktree:main"].firstMatch
     XCTAssertTrue(worktree.waitForExistence(timeout: 30), app.debugDescription); worktree.click()
-    let panel = app.checkBoxes["Root の一覧"]
+    let panel = app.checkBoxes["Node"]
     XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
-    let root = app.buttons["root:\(execution.value)"]
-    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription); root.click()
+    let root = app.buttons["open-node:\(execution.value)"]
+    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
+    app.scrollViews.containing(.button, identifier: "root:\(execution.value)").firstMatch.scroll(byDeltaX: -160, deltaY: 0)
+    XCTAssertTrue(root.isHittable, app.debugDescription); root.click()
     let output = app.staticTexts["command-stdout"]
     XCTAssertTrue(output.waitForExistence(timeout: 30), app.debugDescription)
     let received = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "command-tab-output"), object: output)
@@ -301,5 +303,74 @@ extension WorkbenchTests {
     let result = app.staticTexts["command-result"]
     XCTAssertTrue(result.waitForExistence(timeout: 30), app.debugDescription)
     XCTAssertTrue((result.value as? String)?.contains("Exit code: 0") == true, result.debugDescription)
+  }
+}
+
+extension WorkbenchTests {
+  @MainActor func testNodePanelExpandsWorkflowAndOpensChildSession() async throws {
+    try await fixture.startServer()
+    let repository = try await fixture.repository("node-tree-repository")
+    var path = ""
+    try await fixture.waitForState(target: "workspaces") { payload in
+      guard case .workspaces(let value) = payload.value,
+        let repo = value.repositories.items.first(where: { $0.path == repository.path }),
+        let main = repo.branches.items.first(where: { $0.isMainWorktree }) else { return false }
+      path = main.worktreePath
+      return true
+    }
+    let (client, headers) = try fixture.client()
+    var instruction = Releash_Client_V1_SaveFacetRequest()
+    instruction.kind = "instruction"; instruction.key = "node-tree-e2e"; instruction.isNew = true; instruction.content = "Observe this workflow."
+    _ = try await client.saveFacet(request: instruction, headers: headers).result.get()
+    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
+    definition.source = """
+      name: node-tree-e2e
+      description: Node tree regression
+      nodes:
+        main:
+          sequence:
+            children:
+              - observe: {}
+        observe:
+          session:
+            provider: claude
+            facets: {instruction: node-tree-e2e}
+      """
+    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result.get()
+    guard case .success = saved.variant else { XCTFail("Workflowを保存できません: \(saved)"); return }
+    var request = Releash_Client_V1_StartWorkflowRequest()
+    request.workflowName = "node-tree-e2e"; request.worktreePath = path
+    let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
+    var childID = ""
+    var sessionID = ""
+    try await fixture.waitForState(target: "workspaces") { payload in
+      guard case .workspaces(let value) = payload.value,
+        let tree = value.repositories.items.flatMap(\.worktrees.items).first(where: { $0.path == path }),
+        let root = tree.snapshot.nodes.items.first,
+        case .sequence(let sequence) = root.variant,
+        let child = sequence.children.items.first, case .node(let node) = child.variant else { return false }
+      childID = node.id
+      return !childID.isEmpty
+    }
+    try await fixture.waitForState(target: "node-detail", args: [path, childID]) { payload in
+      guard case .nodeDetail(let value) = payload.value, value.hasValue,
+        case .session(let session) = value.value.content.variant, session.hasSessionID else { return false }
+      sessionID = session.sessionID
+      return !sessionID.isEmpty
+    }
+    launch()
+    let card = app.buttons["worktree:main"].firstMatch
+    XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription); card.click()
+    let panel = app.checkBoxes["Node"]
+    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
+    let root = app.buttons["root:\(execution.value)"]
+    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription); root.click()
+    let child = app.buttons["root:\(childID)"]
+    XCTAssertTrue(child.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertTrue(["active", "attention", "idle"].contains(child.value as? String ?? ""))
+    child.click()
+    XCTAssertFalse(app.textViews["terminal:\(sessionID)"].exists)
+    app.buttons["open-node:\(childID)"].click()
+    XCTAssertTrue(app.textViews["terminal:\(sessionID)"].waitForExistence(timeout: 30), app.debugDescription)
   }
 }

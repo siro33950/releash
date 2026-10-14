@@ -77,13 +77,7 @@ struct CommandPane: View {
   let path: String
   let detail: Releash_Client_V1_WorkspaceNodeDetailDto
   let command: Releash_Client_V1_WorkspaceCommandNodeContentDto
-  var attempts: [Releash_Client_V1_WorkspaceNode] {
-    let roots = model.repositories.flatMap(\.worktrees.items).first { $0.path == path }?.snapshot.nodes.items ?? []
-    for root in roots where root.rootID == detail.id {
-      if case .node(let node) = root.variant { return node.pastAttempts.items.compactMap { if case .node(let v) = $0.variant { return v }; return nil } }
-    }
-    return []
-  }
+  var attempts: [Releash_Client_V1_WorkspaceNodeAttemptDto] { detail.pastAttempts }
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: UIStyle.padding) {

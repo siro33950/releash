@@ -615,7 +615,8 @@ extension AppModel {
   }
 
   func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
-    openNode(root.rootKind, id: root.rootID, title: root.rootTabTitle)
+    guard let kind = root.rootKind else { return }
+    openNode(kind, id: root.rootID, title: root.rootTabTitle)
   }
   func resumeNode(path: String, id: String) {
     guard let client else { return }

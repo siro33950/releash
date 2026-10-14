@@ -32,7 +32,6 @@ pub struct PaneTab {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneTabKind {
     Terminal,
-    Workflow,
     File,
     Session,
     Command,
@@ -136,10 +135,8 @@ impl PaneLayout {
                                 .node_id
                                 .as_deref()
                                 .is_none_or(|id| !id.trim().is_empty() && !id.contains('\0'))
-                            && (matches!(
-                                tab.kind,
-                                PaneTabKind::Session | PaneTabKind::Command | PaneTabKind::Workflow
-                            ) || tab.node_id.is_none())
+                            && (matches!(tab.kind, PaneTabKind::Session | PaneTabKind::Command)
+                                || tab.node_id.is_none())
                             && tab
                                 .file_path
                                 .as_deref()

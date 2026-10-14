@@ -118,6 +118,7 @@ pub struct WorkspaceTreeNode {
     pub completion_signals: NodeCompletionSignalState,
     pub has_artifact: bool,
     pub session_id: Option<String>,
+    pub model: Option<String>,
     pub provider: Option<crate::domain::provider_lifecycle::ProviderKind>,
     pub can_rename: bool,
     pub can_approve: bool,

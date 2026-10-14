@@ -27,6 +27,11 @@ pub struct NodeWorktreeDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceNodeDetailDto {
+    pub classification: String,
+    pub node_execution_id: Option<String>,
+    pub node_name: Option<String>,
+    pub model: Option<String>,
+    pub past_attempts: Vec<WorkspaceNodeAttemptDto>,
     pub execution_id: Option<String>,
     pub can_abort: bool,
     pub process_presence: &'static str,
@@ -45,6 +50,15 @@ pub struct WorkspaceNodeDetailDto {
     pub capabilities: WorkspaceNodeCapabilitiesDto,
     pub updated_at: f64,
     pub content: WorkspaceNodeContentDto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceNodeAttemptDto {
+    pub id: String,
+    pub title: String,
+    pub error_reason: Option<String>,
+    pub updated_at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -169,6 +183,13 @@ impl WorkflowUsecase {
             self.resolve_worktree_path(worktree_path)?,
         );
         self.workspace_query.node_detail(&workspace, node_id).await
+    }
+
+    pub(crate) async fn get_workspace_node_artifact(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<super::query_service::WorkflowGetOutputResult, WorkflowError> {
+        self.workspace_query.node_artifact(node_execution_id).await
     }
 
     /// 実行木と、選択している Node が画面に出す木にあるか。

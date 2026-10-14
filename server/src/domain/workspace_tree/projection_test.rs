@@ -1026,10 +1026,10 @@ pub(crate) mod tests {
 }
 
 #[test]
-fn test_sessionノード_providerを定義から配る() {
+fn test_sessionノード_providerとmodelを定義から配る() {
     // Given
     let definition: WorkflowDefinition = serde_saphyr::from_str(
-        "name: test\ndescription: test\nnodes:\n  test: {session: {provider: codex}}\n",
+        "name: test\ndescription: test\nnodes:\n  test: {session: {provider: codex, model: test-model}}\n",
     )
     .unwrap();
     let mut runtime = node("session", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
@@ -1063,4 +1063,50 @@ fn test_sessionノード_providerを定義から配る() {
         session.provider,
         Some(crate::domain::provider_lifecycle::ProviderKind::Codex)
     );
+    assert_eq!(session.model.as_deref(), Some("test-model"));
+}
+
+#[test]
+fn test_model配信_指定のないsessionとcommandは空欄になる() {
+    // Given
+    for (source, kind) in [
+        ("session: {provider: codex}", NodeKindName::Session),
+        ("command: 'true'", NodeKindName::Command),
+    ] {
+        let definition: WorkflowDefinition = serde_saphyr::from_str(&format!(
+            "name: test\ndescription: test\nnodes:\n  test: {{{source}}}\n"
+        ))
+        .unwrap();
+        let mut runtime = node("current", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        runtime.kind = kind;
+        if kind == NodeKindName::Session {
+            runtime.display_command = None;
+        }
+        // When
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &Default::default(),
+            execution_id: EXECUTION_ID,
+            workflow_name: "test",
+            workspace_identity: "/repo",
+            workflow_definition: Some(&definition),
+            node_executions: &[runtime],
+            retry_predecessors: &Default::default(),
+            delegate_waiting_node_ids: &Default::default(),
+            execution_active: true,
+            started_at: 1.0,
+            updated_at: 2.0,
+            execution: &execution(),
+            session_activities: &Default::default(),
+            session_display_names: &Default::default(),
+            command_failure_reasons: &Default::default(),
+        })
+        .unwrap();
+        // Then
+        assert!(nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("current"))
+            .unwrap()
+            .model
+            .is_none());
+    }
 }

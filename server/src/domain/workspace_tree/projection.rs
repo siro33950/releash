@@ -189,6 +189,12 @@ pub fn runtime_snapshot_nodes(
                 crate::domain::workflow::NodeKind::Session(spec) => Some(spec.provider),
                 _ => None,
             });
+        node.model = workflow_definition
+            .and_then(|definition| definition.node_by_name(&runtime.node_name))
+            .and_then(|definition| match &definition.kind {
+                crate::domain::workflow::NodeKind::Session(spec) => spec.model.clone(),
+                _ => None,
+            });
         node.worktree = runtime.worktree.clone();
         if let Some(reason) = command_failure_reasons.get(&runtime.id) {
             node.error_reason = Some(reason.clone());

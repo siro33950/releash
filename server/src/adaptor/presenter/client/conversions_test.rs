@@ -92,7 +92,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
             PaneTab {
                 node_id: None,
                 id: "workflow".into(),
-                kind: PaneTabKind::Workflow,
+                kind: PaneTabKind::Command,
                 file_path: None,
                 file_mode: None,
                 file_base: None,
@@ -163,10 +163,12 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
     );
     assert!(PaneLayout::try_from(wire::PaneLayout::default()).is_err());
     let mut message = wire::PaneLayout::try_from(pane).unwrap();
-    if let Some(wire::pane_layout::Node::Pane(pane)) = &mut message.node {
-        pane.tabs[0].kind = 999;
+    for kind in [2, 999] {
+        if let Some(wire::pane_layout::Node::Pane(pane)) = &mut message.node {
+            pane.tabs[0].kind = kind;
+        }
+        assert!(PaneLayout::try_from(message.clone()).is_err());
     }
-    assert!(PaneLayout::try_from(message).is_err());
     for axis in [0, 999, wire::SplitAxis::Horizontal as i32] {
         assert!(PaneLayout::try_from(wire::PaneLayout {
             node: Some(wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {

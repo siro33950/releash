@@ -9,11 +9,10 @@ struct PaneTab: Equatable, Identifiable {
   var fileBase: String?
   var title: String { filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title }
   enum Kind: String, CaseIterable {
-    case terminal, workflow, file, session, command
+    case terminal, file, session, command
     var icon: String {
       switch self {
       case .terminal: "terminal"
-      case .workflow: "list.bullet.rectangle"
       case .file: "doc"
       case .session: "sparkle"
       case .command: "terminal"
@@ -22,7 +21,6 @@ struct PaneTab: Equatable, Identifiable {
     var title: String {
       switch self {
       case .terminal: "Terminal"
-      case .workflow: "Workflow 管理"
       case .file: "ファイル"
       case .session: "Session"
       case .command: "Command"
@@ -48,7 +46,6 @@ indirect enum PaneLayout: Equatable {
         let kind: PaneTab.Kind
         switch tab.kind {
         case .terminal: kind = .terminal
-        case .workflow: kind = .workflow
         case .file: kind = .file
         case .session: kind = .session
         case .command: kind = .command
@@ -90,7 +87,6 @@ indirect enum PaneLayout: Equatable {
         if let base = tab.fileBase { value.fileBase = base }
         switch tab.kind {
         case .terminal: value.kind = .terminal
-        case .workflow: value.kind = .workflow
         case .file: value.kind = .file
         case .session: value.kind = .session
         case .command: value.kind = .command

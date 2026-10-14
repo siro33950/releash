@@ -1639,6 +1639,19 @@ message WorkspaceNodeDetailDto {
   optional WorkspaceNodeCapabilitiesDto capabilities = 12 [json_name = "capabilities", (json_required) = true];
   optional double updated_at = 13 [json_name = "updatedAt", (json_required) = true];
   optional WorkspaceNodeContentDto content = 14 [json_name = "content", (json_required) = true];
+  optional string node_execution_id = 18 [json_name = "nodeExecutionId"];
+  optional string node_name = 19 [json_name = "nodeName"];
+  optional string model = 20 [json_name = "model"];
+  repeated WorkspaceNodeAttemptDto past_attempts = 21 [json_name = "pastAttempts"];
+
+  optional WorkspaceStatusClassification classification = 22 [json_name = "classification", (json_required) = true];
+}
+
+message WorkspaceNodeAttemptDto {
+  optional string id = 1 [json_name = "id", (json_required) = true];
+  optional string title = 2 [json_name = "title", (json_required) = true];
+  optional string error_reason = 3 [json_name = "errorReason"];
+  optional double updated_at = 4 [json_name = "updatedAt", (json_required) = true];
 }
 
 message WorkspaceNodeCapabilitiesDto {
@@ -1721,6 +1734,13 @@ message WorkspaceNode {
   optional ListWorkspaceNode past_attempts = 10 [json_name = "pastAttempts", (json_required) = true];
   optional bool past_attempts_collapsed = 11 [json_name = "pastAttemptsCollapsed", (json_required) = true];
   optional double updated_at = 12 [json_name = "updatedAt", (json_required) = true];
+  optional string execution_id = 15 [json_name = "executionId"];
+  optional string node_execution_id = 16 [json_name = "nodeExecutionId"];
+  optional string node_name = 17 [json_name = "nodeName"];
+  optional uint32 attempt = 18 [json_name = "attempt"];
+  optional bool has_artifact = 19 [json_name = "hasArtifact", (json_required) = true];
+  optional string model = 20 [json_name = "model"];
+
 }
 
 message WorkspaceWorkflowCapabilities {
@@ -1761,6 +1781,7 @@ message WorkspaceSequence {
   optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
+  optional bool can_approve = 8 [json_name = "canApprove", (json_required) = true];
 }
 
 message WorkspaceFanout {
@@ -1771,6 +1792,7 @@ message WorkspaceFanout {
   optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
+  optional bool can_approve = 8 [json_name = "canApprove", (json_required) = true];
 }
 
 message ListAgentSessionItemDto {
@@ -1965,7 +1987,8 @@ message PaneTab {
 enum PaneTabKind {
   PANE_TAB_KIND_UNSPECIFIED = 0;
   PANE_TAB_KIND_TERMINAL = 1 [(json_enum_name) = "terminal"];
-  PANE_TAB_KIND_WORKFLOW = 2 [(json_enum_name) = "workflow"];
+  reserved 2;
+  reserved "PANE_TAB_KIND_WORKFLOW";
   PANE_TAB_KIND_FILE = 3 [(json_enum_name) = "file"];
   PANE_TAB_KIND_SESSION = 4 [(json_enum_name) = "session"];
   PANE_TAB_KIND_COMMAND = 5 [(json_enum_name) = "command"];

@@ -138,6 +138,9 @@ final class NodePaneTests: XCTestCase {
     var root = Releash_Client_V1_WorkspaceTreeItem(); root.node.id = "root"; root.node.contentKind.value = .command
     var attempt = Releash_Client_V1_WorkspacePastAttempt(); attempt.node.id = "old"; attempt.node.updatedAt = 12345; attempt.node.errorReason = "old failure"
     root.node.pastAttempts.items = [attempt]
+    old.updatedAt = 12345
+    var summary = Releash_Client_V1_WorkspaceNodeAttemptDto(); summary.id = old.id; summary.title = old.title; summary.updatedAt = old.updatedAt; summary.errorReason = old.errorReason
+    detail.pastAttempts = [summary]
     var tree = Releash_Client_V1_WorkspaceWorktreeList(); tree.path = "/repo"; tree.snapshot.nodes.items = [root]
     var repo = Releash_Client_V1_WorkspaceRepositoryList(); repo.path = "/repo"; repo.worktrees.items = [tree]
     http.state.withLock { $0.repositories = [repo]; $0.nodeDetails = ["root": detail, "old": old] }
