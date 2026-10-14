@@ -553,11 +553,8 @@ impl AgentSession {
         self.last_exit_code
     }
 
-    pub(crate) fn availability(
-        lifecycle: AgentSessionLifecycle,
-        presence: ManagedPtyPresence,
-    ) -> AgentSessionAvailability {
-        if lifecycle == AgentSessionLifecycle::Archived {
+    pub(crate) fn availability(&self, presence: ManagedPtyPresence) -> AgentSessionAvailability {
+        if self.lifecycle == AgentSessionLifecycle::Archived {
             return AgentSessionAvailability::Archived;
         }
         match presence {
@@ -568,7 +565,7 @@ impl AgentSession {
     }
 
     pub(crate) fn open_action(&self, pty_presence: ManagedPtyPresence) -> AgentSessionOpenAction {
-        match Self::availability(self.lifecycle, pty_presence) {
+        match self.availability(pty_presence) {
             AgentSessionAvailability::Open => AgentSessionOpenAction::Attach,
             AgentSessionAvailability::Indeterminate => AgentSessionOpenAction::Indeterminate,
             AgentSessionAvailability::Archived => AgentSessionOpenAction::RemainArchived,

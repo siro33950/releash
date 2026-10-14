@@ -130,11 +130,19 @@ impl AgentSessionLifecycleUsecase {
     pub(crate) async fn terminal_presence(
         &self,
         id: &str,
-    ) -> Result<ManagedPtyPresence, AgentSessionLifecycleUsecaseError> {
+    ) -> Result<
+        (
+            ManagedPtyPresence,
+            crate::domain::agent_session::aggregates::AgentSessionAvailability,
+        ),
+        AgentSessionLifecycleUsecaseError,
+    > {
         let session = self.required(id).await?;
-        self.terminal
+        let presence = self
+            .terminal
             .presence(&session.session().terminal_surface_owner())
-            .map_err(AgentSessionLifecycleUsecaseError::Terminal)
+            .map_err(AgentSessionLifecycleUsecaseError::Terminal)?;
+        Ok((presence, session.session().availability(presence)))
     }
 
     pub async fn open(

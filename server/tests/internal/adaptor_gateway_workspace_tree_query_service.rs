@@ -1159,3 +1159,74 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
         }
     }
 }
+
+#[tokio::test]
+pub async fn test_command詳細_完了済み実行のabort不可をrepositoryから配る() {
+    use releashd::test_support::integration::workflow::{
+        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinition, WorkflowEvent,
+    };
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let tree_id = "00000000-0000-4000-8000-000000001205";
+    let node_id = format!("{tree_id}-command");
+    let definition: WorkflowDefinition = serde_saphyr::from_str(
+        "name: completed\ndescription: test\nnodes:\n  main: {command: 'printf kept'}\n",
+    )
+    .unwrap();
+    append_facts_for_events(
+        &store,
+        &[
+            WorkflowEvent::ExecutionStarted {
+                repository_root: None,
+                execution_id: tree_id.into(),
+                workflow_name: "completed".into(),
+                worktree_path: "/repo".into(),
+                created_from: ExecutionOrigin::DesktopUi,
+                request: String::new(),
+                definition,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: tree_id.into(),
+                node_execution_id: node_id.clone(),
+                node_name: "main".into(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: None,
+                worktree: None,
+                timestamp: 2.0,
+            },
+            WorkflowEvent::ExecutionCompleted {
+                execution_id: tree_id.into(),
+                total_token_usage: Default::default(),
+                timestamp: 3.0,
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let workspace = WorkspaceIdentity::new("/repo");
+    let node = releashd::test_support::integration::workspace::node_for_execution(
+        &*repository,
+        &workspace,
+        &node_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // When
+    let detail = service(&repository)
+        .node_detail(&workspace, &node.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(detail.execution_id.as_deref(), Some(tree_id));
+    assert!(!detail.can_abort);
+}

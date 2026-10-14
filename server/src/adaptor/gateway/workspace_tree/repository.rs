@@ -14,8 +14,9 @@ use crate::domain::workflow::services::fact_replay::{self, FoldedTree, TreeFold}
 use crate::domain::workflow::{ExecutionTreeLaunch, WorkflowError};
 use crate::domain::workspace_tree::WorkspaceExecution;
 use crate::domain::workspace_tree::{
-    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact,
-    WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
+    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspaceNodeKind, WorkspacePublicRoot,
+    WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector,
+    WorkspaceTreeRepository,
 };
 
 #[derive(Clone)]
@@ -86,23 +87,23 @@ impl SqliteWorkspaceTreeRepository {
         for execution in &trees {
             let (folded, record) = &**execution;
             let nodes = self.tree_nodes(&workspace, folded, record)?;
-            let workflow = nodes
-                .iter()
-                .find(|node| {
-                    node.kind == crate::domain::workspace_tree::WorkspaceNodeKind::Workflow
-                        && node.id == folded.aggregate.id
-                })
-                .cloned();
-            if folded.aggregate.id == node_id {
-                if let Some(mut node) =
-                    WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id)
-                        .map(|root| root.node().clone())
-                {
+            let node = if folded.aggregate.id == node_id {
+                WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id).map(|root| {
+                    let mut node = root.node().clone();
                     node.id = node_id.to_string();
-                    return Ok(Some((node, workflow)));
-                }
+                    node
+                })
+            } else {
+                None
             }
-            if let Some(node) = nodes.iter().find(|node| node.id == node_id).cloned() {
+            .or_else(|| nodes.iter().find(|node| node.id == node_id).cloned());
+            if let Some(node) = node {
+                let workflow = nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
+                    })
+                    .cloned();
                 return Ok(Some((node, workflow)));
             }
         }

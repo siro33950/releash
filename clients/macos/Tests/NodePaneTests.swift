@@ -6,6 +6,27 @@ import XCTest
 @testable import Releash
 
 final class NodePaneTests: XCTestCase {
+  @MainActor func testUnsetAvailabilityReleasesOpenTerminal() async throws {
+    let http = TestHTTPClient()
+    var session = Releash_Client_V1_AgentSessionItemDto()
+    session.id = "agent"; session.availability = .open
+    var node = Releash_Client_V1_WorkspaceNodeDetailDto()
+    node.id = "node"; node.content.session.sessionID = "agent"
+    http.state.withLock { $0.sessions["agent"] = session; $0.nodeDetails["node"] = node }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    let host = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "node", focused: true))
+    try await eventuallyView(host) { host.element("terminal:agent") != nil }
+    session.clearAvailability()
+    var payload = Releash_Client_V1_StatePayload()
+    payload.agentSession.value = session
+    try http.publish(payload, target: "agent-session")
+    try await eventuallyView(host) { host.element("terminal:agent") == nil }
+    try await eventually { model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil }
+    host.close(); await model.stop()
+  }
+
   @MainActor func testSessionSubscriptionControlsVisibilityAndResumeSuccessAndFailure() async throws {
     for (availability, canResume, message) in [(Releash_Client_V1_AgentSessionAvailability.paused, false, "Sessionは停止しています"), (.paused, true, "Sessionは停止しています"), (.indeterminate, true, "Sessionを開けるか判定できません"), (.archived, true, "SessionはArchiveされています")] {
       let http = TestHTTPClient()

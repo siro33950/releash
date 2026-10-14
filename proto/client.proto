@@ -900,10 +900,11 @@ message AgentSessionItemDto {
 }
 
 enum AgentSessionAvailability {
-  AGENT_SESSION_AVAILABILITY_OPEN = 0 [(json_enum_name) = "open"];
-  AGENT_SESSION_AVAILABILITY_PAUSED = 1 [(json_enum_name) = "paused"];
-  AGENT_SESSION_AVAILABILITY_INDETERMINATE = 2 [(json_enum_name) = "indeterminate"];
-  AGENT_SESSION_AVAILABILITY_ARCHIVED = 3 [(json_enum_name) = "archived"];
+  AGENT_SESSION_AVAILABILITY_UNSPECIFIED = 0;
+  AGENT_SESSION_AVAILABILITY_OPEN = 1 [(json_enum_name) = "open"];
+  AGENT_SESSION_AVAILABILITY_PAUSED = 2 [(json_enum_name) = "paused"];
+  AGENT_SESSION_AVAILABILITY_INDETERMINATE = 3 [(json_enum_name) = "indeterminate"];
+  AGENT_SESSION_AVAILABILITY_ARCHIVED = 4 [(json_enum_name) = "archived"];
 }
 
 message AgentSessionProviderDto {

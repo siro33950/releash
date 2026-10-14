@@ -238,6 +238,11 @@ import SwiftProtobuf
         failure = failureMessage(error)
         return
       }
+      if target == "terminal", args.count == 2 {
+        desiredTargets.removeValue(forKey: key)
+        failure = failureMessage(error)
+        return
+      }
       throw error
     }
   }
@@ -437,6 +442,7 @@ import SwiftProtobuf
     }
     layoutLoaded = true
     syncTerminalTabs(layout)
+    syncNodeTabTitles()
     openPendingRoot()
   }
   func editLayout(_ edit: (inout PaneLayout) -> Void) {

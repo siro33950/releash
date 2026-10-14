@@ -11,7 +11,10 @@ pub trait AgentSessionGarbageCollectionPort: Send + Sync {
         &self,
         agent_session_id: &str,
     ) -> Result<
-        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        (
+            crate::domain::agent_session::aggregates::ManagedPtyPresence,
+            crate::domain::agent_session::aggregates::AgentSessionAvailability,
+        ),
         AgentSessionLifecycleUsecaseError,
     >;
 
@@ -28,7 +31,10 @@ impl AgentSessionGarbageCollectionPort for AgentSessionLifecycleUsecase {
         &self,
         id: &str,
     ) -> Result<
-        crate::domain::agent_session::aggregates::ManagedPtyPresence,
+        (
+            crate::domain::agent_session::aggregates::ManagedPtyPresence,
+            crate::domain::agent_session::aggregates::AgentSessionAvailability,
+        ),
         AgentSessionLifecycleUsecaseError,
     > {
         self.terminal_presence(id).await
@@ -78,7 +84,13 @@ impl AgentSessionReadUsecase {
     pub(crate) async fn get(
         &self,
         agent_session_id: &str,
-    ) -> Result<Option<AgentSessionItemDto>, AgentSessionReadUsecaseError> {
+    ) -> Result<
+        Option<(
+            AgentSessionItemDto,
+            crate::domain::agent_session::aggregates::AgentSessionAvailability,
+        )>,
+        AgentSessionReadUsecaseError,
+    > {
         let Some(mut item) = self
             .query
             .get(agent_session_id)
@@ -87,7 +99,7 @@ impl AgentSessionReadUsecase {
         else {
             return Ok(None);
         };
-        let presence = match self
+        match self
             .garbage_collection
             .reconcile_garbage_collection(
                 agent_session_id,
@@ -95,11 +107,7 @@ impl AgentSessionReadUsecase {
             )
             .await
         {
-            Ok(AgentSessionGarbageCollectionOutcome::Retained) => self
-                .garbage_collection
-                .terminal_presence(agent_session_id)
-                .await
-                .map_err(map_lifecycle_error)?,
+            Ok(AgentSessionGarbageCollectionOutcome::Retained) => {}
             Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
             | Err(AgentSessionLifecycleUsecaseError::NotFound) => {
                 let Some(current) = self
@@ -111,16 +119,18 @@ impl AgentSessionReadUsecase {
                     return Ok(None);
                 };
                 item = current;
-                crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown
             }
             Err(error) => return Err(map_lifecycle_error(error)),
+        }
+        let (presence, availability) = match self
+            .garbage_collection
+            .terminal_presence(agent_session_id)
+            .await
+        {
+            Ok(value) => value,
+            Err(AgentSessionLifecycleUsecaseError::NotFound) => return Ok(None),
+            Err(error) => return Err(map_lifecycle_error(error)),
         };
-        item.availability = Some(
-            crate::domain::agent_session::aggregates::AgentSession::availability(
-                item.lifecycle.into(),
-                presence,
-            ),
-        );
         item.terminal_presence = Some(
             match presence {
                 crate::domain::agent_session::aggregates::ManagedPtyPresence::Live => "live",
@@ -131,7 +141,7 @@ impl AgentSessionReadUsecase {
             }
             .into(),
         );
-        Ok(Some(item))
+        Ok(Some((item, availability)))
     }
 }
 

@@ -18,18 +18,6 @@ pub enum AgentSessionLifecycleDto {
     Archived,
 }
 
-impl From<AgentSessionLifecycleDto>
-    for crate::domain::agent_session::aggregates::AgentSessionLifecycle
-{
-    fn from(value: AgentSessionLifecycleDto) -> Self {
-        match value {
-            AgentSessionLifecycleDto::Open => Self::Open,
-            AgentSessionLifecycleDto::Paused => Self::Paused,
-            AgentSessionLifecycleDto::Archived => Self::Archived,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionOperationsDto {
@@ -54,8 +42,6 @@ pub struct AgentSessionItemDto {
     pub last_exit_abnormal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_presence: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub availability: Option<crate::domain::agent_session::aggregates::AgentSessionAvailability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

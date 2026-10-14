@@ -67,9 +67,7 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionItemDto> for wire::Agent
             operations: Some(cv(value.operations)?),
             last_exit_abnormal: Some(cv(value.last_exit_abnormal)?),
             terminal_presence: value.terminal_presence,
-            availability: value
-                .availability
-                .map(|value| wire::AgentSessionAvailability::from(value) as i32),
+            availability: None,
         })
     }
 }
@@ -2297,13 +2295,21 @@ impl From<crate::domain::agent_session::aggregates::AgentSessionAvailability>
     }
 }
 
-impl serde::Serialize for crate::domain::agent_session::aggregates::AgentSessionAvailability {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(match self {
-            Self::Open => "open",
-            Self::Paused => "paused",
-            Self::Indeterminate => "indeterminate",
-            Self::Archived => "archived",
-        })
+impl
+    TryFrom<(
+        crate::usecase::agent_session::AgentSessionItemDto,
+        crate::domain::agent_session::aggregates::AgentSessionAvailability,
+    )> for wire::AgentSessionItemDto
+{
+    type Error = String;
+    fn try_from(
+        (item, availability): (
+            crate::usecase::agent_session::AgentSessionItemDto,
+            crate::domain::agent_session::aggregates::AgentSessionAvailability,
+        ),
+    ) -> Result<Self, String> {
+        let mut value = Self::try_from(item)?;
+        value.availability = Some(wire::AgentSessionAvailability::from(availability) as i32);
+        Ok(value)
     }
 }

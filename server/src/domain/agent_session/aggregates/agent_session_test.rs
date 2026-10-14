@@ -1701,6 +1701,15 @@ fn test_session表示状態_archiveを優先し端末の在否を判定する() 
             AgentSessionAvailability::Archived,
         ),
     ] {
-        assert_eq!(AgentSession::availability(lifecycle, presence), expected);
+        let mut session = AgentSession::create(
+            "availability",
+            WorkspaceIdentity::new("/repo"),
+            "/repo",
+            ProviderKind::Claude,
+            standalone_location("availability"),
+        )
+        .unwrap();
+        session.lifecycle = lifecycle;
+        assert_eq!(session.availability(presence), expected);
     }
 }

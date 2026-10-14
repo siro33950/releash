@@ -102,10 +102,25 @@ impl AgentSessionGarbageCollectionPort for Sessions {
         &self,
         _: &str,
     ) -> Result<
-        releashd::test_support::integration::sessions::ManagedPtyPresence,
+        (
+            releashd::test_support::integration::sessions::ManagedPtyPresence,
+            AgentSessionAvailability,
+        ),
         AgentSessionLifecycleUsecaseError,
     > {
-        Ok(releashd::test_support::integration::sessions::ManagedPtyPresence::Live)
+        let item = self.item.lock();
+        let Some(item) = item.as_ref() else {
+            return Err(AgentSessionLifecycleUsecaseError::NotFound);
+        };
+        let availability = if item.lifecycle == AgentSessionLifecycleDto::Archived {
+            AgentSessionAvailability::Archived
+        } else {
+            AgentSessionAvailability::Open
+        };
+        Ok((
+            releashd::test_support::integration::sessions::ManagedPtyPresence::Live,
+            availability,
+        ))
     }
     async fn reconcile_garbage_collection(
         &self,
@@ -1063,7 +1078,6 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
         },
         last_exit_abnormal: false,
         terminal_presence: Some("live".into()),
-        availability: None,
     };
     *fixture.sessions.item.lock() = Some(item.clone());
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
@@ -1072,8 +1086,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
     start_read(&fixture.subscriptions, "client", &target, None)
         .await
         .unwrap();
-    let mut expected = item.clone();
-    expected.availability = Some(AgentSessionAvailability::Open);
+    let expected = (item.clone(), AgentSessionAvailability::Open);
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(expected))))
     );
@@ -1094,13 +1107,13 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             },
             ..item.clone()
         });
-        let expected = next.clone().map(|mut value| {
-            value.availability = Some(if value.lifecycle == AgentSessionLifecycleDto::Archived {
+        let expected = next.clone().map(|value| {
+            let availability = if value.lifecycle == AgentSessionLifecycleDto::Archived {
                 AgentSessionAvailability::Archived
             } else {
                 AgentSessionAvailability::Open
-            });
-            value
+            };
+            (value, availability)
         });
         let before = fixture.sessions.calls.lock().len();
         *fixture.sessions.item.lock() = next.clone();

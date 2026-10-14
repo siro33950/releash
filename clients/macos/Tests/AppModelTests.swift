@@ -631,3 +631,52 @@ extension AppModelTests {
     await model.stop()
   }
 }
+
+
+extension AppModelTests {
+  @MainActor func testRestoredNodeTabTitlesUseAlreadyReceivedRoots() async throws {
+    let http = TestHTTPClient()
+    var roots: [Releash_Client_V1_WorkspaceTreeItem] = []
+    for (id, title, kind) in [("session-root", "Session name", Releash_Client_V1_WorkspaceContentKind.Value.session), ("command-root", "Command name", .command)] {
+      var root = Releash_Client_V1_WorkspaceTreeItem()
+      root.node.id = id; root.node.title = title; root.node.contentKind.value = kind
+      roots.append(root)
+    }
+    var worktree = Releash_Client_V1_WorkspaceWorktreeList()
+    worktree.path = "/repo/a"; worktree.snapshot.nodes.items = roots
+    var repository = Releash_Client_V1_WorkspaceRepositoryList()
+    repository.worktrees.items = [worktree]
+    http.state.withLock { $0.repositories = [repository] }
+    let model = try await testModel(http)
+    try await eventually { !model.repositories.isEmpty }
+    model.selectWorktree("/repo/a")
+    try await eventually { model.layoutLoaded }
+    for root in roots { model.openRoot(root) }
+    try await eventually { model.pendingSaves["/repo/a"] == nil }
+    model.selectWorktree("/repo/b")
+    try await eventually { model.layoutLoaded }
+    model.selectWorktree("/repo/a")
+    try await eventually { model.layoutLoaded }
+    XCTAssertEqual(model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.map(\.title), ["Session name", "Command name"])
+    await model.stop()
+  }
+
+  @MainActor func testSessionTerminalSubscriptionFailureKeepsOtherSubscriptionsConnected() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    http.state.withLock { $0.failedSubscriptionTargets["terminal"] = 1 }
+    model.subscribe("terminal", ["/repo", "deleted-session"]) { _ in }
+    try await eventually { model.failure != nil }
+    model.subscribe("node-detail", ["/repo", "other-node"]) { _ in }
+    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "node-detail" } } }
+    XCTAssertTrue(model.connected)
+    XCTAssertFalse(model.reconnecting)
+    XCTAssertEqual(http.state.withLock { $0.streams.count }, 1)
+    let previous = http.requests("StartStateSubscription").count
+    await model.stop()
+    await model.start()
+    try await eventually { model.connected && http.requests("StartStateSubscription").count > previous }
+    XCTAssertEqual(http.requests("StartStateSubscription").compactMap { try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message ?? Data()) }.filter { $0.target == "terminal" }.count, 1)
+    await model.stop()
+  }
+}
