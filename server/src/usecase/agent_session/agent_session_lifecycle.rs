@@ -127,7 +127,7 @@ impl AgentSessionLifecycleUsecase {
         }
     }
 
-    pub(crate) async fn terminal_presence(
+    pub(crate) async fn terminal_availability(
         &self,
         id: &str,
     ) -> Result<

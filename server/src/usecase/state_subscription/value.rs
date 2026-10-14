@@ -1,3 +1,4 @@
+use crate::domain::agent_session::aggregates::AgentSessionAvailability;
 use crate::usecase::{
     agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto},
     code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
@@ -21,12 +22,7 @@ pub enum StateValue {
     /// 実行木と、選択している Node が画面に出す木にあるか。
     Selection(crate::domain::workspace_tree::WorkspaceTree, bool),
     NodeDetail(Option<WorkspaceNodeDetailDto>),
-    AgentSession(
-        Option<(
-            AgentSessionItemDto,
-            crate::domain::agent_session::aggregates::AgentSessionAvailability,
-        )>,
-    ),
+    AgentSession(Option<(AgentSessionItemDto, AgentSessionAvailability)>),
     SessionHistory(AgentSessionHistoryPageDto),
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),

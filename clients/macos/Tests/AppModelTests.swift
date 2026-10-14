@@ -661,22 +661,60 @@ extension AppModelTests {
     await model.stop()
   }
 
-  @MainActor func testSessionTerminalSubscriptionFailureKeepsOtherSubscriptionsConnected() async throws {
+  @MainActor func testSessionTerminalNotFoundDuringRecoveryKeepsOtherSnapshotsConnected() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
-    http.state.withLock { $0.failedSubscriptionTargets["terminal"] = 1 }
     model.subscribe("terminal", ["/repo", "deleted-session"]) { _ in }
-    try await eventually { model.failure != nil }
-    model.subscribe("node-detail", ["/repo", "other-node"]) { _ in }
-    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "node-detail" } } }
-    XCTAssertTrue(model.connected)
-    XCTAssertFalse(model.reconnecting)
-    XCTAssertEqual(http.state.withLock { $0.streams.count }, 1)
-    let previous = http.requests("StartStateSubscription").count
+    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" } } }
+    let stream = http.state.withLock { state in
+      state.failedSubscriptionTargets["terminal"] = 1
+      state.subscriptionFailureCode = .notFound
+      var repository = Releash_Client_V1_WorkspaceRepositoryList()
+      repository.path = "/updated"
+      state.repositories = [repository]
+      return state.streams.last!
+    }
+    stream.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    try await eventually {
+      model.repositories.first?.path == "/updated" && !model.reconnecting
+        && http.state.withLock { $0.streams.count == 2 && $0.failedSubscriptionTargets["terminal"] == 0 }
+    }
+    XCTAssertNotNil(model.failure)
+    let recovered = http.state.withLock { state in
+      var repository = Releash_Client_V1_WorkspaceRepositoryList()
+      repository.path = "/reconnected"
+      state.repositories = [repository]
+      return state.streams.last!
+    }
+    recovered.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    try await eventually { model.repositories.first?.path == "/reconnected" && !model.reconnecting }
+    let attempts = http.requests("StartStateSubscription").compactMap {
+      try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
+    }.filter { $0.target == "terminal" }
+    XCTAssertEqual(attempts.count, 2)
     await model.stop()
-    await model.start()
-    try await eventually { model.connected && http.requests("StartStateSubscription").count > previous }
-    XCTAssertEqual(http.requests("StartStateSubscription").compactMap { try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message ?? Data()) }.filter { $0.target == "terminal" }.count, 1)
+  }
+
+  @MainActor func testSessionTerminalTransientFailureDuringRecoveryRetriesRegistration() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.subscribe("terminal", ["/repo", "session"]) { _ in }
+    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" } } }
+    let stream = http.state.withLock { state in
+      state.failedSubscriptionTargets["terminal"] = 1
+      state.subscriptionFailureCode = .internalError
+      return state.streams.last!
+    }
+    stream.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    try await eventually {
+      http.state.withLock {
+        $0.streams.count >= 3 && $0.subscriptions.filter { $0.target == "terminal" }.count == 2
+      } && !model.reconnecting
+    }
+    let attempts = http.requests("StartStateSubscription").compactMap {
+      try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
+    }.filter { $0.target == "terminal" }
+    XCTAssertEqual(attempts.count, 3)
     await model.stop()
   }
 }

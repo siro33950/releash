@@ -98,7 +98,7 @@ impl AgentSessionQueryService for Sessions {
 }
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for Sessions {
-    async fn terminal_presence(
+    async fn terminal_availability(
         &self,
         _: &str,
     ) -> Result<

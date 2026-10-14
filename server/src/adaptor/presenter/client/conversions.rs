@@ -1,4 +1,5 @@
 use super as wire;
+use crate::domain::agent_session::aggregates::AgentSessionAvailability;
 
 pub(super) fn cv<T, U: TryFrom<T>>(value: T) -> Result<U, String>
 where
@@ -2281,11 +2282,8 @@ impl From<crate::domain::provider_lifecycle::ProviderKind> for wire::AgentSessio
     }
 }
 
-impl From<crate::domain::agent_session::aggregates::AgentSessionAvailability>
-    for wire::AgentSessionAvailability
-{
-    fn from(value: crate::domain::agent_session::aggregates::AgentSessionAvailability) -> Self {
-        use crate::domain::agent_session::aggregates::AgentSessionAvailability;
+impl From<AgentSessionAvailability> for wire::AgentSessionAvailability {
+    fn from(value: AgentSessionAvailability) -> Self {
         match value {
             AgentSessionAvailability::Open => Self::Open,
             AgentSessionAvailability::Paused => Self::Paused,
@@ -2298,14 +2296,14 @@ impl From<crate::domain::agent_session::aggregates::AgentSessionAvailability>
 impl
     TryFrom<(
         crate::usecase::agent_session::AgentSessionItemDto,
-        crate::domain::agent_session::aggregates::AgentSessionAvailability,
+        AgentSessionAvailability,
     )> for wire::AgentSessionItemDto
 {
     type Error = String;
     fn try_from(
         (item, availability): (
             crate::usecase::agent_session::AgentSessionItemDto,
-            crate::domain::agent_session::aggregates::AgentSessionAvailability,
+            AgentSessionAvailability,
         ),
     ) -> Result<Self, String> {
         let mut value = Self::try_from(item)?;

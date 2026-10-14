@@ -238,7 +238,9 @@ import SwiftProtobuf
         failure = failureMessage(error)
         return
       }
-      if target == "terminal", args.count == 2 {
+      if target == "terminal", args.count == 2,
+        let connectError = error as? ConnectError, connectError.code == .notFound
+      {
         desiredTargets.removeValue(forKey: key)
         failure = failureMessage(error)
         return

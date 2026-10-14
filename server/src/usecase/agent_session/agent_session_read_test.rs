@@ -37,7 +37,7 @@ struct RemovingGarbageCollector {
 
 #[async_trait::async_trait]
 impl AgentSessionGarbageCollectionPort for RemovingGarbageCollector {
-    async fn terminal_presence(
+    async fn terminal_availability(
         &self,
         _: &str,
     ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
@@ -161,7 +161,7 @@ async fn test_session読取_所有済みとworkflow失敗をgc経由でも保持
     struct FailingGc(AgentSessionLifecycleUsecaseError);
     #[async_trait::async_trait]
     impl AgentSessionGarbageCollectionPort for FailingGc {
-        async fn terminal_presence(
+        async fn terminal_availability(
             &self,
             _: &str,
         ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
@@ -208,7 +208,7 @@ async fn test_session読取_プロセス在否を購読用presenceへ写す() {
     struct Presence(ManagedPtyPresence, AgentSessionAvailability);
     #[async_trait::async_trait]
     impl AgentSessionGarbageCollectionPort for Presence {
-        async fn terminal_presence(
+        async fn terminal_availability(
             &self,
             _: &str,
         ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
@@ -262,7 +262,7 @@ async fn test_session読取_gc後に残ったarchive状態にも表示判定を�
     struct ArchivingCollector(Arc<Mutex<Vec<AgentSessionItemDto>>>);
     #[async_trait::async_trait]
     impl AgentSessionGarbageCollectionPort for ArchivingCollector {
-        async fn terminal_presence(
+        async fn terminal_availability(
             &self,
             _: &str,
         ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>
@@ -302,7 +302,7 @@ async fn test_session読取_集約が消えたらqueryのitemが残っていて�
     struct MissingSession;
     #[async_trait::async_trait]
     impl AgentSessionGarbageCollectionPort for MissingSession {
-        async fn terminal_presence(
+        async fn terminal_availability(
             &self,
             _: &str,
         ) -> Result<(ManagedPtyPresence, AgentSessionAvailability), AgentSessionLifecycleUsecaseError>

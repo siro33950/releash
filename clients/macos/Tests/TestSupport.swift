@@ -27,6 +27,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var failedMethod: String?
     var failureDetail: ConnectError.Detail?
     var failedSubscriptionTargets: [String: Int] = [:]
+    var subscriptionFailureCode: Code = .internalError
     var pendingCreation: (@Sendable (HTTPResponse) -> Void)?
     var deferCreation = false
     var deferSave = false
@@ -44,7 +45,7 @@ final class TestHTTPClient: HTTPClientInterface {
   ) -> Cancelable {
     do {
       let method = request.url.lastPathComponent
-      let failed = state.withLock { state in
+      let failureCode: Code? = state.withLock { state in
         state.requests.append(request)
         if method == "StartStateSubscription",
           let subscription = try? Releash_Client_V1_StartStateSubscriptionRequest(
@@ -52,15 +53,15 @@ final class TestHTTPClient: HTTPClientInterface {
           state.failedSubscriptionTargets[subscription.target, default: 0] > 0
         {
           state.failedSubscriptionTargets[subscription.target, default: 0] -= 1
-          return true
+          return state.subscriptionFailureCode
         }
-        return state.failedMethod == method
+        return state.failedMethod == method ? .internalError : nil
       }
-      if failed {
+      if let failureCode {
         let detail = state.withLock { $0.failureDetail }
         onResponse(HTTPResponse(
-          code: .internalError, headers: [:], message: nil, trailers: [:],
-          error: ConnectError(code: .internalError, message: "\(method) failed", details: detail.map { [$0] } ?? []), tracingInfo: nil))
+          code: failureCode, headers: [:], message: nil, trailers: [:],
+          error: ConnectError(code: failureCode, message: "\(method) failed", details: detail.map { [$0] } ?? []), tracingInfo: nil))
         return Cancelable(cancel: {})
       }
       if method == "CreateWorktrees", state.withLock({ $0.deferCreation }) {
