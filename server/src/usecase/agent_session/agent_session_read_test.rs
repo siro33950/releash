@@ -86,6 +86,7 @@ fn item(id: &str) -> AgentSessionItemDto {
         },
         last_exit_abnormal: false,
         terminal_presence: None,
+        availability: None,
     }
 }
 
@@ -227,10 +228,10 @@ async fn test_session読取_プロセス在否を購読用presenceへ写す() {
         }
     }
     // Given
-    for (presence, expected) in [
-        (ManagedPtyPresence::Live, "live"),
-        (ManagedPtyPresence::ConfirmedAbsent, "absent"),
-        (ManagedPtyPresence::Unknown, "unknown"),
+    for (presence, expected, availability) in [
+        (ManagedPtyPresence::Live, "live", "open"),
+        (ManagedPtyPresence::ConfirmedAbsent, "absent", "paused"),
+        (ManagedPtyPresence::Unknown, "unknown", "indeterminate"),
     ] {
         let usecase = AgentSessionReadUsecase::new(
             Arc::new(crate::usecase::test_helpers::TestIdentity),
@@ -240,15 +241,48 @@ async fn test_session読取_プロセス在否を購読用presenceへ写す() {
             Arc::new(Presence(presence)),
         );
         // When / Then
-        assert_eq!(
-            usecase
-                .get("session")
-                .await
-                .unwrap()
-                .unwrap()
-                .terminal_presence
-                .as_deref(),
-            Some(expected)
-        );
+        let item = usecase.get("session").await.unwrap().unwrap();
+        assert_eq!(item.terminal_presence.as_deref(), Some(expected));
+        assert_eq!(item.availability.as_deref(), Some(availability));
     }
+}
+
+#[tokio::test]
+async fn test_session読取_gc後に残ったarchive状態にも表示判定を配る() {
+    // Given
+    struct ArchivingCollector(Arc<Mutex<Vec<AgentSessionItemDto>>>);
+    #[async_trait::async_trait]
+    impl AgentSessionGarbageCollectionPort for ArchivingCollector {
+        async fn terminal_presence(
+            &self,
+            _: &str,
+        ) -> Result<
+            crate::domain::agent_session::aggregates::ManagedPtyPresence,
+            AgentSessionLifecycleUsecaseError,
+        > {
+            panic!("collected terminal must not be read")
+        }
+        async fn reconcile_garbage_collection(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<AgentSessionGarbageCollectionOutcome, AgentSessionLifecycleUsecaseError>
+        {
+            self.0.lock().unwrap()[0].lifecycle = AgentSessionLifecycleDto::Archived;
+            Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
+        }
+    }
+    let items = Arc::new(Mutex::new(vec![item("session")]));
+    let usecase = AgentSessionReadUsecase::new(
+        Arc::new(crate::usecase::test_helpers::TestIdentity),
+        Arc::new(MutableSessionQuery {
+            items: items.clone(),
+        }),
+        Arc::new(ArchivingCollector(items)),
+    );
+    // When
+    let item = usecase.get("session").await.unwrap().unwrap();
+    // Then
+    assert_eq!(item.lifecycle, AgentSessionLifecycleDto::Archived);
+    assert_eq!(item.availability.as_deref(), Some("archived"));
 }

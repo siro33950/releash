@@ -40,6 +40,15 @@ pub async fn test_隔離起動_commandのcwdと環境変数は生成済みworktr
     )
     .await
     .unwrap();
+    let spawned = records
+        .iter()
+        .find_map(|record| match &record.fact {
+            NodeFact::CommandSpawned(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(spawned.shell.as_deref(), Some("/bin/sh"));
+    assert_eq!(spawned.cwd.as_deref(), Some(path));
     assert_eq!(
         records
             .iter()
@@ -1426,6 +1435,8 @@ pub async fn test_隔離合成子競合_最新記録で子開始を再評価し�
                             execution_id: snapshot.execution_id.clone(),
                             node_execution_id: sibling.id.clone(),
                             display_command: format!("external-{attempt}"),
+                            shell: None,
+                            cwd: None,
                             timestamp: current_timestamp(),
                         }
                     }],
@@ -1557,6 +1568,8 @@ pub async fn test_隔離合成子競合_上限後も兄弟と競合したchild�
                 execution_id: snapshot.execution_id.clone(),
                 node_execution_id: writer.clone(),
                 display_command: format!("external-{attempt}"),
+                shell: None,
+                cwd: None,
                 timestamp: current_timestamp(),
             }],
         )

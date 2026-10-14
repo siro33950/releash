@@ -175,7 +175,7 @@ final class Fixture: Sendable {
     return worktree.executions.contains { $0.id == executionID && $0.isWorkflow && $0.status == "active" }
   }
 
-  func waitForState(target: String,
+  func waitForState(target: String, isolation: isolated (any Actor)? = #isolation,
     matches: (Releash_Client_V1_StatePayload) throws -> Bool) async throws
   {
     let (client, headers) = try client()

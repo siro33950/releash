@@ -118,6 +118,7 @@ pub struct WorkspaceTreeNode {
     pub completion_signals: NodeCompletionSignalState,
     pub has_artifact: bool,
     pub session_id: Option<String>,
+    pub provider: Option<crate::domain::provider_lifecycle::ProviderKind>,
     pub can_rename: bool,
     pub can_approve: bool,
     pub can_retry: bool,
@@ -125,12 +126,23 @@ pub struct WorkspaceTreeNode {
     pub can_abort: bool,
     pub can_archive: bool,
     pub display_command: Option<String>,
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
     pub command_result: Option<WorkspaceCommandResult>,
     /// Aggregate-only rule used for established fanout occurrence IDs.
     pub dynamic_fanout: bool,
 }
 
 impl WorkspaceTreeNode {
+    pub fn failure_reason(&self) -> Option<String> {
+        self.error_reason.clone().or_else(|| {
+            self.command_result
+                .as_ref()
+                .filter(|result| result.exit_code != 0)
+                .map(|result| format!("Command exited with code {}", result.exit_code))
+        })
+    }
+
     pub fn updated_at(&self) -> f64 {
         f64::from_bits(self.updated_at_bits)
     }
@@ -277,6 +289,8 @@ pub enum WorkspaceStructureFact {
         execution_id: String,
         node_execution_id: String,
         display_command: String,
+        shell: Option<String>,
+        cwd: Option<String>,
         timestamp: f64,
     },
     NodeArtifactProduced {

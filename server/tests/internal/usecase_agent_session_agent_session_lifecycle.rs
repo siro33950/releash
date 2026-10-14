@@ -2588,6 +2588,28 @@ pub async fn test_agent_session_restoreはprocessを起動せずpausedになり�
         .archive("restore-agent", "archive")
         .await
         .unwrap();
+    for request in ["reselect-tab", "reopen-app"] {
+        assert_eq!(
+            context
+                .lifecycle
+                .open("restore-agent", 24, 80, request)
+                .await
+                .unwrap(),
+            AgentSessionOpenOutcome::Archived
+        );
+        assert_eq!(
+            context
+                .sessions
+                .find("restore-agent")
+                .await
+                .unwrap()
+                .unwrap()
+                .session()
+                .lifecycle(),
+            AgentSessionLifecycle::Archived
+        );
+        assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
+    }
     *context.terminal.fail_spawn.lock().unwrap() = true;
     let selected = context
         .lifecycle

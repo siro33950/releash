@@ -248,11 +248,16 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(wire::WorkspaceNode {
+        provider: item
+            .session()
+            .map(|session| session.provider())
+            .or(node.provider)
+            .map(Into::into),
         process_presence: Some(cv(node.process_presence.as_str())?),
         id: Some(item.id().to_owned()),
         title: Some(item.title().to_owned()),
         status: Some(cv(node.status_classification.as_public_str())?),
-        error_reason: node.error_reason.clone(),
+        error_reason: node.failure_reason(),
         content_kind: Some(cv(if node.kind == WorkspaceNodeKind::WorkflowCommand {
             "command"
         } else {
@@ -344,6 +349,7 @@ fn session_item(
         }),
         last_exit_abnormal: Some(session.last_exit_abnormal()),
         terminal_presence: None,
+        availability: None,
     })
 }
 

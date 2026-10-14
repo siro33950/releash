@@ -135,6 +135,8 @@ pub struct NodeExecution {
     pub process_presence: NodeProcessPresence,
     pub session_id: Option<String>,
     pub display_command: Option<String>,
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
     pub result_summary: Option<String>,
     pub artifact: Option<Artifact>,
     pub token_usage: Option<TokenUsage>,

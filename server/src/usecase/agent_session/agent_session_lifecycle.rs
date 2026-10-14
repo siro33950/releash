@@ -25,6 +25,7 @@ pub enum AgentSessionOpenOutcome {
     Attached,
     Resumed,
     Restored,
+    Archived,
     Paused,
     Indeterminate,
     GarbageCollected,
@@ -184,10 +185,7 @@ impl AgentSessionLifecycleUsecase {
             AgentSessionOpenAction::Attach => Ok(AgentSessionOpenOutcome::Attached),
             AgentSessionOpenAction::Indeterminate => Ok(AgentSessionOpenOutcome::Indeterminate),
             AgentSessionOpenAction::RemainPaused => Ok(AgentSessionOpenOutcome::Paused),
-            AgentSessionOpenAction::Restore => {
-                self.restore_locked(agent_session_id, rows, cols, caller_request_id)
-                    .await
-            }
+            AgentSessionOpenAction::RemainArchived => Ok(AgentSessionOpenOutcome::Archived),
             AgentSessionOpenAction::GarbageCollect => {
                 let tree_id = session.session().tree_location().tree_id().to_string();
                 self.remove_gc(

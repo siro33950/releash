@@ -27,6 +27,7 @@ fn node(kind: WorkspaceNodeKind, status: WorkspaceNodeStatus) -> WorkspaceTreeNo
         completion_signals: NodeCompletionSignalState::Pending,
         has_artifact: false,
         session_id: (kind == WorkspaceNodeKind::WorkflowSession).then(|| "session".into()),
+        provider: None,
         can_rename: false,
         can_approve: false,
         can_retry: false,
@@ -34,6 +35,8 @@ fn node(kind: WorkspaceNodeKind, status: WorkspaceNodeStatus) -> WorkspaceTreeNo
         can_abort: false,
         can_archive: false,
         display_command: None,
+        shell: None,
+        cwd: None,
         command_result: None,
         dynamic_fanout: false,
     }
@@ -397,4 +400,28 @@ fn test_表示状態分類_緑の公開値はidle() {
     let value = classification.as_public_str();
     // Then
     assert_eq!(value, "idle");
+}
+
+#[test]
+fn test_command失敗理由_非ゼロ終了を示し記録された理由を優先する() {
+    // Given
+    let mut command = node(
+        WorkspaceNodeKind::WorkflowCommand,
+        WorkspaceNodeStatus::Completed,
+    );
+    command.command_result = Some(WorkspaceCommandResult {
+        exit_code: 0,
+        duration: 1,
+        stdout: "out".into(),
+        stderr: "err".into(),
+    });
+    // When / Then
+    assert_eq!(command.failure_reason(), None);
+    command.command_result.as_mut().unwrap().exit_code = 2;
+    assert_eq!(
+        command.failure_reason().as_deref(),
+        Some("Command exited with code 2")
+    );
+    command.error_reason = Some("process failed".into());
+    assert_eq!(command.failure_reason().as_deref(), Some("process failed"));
 }

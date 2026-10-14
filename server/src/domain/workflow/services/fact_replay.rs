@@ -556,6 +556,8 @@ fn read_model_node(
         process_presence: Default::default(),
         session_id: node.session_id.clone(),
         display_command: node.display_command.clone(),
+        shell: node.shell.clone(),
+        cwd: node.cwd.clone(),
         result_summary,
         artifact: node.artifact.clone().map(|value| Artifact {
             node_name: node.node_name.clone(),
@@ -617,8 +619,13 @@ pub(super) fn apply_record(
             Ok(())
         }
         NodeFact::CommandSpawned(fact) => {
-            let _ =
-                aggregate.record_node_display_command(id, fact.display_command.clone(), timestamp);
+            let _ = aggregate.record_node_display_command(
+                id,
+                fact.display_command.clone(),
+                fact.shell.clone(),
+                fact.cwd.clone(),
+                timestamp,
+            );
             Ok(())
         }
         NodeFact::ProcessExited(fact) => match record.meta.kind {

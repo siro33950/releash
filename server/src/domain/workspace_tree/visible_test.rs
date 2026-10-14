@@ -38,6 +38,7 @@ fn node(id: &str, parent_id: Option<&str>, kind: WorkspaceNodeKind) -> Workspace
         completion_signals: NodeCompletionSignalState::Pending,
         has_artifact: false,
         session_id: None,
+        provider: None,
         can_rename: false,
         can_approve: false,
         can_retry: false,
@@ -45,6 +46,8 @@ fn node(id: &str, parent_id: Option<&str>, kind: WorkspaceNodeKind) -> Workspace
         can_abort: false,
         can_archive: false,
         display_command: None,
+        shell: None,
+        cwd: None,
         command_result: None,
         dynamic_fanout: false,
     }

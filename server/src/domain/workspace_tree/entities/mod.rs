@@ -310,6 +310,7 @@ impl WorkspaceTree {
             completion_signals,
             has_artifact: false,
             session_id: None,
+            provider: None,
             can_rename: false,
             can_approve: false,
             can_retry: false,
@@ -318,6 +319,8 @@ impl WorkspaceTree {
             can_abort: true,
             can_archive: true,
             display_command: None,
+            shell: None,
+            cwd: None,
             command_result: None,
             dynamic_fanout: false,
         });
@@ -353,6 +356,7 @@ impl WorkspaceTree {
                 completion_signals,
                 has_artifact: false,
                 session_id: None,
+                provider: None,
                 can_rename: false,
                 can_approve: false,
                 can_retry: false,
@@ -361,6 +365,8 @@ impl WorkspaceTree {
                 can_abort: false,
                 can_archive: false,
                 display_command: None,
+                shell: None,
+                cwd: None,
                 command_result: None,
                 dynamic_fanout: true,
             });
@@ -491,6 +497,7 @@ impl WorkspaceTree {
             completion_signals,
             has_artifact: false,
             session_id: None,
+            provider: None,
             can_rename: false,
             can_approve: false,
             can_retry: false,
@@ -499,6 +506,8 @@ impl WorkspaceTree {
             can_abort: false,
             can_archive: false,
             display_command: None,
+            shell: None,
+            cwd: None,
             command_result: None,
             dynamic_fanout,
         };
@@ -806,6 +815,8 @@ impl WorkspaceTreeProjector {
                     execution_id,
                     node_execution_id,
                     display_command,
+                    shell,
+                    cwd,
                     timestamp,
                 } => {
                     let node = tree
@@ -814,6 +825,8 @@ impl WorkspaceTreeProjector {
                             WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
                         })?;
                     node.display_command = Some(display_command);
+                    node.shell = shell;
+                    node.cwd = cwd;
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeArtifactProduced {

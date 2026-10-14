@@ -4,19 +4,13 @@ import SwiftUI
 struct PaneOpenMenu: View {
   @Bindable var model: AppModel
   let pane: PaneID
-  @State private var launch: LaunchKind?
   enum LaunchKind: String, Identifiable {
     case session, workflow
     var id: Self { self }
   }
   var body: some View {
     Menu {
-      Button("Session", systemImage: "sparkle") { launch = .session }
-      Button("Workflow", systemImage: "play") { launch = .workflow }
-      Divider()
-      ForEach([PaneTab.Kind.terminal, .workflow], id: \.self) { kind in
-        Button(kind.title, systemImage: kind.icon) { model.panes.open(kind, in: pane) }
-      }
+      Button("Terminal", systemImage: "terminal") { model.panes.open(.terminal, in: pane) }
     } label: {
       Image(systemName: "plus")
     }
@@ -29,11 +23,6 @@ struct PaneOpenMenu: View {
     .padding(.horizontal, UIStyle.spacing)
     .help("開く")
     .accessibilityLabel("開く")
-    .sheet(item: $launch) { kind in
-      if let path = model.selectedWorktree {
-        PaneLaunchView(model: model, pane: pane, path: path, kind: kind)
-      }
-    }
   }
 }
 
@@ -107,8 +96,9 @@ struct PaneLaunchView: View {
     request.rows = UIStyle.terminalRows
     request.cols = UIStyle.terminalColumns
     request.callerRequestID = UUID().uuidString
-    _ = try await client.createAgentSession(request: request, headers: model.headers).result.get()
-    model.panes.open(.session, in: pane)
+    let selection = try await client.createAgentSession(request: request, headers: model.headers).result.get()
+    model.panes.openNode(.session, id: selection.nodeID, title: "Session", in: pane)
+    model.savePaneLayout()
   }
 
   func startWorkflow(name: String, requestText: String) async throws {
@@ -117,7 +107,8 @@ struct PaneLaunchView: View {
     request.workflowName = name
     request.worktreePath = path
     request.request = requestText
-    _ = try await client.startWorkflow(request: request, headers: model.headers).result.get()
-    model.panes.open(.workflow, in: pane)
+    let execution = try await client.startWorkflow(request: request, headers: model.headers).result.get()
+    model.pendingRoots[path] = execution.value
+    model.openPendingRoot()
   }
 }

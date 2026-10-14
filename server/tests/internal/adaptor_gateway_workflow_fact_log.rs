@@ -849,6 +849,8 @@ pub(crate) mod reconciliation_tests {
                 execution_id: TREE.to_string(),
                 node_execution_id: outcome.starts[0].node_execution_id().to_string(),
                 display_command: "true".to_string(),
+                shell: None,
+                cwd: None,
                 timestamp: 11.5,
             }],
         )
@@ -1149,6 +1151,8 @@ pub(crate) mod round_trip_tests {
                 execution_id: TREE.to_string(),
                 node_execution_id: "run-exec".to_string(),
                 display_command: "true".to_string(),
+                shell: None,
+                cwd: None,
                 timestamp: 5.0,
             }],
             vec![

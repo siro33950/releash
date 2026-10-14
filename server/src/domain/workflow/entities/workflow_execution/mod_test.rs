@@ -297,7 +297,13 @@ fn test_node起動_起動済みのleafと終了したleafは再起動しない()
                 execution.attach_node_session(&leaf.node_execution_id, "agent".into(), 2.0);
             }
             LeafKind::Command => {
-                execution.record_node_display_command(&leaf.node_execution_id, "true".into(), 2.0);
+                execution.record_node_display_command(
+                    &leaf.node_execution_id,
+                    "true".into(),
+                    None,
+                    None,
+                    2.0,
+                );
             }
         }
 
@@ -3168,4 +3174,59 @@ pub(crate) mod tests {
             "part must have one execution instance per visit"
         );
     }
+}
+
+#[test]
+fn test_command準備_実行環境を記録し終了済みattemptには上書きしない() {
+    // Given
+    let mut tree = execution("name: check\ndescription: test\nnodes:\n  main: {command: 'true'}\n");
+    tree.begin_node_attempt(
+        "main".into(),
+        NodeKindName::Command,
+        1,
+        None,
+        "root".into(),
+        1.0,
+    )
+    .unwrap();
+    // When
+    assert_eq!(
+        tree.record_node_display_command(
+            "root",
+            "true".into(),
+            Some("/bin/sh".into()),
+            Some("/repo".into()),
+            2.0
+        ),
+        TransitionOutcome::Applied
+    );
+    // Then
+    let node = tree.node_execution("root").unwrap();
+    assert_eq!(node.shell.as_deref(), Some("/bin/sh"));
+    assert_eq!(node.cwd.as_deref(), Some("/repo"));
+    assert_eq!(
+        tree.record_node_display_command(
+            "root",
+            "true".into(),
+            Some("/bin/sh".into()),
+            Some("/repo".into()),
+            3.0
+        ),
+        TransitionOutcome::AlreadyApplied
+    );
+    tree.abort_node_execution("root", 4.0);
+    assert_eq!(
+        tree.record_node_display_command(
+            "root",
+            "other".into(),
+            Some("other".into()),
+            Some("other".into()),
+            5.0
+        ),
+        TransitionOutcome::NotApplicable
+    );
+    assert_eq!(
+        tree.node_execution("root").unwrap().cwd.as_deref(),
+        Some("/repo")
+    );
 }

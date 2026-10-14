@@ -42,6 +42,8 @@ pub struct AgentSessionItemDto {
     pub last_exit_abnormal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_presence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

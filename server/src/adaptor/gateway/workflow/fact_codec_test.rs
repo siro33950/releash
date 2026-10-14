@@ -29,6 +29,8 @@ mod vocabulary_tests {
             }),
             NodeFact::CommandSpawned(CommandSpawnedFact {
                 display_command: "true".to_string(),
+                shell: None,
+                cwd: None,
             }),
             NodeFact::ProcessExited(ProcessExitedFact {
                 failure_kind: None,
@@ -216,6 +218,8 @@ mod vocabulary_tests {
             decoded,
             NodeFact::CommandSpawned(CommandSpawnedFact {
                 display_command: "true".to_string(),
+                shell: None,
+                cwd: None,
             })
         );
     }
@@ -515,4 +519,27 @@ fn test_repository所属の観測事実_往復し欠損と空のpathを拒否す
     ] {
         assert!(fact_codec::decode(fact_codec::event_type(&fact), invalid).is_err());
     }
+}
+
+#[test]
+fn test_command起動事実_実行環境を往復し旧記録も読める() {
+    use super::*;
+    // Given
+    let fact = NodeFact::CommandSpawned(CommandSpawnedFact {
+        display_command: "printf hello".into(),
+        shell: Some("/bin/sh".into()),
+        cwd: Some("/repo".into()),
+    });
+    // When / Then
+    let encoded = encode_detail(&fact).unwrap();
+    assert_eq!(decode("command_spawned", &encoded).unwrap(), fact);
+    let old = decode("command_spawned", r#"{"displayCommand":"true"}"#).unwrap();
+    assert_eq!(
+        old,
+        NodeFact::CommandSpawned(CommandSpawnedFact {
+            display_command: "true".into(),
+            shell: None,
+            cwd: None
+        })
+    );
 }

@@ -34,6 +34,8 @@ pub(crate) mod tests {
                     status: RuntimeNodeExecutionStatus::WaitingApproval,
                     session_id: None,
                     display_command: None,
+                    shell: None,
+                    cwd: None,
                     artifact: None,
                     result_summary: None,
                     token_usage: None,

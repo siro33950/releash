@@ -190,6 +190,8 @@ pub(crate) mod tests {
             status,
             session_id: None,
             display_command: Some("cargo test".to_string()),
+            shell: None,
+            cwd: None,
             artifact: None,
             result_summary: None,
             token_usage: None,
@@ -1006,4 +1008,43 @@ pub(crate) mod tests {
             }
         }
     }
+}
+
+#[test]
+fn test_sessionノード_providerを定義から配る() {
+    // Given
+    let definition: WorkflowDefinition = serde_saphyr::from_str(
+        "name: test\ndescription: test\nnodes:\n  test: {session: {provider: codex}}\n",
+    )
+    .unwrap();
+    let mut runtime = node("session", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+    runtime.kind = NodeKindName::Session;
+    runtime.display_command = None;
+    // When
+    let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+        process_presences: &Default::default(),
+        execution_id: EXECUTION_ID,
+        workflow_name: "test",
+        workspace_identity: "/repo",
+        workflow_definition: Some(&definition),
+        node_executions: &[runtime],
+        retry_predecessors: &Default::default(),
+        delegate_waiting_node_ids: &Default::default(),
+        execution_active: true,
+        started_at: 1.0,
+        updated_at: 2.0,
+        execution: &execution(),
+        session_activities: &Default::default(),
+        session_display_names: &Default::default(),
+    })
+    .unwrap();
+    // Then
+    let session = nodes
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("session"))
+        .unwrap();
+    assert_eq!(
+        session.provider,
+        Some(crate::domain::provider_lifecycle::ProviderKind::Codex)
+    );
 }

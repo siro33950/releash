@@ -154,6 +154,12 @@ final class WorkspaceActionsTests: XCTestCase {
     let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
     let launch = PaneLaunchView(model: model, pane: pane, path: branch.worktreePath, kind: .session)
     try await launch.startSession(provider.wireName)
+    var root = Releash_Client_V1_WorkspaceTreeItem()
+    root.sequence.id = "workflow-execution"
+    root.sequence.title = "review"
+    var tree = Releash_Client_V1_WorkspaceWorktreeList()
+    tree.path = branch.worktreePath; tree.snapshot.nodes.items = [root]
+    repository.worktrees.items = [tree]; model.repositories = [repository]
     try await launch.startWorkflow(name: "review", requestText: "check changes")
     XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session, .workflow])
     model.panes.closeCurrentTab()

@@ -268,6 +268,8 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::NodeDetail(Some(WorkspaceNodeDetailDto {
+                execution_id: None,
+                can_abort: false,
                 process_presence: "live",
                 worktree: None,
                 id: "node".into(),
@@ -291,6 +293,8 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             })),
             W::NodeDetail(wire::NullableWorkspaceNodeDetailDto {
                 value: Some(wire::WorkspaceNodeDetailDto {
+                    execution_id: None,
+                    can_abort: Some(false),
                     process_presence: Some(wire::NodeProcessPresence {
                         value: Some(wire::node_process_presence::Value::Live as i32),
                     }),
@@ -343,6 +347,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 },
                 last_exit_abnormal: false,
                 terminal_presence: None,
+                availability: None,
             })),
             W::AgentSession(wire::NullableAgentSessionItemDto {
                 value: Some(wire::AgentSessionItemDto {
@@ -367,6 +372,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     }),
                     last_exit_abnormal: Some(false),
                     terminal_presence: None,
+                    availability: None,
                 }),
             }),
         ),

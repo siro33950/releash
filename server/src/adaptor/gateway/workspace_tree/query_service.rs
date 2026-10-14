@@ -80,11 +80,24 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        self.repository
+        let Some(node) = self
+            .repository
             .load_node(workspace_identity, node_id)
             .await
-            .map(|node| node.map(node_detail))
-            .map_err(query_error)
+            .map_err(query_error)?
+        else {
+            return Ok(None);
+        };
+        let can_abort = if let Some(id) = node.execution_id.as_deref() {
+            let Some(execution) = self.repository.folded_tree(id).await.map_err(query_error)?
+            else {
+                return Ok(None);
+            };
+            execution.1.status.can_abort()
+        } else {
+            false
+        };
+        Ok(Some(node_detail(node, can_abort)))
     }
 
     async fn execution_summaries(
@@ -100,8 +113,9 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
     }
 }
 
-pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
+pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
+    let error_reason = node.failure_reason();
     let submit_received = matches!(
         node.completion_signals,
         crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
@@ -122,6 +136,8 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         WorkspaceNodeKind::WorkflowCommand => {
             WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
                 display_command: node.display_command,
+                shell: node.shell,
+                cwd: node.cwd,
                 result: node.command_result.map(|result| WorkspaceCommandResultDto {
                     exit_code: result.exit_code,
                     duration: result.duration,
@@ -135,6 +151,8 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         }),
     };
     WorkspaceNodeDetailDto {
+        execution_id: node.execution_id,
+        can_abort,
         process_presence: node.process_presence.as_str(),
         worktree: node
             .worktree
@@ -149,7 +167,7 @@ pub fn node_detail(node: WorkspaceTreeNode) -> WorkspaceNodeDetailDto {
         stop_received,
         waiting_for,
         has_artifact: node.has_artifact,
-        error_reason: node.error_reason,
+        error_reason,
         capabilities: WorkspaceNodeCapabilitiesDto {
             can_rename: node.can_rename,
             can_approve: node.can_approve,

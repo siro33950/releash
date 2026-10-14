@@ -253,7 +253,7 @@ pub enum ManagedPtyPresence {
 pub(crate) enum AgentSessionOpenAction {
     Attach,
     Resume,
-    Restore,
+    RemainArchived,
     RemainPaused,
     Indeterminate,
     GarbageCollect,
@@ -545,13 +545,30 @@ impl AgentSession {
         self.last_exit_code
     }
 
+    pub(crate) fn availability(
+        lifecycle: AgentSessionLifecycle,
+        presence: ManagedPtyPresence,
+    ) -> &'static str {
+        if lifecycle == AgentSessionLifecycle::Archived {
+            return "archived";
+        }
+        match presence {
+            ManagedPtyPresence::Live => "open",
+            ManagedPtyPresence::Unknown => "indeterminate",
+            ManagedPtyPresence::ConfirmedAbsent => "paused",
+        }
+    }
+
     pub(crate) fn open_action(&self, pty_presence: ManagedPtyPresence) -> AgentSessionOpenAction {
+        if self.lifecycle == AgentSessionLifecycle::Archived {
+            return AgentSessionOpenAction::RemainArchived;
+        }
         match pty_presence {
             ManagedPtyPresence::Live => AgentSessionOpenAction::Attach,
             ManagedPtyPresence::Unknown => AgentSessionOpenAction::Indeterminate,
             ManagedPtyPresence::ConfirmedAbsent => match self.lifecycle {
                 AgentSessionLifecycle::Paused => AgentSessionOpenAction::RemainPaused,
-                AgentSessionLifecycle::Archived => AgentSessionOpenAction::Restore,
+                AgentSessionLifecycle::Archived => AgentSessionOpenAction::RemainArchived,
                 AgentSessionLifecycle::Open if self.provider_session_id.is_some() => {
                     AgentSessionOpenAction::Resume
                 }

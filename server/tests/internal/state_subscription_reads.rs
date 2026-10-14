@@ -1062,6 +1062,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
         },
         last_exit_abnormal: false,
         terminal_presence: Some("live".into()),
+        availability: None,
     };
     *fixture.sessions.item.lock() = Some(item.clone());
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
@@ -1070,8 +1071,10 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
     start_read(&fixture.subscriptions, "client", &target, None)
         .await
         .unwrap();
+    let mut expected = item.clone();
+    expected.availability = Some("open".into());
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(item.clone()))))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(expected))))
     );
     stream.next().await;
     // When / Then
@@ -1090,6 +1093,17 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             },
             ..item.clone()
         });
+        let expected = next.clone().map(|mut value| {
+            value.availability = Some(
+                if value.lifecycle == AgentSessionLifecycleDto::Archived {
+                    "archived"
+                } else {
+                    "open"
+                }
+                .into(),
+            );
+            value
+        });
         let before = fixture.sessions.calls.lock().len();
         *fixture.sessions.item.lock() = next.clone();
         fixture
@@ -1099,7 +1113,7 @@ pub async fn test_agent_session購読_状態変更通知から再読取して同
             .await
             .unwrap();
         assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releashd::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(next)))
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releashd::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(expected)))
         );
         assert_eq!(fixture.sessions.calls.lock().len(), before + 1);
         assert!(fixture
@@ -1251,6 +1265,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     let panes = PaneLayout::pane(
         "pane".into(),
         vec![PaneTab {
+            node_id: None,
             id: "workflow".into(),
             kind: PaneTabKind::Workflow,
             file_path: None,

@@ -111,5 +111,6 @@ fn agent_session_item_from_facts(
         },
         last_exit_abnormal: view.last_exit_abnormal,
         terminal_presence: None,
+        availability: None,
     })
 }

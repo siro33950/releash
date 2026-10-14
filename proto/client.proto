@@ -896,6 +896,7 @@ message AgentSessionItemDto {
   optional AgentSessionOperationsDto operations = 10 [json_name = "operations", (json_required) = true];
   optional bool last_exit_abnormal = 11 [json_name = "lastExitAbnormal", (json_required) = true];
   optional string terminal_presence = 12 [json_name = "terminalPresence"];
+  optional string availability = 13 [json_name = "availability"];
 }
 
 message AgentSessionProviderDto {
@@ -1611,6 +1612,8 @@ message ApprovalTargetView {
 
 
 message WorkspaceNodeDetailDto {
+  optional string execution_id = 16 [json_name = "executionId"];
+  optional bool can_abort = 17 [json_name = "canAbort"];
   optional NodeProcessPresence process_presence = 15 [json_name = "processPresence", (json_required) = true];
   optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
@@ -1652,6 +1655,8 @@ message WorkspaceSessionNodeContentDto {
 }
 
 message WorkspaceCommandNodeContentDto {
+  optional string shell = 3 [json_name = "shell"];
+  optional string cwd = 4 [json_name = "cwd"];
   optional string display_command = 1 [json_name = "displayCommand", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional WorkspaceCommandResultDto result = 2 [json_name = "result", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
 }
@@ -1694,6 +1699,7 @@ message WorkspaceTreeItem {
 }
 
 message WorkspaceNode {
+  optional AgentSessionProviderDto provider = 14 [json_name = "provider"];
   optional NodeProcessPresence process_presence = 13 [json_name = "processPresence", (json_required) = true];
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string title = 2 [json_name = "title", (json_required) = true];
@@ -1946,6 +1952,7 @@ message PaneTab {
   optional string file_path = 3;
   optional string file_mode = 4;
   optional string file_base = 5;
+  optional string node_id = 6;
 }
 enum PaneTabKind {
   PANE_TAB_KIND_UNSPECIFIED = 0;
@@ -1953,6 +1960,7 @@ enum PaneTabKind {
   PANE_TAB_KIND_WORKFLOW = 2 [(json_enum_name) = "workflow"];
   PANE_TAB_KIND_FILE = 3 [(json_enum_name) = "file"];
   PANE_TAB_KIND_SESSION = 4 [(json_enum_name) = "session"];
+  PANE_TAB_KIND_COMMAND = 5 [(json_enum_name) = "command"];
 }
 enum SplitAxis {
   SPLIT_AXIS_UNSPECIFIED = 0;

@@ -463,3 +463,41 @@ extension TerminalSessionTests {
     await model.stop()
   }
 }
+
+extension TerminalSessionTests {
+  @MainActor func testAgentTerminalUsesSessionOwnerAndPreservesInputProtocol() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let terminal = model.terminal(path: "/repo", id: "agent-session", agent: true)
+    terminal.input("hello\r")
+    try await eventually { !http.requests("WriteTerminalSurface").isEmpty }
+    let write = try Releash_Client_V1_WriteTerminalSurfaceRequest(serializedBytes: XCTUnwrap(http.requests("WriteTerminalSurface").last?.message))
+    XCTAssertEqual(write.owner.session.sessionID, "agent-session")
+    XCTAssertEqual(write.owner.session.workspacePath, "/repo")
+    XCTAssertEqual(write.sequence, 0)
+    XCTAssertEqual(write.data, "hello\r")
+    XCTAssertFalse(http.requests("OpenAgentSession").isEmpty)
+    model.releaseAgentTerminal(path: "/repo", id: "agent-session")
+    XCTAssertTrue(http.requests("KillTerminalSurface").isEmpty)
+    await model.stop()
+  }
+}
+
+extension TerminalSessionTests {
+  @MainActor func testHiddenTerminalRelinquishesKeyboardWithoutTakingOtherControlsFocus() {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: .titled, backing: .buffered, defer: false)
+    let screen = TerminalScreen(frame: window.contentView!.bounds)
+    window.contentView!.addSubview(screen)
+    screen.setFocused(true)
+    XCTAssertTrue(window.firstResponder === screen)
+    screen.setFocused(false)
+    XCTAssertFalse(window.firstResponder === screen)
+    screen.setFocused(true)
+    XCTAssertTrue(window.firstResponder === screen)
+    let other = NSTextView(frame: window.contentView!.bounds)
+    window.contentView!.addSubview(other)
+    window.makeFirstResponder(other)
+    screen.setFocused(false)
+    XCTAssertTrue(window.firstResponder === other)
+  }
+}

@@ -65,7 +65,7 @@ impl DelegateContinuationGateway for Gateway {
             )
             .is_ok()
         {
-            execution.record_node_display_command("node-1", "codex".into(), 8.0);
+            execution.record_node_display_command("node-1", "codex".into(), None, None, 8.0);
             return Err(WorkflowRuntimeError::Conflict(
                 "changed before commit".into(),
             ));
@@ -220,7 +220,7 @@ async fn test_delegate_送付中の変更と末尾競合を保持し再送せず
         let (gateway, injection) = fixture(None);
         if during_send {
             *gateway.on_send.lock().unwrap() = Some(|execution| {
-                execution.record_node_display_command("node-1", "codex".into(), 8.0);
+                execution.record_node_display_command("node-1", "codex".into(), None, None, 8.0);
             });
         } else {
             gateway

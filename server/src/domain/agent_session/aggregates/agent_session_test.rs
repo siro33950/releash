@@ -1391,10 +1391,16 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
     open.complete_resume(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
     open.archive().unwrap();
-    assert_eq!(
-        open.open_action(ManagedPtyPresence::ConfirmedAbsent),
-        AgentSessionOpenAction::Restore
-    );
+    for presence in [
+        ManagedPtyPresence::ConfirmedAbsent,
+        ManagedPtyPresence::Live,
+        ManagedPtyPresence::Unknown,
+    ] {
+        assert_eq!(
+            open.open_action(presence),
+            AgentSessionOpenAction::RemainArchived
+        );
+    }
 }
 
 #[test]
@@ -1661,5 +1667,39 @@ fn test_agent_session_gc_archiveとrestore後の未知provider記録を削除し
         ));
         assert_eq!(session.lifecycle(), lifecycle);
         assert!(session.uncommitted_events().is_empty());
+    }
+}
+
+#[test]
+fn test_session表示状態_archiveを優先し端末の在否を判定する() {
+    // Given / When / Then
+    for (lifecycle, presence, expected) in [
+        (
+            AgentSessionLifecycle::Open,
+            ManagedPtyPresence::Live,
+            "open",
+        ),
+        (
+            AgentSessionLifecycle::Paused,
+            ManagedPtyPresence::ConfirmedAbsent,
+            "paused",
+        ),
+        (
+            AgentSessionLifecycle::Open,
+            ManagedPtyPresence::Unknown,
+            "indeterminate",
+        ),
+        (
+            AgentSessionLifecycle::Archived,
+            ManagedPtyPresence::Live,
+            "archived",
+        ),
+        (
+            AgentSessionLifecycle::Archived,
+            ManagedPtyPresence::Unknown,
+            "archived",
+        ),
+    ] {
+        assert_eq!(AgentSession::availability(lifecycle, presence), expected);
     }
 }

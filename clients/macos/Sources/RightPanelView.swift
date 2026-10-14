@@ -3,16 +3,16 @@ import SwiftUI
 struct RightPanelView: View {
   @Binding var expanded: Bool
   var model: AppModel
-  @State private var selected = Panel.files
+  @State private var selected = Panel.roots
   enum Panel: String, CaseIterable, Identifiable {
-    case files, sourceControl, threads, tasks
+    case roots, files, sourceControl, threads
     var id: Self { self }
     var title: String {
       switch self {
       case .files: "ファイル"
       case .sourceControl: "Source Control"
       case .threads: "Thread"
-      case .tasks: "タスク"
+      case .roots: "Root の一覧"
       }
     }
     var icon: String {
@@ -20,7 +20,7 @@ struct RightPanelView: View {
       case .files: "doc"
       case .sourceControl: "arrow.triangle.branch"
       case .threads: "bubble.left"
-      case .tasks: "checklist"
+      case .roots: "list.bullet"
       }
     }
   }
@@ -52,7 +52,9 @@ struct RightPanelView: View {
       .padding(.horizontal, UIStyle.spacing)
       .frame(height: UIStyle.tabBarHeight)
       Divider()
-      if expanded, selected == .files, let path = model.selectedWorktree {
+      if expanded, selected == .roots, let path = model.selectedWorktree {
+        RootListView(model: model, path: path).id(path)
+      } else if expanded, selected == .files, let path = model.selectedWorktree {
         FileTreeView(model: model, worktree: path).id(path)
       } else { Spacer(minLength: 0) }
     }

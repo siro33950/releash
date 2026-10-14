@@ -2538,6 +2538,8 @@ fn test_終端復元_読める定義と定義なしで同じ状態と記録属�
         root.clone(),
         NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
             display_command: "true".into(),
+            shell: None,
+            cwd: None,
         }),
     );
     log.push(root, NodeFact::ExecutionCompleted);

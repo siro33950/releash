@@ -2,6 +2,7 @@ use super::*;
 
 fn tab(id: &str, kind: PaneTabKind) -> PaneTab {
     PaneTab {
+        node_id: None,
         id: id.into(),
         kind,
         file_path: None,
@@ -153,4 +154,20 @@ fn test_ファイルタブ_選択とpathを保持し不正な表示値を拒否�
     assert!(PaneLayout::pane("pane".into(), vec![file.clone()], Some("file".into())).is_ok());
     file.kind = PaneTabKind::Terminal;
     assert!(PaneLayout::pane("pane".into(), vec![file], None).is_err());
+}
+
+#[test]
+fn test_node参照_sessionとcommandで保持し空文字と他の種類を拒否する() {
+    // Given
+    for kind in [PaneTabKind::Session, PaneTabKind::Command] {
+        let mut value = tab("tab", kind);
+        value.node_id = Some("node".into());
+        // When / Then
+        assert!(PaneLayout::pane("pane".into(), vec![value.clone()], None).is_ok());
+        value.node_id = Some(" ".into());
+        assert!(PaneLayout::pane("pane".into(), vec![value], None).is_err());
+    }
+    let mut value = tab("terminal", PaneTabKind::Terminal);
+    value.node_id = Some("node".into());
+    assert!(PaneLayout::pane("pane".into(), vec![value], None).is_err());
 }

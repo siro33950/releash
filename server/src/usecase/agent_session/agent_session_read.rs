@@ -87,7 +87,7 @@ impl AgentSessionReadUsecase {
         else {
             return Ok(None);
         };
-        match self
+        let presence = match self
             .garbage_collection
             .reconcile_garbage_collection(
                 agent_session_id,
@@ -95,22 +95,54 @@ impl AgentSessionReadUsecase {
             )
             .await
         {
-            Ok(AgentSessionGarbageCollectionOutcome::Retained) => {
-                item.terminal_presence = Some(match self.garbage_collection.terminal_presence(agent_session_id).await.map_err(map_lifecycle_error)? {
-                    crate::domain::agent_session::aggregates::ManagedPtyPresence::Live => "live",
-                    crate::domain::agent_session::aggregates::ManagedPtyPresence::ConfirmedAbsent => "absent",
-                    crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown => "unknown",
-                }.into());
-                Ok(Some(item))
-            }
-            Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
-            | Err(AgentSessionLifecycleUsecaseError::NotFound) => Ok(self
-                .query
-                .get(agent_session_id)
+            Ok(AgentSessionGarbageCollectionOutcome::Retained) => self
+                .garbage_collection
+                .terminal_presence(agent_session_id)
                 .await
-                .map_err(map_query_error)?),
-            Err(error) => Err(map_lifecycle_error(error)),
-        }
+                .map_err(map_lifecycle_error)?,
+            Ok(AgentSessionGarbageCollectionOutcome::GarbageCollected)
+            | Err(AgentSessionLifecycleUsecaseError::NotFound) => {
+                let Some(current) = self
+                    .query
+                    .get(agent_session_id)
+                    .await
+                    .map_err(map_query_error)?
+                else {
+                    return Ok(None);
+                };
+                item = current;
+                crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown
+            }
+            Err(error) => return Err(map_lifecycle_error(error)),
+        };
+        let lifecycle = match item.lifecycle {
+            super::AgentSessionLifecycleDto::Open => {
+                crate::domain::agent_session::aggregates::AgentSessionLifecycle::Open
+            }
+            super::AgentSessionLifecycleDto::Paused => {
+                crate::domain::agent_session::aggregates::AgentSessionLifecycle::Paused
+            }
+            super::AgentSessionLifecycleDto::Archived => {
+                crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived
+            }
+        };
+        item.availability = Some(
+            crate::domain::agent_session::aggregates::AgentSession::availability(
+                lifecycle, presence,
+            )
+            .into(),
+        );
+        item.terminal_presence = Some(
+            match presence {
+                crate::domain::agent_session::aggregates::ManagedPtyPresence::Live => "live",
+                crate::domain::agent_session::aggregates::ManagedPtyPresence::ConfirmedAbsent => {
+                    "absent"
+                }
+                crate::domain::agent_session::aggregates::ManagedPtyPresence::Unknown => "unknown",
+            }
+            .into(),
+        );
+        Ok(Some(item))
     }
 }
 

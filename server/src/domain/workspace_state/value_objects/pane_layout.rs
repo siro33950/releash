@@ -24,6 +24,7 @@ enum PaneLayoutNode {
 pub struct PaneTab {
     pub id: String,
     pub kind: PaneTabKind,
+    pub node_id: Option<String>,
     pub file_path: Option<String>,
     pub file_mode: Option<FileMode>,
     pub file_base: Option<ReviewBase>,
@@ -34,6 +35,7 @@ pub enum PaneTabKind {
     Workflow,
     File,
     Session,
+    Command,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum SplitAxis {
@@ -130,6 +132,14 @@ impl PaneLayout {
                     tabs.iter().all(|tab| {
                         !tab.id.trim().is_empty()
                             && ids.insert(tab.id.clone())
+                            && tab
+                                .node_id
+                                .as_deref()
+                                .is_none_or(|id| !id.trim().is_empty() && !id.contains('\0'))
+                            && (matches!(
+                                tab.kind,
+                                PaneTabKind::Session | PaneTabKind::Command | PaneTabKind::Workflow
+                            ) || tab.node_id.is_none())
                             && tab
                                 .file_path
                                 .as_deref()

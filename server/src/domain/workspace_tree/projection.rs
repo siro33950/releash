@@ -120,6 +120,8 @@ pub fn runtime_snapshot_nodes(
                 execution_id: execution_id.to_string(),
                 node_execution_id: node.id.clone(),
                 display_command: display_command.clone(),
+                shell: node.shell.clone(),
+                cwd: node.cwd.clone(),
                 timestamp: node.started_at,
             });
         }
@@ -178,6 +180,12 @@ pub fn runtime_snapshot_nodes(
             && runtime.can_retry(node.process_presence)
             && node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
+            });
+        node.provider = workflow_definition
+            .and_then(|definition| definition.node_by_name(&runtime.node_name))
+            .and_then(|definition| match &definition.kind {
+                crate::domain::workflow::NodeKind::Session(spec) => Some(spec.provider),
+                _ => None,
             });
         node.worktree = runtime.worktree.clone();
         node.can_resume_session = runtime.can_resume_session(node.process_presence);
