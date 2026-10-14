@@ -402,19 +402,18 @@ impl StoredPaneTabKind {
 }
 impl StoredPaneTab {
     fn into_domain(self, kind: PaneTabKind) -> Result<PaneTab, WorkspaceStateError> {
-        let value = self;
         Ok(PaneTab {
-            id: value.id,
+            id: self.id,
             kind,
-            file_path: value.file_path,
-            node_id: value.node_id,
-            file_mode: value
+            file_path: self.file_path,
+            node_id: self.node_id,
+            file_mode: self
                 .file_mode
                 .as_deref()
                 .map(crate::domain::code::value_objects::review::FileMode::parse)
                 .transpose()
                 .map_err(|_| WorkspaceStateError::InvalidLayout)?,
-            file_base: value
+            file_base: self
                 .file_base
                 .as_deref()
                 .map(crate::domain::code::ReviewBase::parse)

@@ -249,9 +249,9 @@ struct ViewElement {
   private var snapshot: [ViewElement] = []
   private var menuHandled = false
   private var trackingMenu: NSMenu?
-  init<V: View>(_ view: V) async {
+  init<V: View>(_ view: V, size: NSSize = NSSize(width: 1000, height: 700)) async {
     existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
-    window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+    window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
     super.init()
     window.isReleasedWhenClosed = false
     window.title = "ViewHarness-" + UUID().uuidString
@@ -297,6 +297,27 @@ struct ViewElement {
     let element = try XCTUnwrap(snapshot.first { ($0.identifier == name || $0.label == name || $0.value == name) && $0.actions.contains(kAXPressAction) }, file: file, line: line)
     let result = AXUIElementPerformAction(element.reference, kAXPressAction as CFString).rawValue
     XCTAssertEqual(result, AXError.success.rawValue, file: file, line: line)
+    await refresh()
+  }
+  func tableRow(_ name: String) throws -> AXUIElement {
+    var reference = try XCTUnwrap(element(name)).reference
+    while true {
+      var role: CFTypeRef?
+      AXUIElementCopyAttributeValue(reference, kAXRoleAttribute as CFString, &role)
+      if role as? String == kAXRowRole { return reference }
+      var parent: CFTypeRef?
+      XCTAssertEqual(AXUIElementCopyAttributeValue(reference, kAXParentAttribute as CFString, &parent), .success)
+      reference = try XCTUnwrap(parent) as! AXUIElement
+    }
+  }
+  func selectRow(_ name: String) async throws {
+    await refresh()
+    XCTAssertEqual(AXUIElementSetAttributeValue(try tableRow(name), kAXSelectedAttribute as CFString, kCFBooleanTrue), .success)
+    await refresh()
+  }
+  func setRowExpanded(_ name: String, _ expanded: Bool) async throws {
+    await refresh()
+    XCTAssertEqual(AXUIElementSetAttributeValue(try tableRow(name), kAXDisclosingAttribute as CFString, expanded ? kCFBooleanTrue : kCFBooleanFalse), .success)
     await refresh()
   }
   @objc private func menuBegan(_ notification: Notification) { trackingMenu = notification.object as? NSMenu }

@@ -77,7 +77,7 @@ Node の行は過去の試行を開閉して並べ、Sequence と Fanout の行�
 
 - 右カラムの面「Root の一覧」を「Node」の面に置き換える。
 - Node 面の上段の実行木と、下段の選択した Node の詳細。
-- 右カラムの最大幅の制約と、中央のカラムの最小幅。
+- 右カラムの最大幅の制約と、中央と右のカラムの最小幅と初期の幅。
 - タブの種類 workflow の削除（Swift、proto、domain、保存形式）。
 - History に、archive 済みの Workflow の実行の復元を足す。
 - 実行木の項目に、Node の実行の識別、MODEL、Artifact の有無を出す。
@@ -103,7 +103,7 @@ Node の行は過去の試行を開閉して並べ、Sequence と Fanout の行�
 - R-003: 実行木の各行は、状態の 3 色、タイトルを出す。Sequence の行は種別 `SEQ`、Fanout の行は種別 `FANOUT` を出す。Session と Command の行は、失敗理由の一文、MODEL、Artifact の有無を出す。
 - R-004: Session の行の MODEL は、定義の Session の指定にある model である。model の指定が無い Session と、Command の行の MODEL は空欄である。
 - R-005: Artifact を提出した Session と Command の行は、ART 列に `◆` を出す。提出の回数は出さない。
-- R-006: Node の行は過去の試行を開閉して並べられる。Sequence と Fanout の行は、隔離 worktree を持つとき、その branch と path を出す。
+- R-006: Session と Command の行は、過去の試行を開閉して並べられる。delegate の子を持つ Session の行は、開閉の矢印で delegate の子を開閉でき、過去の試行はそれとは別の操作で開閉する。Sequence と Fanout の行は、隔離 worktree を持つとき、その branch と path を出す。
 - R-007: 並列 12・深さ 4 の実行木と、同じ名前の Node へ戻った実行（周回の再入）が、それぞれ別の行として潰れずに並ぶ。
 - R-008: Session と Command の行を押すと、その行が選択され、下段にその Node の詳細が出る。Sequence と Fanout の行を押すと、開閉だけが起き、選択は変わらない。
 - R-009: Session と Command の行は `▷` ボタンを持ち、押すと Session の行は Session タブ、Command の行は Command タブを中央に開く。
@@ -114,7 +114,7 @@ Node の行は過去の試行を開閉して並べ、Sequence と Fanout の行�
 - R-014: Node 面の上端に、New Session と New Workflow の「+」メニューと、History の「…」メニューがある。Root の行の右クリックメニューに、サーバが可とするときに Rename、Resume、Archive がある。
 - R-015: History から、archive 済みの Workflow の実行を選んで復元できる。復元した実行は Node 面の実行木に戻る。
 - R-016: 右カラムを 400 より広げられる。左のサイドバーの最大幅は変わらない。
-- R-017: 中央のカラムは、右カラムを広げても最小幅より狭くならない。
+- R-017: 中央のカラムと、開いている右カラムの最小幅は、どちらも、ウィンドウの最小幅から左のサイドバーの最小幅を引いた残りを 2 等分した値である。中央のカラムと右カラムの初期の幅は、どちらも、ウィンドウの初期の幅から左のサイドバーの初期の幅を引いた残りを 2 等分した値である。左のサイドバーの最小幅と初期の幅は変わらない。
 - R-018: 中央のタブに「Workflow 管理」タブを開く経路が無い。クライアントとサーバの通信で、タブの種類 workflow は使えない。
 - R-019: 保存済みのペインのレイアウトに「Workflow 管理」タブが含まれていても、そのタブを除いた残りのレイアウトが読み込まれる。
 - R-020: Command タブは、Root か子かによらず、その Command の過去の試行を出す。

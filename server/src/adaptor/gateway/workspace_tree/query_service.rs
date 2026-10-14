@@ -92,16 +92,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 .repository
                 .tree_nodes(workspace, folded, record)
                 .map_err(query_error)?;
-            let node = if folded.aggregate.id == node_id {
-                WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id).map(|root| {
-                    let mut node = root.node().clone();
-                    node.id = node_id.to_string();
-                    node
-                })
-            } else {
-                None
-            }
-            .or_else(|| nodes.iter().find(|node| node.id == node_id).cloned());
+            let node = WorkspacePublicRoot::resolve_node(&nodes, node_id);
             let Some(node) = node else { continue };
             let attempts = node
                 .past_attempt_ids

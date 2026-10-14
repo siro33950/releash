@@ -293,7 +293,7 @@ extension WorkbenchTests {
     XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
     let root = app.buttons["open-node:\(execution.value)"]
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
-    app.scrollViews.containing(.button, identifier: "root:\(execution.value)").firstMatch.scroll(byDeltaX: -160, deltaY: 0)
+    app.scrollViews.containing(.any, identifier: "root:\(execution.value)").firstMatch.scroll(byDeltaX: -160, deltaY: 0)
     XCTAssertTrue(root.isHittable, app.debugDescription); root.click()
     let output = app.staticTexts["command-stdout"]
     XCTAssertTrue(output.waitForExistence(timeout: 30), app.debugDescription)
@@ -363,9 +363,9 @@ extension WorkbenchTests {
     XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription); card.click()
     let panel = app.checkBoxes["Node"]
     XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
-    let root = app.buttons["root:\(execution.value)"]
+    let root = app.descendants(matching: .any).matching(identifier: "root:\(execution.value)").firstMatch
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription); root.click()
-    let child = app.buttons["root:\(childID)"]
+    let child = app.descendants(matching: .any).matching(identifier: "root:\(childID)").firstMatch
     XCTAssertTrue(child.waitForExistence(timeout: 10), app.debugDescription)
     XCTAssertTrue(["active", "attention", "idle"].contains(child.value as? String ?? ""))
     child.click()

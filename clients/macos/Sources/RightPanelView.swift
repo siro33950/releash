@@ -60,7 +60,7 @@ struct RightPanelView: View {
     }
     .frame(
       minWidth: expanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth,
-      idealWidth: expanded ? UIStyle.sidebarWidth : UIStyle.collapsedPanelWidth,
+      idealWidth: expanded ? UIStyle.centerInitialWidth : UIStyle.collapsedPanelWidth,
       maxWidth: expanded ? .infinity : UIStyle.collapsedPanelWidth
     )
     .frame(maxHeight: .infinity)

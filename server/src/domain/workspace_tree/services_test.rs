@@ -200,4 +200,47 @@ pub(crate) mod tests {
 
         assert_eq!(public_root.public_title(), "Provider title");
     }
+    #[test]
+    fn test_node解決_実行idは公開rootの別名で通常idは対象nodeを返す() {
+        // Given
+        let nodes = vec![
+            node(
+                "execution",
+                None,
+                0,
+                WorkspaceNodeKind::Workflow,
+                Some("execution"),
+            ),
+            node(
+                "root",
+                Some("execution"),
+                0,
+                WorkspaceNodeKind::Sequence,
+                Some("execution"),
+            ),
+            node(
+                "child",
+                Some("root"),
+                0,
+                WorkspaceNodeKind::WorkflowCommand,
+                Some("execution"),
+            ),
+        ];
+
+        // When
+        let alias = WorkspacePublicRoot::resolve_node(&nodes, "execution").unwrap();
+        let child = WorkspacePublicRoot::resolve_node(&nodes, "child").unwrap();
+
+        // Then
+        let mut expected = nodes[1].clone();
+        expected.id = "execution".to_string();
+        assert_eq!(alias, expected);
+        assert_eq!(child, nodes[2]);
+        assert_eq!(
+            WorkspacePublicRoot::resolve_node(&nodes, "root"),
+            Some(nodes[1].clone())
+        );
+        assert!(WorkspacePublicRoot::resolve_node(&nodes, "missing").is_none());
+        assert_eq!(nodes[1].id, "root");
+    }
 }
