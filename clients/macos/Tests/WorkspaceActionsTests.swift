@@ -257,7 +257,7 @@ final class WorkspaceActionsTests: XCTestCase {
     XCTAssertEqual(request.branches, ["1204", "feat/issues/1204"])
     guard case .workflow(let workflow) = request.launch else { return XCTFail("Missing workflow") }
     XCTAssertEqual(workflow.name, "review")
-    XCTAssertFalse(workflow.hasRequest)
+    XCTAssertEqual(workflow.request, "check changes")
     let completion = http.state.withLock { state in
       let completion = state.pendingCreation
       state.pendingCreation = nil

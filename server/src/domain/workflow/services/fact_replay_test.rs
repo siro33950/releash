@@ -1970,6 +1970,62 @@ mod process_observation_tests {
     use super::*;
 
     #[test]
+    fn test_command起動失敗_差分再生で理由を更新し起動成功で解消する() {
+        // Given
+        let mut log = FactLog::new();
+        let root_meta = meta(TREE, None, "work", NodeKindName::Command, 1);
+        log.push(
+            root_meta.clone(),
+            started_root(workflow_root(workflow_definition(
+                vec![command_leaf("work")],
+                "work",
+            ))),
+        );
+        let (mut fold, _) = TreeFold::from_records(TREE, &log.records).unwrap().unwrap();
+        for reason in ["spawn failed", "preparation failed"] {
+            // When
+            log.push(
+                root_meta.clone(),
+                NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                    reason: reason.into(),
+                    failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+                }),
+            );
+            fold.push(log.records.last().unwrap()).unwrap();
+            let view = fold.view().unwrap();
+            // Then
+            assert_eq!(
+                view.command_failure_reasons.get(TREE).map(String::as_str),
+                Some(reason)
+            );
+            assert_eq!(
+                view,
+                fold_execution_tree(TREE, &log.records).unwrap().unwrap()
+            );
+            assert_eq!(
+                view.aggregate.node_execution(TREE).unwrap().status,
+                RuntimeNodeExecutionStatus::Running
+            );
+        }
+        // When
+        log.push(
+            root_meta,
+            NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
+                display_command: "true".into(),
+                shell: None,
+                cwd: None,
+            }),
+        );
+        fold.push(log.records.last().unwrap()).unwrap();
+        // Then
+        assert!(fold.view().unwrap().command_failure_reasons.is_empty());
+        assert_eq!(
+            fold.view().unwrap(),
+            fold_execution_tree(TREE, &log.records).unwrap().unwrap()
+        );
+    }
+
+    #[test]
     fn runtime_failure_facts_do_not_settle_session_or_command_attempts() {
         for kind in [NodeKindName::Session, NodeKindName::Command] {
             let mut log = FactLog::new();

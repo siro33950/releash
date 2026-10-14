@@ -348,6 +348,7 @@ impl SqliteWorkspaceTreeRepository {
             .map(|node| node.id.clone())
             .collect();
         crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            command_failure_reasons: &folded.command_failure_reasons,
             process_presences: &process_presences,
             execution_id: &folded.aggregate.id,
             workflow_name: &folded.aggregate.workflow_name,

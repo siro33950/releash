@@ -29,6 +29,7 @@ fn test_未紐づけsession_プロセス不在判定でも青になる() {
         execution: &execution(),
         session_activities: &Default::default(),
         session_display_names: &Default::default(),
+        command_failure_reasons: &Default::default(),
     })
     .unwrap();
     let session = nodes
@@ -87,6 +88,7 @@ fn test_完了済みworkflow_session_プロセス消失後も緑になる() {
             execution: &execution(),
             session_activities: &activities,
             session_display_names: &Default::default(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         let session = nodes
@@ -147,6 +149,7 @@ fn test_delegate親_子のactivityを集約する() {
             execution: &execution(),
             session_activities: &session_activities,
             session_display_names: &Default::default(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         let parent = projected
@@ -236,6 +239,7 @@ pub(crate) mod tests {
             execution: &execution(),
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap()
         .into_iter()
@@ -433,6 +437,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
 
@@ -493,6 +498,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &display_names,
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         let session = nodes
@@ -541,6 +547,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
 
@@ -571,6 +578,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         assert!(!nodes[0].can_retry);
@@ -617,6 +625,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         let by_execution_id = nodes
@@ -685,6 +694,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
 
@@ -748,6 +758,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &session_activities,
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         let by_execution_id = nodes
@@ -811,6 +822,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &session_activities,
             session_display_names: &std::collections::HashMap::new(),
+            command_failure_reasons: &Default::default(),
         })
         .unwrap();
         let waiting = nodes
@@ -880,6 +892,7 @@ pub(crate) mod tests {
                     execution: &execution,
                     session_activities: &session_activities,
                     session_display_names: &std::collections::HashMap::new(),
+                    command_failure_reasons: &Default::default(),
                 })
                 .unwrap()
             });
@@ -938,6 +951,7 @@ pub(crate) mod tests {
                 execution: &execution(),
                 session_activities: &Default::default(),
                 session_display_names: &Default::default(),
+                command_failure_reasons: &Default::default(),
             })
             .unwrap();
             // Then
@@ -982,6 +996,7 @@ pub(crate) mod tests {
                         execution: &execution(),
                         session_activities: &Default::default(),
                         session_display_names: &Default::default(),
+                        command_failure_reasons: &Default::default(),
                     })
                     .unwrap();
                     let leaf = nodes
@@ -1036,6 +1051,7 @@ fn test_sessionノード_providerを定義から配る() {
         execution: &execution(),
         session_activities: &Default::default(),
         session_display_names: &Default::default(),
+        command_failure_reasons: &Default::default(),
     })
     .unwrap();
     // Then

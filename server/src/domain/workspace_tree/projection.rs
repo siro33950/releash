@@ -10,6 +10,7 @@ fn command_result_from_value(
 }
 
 pub struct RuntimeSnapshotNodeProjection<'a> {
+    pub command_failure_reasons: &'a std::collections::HashMap<String, String>,
     pub process_presences:
         &'a std::collections::HashMap<String, crate::domain::workflow::NodeProcessPresence>,
     pub execution_id: &'a str,
@@ -42,6 +43,7 @@ pub fn runtime_snapshot_nodes(
         WorkspaceStructureFact as F, WorkspaceTree, WorkspaceTreeProjector,
     };
     let RuntimeSnapshotNodeProjection {
+        command_failure_reasons,
         process_presences,
         execution_id,
         workflow_name,
@@ -188,6 +190,9 @@ pub fn runtime_snapshot_nodes(
                 _ => None,
             });
         node.worktree = runtime.worktree.clone();
+        if let Some(reason) = command_failure_reasons.get(&runtime.id) {
+            node.error_reason = Some(reason.clone());
+        }
         node.can_resume_session = runtime.can_resume_session(node.process_presence);
     }
     tree.recompute_status_classifications();
