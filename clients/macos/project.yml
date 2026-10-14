@@ -118,5 +118,6 @@ schemes:
         ReleashUITests: [test]
     test:
       targets: [ReleashUITests]
+      preferredScreenCaptureFormat: screenshots
       environmentVariables:
         RELEASH_E2E_ROOT: $(SRCROOT)/../..
