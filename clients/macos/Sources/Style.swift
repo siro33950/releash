@@ -3,6 +3,7 @@ import SwiftUI
 enum UIStyle {
   static let terminalRows: UInt32 = 24
   static let terminalColumns: UInt32 = 80
+  static let terminalFontName = "Sarasa-Term-J-Regular"
   static let spacing: CGFloat = 8
   static let padding: CGFloat = 12
   static let rowSpacing: CGFloat = 4
@@ -35,6 +36,7 @@ enum UIStyle {
   static let sidebarSelection = Color(nsColor: .selectedContentBackgroundColor)
   static let sidebarSelectionText = Color(nsColor: .alternateSelectedControlTextColor)
   static let iconButtonCornerRadius: CGFloat = 5
+  static let iconButtonHover = Color(nsColor: .quaternarySystemFill)
   static let attention = Color.yellow
   static let active = Color.blue
   static let idle = Color.green
@@ -50,13 +52,51 @@ enum UIStyle {
   }
 }
 
-/// アイコンだけのトグル。off は accessoryBar のボタンと同じ見た目で、on は worktree の選択と同じ色にする
+extension View {
+  /// アイコンだけのボタン・トグル・メニューの大きさを揃える
+  func iconButtonFrame() -> some View {
+    frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight).fixedSize()
+  }
+}
+
+/// アイコンだけのボタンとメニュー。マウスを乗せたときと押したときに、枠いっぱいに背景を描く
+struct IconButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View { HoverLabel(configuration: configuration) }
+  private struct HoverLabel: View {
+    let configuration: Configuration
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovering = false
+    var body: some View {
+      configuration.label.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+        .background(
+          enabled && (hovering || configuration.isPressed) ? UIStyle.iconButtonHover : .clear,
+          in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius))
+        .opacity(enabled ? 1 : 0.4)
+        .onHover { hovering = $0 }
+    }
+  }
+}
+
+/// アイコンだけのメニュー
+struct IconMenu<Content: View>: View {
+  let title: String
+  let systemImage: String
+  @ViewBuilder let content: () -> Content
+  var body: some View {
+    Menu(content: content) { Image(systemName: systemImage) }
+      .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden)
+      .iconButtonFrame()
+      .help(title).accessibilityLabel(title)
+  }
+}
+
+/// アイコンだけのトグル。off は IconButtonStyle と同じ見た目で、on は worktree の選択と同じ色にする
 struct IconToggleStyle: ToggleStyle {
   func makeBody(configuration: Configuration) -> some View {
     Button { configuration.isOn.toggle() } label: {
-      configuration.label.frame(maxWidth: .infinity, maxHeight: .infinity)
+      configuration.label
     }
-    .buttonStyle(.accessoryBar)
+    .buttonStyle(IconButtonStyle())
     .background(
       configuration.isOn ? UIStyle.sidebarSelection : .clear,
       in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius))

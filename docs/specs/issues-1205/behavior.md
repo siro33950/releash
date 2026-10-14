@@ -21,14 +21,14 @@ THEN Session の行なら Session タブ、Command の行なら Command タブ�
 ## B-004: New Session と New Workflow
 
 GIVEN Root の一覧を開いている
-WHEN 利用者が New Session で provider を選んで開始する、または New Workflow で定義と依頼文を入力して開始する
+WHEN 利用者が一覧の上端のメニューの New Session で provider を選ぶ、または New Workflow で定義を選ぶ
 THEN 選んでいる worktree で Session または Workflow が開始する
 AND 開始した Root について、一覧の行を押したときと同じタブが開く
 
 ## B-005: History の Archive 済みの Session
 
 GIVEN 選んでいる worktree に Archive 済みの Session がある
-WHEN 利用者が History を開く
+WHEN 利用者が一覧の上端のメニューから History を開く
 THEN Archive 済みの Session が並ぶ
 AND その Session を選ぶと Restore され、Root の一覧に行が戻り、その Session タブが開く
 AND Delete を選ぶと、その Session は削除され History から消える

@@ -69,14 +69,12 @@ final class RootListViewTests: XCTestCase {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.selectWorktree("/a"); try await eventually { model.layoutLoaded }
-    let pane = try XCTUnwrap(model.panes.controller.focusedPaneId)
-    try await PaneLaunchView(model: model, pane: pane, path: "/a", kind: .workflow).startWorkflow(name: "flow", requestText: "")
+    try await model.startWorkflow(name: "flow", path: "/a")
     XCTAssertEqual(model.pendingRoots["/a"], "workflow-execution")
     model.selectWorktree("/b"); try await eventually { model.layoutLoaded }
     XCTAssertNil(model.pendingRoots["/b"])
     let host = await ViewHarness(RootListView(model: model, path: "/b"))
-    try await eventuallyView(host) { host.element("New Workflow") != nil }
-    XCTAssertTrue(host.element("New Workflow")?.enabled == true)
+    try await eventuallyView(host) { host.element("開始") != nil }
     XCTAssertNil(host.element("Rootの配信を待っています"))
     var root = Releash_Client_V1_WorkspaceTreeItem(); root.node.id = "workflow-execution"; root.node.title = "A command"; root.node.contentKind.value = .command
     var a = Releash_Client_V1_WorkspaceWorktreeList(); a.path = "/a"; a.snapshot.nodes.items = [root]
@@ -87,7 +85,7 @@ final class RootListViewTests: XCTestCase {
     try await eventually { model.repositories.first?.worktrees.items.count == 2 }
     XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
     XCTAssertEqual(model.pendingRoots["/a"], "workflow-execution")
-    try await PaneLaunchView(model: model, pane: try XCTUnwrap(model.panes.controller.focusedPaneId), path: "/b", kind: .workflow).startWorkflow(name: "another", requestText: "")
+    try await model.startWorkflow(name: "another", path: "/b")
     XCTAssertEqual(model.pendingRoots["/b"], "workflow-execution")
     host.close()
     model.deselectWorktree("/b"); XCTAssertEqual(model.pendingRoots.count, 2)
@@ -127,7 +125,7 @@ final class RootListViewTests: XCTestCase {
     try await host.press("root:session-root")
     XCTAssertEqual(try model.panes.layout().tabs.last?.nodeID, "session-root")
     try await host.menu("root:command-root", selecting: nil) { texts in
-      for action in ["改名", "Resume", "Archive"] { XCTAssertFalse(texts.contains(action)) }
+      for action in ["Rename", "Resume", "Archive"] { XCTAssertFalse(texts.contains(action)) }
     }
     session.node.capabilities.canRename = true; session.node.capabilities.canResumeSession = true; session.node.workflowCapabilities.canArchive = true; session.node.workflowCapabilities.canAbort = true
     tree.snapshot.nodes.items[0] = session; repo.worktrees.items = [tree]
@@ -138,16 +136,16 @@ final class RootListViewTests: XCTestCase {
       return root.capabilities.canRename
     }
     try await host.menu("root:session-root", selecting: "Archive") { texts in
-      for action in ["改名", "Resume", "Archive"] { XCTAssertTrue(texts.contains(action)) }
+      for action in ["Rename", "Resume", "Archive"] { XCTAssertTrue(texts.contains(action)) }
     }
     try await eventuallyView(host) { host.element("キャンセル") != nil }
     XCTAssertTrue(http.requests("ArchiveWorkspaceWorkflowExecution").isEmpty)
     try await host.pressAlertButton("キャンセル")
     XCTAssertTrue(http.requests("ArchiveWorkspaceWorkflowExecution").isEmpty)
     try await host.menu("root:session-root", selecting: "Archive") { XCTAssertTrue($0.contains("Archive")) }
-    try await eventuallyView(host) { host.element("中止してArchive") != nil }; try await host.pressAlertButton("中止してArchive")
+    try await eventuallyView(host) { host.element("Abort and Archive") != nil }; try await host.pressAlertButton("Abort and Archive")
     try await eventually { http.requests("ArchiveWorkspaceWorkflowExecution").count == 1 }
-    try await host.menu("root:session-root", selecting: "改名") { XCTAssertTrue($0.contains("改名")) }
+    try await host.menu("root:session-root", selecting: "Rename") { XCTAssertTrue($0.contains("Rename")) }
     try await eventuallyView(host) { host.element("保存") != nil }
     try await host.setTextField("Renamed title")
     try await host.pressAlertButton("保存")
@@ -157,10 +155,10 @@ final class RootListViewTests: XCTestCase {
     session.node.title = "Renamed title"; session.node.workflowCapabilities.canAbort = false
     tree.snapshot.nodes.items[0] = session; repo.worktrees.items = [tree]; payload.workspaces.repositories.items = [repo]
     try http.publish(payload, target: "workspaces")
-    try await eventuallyView(host) { model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.last?.title == "Renamed title" && host.element("root:session-root")?.label.contains("Renamed title") == true }
+    try await eventuallyView(host) { model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.last?.title == "Claude Renamed title" && host.element("root:session-root")?.label.contains("Renamed title") == true }
     try await host.menu("root:session-root", selecting: "Archive") { XCTAssertTrue($0.contains("Archive")) }
     try await eventually { http.requests("ArchiveWorkspaceWorkflowExecution").count == 2 }
-    XCTAssertNil(host.element("中止してArchive"))
+    XCTAssertNil(host.element("Abort and Archive"))
     host.close(); await model.stop()
   }
 

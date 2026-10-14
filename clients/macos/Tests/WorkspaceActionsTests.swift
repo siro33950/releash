@@ -9,16 +9,19 @@ final class WorkspaceActionsTests: XCTestCase {
   @MainActor func testLaunchFailureDisplaysServerReasonWithoutOpeningTabs() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
-    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
     var detail = Releash_Client_V1_CommandError()
     detail.message.value = "開始できない理由"
     let packed = ConnectError.Detail(type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
-    for (kind, method) in [(LaunchKind.session, "CreateAgentSession"), (.workflow, "StartWorkflow")] {
-      let launch = PaneLaunchView(model: model, pane: pane, path: "/repo/a", kind: kind)
+    for method in ["CreateAgentSession", "StartWorkflow"] {
       for serverDetail in [nil, packed] {
         http.state.withLock { $0.failedMethod = method; $0.failureDetail = serverDetail }
-        let failure = await launch.start(provider: "codex", workflow: "review", requestText: "check")
-        XCTAssertEqual(failure, serverDetail == nil ? "\(method) failed" : "開始できない理由")
+        do {
+          if method == "CreateAgentSession" { try await model.startSession(provider: "codex", path: "/repo/a") }
+          else { try await model.startWorkflow(name: "review", path: "/repo/a") }
+          XCTFail("Expected launch failure")
+        } catch {
+          XCTAssertEqual(model.failureMessage(error), serverDetail == nil ? "\(method) failed" : "開始できない理由")
+        }
         XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
       }
     }
@@ -28,15 +31,13 @@ final class WorkspaceActionsTests: XCTestCase {
   @MainActor func testFailedLaunchDoesNotOpenTabs() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
-    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
-    let launch = PaneLaunchView(model: model, pane: pane, path: "/repo/a", kind: .session)
     for method in ["CreateAgentSession", "StartWorkflow"] {
       http.state.withLock { $0.failedMethod = method }
       do {
         if method == "CreateAgentSession" {
-          try await launch.startSession("codex")
+          try await model.startSession(provider: "codex", path: "/repo/a")
         } else {
-          try await launch.startWorkflow(name: "review", requestText: "check")
+          try await model.startWorkflow(name: "review", path: "/repo/a")
         }
         XCTFail("Expected launch failure")
       } catch {
@@ -151,16 +152,14 @@ final class WorkspaceActionsTests: XCTestCase {
     var provider = Releash_Client_V1_AgentSessionProviderDto()
     provider.value = .codex
     try await eventually { model.layoutLoaded }
-    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
-    let launch = PaneLaunchView(model: model, pane: pane, path: branch.worktreePath, kind: .session)
-    try await launch.startSession(provider.wireName)
+    try await model.startSession(provider: provider.wireName, path: branch.worktreePath)
     var root = Releash_Client_V1_WorkspaceTreeItem()
     root.sequence.id = "workflow-execution"
     root.sequence.title = "review"
     var tree = Releash_Client_V1_WorkspaceWorktreeList()
     tree.path = branch.worktreePath; tree.snapshot.nodes.items = [root]
     repository.worktrees.items = [tree]; model.repositories = [repository]
-    try await launch.startWorkflow(name: "review", requestText: "check changes")
+    try await model.startWorkflow(name: "review", path: branch.worktreePath)
     XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session, .workflow])
     model.panes.closeCurrentTab()
     model.panes.closeCurrentTab()
@@ -181,7 +180,7 @@ final class WorkspaceActionsTests: XCTestCase {
       serializedBytes: XCTUnwrap(http.requests("StartWorkflow").last?.message))
     XCTAssertEqual(workflow.workflowName, "review")
     XCTAssertEqual(workflow.worktreePath, "/repo/a")
-    XCTAssertEqual(workflow.request, "check changes")
+    XCTAssertFalse(workflow.hasRequest)
     await model.stop()
   }
 
@@ -258,7 +257,7 @@ final class WorkspaceActionsTests: XCTestCase {
     XCTAssertEqual(request.branches, ["1204", "feat/issues/1204"])
     guard case .workflow(let workflow) = request.launch else { return XCTFail("Missing workflow") }
     XCTAssertEqual(workflow.name, "review")
-    XCTAssertEqual(workflow.request, "check changes")
+    XCTAssertFalse(workflow.hasRequest)
     let completion = http.state.withLock { state in
       let completion = state.pendingCreation
       state.pendingCreation = nil

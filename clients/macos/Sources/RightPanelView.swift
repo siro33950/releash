@@ -33,7 +33,7 @@ struct RightPanelView: View {
               Image(systemName: panel.icon)
             }
             .toggleStyle(IconToggleStyle())
-            .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
+            .iconButtonFrame()
             .help(panel.title).accessibilityLabel(panel.title)
             .accessibilityAddTraits(selected == panel ? .isSelected : [])
           }
@@ -44,11 +44,11 @@ struct RightPanelView: View {
         } label: {
           Image(systemName: "sidebar.right")
         }
-        .frame(width: UIStyle.iconButtonWidth, height: UIStyle.iconButtonHeight)
+        .buttonStyle(IconButtonStyle())
+        .iconButtonFrame()
         .help(expanded ? "右パネルを閉じる" : "右パネルを開く")
         .accessibilityLabel(expanded ? "右パネルを閉じる" : "右パネルを開く")
       }
-      .buttonStyle(.accessoryBar)
       .padding(.horizontal, UIStyle.spacing)
       .frame(height: UIStyle.tabBarHeight)
       Divider()

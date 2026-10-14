@@ -15,17 +15,16 @@ struct SidebarView: View {
         Spacer()
         Button(action: model.addRepository) {
           Image(systemName: "folder.badge.plus")
-        }.help("Repositoryを追加").accessibilityLabel("Repositoryを追加")
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加").accessibilityLabel("Repositoryを追加")
         Button(action: model.refresh) {
           Image(systemName: "arrow.clockwise")
-        }.help("再読み込み").accessibilityLabel("再読み込み")
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("再読み込み").accessibilityLabel("再読み込み")
         Button {
           creating = true
         } label: {
           Image(systemName: "plus")
-        }.help("Worktreeを作成").accessibilityLabel("Worktreeを作成")
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Worktreeを作成").accessibilityLabel("Worktreeを作成")
       }
-      .buttonStyle(.accessoryBar)
       .frame(height: UIStyle.iconButtonHeight)
       .padding(UIStyle.padding)
       List {

@@ -95,7 +95,7 @@ Root の一覧:
 - R-001: 右カラムの面は、Root の一覧、ファイル、Source Control、Thread の順に並ぶ。「タスク」の面は無い。
 - R-002: Root の一覧は、選んでいる worktree の実行木の Root のうち、Archive されていないものだけを 1 行ずつ並べる。各行は、Root の種類（Session、Command、Sequence、Fanout）のアイコンを状態の 3 値の色で塗り、タイトルを並べる。Session の Root は、タイトルの前に provider の表示名を出す。
 - R-003: 行を押すと、Root の種類に応じたタブを開く。Session なら Session タブ、Command なら Command タブ、Sequence と Fanout なら Workflow 管理タブである。
-- R-004: 一覧の上端に、New Session、New Workflow、History のメニューがある。New Session は provider を、New Workflow は定義と依頼文を入力し、選んでいる worktree で開始する。開始に成功すると、開始した Root について、一覧の行を押したときと同じ振る舞いをする。
+- R-004: 一覧の上端の右に、「…」と「+」のアイコンのボタンがある。「+」のメニューに New Session と New Workflow が、「…」のメニューに History がある。New Session は provider を、New Workflow は定義を、ダイアログを出さずにメニューの中で選び、選んでいる worktree で開始する。依頼文は渡さない。History はダイアログで開く。開始に成功すると、開始した Root について、一覧の行を押したときと同じ振る舞いをする。
 - R-005: History は、Archive 済みの Session と provider の履歴を並べる。Archive 済みの Session を選ぶと Restore し、Delete もできる。provider の履歴を選ぶと Resume し、さらに古い履歴を追加で読める。Restore または Resume に成功すると、その Root について、一覧の行を押したときと同じ振る舞いをする。
 - R-006: 行の右クリックメニューには、改名、Archive、Resume を置く。項目は、サーバが配る値でその Root に使えるときだけ出し、使えない項目は出さない。
 - R-007: Archive は、どの種類の Root にも同じ操作で働く。その Root の実行が中止できる状態なら、Archive する前に、実行を中止して Archive することの確認を出す。確認で取りやめると何もしない。

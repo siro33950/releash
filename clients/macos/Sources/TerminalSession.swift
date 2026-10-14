@@ -34,6 +34,7 @@ import SwiftTerm
     self.agent = agent
     super.init()
     screen.terminalDelegate = self
+    if let font = NSFont(name: UIStyle.terminalFontName, size: NSFont.systemFontSize) { screen.font = font }
     screen.nativeBackgroundColor = .textBackgroundColor
     screen.nativeForegroundColor = .textColor
     screen.setAccessibilityIdentifier("terminal:\(id)")

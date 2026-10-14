@@ -5,8 +5,8 @@
 - Root の一覧の行: 選んでいる worktree の実行木の Root のうち Archive されていないものを、種類のアイコン（状態の 3 値の色）、Session なら provider の表示名、タイトルで並べる。根拠: R-002。ルート: 「固定するルート」1
 - Root の一覧に要る値の配信: Session の Root の provider を、サーバが Root ごとに配る。開始した Workflow の Root は、`StartWorkflow` が返す実行の ID を Root の `id` として配る今のサーバの規則（`server/src/domain/workspace_tree/visible.rs:169-173`）で特定し、サーバには足さない。根拠: R-002、R-004、R-019「Swift.app が別々に届いた値を突き合わせて求めない」。ルート: 委任
 - 行からタブを開く: 行を押すと、Session なら Session タブ、Command なら Command タブ、Sequence と Fanout なら Workflow 管理タブを開く。Workflow 管理タブの中身は今の仮の表示のままにする。根拠: R-003。ルート: 委任
-- New Session と New Workflow: 一覧の上端に置き、今の「+」の「Session」「Workflow」と同じ入力で開始する。成功したら、開始した Root について行を押したときと同じ振る舞いをする。根拠: R-004。ルート: 委任
-- History: 一覧の上端に置き、Archive 済みの Session（実行木の `archivedSessions`）と provider の履歴（購読 `session-history`）を並べる。Archive 済みの Session は `RestoreAgentSession` と `DeleteAgentSession`、provider の履歴は `ResumeAgentSessionHistoryCandidate` を使う。Restore と Resume に成功したら、返った Node について行を押したときと同じ振る舞いをする。根拠: R-005。ルート: 委任
+- New Session と New Workflow: 一覧の上端の「+」のアイコンのボタンのメニューに置く。New Session は provider、New Workflow は定義をサブメニューで選び、選んだ時点で開始する。`StartWorkflow` の `request` は nullable なので渡さない（`proto/client.proto:2228`）。成功したら、開始した Root について行を押したときと同じ振る舞いをする。根拠: R-004。ルート: 委任
+- History: 一覧の上端の「…」のアイコンのボタンのメニューに置き、ダイアログで開いて、Archive 済みの Session（実行木の `archivedSessions`）と provider の履歴（購読 `session-history`）を並べる。Archive 済みの Session は `RestoreAgentSession` と `DeleteAgentSession`、provider の履歴は `ResumeAgentSessionHistoryCandidate` を使う。Restore と Resume に成功したら、返った Node について行を押したときと同じ振る舞いをする。根拠: R-005。ルート: 委任
 - 行の右クリックメニュー: 改名（`canRename`、`RenameWorkspaceSessionNode`）、Archive（`workflowCapabilities.canArchive`）、Resume（`canResumeSession`、`ResumeWorkspaceSessionNode`）を、値が真のときだけ出す。根拠: R-006、R-008。ルート: 「固定するルート」2
 - Archive: すべての種類の Root で `ArchiveWorkspaceWorkflowExecution` を呼ぶ。`workflowCapabilities.canAbort` が真なら、実行を中止して Archive することの確認を先に出す。根拠: R-007。ルート: 「固定するルート」2
 - 「+」の「開く」: Session、Workflow、Workflow 管理を外し、Terminal だけにする。根拠: R-009。ルート: 委任

@@ -588,11 +588,34 @@ extension AppModel {
 
   private func syncNodeTabTitles() {
     let roots = repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes.items ?? []
-    for root in roots { panes.renameNode(root.rootID, title: root.rootTitle) }
+    for root in roots { panes.renameNode(root.rootID, title: root.rootTabTitle) }
+  }
+
+  func startSession(provider: String, path: String) async throws {
+    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_CreateAgentSessionRequest()
+    request.provider = provider
+    request.workspaceIdentity = path
+    request.worktreePath = path
+    request.rows = UIStyle.terminalRows
+    request.cols = UIStyle.terminalColumns
+    request.callerRequestID = UUID().uuidString
+    let selection = try await client.createAgentSession(request: request, headers: headers).result.get()
+    openNode(.session, id: selection.nodeID, title: "Session")
+  }
+
+  func startWorkflow(name: String, path: String) async throws {
+    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_StartWorkflowRequest()
+    request.workflowName = name
+    request.worktreePath = path
+    let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
+    pendingRoots[path] = execution.value
+    openPendingRoot()
   }
 
   func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
-    openNode(root.rootKind, id: root.rootID, title: root.rootTitle)
+    openNode(root.rootKind, id: root.rootID, title: root.rootTabTitle)
   }
   func resumeNode(path: String, id: String) {
     guard let client else { return }
