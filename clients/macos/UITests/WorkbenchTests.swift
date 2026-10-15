@@ -164,7 +164,7 @@ final class WorkbenchTests: XCTestCase {
     let edge = open.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 5))
     tab.click()
     tab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-      .press(forDuration: 0.5, thenDragTo: edge)
+      .click(forDuration: 0.5, thenDragTo: edge)
     XCTAssertTrue(
       app.menuButtons.matching(identifier: "開く").element(boundBy: 1).waitForExistence(timeout: 10),
       app.debugDescription)
@@ -179,7 +179,7 @@ final class WorkbenchTests: XCTestCase {
     app.menuItems["Terminal"].click()
     moved.click()
     moved.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-      .press(
+      .click(
         forDuration: 0.5,
         thenDragTo: retained.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
     XCTAssertTrue(destination.waitForExistence(timeout: 10), app.debugDescription)
