@@ -19,6 +19,7 @@ struct NodePane: View {
       } else { ProgressView() }
     }.frame(maxWidth: .infinity, maxHeight: .infinity)
     .onAppear {
+      if let subscription { model.unsubscribe(subscription) }
       subscription = model.subscribe("node-detail", [path, nodeID]) { payload in
         if case .nodeDetail(let value) = payload.value {
           detail = value.hasValue ? value.value : nil

@@ -16,7 +16,7 @@ final class NodePaneTests: XCTestCase {
     let model = try await testModel(http)
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
-    let host = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "node", focused: true))
+    let host = await ViewHarness(AnyView(NodePane(model: model, path: "/repo", nodeID: "node", focused: true)))
     try await eventuallyView(host) { host.element("terminal:agent") != nil }
     session.clearAvailability()
     var payload = Releash_Client_V1_StatePayload()
@@ -24,6 +24,14 @@ final class NodePaneTests: XCTestCase {
     try http.publish(payload, target: "agent-session")
     try await eventuallyView(host) { host.element("terminal:agent") == nil }
     try await eventually { model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil }
+    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first { $0.target == "node-detail" && $0.args == ["/repo", "node"] } })
+    let hostingView = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
+    hostingView.rootView = AnyView(EmptyView())
+    try await eventually {
+      http.requests("StopStateSubscription").contains {
+        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data()).subscriptionID) == subscription.subscriptionID
+      }
+    }
     host.close(); await model.stop()
   }
 

@@ -71,6 +71,7 @@ struct NodeInspector: View {
       } else { Text("Nodeの詳細を待っています").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
     }
     .onAppear {
+      if let detailSubscription { model.unsubscribe(detailSubscription) }
       detailSubscription = model.subscribe("node-detail", [path, nodeID]) { payload in
         guard case .nodeDetail(let value) = payload.value else { return }
         detail = value.hasValue ? value.value : nil

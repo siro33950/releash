@@ -72,13 +72,24 @@ final class NodeInspectorTests: XCTestCase {
     http.state.withLock { $0.nodeDetails = ["first": first, "second": second]; $0.artifacts = ["visit-1": one, "visit-2": two] }
     let model = try await testModel(http)
     for (id, artifact) in [("first", "first artifact"), ("second", "second artifact")] {
-      let host = await ViewHarness(NodeInspector(model: model, path: "/repo", nodeID: id))
+      let host = await ViewHarness(AnyView(NodeInspector(model: model, path: "/repo", nodeID: id)))
       try await eventuallyView(host) { host.texts().contains(artifact) }
       XCTAssertTrue(host.texts().contains("Human session"))
       XCTAssertTrue(host.texts().contains("model-1"))
       try await host.press("artifact-json")
       try await eventuallyView(host) { host.texts().contains("\"" + artifact + "\"") }
       XCTAssertNil(host.element("Retry")); XCTAssertNil(host.element("Abort"))
+      let subscriptions = http.state.withLock { state in
+        state.subscriptions.filter { ($0.target == "node-detail" && $0.args == ["/repo", id]) || $0.target == "node-artifact" }.map(\.subscriptionID)
+      }
+      let hostingView = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
+      hostingView.rootView = AnyView(EmptyView())
+      try await eventually {
+        let stopped = http.requests("StopStateSubscription").compactMap {
+          try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data()).subscriptionID
+        }
+        return subscriptions.allSatisfy { stopped.contains($0) }
+      }
       host.close()
     }
     let ids = http.state.withLock { $0.subscriptions.filter { $0.target == "node-artifact" }.map(\.args) }
