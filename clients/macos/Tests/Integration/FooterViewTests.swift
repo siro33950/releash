@@ -11,7 +11,8 @@ import XCTest
 
   init(_ model: AppModel) async {
     existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
-    window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1600, height: 80),
+    window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1600, height: 80),
       styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = NSHostingView(rootView: FooterView(model: model))
@@ -64,7 +65,8 @@ final class FooterViewTests: XCTestCase {
     usage.provider = "claude"
     if let plan { usage.plan = plan }
     let now = UInt64(Date().timeIntervalSince1970)
-    usage.windows = [(UInt64(300), now + 7245), (UInt64(10080), now + 25245)].map { minutes, reset in
+    usage.windows = [(UInt64(300), now + 7245), (UInt64(10080), now + 25245)].map {
+      minutes, reset in
       var window = Releash_Client_V1_ProviderUsageWindow()
       window.windowMinutes = minutes
       window.resetsAt = reset
@@ -112,7 +114,8 @@ final class FooterViewTests: XCTestCase {
     XCTAssertNil(footer.provider("codex"))
   }
 
-  @MainActor func testHookReadAndSubscriptionFailuresShareOneWarningOutsideProviders() async throws {
+  @MainActor func testHookReadAndSubscriptionFailuresShareOneWarningOutsideProviders() async throws
+  {
     for (read, subscription) in [(true, false), (false, true), (true, true)] {
       let model = AppModel()
       if read { model.hookHealth.readErrors = ["read failure"] }
@@ -122,7 +125,8 @@ final class FooterViewTests: XCTestCase {
       try await eventually {
         footer.elements().contains { $0.accessibilityLabel?() == "hookの状態を確認できません" }
       }
-      XCTAssertEqual(footer.elements().filter { $0.accessibilityLabel?() == "hookの状態を確認できません" }.count, 1)
+      XCTAssertEqual(
+        footer.elements().filter { $0.accessibilityLabel?() == "hookの状態を確認できません" }.count, 1)
       XCTAssertNil(footer.provider("claude"))
       XCTAssertNil(footer.provider("codex"))
     }
@@ -139,7 +143,8 @@ final class FooterViewTests: XCTestCase {
     try await eventually {
       footer.elements().contains { $0.accessibilityIdentifier?() == "footer-server" }
     }
-    let server = try XCTUnwrap(footer.elements().first { $0.accessibilityIdentifier?() == "footer-server" })
+    let server = try XCTUnwrap(
+      footer.elements().first { $0.accessibilityIdentifier?() == "footer-server" })
     let label = try XCTUnwrap(server.accessibilityLabel?())
     XCTAssertTrue(label.contains("v0.4.20"), label)
     XCTAssertTrue(label.contains("serving"), label)
@@ -158,7 +163,8 @@ final class FooterViewTests: XCTestCase {
       defer { footer.close() }
       try await eventually { footer.texts().contains(guidance) }
 
-      XCTAssertFalse(footer.texts().contains(compatibility == "server_older" ? "クライアントが古いです" : "再起動で更新できます"))
+      XCTAssertFalse(
+        footer.texts().contains(compatibility == "server_older" ? "クライアントが古いです" : "再起動で更新できます"))
     }
   }
 }

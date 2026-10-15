@@ -33,7 +33,10 @@ final class PaneLayoutTests: XCTestCase {
 
 extension PaneLayoutTests {
   func testSessionAndCommandNodeReferencesSurviveWireRoundTrip() throws {
-    let tabs = [PaneTab(kind: .session, nodeID: "session-node"), PaneTab(kind: .command, nodeID: "command-node")]
+    let tabs = [
+      PaneTab(kind: .session, nodeID: "session-node"),
+      PaneTab(kind: .command, nodeID: "command-node"),
+    ]
     let layout = PaneLayout.pane(id: "pane", tabs: tabs, active: tabs[1].id)
     XCTAssertEqual(try PaneLayout(layout.message), layout)
   }

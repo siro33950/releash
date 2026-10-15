@@ -351,9 +351,10 @@ extension AppModelTests {
     let path = "/repo/a"
     model.selectWorktree(path)
     try await eventually { model.layoutLoaded }
-    let subscription = try XCTUnwrap(http.state.withLock {
-      $0.subscriptions.last { $0.target == "workspace-state" }
-    })
+    let subscription = try XCTUnwrap(
+      http.state.withLock {
+        $0.subscriptions.last { $0.target == "workspace-state" }
+      })
     http.state.withLock { $0.deferSave = true }
     model.editLayout { $0 = testLayout(.terminal) }
     try await eventually { http.state.withLock { $0.pendingSave != nil } }
@@ -365,7 +366,8 @@ extension AppModelTests {
     let oldLayout = PaneLayout.empty()
     var receivedEcho = false
     let echoSubscriber = model.subscribe("workspace-state", [path, path]) { payload in
-      receivedEcho = payload.workspaceState.hasValue
+      receivedEcho =
+        payload.workspaceState.hasValue
         && payload.workspaceState.value.paneLayout == oldLayout.message
     }
     var echo = Releash_Client_V1_StateSubscriptionEvent()
@@ -376,13 +378,17 @@ extension AppModelTests {
     XCTAssertEqual(model.pendingSaves[path], 3)
     XCTAssertEqual(model.layout, last)
     model.unsubscribe(echoSubscriber)
-    let release = try XCTUnwrap(http.state.withLock { state in
-      let callback = state.pendingSave
-      state.pendingSave = nil
-      state.deferSave = false
-      return callback
-    })
-    release(HTTPResponse(code: .ok, headers: ["content-type": ["application/proto"]], message: Data(), trailers: [:], error: nil, tracingInfo: .init(httpStatus: 200)))
+    let release = try XCTUnwrap(
+      http.state.withLock { state in
+        let callback = state.pendingSave
+        state.pendingSave = nil
+        state.deferSave = false
+        return callback
+      })
+    release(
+      HTTPResponse(
+        code: .ok, headers: ["content-type": ["application/proto"]], message: Data(), trailers: [:],
+        error: nil, tracingInfo: .init(httpStatus: 200)))
     try await eventually { model.pendingSaves[path] == nil }
     let saves = try http.requests("SaveWorkspaceState").map {
       try Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: $0.message!)
@@ -452,10 +458,15 @@ extension AppModelTests {
     let first = model.subscribe("directory", ["/repo", "."]) { payload in
       if case .directory(let value) = payload.value, value.delta { received = true }
     }
-    try await eventually { http.state.withLock { $0.subscriptions.contains(where: { $0.target == "directory" }) } }
-    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first(where: { $0.target == "directory" }) })
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains(where: { $0.target == "directory" }) }
+    }
+    let subscription = try XCTUnwrap(
+      http.state.withLock { $0.subscriptions.first(where: { $0.target == "directory" }) })
     func entry(_ path: String) -> Releash_Client_V1_DirectoryEntry {
-      var value = Releash_Client_V1_DirectoryEntry(); value.path = path; value.name = path
+      var value = Releash_Client_V1_DirectoryEntry()
+      value.path = path
+      value.name = path
       return value
     }
     var snapshot = Releash_Client_V1_StateSubscriptionEvent()
@@ -472,11 +483,14 @@ extension AppModelTests {
     try TestHTTPClient.send(delta, on: http.state.withLock { $0.streams.last! })
     try await eventually { received }
     var mirror = Releash_Client_V1_DirectorySnapshot()
-    let second = model.subscribe("directory", ["/repo", "."]) { payload in mirror = payload.directory }
+    let second = model.subscribe("directory", ["/repo", "."]) { payload in
+      mirror = payload.directory
+    }
     XCTAssertEqual(mirror.order, ["same", "new"])
     XCTAssertFalse(mirror.delta)
     XCTAssertEqual(Set(mirror.entries.map(\.path)), ["same", "new"])
-    model.unsubscribe(first); model.unsubscribe(second)
+    model.unsubscribe(first)
+    model.unsubscribe(second)
     await model.stop()
   }
 
@@ -484,8 +498,11 @@ extension AppModelTests {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     let id = model.subscribe("directory", ["/repo", "."]) { _ in }
-    try await eventually { http.state.withLock { $0.subscriptions.contains(where: { $0.target == "directory" }) } }
-    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first(where: { $0.target == "directory" }) })
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains(where: { $0.target == "directory" }) }
+    }
+    let subscription = try XCTUnwrap(
+      http.state.withLock { $0.subscriptions.first(where: { $0.target == "directory" }) })
     var delta = Releash_Client_V1_StateSubscriptionEvent()
     delta.subscriptionID = subscription.subscriptionID
     delta.change.payload.directory.delta = true
@@ -500,10 +517,13 @@ extension AppModelTests {
 extension AppModelTests {
   @MainActor func testStoppingDaemonClearsUsageAndDoesNotDiscoverOrStartAgain() async throws {
     let calls = Mutex<[[String]]>([])
-    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { _, args in
-      calls.withLock { $0.append(args) }
-      return Data()
-    }))
+    let model = AppModel(
+      cli: CLI(
+        executable: URL(fileURLWithPath: "/bundled/releash"),
+        run: { _, args in
+          calls.withLock { $0.append(args) }
+          return Data()
+        }))
     var usage = Releash_Client_V1_ProviderUsageEntry()
     usage.provider = "claude"
     model.providerUsage = [usage]
@@ -519,10 +539,13 @@ extension AppModelTests {
 
   @MainActor func testRestartFailureRemainsVisibleWithoutStartingServerAgain() async throws {
     let calls = Mutex<[[String]]>([])
-    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { _, args in
-      calls.withLock { $0.append(args) }
-      throw CLIFailure(message: "restart failed")
-    }))
+    let model = AppModel(
+      cli: CLI(
+        executable: URL(fileURLWithPath: "/bundled/releash"),
+        run: { _, args in
+          calls.withLock { $0.append(args) }
+          throw CLIFailure(message: "restart failed")
+        }))
     model.connected = true
     await model.restartDaemon()
     XCTAssertEqual(calls.withLock { $0 }, [["server", "restart"]])
@@ -576,15 +599,22 @@ extension AppModelTests {
 extension AppModelTests {
   @MainActor func testRestartReconnectsWithCLIAndDropsPreviousUsage() async throws {
     let http = TestHTTPClient()
-    try Data(#"{"port":12345,"token":"operator-test","daemon_id":"test","pid":1,"process_started_at":"1"}"#.utf8).write(to: http.discoveryFile)
+    try Data(
+      #"{"port":12345,"token":"operator-test","daemon_id":"test","pid":1,"process_started_at":"1"}"#
+        .utf8
+    ).write(to: http.discoveryFile)
     let status = try JSONSerialization.data(withJSONObject: [
-      "running": true, "compatibility": "compatible", "release_compatibility": "server_older", "discovery_file": http.discoveryFile.path,
+      "running": true, "compatibility": "compatible", "release_compatibility": "server_older",
+      "discovery_file": http.discoveryFile.path,
     ])
     let calls = Mutex<[[String]]>([])
-    let model = AppModel(cli: CLI(executable: URL(fileURLWithPath: "/bundled/releash"), run: { _, args in
-      calls.withLock { $0.append(args) }
-      return status
-    }), httpClient: http)
+    let model = AppModel(
+      cli: CLI(
+        executable: URL(fileURLWithPath: "/bundled/releash"),
+        run: { _, args in
+          calls.withLock { $0.append(args) }
+          return status
+        }), httpClient: http)
     await model.start()
     try await eventually { model.connected }
     var usage = Releash_Client_V1_ProviderUsageEntry()
@@ -592,7 +622,8 @@ extension AppModelTests {
     model.providerUsage = [usage]
     await model.restartDaemon()
     try await eventually { model.connected }
-    XCTAssertEqual(calls.withLock { $0 }, [["status", "--json"], ["server", "restart"], ["status", "--json"]])
+    XCTAssertEqual(
+      calls.withLock { $0 }, [["status", "--json"], ["server", "restart"], ["status", "--json"]])
     XCTAssertTrue(model.providerUsage.isEmpty)
     XCTAssertEqual(model.releaseCompatibility, "server_older")
     XCTAssertNil(model.connectionFailure)
@@ -602,8 +633,11 @@ extension AppModelTests {
   @MainActor func testHookStreamFailureStaysInFooter() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
-    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "provider-hook-health" } } }
-    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first { $0.target == "provider-hook-health" } })
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains { $0.target == "provider-hook-health" } }
+    }
+    let subscription = try XCTUnwrap(
+      http.state.withLock { $0.subscriptions.first { $0.target == "provider-hook-health" } })
     var event = Releash_Client_V1_StateSubscriptionEvent()
     event.subscriptionID = subscription.subscriptionID
     event.failure.message = "hook stream failed"
@@ -615,7 +649,8 @@ extension AppModelTests {
 }
 
 extension AppModelTests {
-  @MainActor func testUsageSubscriptionFailureKeepsServerFooterAndConnectionAvailable() async throws {
+  @MainActor func testUsageSubscriptionFailureKeepsServerFooterAndConnectionAvailable() async throws
+  {
     let http = TestHTTPClient()
     http.state.withLock { state in
       state.failedSubscriptionTargets["provider-usage"] = 1
@@ -632,18 +667,23 @@ extension AppModelTests {
   }
 }
 
-
 extension AppModelTests {
   @MainActor func testRestoredNodeTabTitlesUseAlreadyReceivedRoots() async throws {
     let http = TestHTTPClient()
     var roots: [Releash_Client_V1_WorkspaceTreeItem] = []
-    for (id, title, kind) in [("session-root", "Session name", Releash_Client_V1_WorkspaceContentKind.Value.session), ("command-root", "Command name", .command)] {
+    for (id, title, kind) in [
+      ("session-root", "Session name", Releash_Client_V1_WorkspaceContentKind.Value.session),
+      ("command-root", "Command name", .command),
+    ] {
       var root = Releash_Client_V1_WorkspaceTreeItem()
-      root.node.id = id; root.node.title = title; root.node.contentKind.value = kind
+      root.node.id = id
+      root.node.title = title
+      root.node.contentKind.value = kind
       roots.append(root)
     }
     var worktree = Releash_Client_V1_WorkspaceWorktreeList()
-    worktree.path = "/repo/a"; worktree.snapshot.nodes.items = roots
+    worktree.path = "/repo/a"
+    worktree.snapshot.nodes.items = roots
     var repository = Releash_Client_V1_WorkspaceRepositoryList()
     repository.worktrees.items = [worktree]
     http.state.withLock { $0.repositories = [repository] }
@@ -657,15 +697,21 @@ extension AppModelTests {
     try await eventually { model.layoutLoaded }
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
-    XCTAssertEqual(model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.map(\.title), ["Session name", "Command name"])
+    XCTAssertEqual(
+      model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.map(
+        \.title), ["Session name", "Command name"])
     await model.stop()
   }
 
-  @MainActor func testSessionTerminalNotFoundDuringRecoveryKeepsOtherSnapshotsConnected() async throws {
+  @MainActor func testSessionTerminalNotFoundDuringRecoveryKeepsOtherSnapshotsConnected()
+    async throws
+  {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.subscribe("terminal", ["/repo", "deleted-session"]) { _ in }
-    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" } } }
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" } }
+    }
     let stream = http.state.withLock { state in
       state.failedSubscriptionTargets["terminal"] = 1
       state.subscriptionFailureCode = .notFound
@@ -674,10 +720,13 @@ extension AppModelTests {
       state.repositories = [repository]
       return state.streams.last!
     }
-    stream.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    stream.receiveClose(
+      .unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
     try await eventually {
       model.repositories.first?.path == "/updated" && !model.reconnecting
-        && http.state.withLock { $0.streams.count == 2 && $0.failedSubscriptionTargets["terminal"] == 0 }
+        && http.state.withLock {
+          $0.streams.count == 2 && $0.failedSubscriptionTargets["terminal"] == 0
+        }
     }
     XCTAssertNotNil(model.failure)
     let recovered = http.state.withLock { state in
@@ -686,7 +735,8 @@ extension AppModelTests {
       state.repositories = [repository]
       return state.streams.last!
     }
-    recovered.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    recovered.receiveClose(
+      .unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
     try await eventually { model.repositories.first?.path == "/reconnected" && !model.reconnecting }
     let attempts = http.requests("StartStateSubscription").compactMap {
       try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
@@ -695,17 +745,22 @@ extension AppModelTests {
     await model.stop()
   }
 
-  @MainActor func testSessionTerminalTransientFailureDuringRecoveryRetriesRegistration() async throws {
+  @MainActor func testSessionTerminalTransientFailureDuringRecoveryRetriesRegistration()
+    async throws
+  {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.subscribe("terminal", ["/repo", "session"]) { _ in }
-    try await eventually { http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" } } }
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains { $0.target == "terminal" } }
+    }
     let stream = http.state.withLock { state in
       state.failedSubscriptionTargets["terminal"] = 1
       state.subscriptionFailureCode = .internalError
       return state.streams.last!
     }
-    stream.receiveClose(.unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    stream.receiveClose(
+      .unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
     try await eventually {
       http.state.withLock {
         $0.streams.count >= 3 && $0.subscriptions.filter { $0.target == "terminal" }.count == 2

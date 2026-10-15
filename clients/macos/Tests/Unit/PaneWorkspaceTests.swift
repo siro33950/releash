@@ -71,10 +71,14 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertEqual(workspace.controller.allTabIds.count, 1)
     let restored = PaneWorkspace()
     try restored.restore(PaneLayout(workspace.layout().message))
-    XCTAssertEqual(restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.filePath, "src/file.swift")
-    XCTAssertEqual(restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.fileMode, "file")
-    XCTAssertEqual(restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.fileBase, "branch-base")
-    let second = try XCTUnwrap(workspace.controller.splitPane(workspace.controller.allPaneIds[0], orientation: .vertical))
+    XCTAssertEqual(
+      restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.filePath, "src/file.swift")
+    XCTAssertEqual(
+      restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.fileMode, "file")
+    XCTAssertEqual(
+      restored.tab(try XCTUnwrap(restored.controller.allTabIds.first))?.fileBase, "branch-base")
+    let second = try XCTUnwrap(
+      workspace.controller.splitPane(workspace.controller.allPaneIds[0], orientation: .vertical))
     workspace.controller.focusPane(second)
     workspace.openFile("src/file.swift", base: "head")
     XCTAssertEqual(workspace.controller.allTabIds.count, 2)
@@ -92,7 +96,10 @@ extension PaneWorkspaceTests {
     let names = workspace.controller.tabs(inPane: pane).map(\.title)
     XCTAssertEqual(Set(names).count, 2)
     var cancelled = false
-    workspace.requestClose = { _ in cancelled = true; return false }
+    workspace.requestClose = { _ in
+      cancelled = true
+      return false
+    }
     workspace.closeCurrentTab()
     try await eventually { cancelled }
     XCTAssertEqual(workspace.controller.allTabIds.count, 2)
@@ -101,7 +108,6 @@ extension PaneWorkspaceTests {
     try await eventually { workspace.controller.allTabIds.count == 1 }
   }
 }
-
 
 extension PaneWorkspaceTests {
   @MainActor func testPaneCloseCancellationLeavesOnlyUnstoppedTabAndCanRetry() async throws {
@@ -122,10 +128,14 @@ extension PaneWorkspaceTests {
     try await eventually { requests.count == 2 }
     XCTAssertTrue(workspace.controller.allPaneIds.contains(pane))
     XCTAssertEqual(workspace.controller.tabs(inPane: pane).map(\.id), [terminals[1].id])
-    workspace.requestClose = { tab in requests.append(tab.id); return true }
+    workspace.requestClose = { tab in
+      requests.append(tab.id)
+      return true
+    }
     workspace.controller.closePane(pane)
     try await eventually { !workspace.controller.allPaneIds.contains(pane) }
-    XCTAssertEqual(requests, terminals.map { $0.id.id.uuidString } + [terminals[1].id.id.uuidString])
+    XCTAssertEqual(
+      requests, terminals.map { $0.id.id.uuidString } + [terminals[1].id.id.uuidString])
     XCTAssertEqual(workspace.controller.allPaneIds, [other])
   }
 }
@@ -142,7 +152,10 @@ extension PaneWorkspaceTests {
     let pane = try XCTUnwrap(workspace.controller.focusedPaneId)
     XCTAssertEqual(workspace.controller.selectedTab(inPane: pane)?.title, "after")
     var called = false
-    workspace.requestClose = { _ in called = true; return false }
+    workspace.requestClose = { _ in
+      called = true
+      return false
+    }
     workspace.closeCurrentTab()
     XCTAssertFalse(called)
     XCTAssertEqual(try workspace.layout().tabs.map(\.nodeID), ["command-node"])

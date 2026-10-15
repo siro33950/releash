@@ -114,8 +114,9 @@ Nx Cloud は使わない。
 ```
 
 PR と main push の CI は `nx show projects --affected` で変更の影響を受けるプロジェクトを判定し、検証の種類ごとに別の job から Nx を呼ぶ。
-必須チェックは `plan`、各 `*-checks / <target>`、`macos-checks` を直接指定する。
-対象外の Linux 検証も同じチェック名を作り、実行ステップを省略する。変更判定の失敗は必須の `plan` で止める。
+必須チェックは `frontend-required`、`server-required`、`shell-required`、`cli-required`、`quality-required`、`macos-required` を指定する。
+各集約 job は `plan` とそのグループの全チェックの成功を要求し、失敗・キャンセル・job のスキップを通さない。
+変更対象外の検証も同じチェック名を作り、実行ステップを省略する。変更判定の失敗は各集約 job で止める。
 macos は macOS runner、それ以外は Linux runner で実行する。
 nightly のリリース前検証では全プロジェクトを対象にする。
 
@@ -123,14 +124,17 @@ nightly のリリース前検証では全プロジェクトを対象にする。
 |---|---|
 | server、cli | `lint`、`test`、`build` |
 | desktop | `lint`、`test`、`build`、`e2e`、`dev`、`tauri` |
-| macos | `generate`、`helpers`、`build`、`test`、`e2e`、`dev` |
+| macos | `lint`、`generate`、`helpers`、`build`、`test`、`test-unit`、`test-integration`、`e2e`、`dev` |
 | workspace | `lint`、`coverage` |
 
 `test` は各テスト target を集約する。
 server と cli の `test` は `test-unit`（単体・doc）と `test-integration`、desktop の `test` は `rust-test-unit`、`rust-test-integration`、`frontend-test-unit`、`frontend-test-integration` を集約する。
 desktop の `lint` は `rust-lint` と `frontend-lint` を集約する。
 バイナリの build 依存は Rust の統合テストにだけ置く。
-macOS の CI は `macos:test` でアプリのビルドとテストを行い、`macos:build` を重ねて実行しない。
+macOS の CI は `lint`、`test-unit`、`test-integration` を別々の job で実行する。
+`macos:test` は単体と統合を集約する。各テストは必要なアプリをビルドするため、CI で `macos:build` を重ねて実行しない。
+同じ Nx 実行内では macOS の単体・統合テストを直列に実行し、アプリとウィンドウの競合を避ける。CI では別々の runner で並列に実行する。
+Swift の lint は Xcode 付属の `swift-format lint --strict` を使い、`Sources/`、`Tests/`、`UITests/` と `BuildTools/Package.swift` を対象にする。生成コードと依存ライブラリは対象に含めない。
 macOS の回帰の E2E は、次のコマンドで実行する。
 画面がロックされておらず、アプリを前面に出せる Mac が必要である。
 

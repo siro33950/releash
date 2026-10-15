@@ -105,16 +105,22 @@ import SwiftUI
   func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil) {
     let live = Set(controller.allTabIds.map { $0.id.uuidString })
     tabs = tabs.filter { live.contains($0.key) }
-    if let existing = controller.allTabIds.first(where: { tabs[$0.id.uuidString]?.nodeID == nodeID }) {
+    if let existing = controller.allTabIds.first(where: { tabs[$0.id.uuidString]?.nodeID == nodeID }
+    ) {
       controller.selectTab(existing)
       return
     }
-    guard let id = controller.createTab(title: title, icon: kind.icon, inPane: pane ?? controller.focusedPaneId) else { return }
+    guard
+      let id = controller.createTab(
+        title: title, icon: kind.icon, inPane: pane ?? controller.focusedPaneId)
+    else { return }
     tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: kind, nodeID: nodeID)
   }
 
   func renameNode(_ nodeID: String, title: String) {
-    for id in controller.allTabIds where tabs[id.id.uuidString]?.nodeID == nodeID { controller.updateTab(id, title: title) }
+    for id in controller.allTabIds where tabs[id.id.uuidString]?.nodeID == nodeID {
+      controller.updateTab(id, title: title)
+    }
   }
 
   func isFocused(_ tab: TabID, in pane: PaneID) -> Bool {
@@ -123,9 +129,13 @@ import SwiftUI
 
   func tab(_ id: TabID) -> PaneTab? { tabs[id.id.uuidString] }
 
-  func splitTabBar(_ controller: BonsplitController, shouldCloseTab tab: Bonsplit.Tab, inPane pane: PaneID) -> Bool {
+  func splitTabBar(
+    _ controller: BonsplitController, shouldCloseTab tab: Bonsplit.Tab, inPane pane: PaneID
+  ) -> Bool {
     if approved.remove(tab.id) != nil { return true }
-    guard let value = tabs[tab.id.id.uuidString], value.kind == .terminal, let requestClose else { return true }
+    guard let value = tabs[tab.id.id.uuidString], value.kind == .terminal, let requestClose else {
+      return true
+    }
     guard closing.insert(tab.id).inserted else { return false }
     Task {
       defer { closing.remove(tab.id) }
@@ -139,12 +149,15 @@ import SwiftUI
 
   func splitTabBar(_ controller: BonsplitController, shouldClosePane pane: PaneID) -> Bool {
     if approvedPanes.remove(pane) != nil { return true }
-    let terminalTabs = controller.tabs(inPane: pane).compactMap { tabs[$0.id.id.uuidString] }.filter { $0.kind == .terminal }
+    let terminalTabs = controller.tabs(inPane: pane).compactMap { tabs[$0.id.id.uuidString] }.filter
+    { $0.kind == .terminal }
     guard !terminalTabs.isEmpty, let requestClose else { return true }
     guard closingPanes.insert(pane).inserted else { return false }
     Task {
       defer { closingPanes.remove(pane) }
-      while let tab = controller.tabs(inPane: pane).first(where: { tabs[$0.id.id.uuidString]?.kind == .terminal }), let value = tabs[tab.id.id.uuidString] {
+      while let tab = controller.tabs(inPane: pane).first(where: {
+        tabs[$0.id.id.uuidString]?.kind == .terminal
+      }), let value = tabs[tab.id.id.uuidString] {
         guard await requestClose(value) else { return }
         approved.insert(tab.id)
         controller.closeTab(tab.id)
@@ -159,12 +172,19 @@ import SwiftUI
 
   func openFile(_ path: String, base: String) {
     guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
-    if let existing = controller.tabs(inPane: pane).first(where: { tabs[$0.id.id.uuidString]?.filePath == path }) {
+    if let existing = controller.tabs(inPane: pane).first(where: {
+      tabs[$0.id.id.uuidString]?.filePath == path
+    }) {
       controller.selectTab(existing.id)
       return
     }
-    guard let id = controller.createTab(title: URL(fileURLWithPath: path).lastPathComponent, icon: PaneTab.Kind.file.icon, inPane: pane) else { return }
-    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: .file, filePath: path, fileBase: base)
+    guard
+      let id = controller.createTab(
+        title: URL(fileURLWithPath: path).lastPathComponent, icon: PaneTab.Kind.file.icon,
+        inPane: pane)
+    else { return }
+    tabs[id.id.uuidString] = PaneTab(
+      id: id.id.uuidString, kind: .file, filePath: path, fileBase: base)
   }
 
   func setFilePresentation(_ id: TabID, mode: String?, base: String?) {
@@ -192,12 +212,24 @@ struct WorkspacePaneView: View {
   @Bindable var model: AppModel
   var body: some View {
     BonsplitView(controller: model.panes.controller) { tab, pane in
-      if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal, let path = model.selectedWorktree {
-        TerminalPane(session: model.terminal(path: path, id: value.id), focused: model.panes.isFocused(tab.id, in: pane)).id(path + value.id)
-      } else if model.layoutLoaded, let value = model.panes.tab(tab.id), let nodeID = value.nodeID, let path = model.selectedWorktree, value.kind == .session || value.kind == .command {
-        NodePane(model: model, path: path, nodeID: nodeID, focused: model.panes.isFocused(tab.id, in: pane)).id(path + nodeID)
-      } else if let file = model.panes.tab(tab.id), let path = file.filePath, let worktree = model.selectedWorktree {
-        FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree).id("\(worktree):\(tab.id):\(path)")
+      if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal,
+        let path = model.selectedWorktree
+      {
+        TerminalPane(
+          session: model.terminal(path: path, id: value.id),
+          focused: model.panes.isFocused(tab.id, in: pane)
+        ).id(path + value.id)
+      } else if model.layoutLoaded, let value = model.panes.tab(tab.id), let nodeID = value.nodeID,
+        let path = model.selectedWorktree, value.kind == .session || value.kind == .command
+      {
+        NodePane(
+          model: model, path: path, nodeID: nodeID, focused: model.panes.isFocused(tab.id, in: pane)
+        ).id(path + nodeID)
+      } else if let file = model.panes.tab(tab.id), let path = file.filePath,
+        let worktree = model.selectedWorktree
+      {
+        FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree).id(
+          "\(worktree):\(tab.id):\(path)")
       } else {
         Text(tab.title).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, maxHeight: .infinity)

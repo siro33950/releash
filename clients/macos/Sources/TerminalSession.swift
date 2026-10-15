@@ -22,11 +22,16 @@ import SwiftTerm
   @ObservationIgnored private var reportUnits = 0
   @ObservationIgnored private var replaying = false
   @ObservationIgnored private var applying = false
-  @ObservationIgnored private var size = (cols: Int(UIStyle.terminalColumns), rows: Int(UIStyle.terminalRows))
+  @ObservationIgnored private var size = (
+    cols: Int(UIStyle.terminalColumns), rows: Int(UIStyle.terminalRows)
+  )
   @ObservationIgnored private let openLink: (URL) -> Void
   @ObservationIgnored private var tail: Task<Void, Never>?
 
-  init(model: AppModel, path: String, id: String, agent: Bool = false, openLink: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
+  init(
+    model: AppModel, path: String, id: String, agent: Bool = false,
+    openLink: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
+  ) {
     self.openLink = openLink
     self.model = model
     self.path = path
@@ -34,7 +39,9 @@ import SwiftTerm
     self.agent = agent
     super.init()
     screen.terminalDelegate = self
-    if let font = NSFont(name: UIStyle.terminalFontName, size: NSFont.systemFontSize) { screen.font = font }
+    if let font = NSFont(name: UIStyle.terminalFontName, size: NSFont.systemFontSize) {
+      screen.font = font
+    }
     screen.nativeBackgroundColor = .textBackgroundColor
     screen.nativeForegroundColor = .textColor
     screen.setAccessibilityIdentifier("terminal:\(id)")
@@ -47,8 +54,13 @@ import SwiftTerm
 
   var owner: Releash_Client_V1_TerminalSurfaceOwnerV1 {
     var owner = Releash_Client_V1_TerminalSurfaceOwnerV1()
-    if agent { owner.session.workspacePath = path; owner.session.sessionID = id }
-    else { owner.workspaceTerminal.workspacePath = path; owner.workspaceTerminal.terminalID = id }
+    if agent {
+      owner.session.workspacePath = path
+      owner.session.sessionID = id
+    } else {
+      owner.workspaceTerminal.workspacePath = path
+      owner.workspaceTerminal.terminalID = id
+    }
     return owner
   }
 
@@ -67,7 +79,9 @@ import SwiftTerm
   }
 
   func receive(_ event: Releash_Client_V1_TerminalEvent) {
-    guard let model, let current = model.terminalAttachment(path: path, id: id, agent: agent) else { return }
+    guard let model, let current = model.terminalAttachment(path: path, id: id, agent: agent) else {
+      return
+    }
     applying = true
     defer { applying = false }
     switch event.item {
@@ -99,7 +113,8 @@ import SwiftTerm
         request.subscriptionID = current
         request.units = UInt32(reportUnits)
         enqueue(current) { client, headers in
-          _ = try await client.reportTerminalProcessed(request: request, headers: headers).result.get()
+          _ = try await client.reportTerminalProcessed(request: request, headers: headers).result
+            .get()
         }
       }
     case .resize(let resize):
@@ -159,15 +174,17 @@ import SwiftTerm
 
   private func enqueue(
     _ attachment: String,
-    operation: @escaping @MainActor (any Releash_Client_V1_ClientServiceClientInterface, Connect.Headers) async throws -> Void
+    operation:
+      @escaping @MainActor (any Releash_Client_V1_ClientServiceClientInterface, Connect.Headers)
+      async throws -> Void
   ) {
     let prior = tail
     tail = Task { [weak self] in
       await prior?.value
       guard let self, !Task.isCancelled, self.attachment == attachment,
-        let model, let client = model.client else { return }
-      do { try await operation(client, model.headers) }
-      catch {
+        let model, let client = model.client
+      else { return }
+      do { try await operation(client, model.headers) } catch {
         guard self.attachment == attachment else { return }
         failure = model.failureMessage(error)
         disconnect()
@@ -204,7 +221,8 @@ import SwiftTerm
   func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
   func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
     guard let url = URL(string: link), let scheme = url.scheme?.lowercased(),
-      ["http", "https", "mailto", "tel"].contains(scheme) else { return }
+      ["http", "https", "mailto", "tel"].contains(scheme)
+    else { return }
     openLink(url)
   }
 }
@@ -228,8 +246,11 @@ final class TerminalScreen: TerminalView {
   func setFocused(_ value: Bool) {
     let gained = value && !focused
     focused = value
-    if gained { window?.makeFirstResponder(self) }
-    else if !value, window?.firstResponder === self { window?.makeFirstResponder(nil) }
+    if gained {
+      window?.makeFirstResponder(self)
+    } else if !value, window?.firstResponder === self {
+      window?.makeFirstResponder(nil)
+    }
   }
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
@@ -240,6 +261,10 @@ final class TerminalScreen: TerminalView {
   override func accessibilityLabel() -> String? { "Terminal" }
   override func accessibilityValue() -> Any? {
     let terminal = getTerminal()
-    return (0..<terminal.rows).compactMap { terminal.getLine(row: $0)?.translateToString(trimRight: true, skipNullCellsFollowingWide: true, characterProvider: { terminal.getCharacter(for: $0) }) }.joined(separator: "\n")
+    return (0..<terminal.rows).compactMap {
+      terminal.getLine(row: $0)?.translateToString(
+        trimRight: true, skipNullCellsFollowingWide: true,
+        characterProvider: { terminal.getCharacter(for: $0) })
+    }.joined(separator: "\n")
   }
 }

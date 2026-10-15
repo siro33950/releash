@@ -60,7 +60,9 @@ struct CLI: Sendable {
     try await discoverWithStatus(startIfMissing: startIfMissing).0
   }
 
-  func discoverWithStatus(startIfMissing: Bool) async throws -> (Releash_Client_V1_LocalApiDiscovery, CLIStatus) {
+  func discoverWithStatus(startIfMissing: Bool) async throws -> (
+    Releash_Client_V1_LocalApiDiscovery, CLIStatus
+  ) {
     var category = "サーバを発見できません"
     do {
       var statusOutput = try await run(executable, ["status", "--json"])
@@ -75,23 +77,27 @@ struct CLI: Sendable {
       guard status.running else {
         guard let guidance = status.startupGuidance else {
           throw CLIFailure(
-            message: "CLI の status --json 出力に startup_guidance がありません\n\(String(decoding: statusOutput, as: UTF8.self))")
+            message:
+              "CLI の status --json 出力に startup_guidance がありません\n\(String(decoding: statusOutput, as: UTF8.self))"
+          )
         }
         throw CLIFailure(message: guidance)
       }
       guard status.compatibility == "compatible" else {
         category = "サーバと互換性がありません"
         throw CLIFailure(
-          message: [status.compatibility, status.guidance].compactMap { $0 }.joined(separator: "\n"))
+          message: [status.compatibility, status.guidance].compactMap { $0 }.joined(separator: "\n")
+        )
       }
       let data = try Data(contentsOf: URL(fileURLWithPath: status.discoveryFile))
       return (try Releash_Client_V1_LocalApiDiscovery(jsonUTF8Data: data), status)
     } catch {
       let message = error.localizedDescription
       let output = try? JSONDecoder().decode(CLIErrorOutput.self, from: Data(message.utf8))
-      let detail = output.map {
-        [$0.error.message, $0.error.guidance].compactMap { $0 }.joined(separator: "\n")
-      } ?? message
+      let detail =
+        output.map {
+          [$0.error.message, $0.error.guidance].compactMap { $0 }.joined(separator: "\n")
+        } ?? message
       throw CLIFailure(message: "\(category)\n\(detail)")
     }
   }

@@ -67,19 +67,27 @@ final class WorkbenchTests: XCTestCase {
         main:
           command: sleep 3600
       """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result.get()
+    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
+      .get()
     guard case .success = saved.variant else {
-      throw NSError(domain: "E2E", code: 3, userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
+      throw NSError(
+        domain: "E2E", code: 3,
+        userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
     }
-    _ = try await fixture.repository("first-repository", worktrees: ["feature-one"],
+    _ = try await fixture.repository(
+      "first-repository", worktrees: ["feature-one"],
       workflows: ["e2e-running"], threads: ["worktree card context"])
     _ = try await fixture.repository("second-repository", worktrees: ["feature-two"])
 
     let first = fixture.directory.appendingPathComponent("first-repository")
     let second = fixture.directory.appendingPathComponent("second-repository")
     launch()
-    let firstHeader = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@", "repository:\(first.path)")).element
-    let secondHeader = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@", "repository:\(second.path)")).element
+    let firstHeader = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier == %@", "repository:\(first.path)")
+    ).element
+    let secondHeader = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier == %@", "repository:\(second.path)")
+    ).element
     let firstCard = app.buttons["worktree:feature-one"]
     let secondCard = app.buttons["worktree:feature-two"]
     for element in [firstHeader, secondHeader, firstCard, secondCard] {
@@ -92,7 +100,8 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertGreaterThan(firstCard.frame.minY, firstHeader.frame.minY)
     XCTAssertLessThan(firstCard.frame.maxY, secondHeader.frame.minY)
     XCTAssertGreaterThan(secondCard.frame.minY, secondHeader.frame.minY)
-    let execution = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "e2e-running"),
+    let execution = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label CONTAINS %@", "e2e-running"),
       object: app.buttons["worktree:main"].firstMatch)
     XCTAssertEqual(XCTWaiter.wait(for: [execution], timeout: 30), .completed, app.debugDescription)
   }
@@ -104,7 +113,12 @@ final class WorkbenchTests: XCTestCase {
     try "let before = 1\n".write(to: path, atomically: true, encoding: .utf8)
     let git = URL(fileURLWithPath: "/usr/bin/git")
     try fixture.process(git, ["add", "file.swift"], at: repository)
-    try fixture.process(git, ["-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "file"], at: repository)
+    try fixture.process(
+      git,
+      [
+        "-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false",
+        "commit", "-m", "file",
+      ], at: repository)
     try "let after = 2\n".write(to: path, atomically: true, encoding: .utf8)
     launch()
     app.buttons["worktree:main"].firstMatch.click()
@@ -112,15 +126,20 @@ final class WorkbenchTests: XCTestCase {
     let file = app.descendants(matching: .any).matching(identifier: "file:file.swift").firstMatch
     XCTAssertTrue(file.waitForExistence(timeout: 30), app.debugDescription)
     file.click()
-    XCTAssertTrue(app.buttons["file.swift"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
-    let after = app.webViews.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "after")).firstMatch
-    let before = app.webViews.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "before")).firstMatch
+    XCTAssertTrue(
+      app.buttons["file.swift"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+    let after = app.webViews.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "after"))
+      .firstMatch
+    let before = app.webViews.staticTexts.matching(
+      NSPredicate(format: "value CONTAINS %@", "before")
+    ).firstMatch
     XCTAssertTrue(after.waitForExistence(timeout: 30), app.debugDescription)
     XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
     let mode = app.descendants(matching: .any).matching(identifier: "file-mode").firstMatch
     mode.click()
     XCTAssertTrue(after.waitForExistence(timeout: 10), app.debugDescription)
-    let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: before)
+    let removed = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"), object: before)
     XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, app.debugDescription)
     mode.click()
     XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
@@ -138,14 +157,17 @@ final class WorkbenchTests: XCTestCase {
     app.menuItems["Terminal"].click()
     open.click()
     app.menuItems["Terminal"].click()
-    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal ")).firstMatch
+    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal "))
+      .firstMatch
     XCTAssertTrue(tab.waitForExistence(timeout: 10))
     let terminalTitle = tab.label
     let edge = open.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 5))
     tab.click()
     tab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
       .press(forDuration: 0.5, thenDragTo: edge)
-    XCTAssertTrue(app.menuButtons.matching(identifier: "開く").element(boundBy: 1).waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertTrue(
+      app.menuButtons.matching(identifier: "開く").element(boundBy: 1).waitForExistence(timeout: 10),
+      app.debugDescription)
     let moved = app.scrollViews.buttons[terminalTitle].firstMatch
     let retained = app.scrollViews.buttons["Terminal 2"].firstMatch
     let destination = app.scrollViews.containing(.button, identifier: terminalTitle)
@@ -157,7 +179,9 @@ final class WorkbenchTests: XCTestCase {
     app.menuItems["Terminal"].click()
     moved.click()
     moved.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-      .press(forDuration: 0.5, thenDragTo: retained.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+      .press(
+        forDuration: 0.5,
+        thenDragTo: retained.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
     XCTAssertTrue(destination.waitForExistence(timeout: 10), app.debugDescription)
     XCTAssertEqual(app.menuButtons.matching(identifier: "開く").count, 2)
 
@@ -173,7 +197,9 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertTrue(picker.waitForExistence(timeout: 10), app.debugDescription)
     picker.click()
     app.menuItems[repository.path].click()
-    app.disclosureTriangles["Advanced"].coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).click()
+    app.disclosureTriangles["Advanced"].coordinate(
+      withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)
+    ).click()
     let branch = app.descendants(matching: .any)["new-branch-field"].firstMatch
     XCTAssertTrue(branch.waitForExistence(timeout: 10), app.debugDescription)
     branch.click()
@@ -187,13 +213,14 @@ final class WorkbenchTests: XCTestCase {
     app.buttons["作成"].click()
     let card = app.buttons["worktree:created-branch"]
     XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription)
-    let started = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "Claude"), object: card)
+    let started = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label CONTAINS %@", "Claude"), object: card)
     XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 30), .completed, app.debugDescription)
     XCTAssertTrue(card.label.contains("Session,"), card.label)
-    try await fixture.waitForLiveSession(repository: repository, branch: "created-branch", provider: .claude)
+    try await fixture.waitForLiveSession(
+      repository: repository, branch: "created-branch", provider: .claude)
   }
 }
-
 
 extension WorkbenchTests {
   @MainActor func testTerminalShowsCommandOutput() async throws {
@@ -201,24 +228,44 @@ extension WorkbenchTests {
     _ = try await fixture.repository("terminal-repository")
     launch()
     let worktree = app.buttons.matching(identifier: "worktree:main").firstMatch
-    guard worktree.waitForExistence(timeout: 30) else { XCTFail("Worktreeが表示されません"); return }
+    guard worktree.waitForExistence(timeout: 30) else {
+      XCTFail("Worktreeが表示されません")
+      return
+    }
     worktree.click()
     let open = app.menuButtons["開く"].firstMatch
-    let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: open)
-    guard await XCTWaiter.fulfillment(of: [ready], timeout: 30) == .completed else { XCTFail("開くメニューが有効になりません"); return }
+    let ready = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == true AND enabled == true"), object: open)
+    guard await XCTWaiter.fulfillment(of: [ready], timeout: 30) == .completed else {
+      XCTFail("開くメニューが有効になりません")
+      return
+    }
     open.click()
     let item = app.menuItems["Terminal"]
-    guard item.waitForExistence(timeout: 10), item.isHittable else { XCTFail("Terminalメニューを選択できません"); return }
+    guard item.waitForExistence(timeout: 10), item.isHittable else {
+      XCTFail("Terminalメニューを選択できません")
+      return
+    }
     item.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal ")).firstMatch
-    guard tab.waitForExistence(timeout: 30) else { XCTFail("Terminalタブが作られません"); return }
+    let tab = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Terminal "))
+      .firstMatch
+    guard tab.waitForExistence(timeout: 30) else {
+      XCTFail("Terminalタブが作られません")
+      return
+    }
     tab.click()
-    let terminals = app.textViews.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal:"))
+    let terminals = app.textViews.matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "terminal:"))
     let terminal = terminals.firstMatch
-    guard terminal.waitForExistence(timeout: 30), terminals.count == 1 else { XCTFail("作成したタブの端末ビューを取得できません"); return }
+    guard terminal.waitForExistence(timeout: 30), terminals.count == 1 else {
+      XCTFail("作成したタブの端末ビューを取得できません")
+      return
+    }
     terminal.click()
     terminal.typeText("printf 'releash-%s\\n' terminal-output\n")
-    let output = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "releash-terminal-output"), object: terminal)
+    let output = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value CONTAINS %@", "releash-terminal-output"),
+      object: terminal)
     XCTAssertEqual(XCTWaiter.wait(for: [output], timeout: 30), .completed, app.debugDescription)
   }
 }
@@ -231,40 +278,58 @@ extension WorkbenchTests {
     try await fixture.waitForState(target: "workspaces") { payload in
       guard case .workspaces(let value) = payload.value,
         let repo = value.repositories.items.first(where: { $0.path == repository.path }),
-        let main = repo.branches.items.first(where: { $0.isMainWorktree }) else { return false }
+        let main = repo.branches.items.first(where: { $0.isMainWorktree })
+      else { return false }
       path = main.worktreePath
       return true
     }
     let (client, headers) = try fixture.client()
     var request = Releash_Client_V1_CreateAgentSessionRequest()
-    request.provider = "claude"; request.workspaceIdentity = path; request.worktreePath = path
-    request.rows = 24; request.cols = 80; request.callerRequestID = UUID().uuidString
-    let selection = try await client.createAgentSession(request: request, headers: headers).result.get()
+    request.provider = "claude"
+    request.workspaceIdentity = path
+    request.worktreePath = path
+    request.rows = 24
+    request.cols = 80
+    request.callerRequestID = UUID().uuidString
+    let selection = try await client.createAgentSession(request: request, headers: headers).result
+      .get()
     var rootID = ""
     try await fixture.waitForState(target: "workspaces") { payload in
       guard case .workspaces(let value) = payload.value,
-        let worktree = value.repositories.items.flatMap(\.worktrees.items).first(where: { $0.path == path }),
+        let worktree = value.repositories.items.flatMap(\.worktrees.items).first(where: {
+          $0.path == path
+        }),
         let root = worktree.snapshot.nodes.items.first(where: {
-          if case .node(let node) = $0.variant { return node.sessionCapabilities.sessionRef == selection.agentSessionID }
+          if case .node(let node) = $0.variant {
+            return node.sessionCapabilities.sessionRef == selection.agentSessionID
+          }
           return false
-        }), case .node(let node) = root.variant else { return false }
+        }), case .node(let node) = root.variant
+      else { return false }
       rootID = node.id
       return true
     }
     launch()
     let worktree = app.buttons["worktree:main"].firstMatch
-    XCTAssertTrue(worktree.waitForExistence(timeout: 30), app.debugDescription); worktree.click()
+    XCTAssertTrue(worktree.waitForExistence(timeout: 30), app.debugDescription)
+    worktree.click()
     let panel = app.checkBoxes["Node"]
-    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
+    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription)
+    panel.click()
     let root = app.buttons["open-node:\(rootID)"]
-    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription); root.click()
+    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
+    root.click()
     let terminal = app.textViews["terminal:\(selection.agentSessionID)"]
     XCTAssertTrue(terminal.waitForExistence(timeout: 30), app.debugDescription)
-    let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "e2e-provider"), object: terminal)
+    let ready = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value CONTAINS %@", "e2e-provider"), object: terminal)
     let readyResult = await XCTWaiter.fulfillment(of: [ready], timeout: 30)
     XCTAssertEqual(readyResult, .completed)
-    terminal.click(); terminal.typeText("session-tab-input\n")
-    let input = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "received-0:session-tab-input"), object: terminal)
+    terminal.click()
+    terminal.typeText("session-tab-input\n")
+    let input = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value CONTAINS %@", "received-0:session-tab-input"),
+      object: terminal)
     let inputResult = await XCTWaiter.fulfillment(of: [input], timeout: 30)
     XCTAssertEqual(inputResult, .completed)
   }
@@ -281,28 +346,39 @@ extension WorkbenchTests {
         main:
           command: printf command-tab-output
       """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result.get()
-    guard case .success = saved.variant else { XCTFail("Workflowを保存できません"); return }
+    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
+      .get()
+    guard case .success = saved.variant else {
+      XCTFail("Workflowを保存できません")
+      return
+    }
     var start = Releash_Client_V1_StartWorkflowRequest()
-    start.workflowName = "command-tab-e2e"; start.worktreePath = repository.path
+    start.workflowName = "command-tab-e2e"
+    start.worktreePath = repository.path
     let execution = try await client.startWorkflow(request: start, headers: headers).result.get()
     launch()
     let worktree = app.buttons["worktree:main"].firstMatch
-    XCTAssertTrue(worktree.waitForExistence(timeout: 30), app.debugDescription); worktree.click()
+    XCTAssertTrue(worktree.waitForExistence(timeout: 30), app.debugDescription)
+    worktree.click()
     let panel = app.checkBoxes["Node"]
-    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
+    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription)
+    panel.click()
     let root = app.buttons["open-node:\(execution.value)"]
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
-    app.scrollViews.containing(.any, identifier: "root:\(execution.value)").firstMatch.scroll(byDeltaX: -160, deltaY: 0)
-    XCTAssertTrue(root.isHittable, app.debugDescription); root.click()
+    app.scrollViews.containing(.any, identifier: "root:\(execution.value)").firstMatch.scroll(
+      byDeltaX: -160, deltaY: 0)
+    XCTAssertTrue(root.isHittable, app.debugDescription)
+    root.click()
     let output = app.staticTexts["command-stdout"]
     XCTAssertTrue(output.waitForExistence(timeout: 30), app.debugDescription)
-    let received = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "command-tab-output"), object: output)
+    let received = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value CONTAINS %@", "command-tab-output"), object: output)
     let receivedResult = await XCTWaiter.fulfillment(of: [received], timeout: 30)
     XCTAssertEqual(receivedResult, .completed)
     let result = app.staticTexts["command-result"]
     XCTAssertTrue(result.waitForExistence(timeout: 30), app.debugDescription)
-    XCTAssertTrue((result.value as? String)?.contains("Exit code: 0") == true, result.debugDescription)
+    XCTAssertTrue(
+      (result.value as? String)?.contains("Exit code: 0") == true, result.debugDescription)
   }
 }
 
@@ -314,13 +390,17 @@ extension WorkbenchTests {
     try await fixture.waitForState(target: "workspaces") { payload in
       guard case .workspaces(let value) = payload.value,
         let repo = value.repositories.items.first(where: { $0.path == repository.path }),
-        let main = repo.branches.items.first(where: { $0.isMainWorktree }) else { return false }
+        let main = repo.branches.items.first(where: { $0.isMainWorktree })
+      else { return false }
       path = main.worktreePath
       return true
     }
     let (client, headers) = try fixture.client()
     var instruction = Releash_Client_V1_SaveFacetRequest()
-    instruction.kind = "instruction"; instruction.key = "node-tree-e2e"; instruction.isNew = true; instruction.content = "Observe this workflow."
+    instruction.kind = "instruction"
+    instruction.key = "node-tree-e2e"
+    instruction.isNew = true
+    instruction.content = "Observe this workflow."
     _ = try await client.saveFacet(request: instruction, headers: headers).result.get()
     var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
     definition.source = """
@@ -336,41 +416,55 @@ extension WorkbenchTests {
             provider: claude
             facets: {instruction: node-tree-e2e}
       """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result.get()
-    guard case .success = saved.variant else { XCTFail("Workflowを保存できません: \(saved)"); return }
+    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
+      .get()
+    guard case .success = saved.variant else {
+      XCTFail("Workflowを保存できません: \(saved)")
+      return
+    }
     var request = Releash_Client_V1_StartWorkflowRequest()
-    request.workflowName = "node-tree-e2e"; request.worktreePath = path
+    request.workflowName = "node-tree-e2e"
+    request.worktreePath = path
     let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
     var childID = ""
     var sessionID = ""
     try await fixture.waitForState(target: "workspaces") { payload in
       guard case .workspaces(let value) = payload.value,
-        let tree = value.repositories.items.flatMap(\.worktrees.items).first(where: { $0.path == path }),
+        let tree = value.repositories.items.flatMap(\.worktrees.items).first(where: {
+          $0.path == path
+        }),
         let root = tree.snapshot.nodes.items.first,
         case .sequence(let sequence) = root.variant,
-        let child = sequence.children.items.first, case .node(let node) = child.variant else { return false }
+        let child = sequence.children.items.first, case .node(let node) = child.variant
+      else { return false }
       childID = node.id
       return !childID.isEmpty
     }
     try await fixture.waitForState(target: "node-detail", args: [path, childID]) { payload in
       guard case .nodeDetail(let value) = payload.value, value.hasValue,
-        case .session(let session) = value.value.content.variant, session.hasSessionID else { return false }
+        case .session(let session) = value.value.content.variant, session.hasSessionID
+      else { return false }
       sessionID = session.sessionID
       return !sessionID.isEmpty
     }
     launch()
     let card = app.buttons["worktree:main"].firstMatch
-    XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription); card.click()
+    XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription)
+    card.click()
     let panel = app.checkBoxes["Node"]
-    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription); panel.click()
-    let root = app.descendants(matching: .any).matching(identifier: "root:\(execution.value)").firstMatch
-    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription); root.click()
+    XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription)
+    panel.click()
+    let root = app.descendants(matching: .any).matching(identifier: "root:\(execution.value)")
+      .firstMatch
+    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
+    root.click()
     let child = app.descendants(matching: .any).matching(identifier: "root:\(childID)").firstMatch
     XCTAssertTrue(child.waitForExistence(timeout: 10), app.debugDescription)
     XCTAssertTrue(["active", "attention", "idle"].contains(child.value as? String ?? ""))
     child.click()
     XCTAssertFalse(app.textViews["terminal:\(sessionID)"].exists)
     app.buttons["open-node:\(childID)"].click()
-    XCTAssertTrue(app.textViews["terminal:\(sessionID)"].waitForExistence(timeout: 30), app.debugDescription)
+    XCTAssertTrue(
+      app.textViews["terminal:\(sessionID)"].waitForExistence(timeout: 30), app.debugDescription)
   }
 }

@@ -84,12 +84,21 @@ targets:
       - package: SwiftTerm
       - package: Connect
       - package: SwiftProtobuf
-  ReleashTests:
+  ReleashUnitTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - Tests
+      - Tests/Unit
+      - Tests/Shared
       - UITests/Fixture.swift
+    dependencies:
+      - target: Releash
+  ReleashIntegrationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/Integration
+      - Tests/Shared
     dependencies:
       - target: Releash
   ReleashUITests:
@@ -114,7 +123,19 @@ schemes:
       targets:
         Releash: all
     test:
-      targets: [ReleashTests]
+      targets: [ReleashUnitTests, ReleashIntegrationTests]
+  ReleashUnitTests:
+    build:
+      targets:
+        Releash: all
+    test:
+      targets: [ReleashUnitTests]
+  ReleashIntegrationTests:
+    build:
+      targets:
+        Releash: all
+    test:
+      targets: [ReleashIntegrationTests]
   ReleashE2E:
     build:
       targets:

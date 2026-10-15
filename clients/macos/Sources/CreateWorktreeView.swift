@@ -140,26 +140,29 @@ struct CreateWorktreeView: View {
     milestone = ""
     readFailure = nil
     guard !form.repository.isEmpty else { return }
-    subscriptions.append(model.subscribe("available-branches", [form.repository]) { payload in
-      if case .branchStatus(let value) = payload.value { branches = value.items }
-    })
+    subscriptions.append(
+      model.subscribe("available-branches", [form.repository]) { payload in
+        if case .branchStatus(let value) = payload.value { branches = value.items }
+      })
     if source == "issue" {
-      subscriptions.append(model.subscribe("issues", [form.repository]) { payload in
-        if case .issues(let value) = payload.value {
-          labels = value.labels
-          milestones = value.milestones
-          allIssues = value.issues.items
-          if label.isEmpty && milestone.isEmpty { issues = value.issues.items }
-          if value.hasReadError { readFailure = value.readError }
-        }
-      })
+      subscriptions.append(
+        model.subscribe("issues", [form.repository]) { payload in
+          if case .issues(let value) = payload.value {
+            labels = value.labels
+            milestones = value.milestones
+            allIssues = value.issues.items
+            if label.isEmpty && milestone.isEmpty { issues = value.issues.items }
+            if value.hasReadError { readFailure = value.readError }
+          }
+        })
     } else if source == "notion" {
-      subscriptions.append(model.subscribe("notion-tasks", [form.repository, "100"]) { payload in
-        if case .notionTasks(let value) = payload.value {
-          tasks = value.page.tasks.items
-          if value.hasReadError { readFailure = value.readError.message }
-        }
-      })
+      subscriptions.append(
+        model.subscribe("notion-tasks", [form.repository, "100"]) { payload in
+          if case .notionTasks(let value) = payload.value {
+            tasks = value.page.tasks.items
+            if value.hasReadError { readFailure = value.readError.message }
+          }
+        })
     }
   }
   private func filterIssues() {

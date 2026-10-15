@@ -51,7 +51,8 @@ indirect enum PaneLayout: Equatable {
         case .command: kind = .command
         default: throw CLIFailure(message: "Unknown pane tab kind")
         }
-        return PaneTab(id: tab.id, kind: kind,
+        return PaneTab(
+          id: tab.id, kind: kind,
           nodeID: tab.hasNodeID ? tab.nodeID : nil,
           filePath: tab.hasFilePath ? tab.filePath : nil,
           fileMode: tab.hasFileMode ? tab.fileMode : nil,

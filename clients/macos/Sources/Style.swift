@@ -63,7 +63,9 @@ extension View {
 
 /// アイコンだけのボタンとメニュー。マウスを乗せたときと押したときに、枠いっぱいに背景を描く
 struct IconButtonStyle: ButtonStyle {
-  func makeBody(configuration: Configuration) -> some View { HoverLabel(configuration: configuration) }
+  func makeBody(configuration: Configuration) -> some View {
+    HoverLabel(configuration: configuration)
+  }
   private struct HoverLabel: View {
     let configuration: Configuration
     @Environment(\.isEnabled) private var enabled
@@ -72,7 +74,8 @@ struct IconButtonStyle: ButtonStyle {
       configuration.label.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
         .background(
           enabled && (hovering || configuration.isPressed) ? UIStyle.iconButtonHover : .clear,
-          in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius))
+          in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius)
+        )
         .opacity(enabled ? 1 : 0.4)
         .onHover { hovering = $0 }
     }
@@ -95,13 +98,16 @@ struct IconMenu<Content: View>: View {
 /// アイコンだけのトグル。off は IconButtonStyle と同じ見た目で、on は worktree の選択と同じ色にする
 struct IconToggleStyle: ToggleStyle {
   func makeBody(configuration: Configuration) -> some View {
-    Button { configuration.isOn.toggle() } label: {
+    Button {
+      configuration.isOn.toggle()
+    } label: {
       configuration.label
     }
     .buttonStyle(IconButtonStyle())
     .background(
       configuration.isOn ? UIStyle.sidebarSelection : .clear,
-      in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius))
+      in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius)
+    )
     .foregroundStyle(configuration.isOn ? UIStyle.sidebarSelectionText : .primary)
   }
 }

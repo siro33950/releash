@@ -65,17 +65,19 @@ class MacOSBuildTest(unittest.TestCase):
     def test_protocol_generation_precedes_source_validation(self):
         project = (MACOS / "project.yml").read_text()
         targets = json.loads((MACOS / "project.json").read_text())["targets"]
-        for target in ["build", "test"]:
-            self.assertIn("generate", targets[target]["dependsOn"])
-            self.assertIn("helpers", targets[target]["dependsOn"])
-            commands = targets[target]["options"]["commands"]
+        prepare = targets["prepare"]
+        self.assertIn("generate", prepare["dependsOn"])
+        self.assertIn("helpers", prepare["dependsOn"])
+        commands = prepare["options"]["commands"]
+        self.assertLess(commands.index("swift run --package-path BuildTools xcodegen generate"),
+                        next(i for i, command in enumerate(commands) if command.startswith("xcodebuild ")))
+        for target in ["build", "test-unit", "test-integration"]:
+            self.assertIn("prepare", targets[target]["dependsOn"])
             self.assertFalse(targets[target]["options"]["forwardAllArgs"])
-            self.assertLess(commands.index("swift run --package-path BuildTools xcodegen generate"),
-                            next(i for i, command in enumerate(commands) if command.startswith("xcodebuild ")))
         self.assertIn("- path: Generated", project)
         self.assertIn("path: Generated/client-descriptor.bin\n        buildPhase: resources", project)
-        unit = project.split("  ReleashTests:", 1)[1].split("  ReleashUITests:", 1)[0]
-        self.assertIn("      - Tests", unit)
+        unit = project.split("  ReleashUnitTests:", 1)[1].split("  ReleashIntegrationTests:", 1)[0]
+        self.assertIn("      - Tests/Unit", unit)
         self.assertIn("      - UITests/Fixture.swift", unit)
         self.assertIn("- target: Releash", project)
 

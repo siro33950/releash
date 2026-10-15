@@ -104,33 +104,121 @@ jobs:
 
   macos-checks:
     needs: plan
-    if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
+    name: macos-checks / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [lint, test-unit, test-integration]
     runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
         with:
           ref: ${{ needs.plan.outputs.ref }}
           fetch-depth: 0
       - uses: jdx/mise-action@v3
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
       - name: Read Xcode version
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
         id: xcode
         run: echo "version=$(cat clients/macos/.xcode-version)" >> "$GITHUB_OUTPUT"
       - uses: maxim-lobanov/setup-xcode@v1
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
         with:
           xcode-version: ${{ steps.xcode.outputs.version }}
       - name: Install Metal Toolchain
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Install Rust toolchain
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
       - uses: actions/cache@v6
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
         with:
           path: clients/macos/BuildTools/.build
           key: macos-native-build-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/BuildTools/Package.resolved') }}
       - uses: actions/cache@v6
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
         with:
           path: clients/macos/.build/SourcePackages
           key: macos-native-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-      - name: Build and test native client
-        run: ./nx run macos:test --parallel=2 --outputStyle=static
+      - name: Run check
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
+        env:
+          NX_TARGET: ${{ matrix.target }}
+        run: ./nx run "macos:$NX_TARGET" --parallel=2 --outputStyle=static
+
+  frontend-required:
+    needs: [plan, frontend-checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful frontend checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.frontend-checks.result }}
+        run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
+
+  server-required:
+    needs: [plan, server-checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful server checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.server-checks.result }}
+        run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
+
+  shell-required:
+    needs: [plan, shell-checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful shell checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.shell-checks.result }}
+        run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
+
+  cli-required:
+    needs: [plan, cli-checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful cli checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.cli-checks.result }}
+        run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
+
+  quality-required:
+    needs: [plan, quality-checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful quality checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.quality-checks.result }}
+        run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
+
+  macos-required:
+    needs: [plan, macos-checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful macos checks
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          CHECK_RESULT: ${{ needs.macos-checks.result }}
+        run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success

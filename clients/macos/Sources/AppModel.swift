@@ -38,8 +38,9 @@ import SwiftProtobuf
   @ObservationIgnored private var policy: TransportPolicy?
   @ObservationIgnored private var streamTask: Task<Void, Never>?
   @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
-  @ObservationIgnored private var callbacks: [String: [UUID: (Releash_Client_V1_StatePayload) -> Void]] =
-    [:]
+  @ObservationIgnored private var callbacks:
+    [String: [UUID: (Releash_Client_V1_StatePayload) -> Void]] =
+      [:]
   @ObservationIgnored private var subscriberKeys: [UUID: String] = [:]
   @ObservationIgnored private var lastPayloads: [String: Releash_Client_V1_StatePayload] = [:]
   @ObservationIgnored private var groupSubscriptions: [String: UUID] = [:]
@@ -88,43 +89,50 @@ import SwiftProtobuf
       connectionFailure = nil
       for id in rootSubscriptions { unsubscribe(id) }
       rootSubscriptions = []
-      rootSubscriptions.append(subscribe("workspaces") { [weak self] payload in
-        guard case .workspaces(let value) = payload.value else { return }
-        guard let self else { return }
-        let paths = Set(value.repositories.items.map(\.path))
-        for repo in repositories where !paths.contains(repo.path) {
-          if let id = groupSubscriptions.removeValue(forKey: repo.path) { unsubscribe(id) }
-          collapsed.removeValue(forKey: repo.path)
-        }
-        repositories = value.repositories.items
-        openPendingRoot()
-        syncNodeTabTitles()
-        for repo in value.repositories.items where groupSubscriptions[repo.path] == nil {
-          groupSubscriptions[repo.path] = self.subscribe("repository-group-state", [repo.path]) { [weak self] payload in
-            if case .repositoryGroupState(let group) = payload.value {
-              self?.collapsed[repo.path] = group.collapsed
+      rootSubscriptions.append(
+        subscribe("workspaces") { [weak self] payload in
+          guard case .workspaces(let value) = payload.value else { return }
+          guard let self else { return }
+          let paths = Set(value.repositories.items.map(\.path))
+          for repo in repositories where !paths.contains(repo.path) {
+            if let id = groupSubscriptions.removeValue(forKey: repo.path) { unsubscribe(id) }
+            collapsed.removeValue(forKey: repo.path)
+          }
+          repositories = value.repositories.items
+          openPendingRoot()
+          syncNodeTabTitles()
+          for repo in value.repositories.items where groupSubscriptions[repo.path] == nil {
+            groupSubscriptions[repo.path] = self.subscribe("repository-group-state", [repo.path]) {
+              [weak self] payload in
+              if case .repositoryGroupState(let group) = payload.value {
+                self?.collapsed[repo.path] = group.collapsed
+              }
             }
           }
-        }
-      })
-      rootSubscriptions.append(subscribe("workflows") { [weak self] payload in
-        if case .workflows(let list) = payload.value { self?.workflows = list.items }
-      })
-      rootSubscriptions.append(subscribe("providers") { [weak self] payload in
-        if case .providers(let list) = payload.value { self?.providers = list.items }
-      })
-      rootSubscriptions.append(subscribe("provider-usage") { [weak self] payload in
-        if case .providerUsage(let value) = payload.value { self?.providerUsage = value.items }
-      })
-      rootSubscriptions.append(subscribe("provider-hook-health") { [weak self] payload in
-        if case .providerHookHealth(let value) = payload.value {
-          self?.hookHealth = value
-          self?.hookSubscriptionFailure = nil
-        }
-      })
-      rootSubscriptions.append(subscribe("daemon-info") { [weak self] payload in
-        if case .daemonInfo(let value) = payload.value { self?.daemonInfo = value }
-      })
+        })
+      rootSubscriptions.append(
+        subscribe("workflows") { [weak self] payload in
+          if case .workflows(let list) = payload.value { self?.workflows = list.items }
+        })
+      rootSubscriptions.append(
+        subscribe("providers") { [weak self] payload in
+          if case .providers(let list) = payload.value { self?.providers = list.items }
+        })
+      rootSubscriptions.append(
+        subscribe("provider-usage") { [weak self] payload in
+          if case .providerUsage(let value) = payload.value { self?.providerUsage = value.items }
+        })
+      rootSubscriptions.append(
+        subscribe("provider-hook-health") { [weak self] payload in
+          if case .providerHookHealth(let value) = payload.value {
+            self?.hookHealth = value
+            self?.hookSubscriptionFailure = nil
+          }
+        })
+      rootSubscriptions.append(
+        subscribe("daemon-info") { [weak self] payload in
+          if case .daemonInfo(let value) = payload.value { self?.daemonInfo = value }
+        })
       streamTask = Task { await recoverStream() }
     } catch { connectionFailure = failureMessage(error) }
   }
@@ -301,9 +309,13 @@ import SwiftProtobuf
                 receive(change.payload, key: key)
               }
             } else if case .failure(let error) = event.event {
-              if subscriptionIDs.key(for: event.subscriptionID) == subscriptionKey("provider-hook-health", []) {
+              if subscriptionIDs.key(for: event.subscriptionID)
+                == subscriptionKey("provider-hook-health", [])
+              {
                 hookSubscriptionFailure = error.message
-              } else { failure = error.message }
+              } else {
+                failure = error.message
+              }
             }
           case .complete(_, let error, _): if let error { throw error }
           case .headers: break
@@ -494,7 +506,10 @@ import SwiftProtobuf
   func syncTerminalTabs(_ layout: PaneLayout) {
     guard let path = selectedWorktree else { return }
     let ids = Set(layout.tabs.filter { $0.kind == .terminal }.map(\.id))
-    for (key, session) in terminals where !session.agent && !ids.contains(session.id) { session.stop(); terminals.removeValue(forKey: key) }
+    for (key, session) in terminals where !session.agent && !ids.contains(session.id) {
+      session.stop()
+      terminals.removeValue(forKey: key)
+    }
     for id in ids { _ = terminal(path: path, id: id) }
   }
 
@@ -527,11 +542,17 @@ import SwiftProtobuf
       _ = try await client.killTerminalSurface(request: request, headers: headers).result.get()
       session.stop()
       return true
-    } catch { failure = failureMessage(error); return false }
+    } catch {
+      failure = failureMessage(error)
+      return false
+    }
   }
 
   func openPendingRoot() {
-    guard layoutLoaded, let path = selectedWorktree, let pendingRoot = pendingRoots[path], let root = repositories.flatMap(\.worktrees.items).first(where: { $0.path == path })?.snapshot.nodes.items.first(where: { $0.rootID == pendingRoot }) else { return }
+    guard layoutLoaded, let path = selectedWorktree, let pendingRoot = pendingRoots[path],
+      let root = repositories.flatMap(\.worktrees.items).first(where: { $0.path == path })?.snapshot
+        .nodes.items.first(where: { $0.rootID == pendingRoot })
+    else { return }
     pendingRoots[path] = nil
     openRoot(root)
   }
@@ -587,7 +608,9 @@ extension AppModel {
   }
 
   private func syncNodeTabTitles() {
-    let roots = repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes.items ?? []
+    let roots =
+      repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes
+      .items ?? []
     for root in roots { panes.renameNode(root.rootID, title: root.rootTabTitle) }
   }
 
@@ -600,7 +623,8 @@ extension AppModel {
     request.rows = UIStyle.terminalRows
     request.cols = UIStyle.terminalColumns
     request.callerRequestID = UUID().uuidString
-    let selection = try await client.createAgentSession(request: request, headers: headers).result.get()
+    let selection = try await client.createAgentSession(request: request, headers: headers).result
+      .get()
     openNode(.session, id: selection.nodeID, title: "Session")
   }
 
@@ -621,19 +645,28 @@ extension AppModel {
   func resumeNode(path: String, id: String) {
     guard let client else { return }
     var request = Releash_Client_V1_ResumeWorkspaceSessionNodeRequest()
-    request.worktreePath = path; request.nodeID = id
-    perform { _ = try await client.resumeWorkspaceSessionNode(request: request, headers: self.headers).result.get() }
+    request.worktreePath = path
+    request.nodeID = id
+    perform {
+      _ = try await client.resumeWorkspaceSessionNode(request: request, headers: self.headers)
+        .result.get()
+    }
   }
   func retryNode(path: String, id: String) {
     guard let client else { return }
     var request = Releash_Client_V1_RetryWorkspaceNodeRequest()
-    request.worktreePath = path; request.nodeID = id
-    perform { _ = try await client.retryWorkspaceNode(request: request, headers: self.headers).result.get() }
+    request.worktreePath = path
+    request.nodeID = id
+    perform {
+      _ = try await client.retryWorkspaceNode(request: request, headers: self.headers).result.get()
+    }
   }
   func abortExecution(id: String) {
     guard let client else { return }
     var request = Releash_Client_V1_AbortWorkflowRequest()
     request.executionID = id
-    perform { _ = try await client.abortWorkflow(request: request, headers: self.headers).result.get() }
+    perform {
+      _ = try await client.abortWorkflow(request: request, headers: self.headers).result.get()
+    }
   }
 }
