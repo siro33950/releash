@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 
 for (const status of ['Accepted', 'Invalid', 'LocalLibrary', 'MissingArchitecture']) {
   test(`notarization ${status}: only accepted apps are stapled and packaged, keychain is always cleaned`, t => {
-    const root = mkdtempSync(join(tmpdir(), 'releash-signing-'));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'releash-signing-')));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     for (const path of ['.github/scripts', 'clients/macos', 'clients/desktop', 'bin']) mkdirSync(join(root, path), { recursive: true });
     copyFileSync('.github/scripts/macos-release.sh', join(root, '.github/scripts/macos-release.sh'));
@@ -55,5 +55,15 @@ if name == 'ditto': pathlib.Path(args[-1]).touch()
     const signatures = calls.filter(call => call[0] === 'codesign' && call.includes('--force'));
     assert.equal(signatures.length, ['LocalLibrary', 'MissingArchitecture'].includes(status) ? 0 : 3);
     assert.ok(signatures.every(call => call.includes('runtime') && call.includes('--timestamp')));
+    const archiveIndex = calls.findIndex(call => call[0] === 'xcodebuild' && call.includes('archive'));
+    if (['LocalLibrary', 'MissingArchitecture'].includes(status)) {
+      assert.equal(archiveIndex, -1);
+    } else {
+      for (const helper of ['releashd', 'releash']) {
+        const signatureIndex = calls.findIndex(call => call[0] === 'codesign' && call.at(-1) === join(root, 'clients/macos/.build/Helpers/Release', helper));
+        assert.ok(signatureIndex >= 0 && signatureIndex < archiveIndex);
+      }
+      assert.ok(calls.indexOf(signatures.at(-1)) > archiveIndex);
+    }
   });
 }

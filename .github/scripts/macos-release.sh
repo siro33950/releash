@@ -38,6 +38,16 @@ PYKEYS
 
 ./nx run macos:generate
 ./nx run macos:helpers -c release
+for binary in "$ROOT/clients/macos/.build/Helpers/Release/releashd" "$ROOT/clients/macos/.build/Helpers/Release/releash"; do
+  lipo -verify_arch arm64 "$binary"
+  lipo -verify_arch x86_64 "$binary"
+  LINKED_LIBRARIES=$(otool -L "$binary")
+  if grep -Eq '/(opt/homebrew|usr/local)/' <<< "$LINKED_LIBRARIES"; then
+    echo "::error::Helper depends on a local package manager library: $binary"
+    exit 1
+  fi
+  codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$binary"
+done
 ./nx run macos:file-viewer
 cd clients/macos
 swift run --package-path BuildTools xcodegen generate
@@ -65,16 +75,6 @@ assert info['CFBundleIdentifier'] == 'com.releash.macos', 'Unexpected bundle ID'
 print(version)
 PY
 )
-for binary in "$APP/Contents/Helpers/releashd" "$APP/Contents/Helpers/releash"; do
-  lipo -verify_arch arm64 "$binary"
-  lipo -verify_arch x86_64 "$binary"
-  LINKED_LIBRARIES=$(otool -L "$binary")
-  if grep -Eq '/(opt/homebrew|usr/local)/' <<< "$LINKED_LIBRARIES"; then
-    echo "::error::Helper depends on a local package manager library: $binary"
-    exit 1
-  fi
-  codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$binary"
-done
 lipo -verify_arch arm64 "$APP/Contents/MacOS/Releash Preview"
 lipo -verify_arch x86_64 "$APP/Contents/MacOS/Releash Preview"
 codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$APP"
