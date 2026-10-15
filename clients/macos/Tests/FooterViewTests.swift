@@ -128,6 +128,24 @@ final class FooterViewTests: XCTestCase {
     }
   }
 
+  @MainActor func testServerAccessibilityIncludesVersionAndStateInsteadOfIconName() async throws {
+    let model = AppModel()
+    model.daemonInfo = .init()
+    model.daemonInfo?.release = "0.4.20"
+    model.daemonInfo?.servingStatus = .serving
+    model.releaseCompatibility = "compatible"
+    let footer = await FooterHarness(model)
+    defer { footer.close() }
+    try await eventually {
+      footer.elements().contains { $0.accessibilityIdentifier?() == "footer-server" }
+    }
+    let server = try XCTUnwrap(footer.elements().first { $0.accessibilityIdentifier?() == "footer-server" })
+    let label = try XCTUnwrap(server.accessibilityLabel?())
+    XCTAssertTrue(label.contains("v0.4.20"), label)
+    XCTAssertTrue(label.contains("serving"), label)
+    XCTAssertTrue(label.contains("compatible"), label)
+  }
+
   @MainActor func testCLIReleaseJudgmentDisplaysMatchingGuidance() async throws {
     for (compatibility, guidance) in [
       ("server_older", "再起動で更新できます"),

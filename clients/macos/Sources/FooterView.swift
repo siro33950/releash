@@ -33,6 +33,7 @@ struct FooterView: View {
           } label: {
             HStack(spacing: UIStyle.statusSpacing) {
               Image(systemName: model.releaseCompatibility == "compatible" ? "server.rack" : "exclamationmark.triangle")
+                .accessibilityHidden(true)
               Text("v\(info.release) · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))")
               Text(model.releaseCompatibility ?? "")
             }

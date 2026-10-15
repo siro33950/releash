@@ -37,7 +37,7 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 統合（desktop 画面） | `clients/desktop/tests/integration/` | `pnpm test:integration` | PR 層の `test` target |
 | 振る舞い（desktop） | `clients/desktop/tests/behavior/` | `pnpm test:behavior` | nightly 層 |
 | 単体（macOS） | `clients/macos/Tests/` | `./nx run macos:test` | PR 層 |
-| 振る舞い（macOS） | `clients/macos/UITests/` | `./nx run macos:e2e` | #1766 で追加。それまでは画面の機能を足す・変える PR で手元で全件実行 |
+| 振る舞い（macOS） | `clients/macos/UITests/` | `./nx run macos:e2e` | Nightly の公開関門。失敗したテストは 1 回再試行し、失敗が残れば Issue を作成または追記して公開を停止 |
 
 手動で実行するテストはコミットしない。
 

@@ -36,7 +36,8 @@ class MacOSBuildTest(unittest.TestCase):
                 for call, target in zip(calls, targets):
                     self.assertEqual(call, ["cargo", "build", "--locked", "--profile", cargo_profile,
                                            "--target", target, "-p", "releashd", "--bin", "releashd",
-                                           "-p", "releash", "--bin", "releash"])
+                                           "-p", "releash", "--bin", "releash",
+                                           *(["--features", "releashd/vendored-openssl"] if configuration == "Release" else [])])
                 for call, helper in zip(calls[len(targets):], ["releashd", "releash"]):
                     self.assertEqual(call, ["lipo", "-create", *[
                         str(target_dir / target / profile / helper) for target in targets

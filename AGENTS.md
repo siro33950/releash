@@ -144,7 +144,8 @@ macOS の回帰の E2E は、次のコマンドで実行する。
 `--test` を省略すると回帰の E2E を全部回す。複数指定には `--test` を繰り返す。
 本番との共存確認では、本番のアプリとサーバを起動した状態で `--verify-production` を付ける。実行前の PID と起動時刻を、E2E の実行中とテスト環境の終了処理後に照合する。本番が起動していなければ失敗する。
 同じ Mac の E2E は排他で実行し、後から呼んだコマンドは待つ。
-CI で回帰の E2E を回すのは #1766 からであり、それまでは画面の機能を足す・変える PR で手元で全件を回す。
+Nightly は macOS の回帰の E2E を全件実行する。失敗したテストは 1 回だけ再試行し、再試行後も失敗したら Issue を作成または既存 Issue に追記し、リリースしない。
+画面の機能を足す・変える PR で、手元の回帰 E2E の全件実行は必須としない。変更した機能の確認と証跡の記録は引き続き行う。
 
 `macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
 Cargo、pnpm、SwiftPM のキャッシュは GitHub Actions で再利用する。Nx のローカルキャッシュは runner 間で共有しない。
@@ -182,7 +183,7 @@ rustup component add llvm-tools-preview
 子プロセス強制終了時の profile 保持と負荷干渉を避ける設定は、この target 内だけに適用する。
 
 版上げは `./nx release version patch`（`minor`、`major` も可）を使う。
-Nx は desktop の `package.json` を更新し、bump workflow が `tauri.conf.json` と Cargo workspace の版を同期する。
+Nx は desktop の `package.json` を更新し、bump workflow が `tauri.conf.json`、Swift 版の `MARKETING_VERSION`、Cargo workspace の版を同期する。
 `@monodon/rust` の version actions は `version.workspace = true` に対応していないため、Rust の版同期は workflow に残す。
 タグとリリースノートは `nx release changelog`、draft Release の作成と成果物が揃った後の公開は GitHub API で行う。
 
@@ -226,10 +227,10 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 対応プラットフォームは macOS。
 
 1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動する。main の HEAD を対象とし、日次は直近の公開済み nightly のタグが指す commit と同じならスキップする。手動起動は常に実行する。
-2. PR 層の検証一式がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
+2. PR 層の検証一式と macOS の回帰 E2E がすべて成功したら、Tauri 版と Swift 版の署名・公証済み macOS universal ビルドを別々の job で作る。両方が揃ってから同じ prerelease を公開する。Swift 版は `Releash Preview.app` として配布し、Tauri 版の `Releash.app` と共存する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
 3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
 4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
-5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
+5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`clients/macos/project.yml` の `MARKETING_VERSION`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
 
 ## セキュリティ
 

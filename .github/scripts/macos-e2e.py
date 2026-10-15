@@ -45,7 +45,7 @@ def production_processes():
     for line in subprocess.check_output(['ps', '-axo', 'pid=,lstart=,stat=,comm='], text=True).splitlines():
         fields = line.split(None, 7)
         pid, started, status, command = int(fields[0]), tuple(fields[1:6]), fields[6], fields[7]
-        if 'Z' in status or Path(command).name not in {'Releash', 'releash-desktop', 'releashd'}:
+        if 'Z' in status or Path(command).name not in {'Releash', 'Releash Preview', 'releash-desktop', 'releashd'}:
             continue
         buffer = ctypes.create_string_buffer(4096)
         if library.proc_pidpath(pid, buffer, len(buffer)) <= 0:
@@ -86,7 +86,7 @@ def monitored_test(command, macos, require_production):
     return status
 
 
-def execute(root, tests, result, require_production=False):
+def execute(root, tests, result, require_production=False, retry=False):
     macos = root / 'clients/macos'
     run(['swift', 'run', '--package-path', 'BuildTools', 'xcodegen', 'generate'], macos)
     base = ['xcodebuild', '-project', 'Releash.xcodeproj', '-scheme', 'ReleashE2E',
@@ -98,6 +98,9 @@ def execute(root, tests, result, require_production=False):
                '-default-test-execution-time-allowance', '60',
                '-maximum-test-execution-time-allowance', '60', '-resultBundlePath', str(result),
                'CODE_SIGNING_ALLOWED=YES', 'test']
+    if retry:
+        command.extend(['-retry-tests-on-failure', '-test-iterations', '2',
+                        '-test-repetition-relaunch-enabled', 'YES'])
     command.extend(f'-only-testing:{test}' for test in tests)
     return monitored_test(command, macos, require_production)
 
@@ -106,12 +109,18 @@ def main(args):
     # All checkouts share this lock because XCUITest needs the foreground application.
     with open(LOCK, 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.result_bundle:
+            result = args.result_bundle.resolve()
+            result.parent.mkdir(parents=True, exist_ok=True)
+            return execute(ROOT, args.test, result, args.verify_production, args.retry)
         with tempfile.TemporaryDirectory(prefix='releash-e2e-result-') as directory:
-            return execute(ROOT, args.test, Path(directory) / 'Tests.xcresult', args.verify_production)
+            return execute(ROOT, args.test, Path(directory) / 'Tests.xcresult', args.verify_production, args.retry)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--result-bundle', type=Path, help='Preserve the xcresult at this path')
+    parser.add_argument('--retry', action='store_true', help='Retry failed tests once')
     parser.add_argument('--build-fixture', action='store_true')
     parser.add_argument('--verify-production', action='store_true', help='Require a running production app and server and verify they survive E2E')
     parser.add_argument('--test', action='append', default=[], help='Xcode target/class/method; omit for all regression tests')

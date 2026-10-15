@@ -56,7 +56,7 @@ class E2ETests(unittest.TestCase):
         calls = []
         outcomes = []
 
-        def execute(root, tests, result, require_production):
+        def execute(root, tests, result, require_production, retry):
             calls.append(tests)
             if tests == ['first']:
                 first_entered.set()
@@ -66,8 +66,8 @@ class E2ETests(unittest.TestCase):
             return 0
 
         with patch.object(e2e, 'execute', side_effect=execute):
-            first = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(verify_production=False, test=['first']))))
-            second = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(verify_production=False, test=['second']))))
+            first = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(result_bundle=None, retry=False, verify_production=False, test=['first']))))
+            second = threading.Thread(target=lambda: outcomes.append(e2e.main(argparse.Namespace(result_bundle=None, retry=False, verify_production=False, test=['second']))))
             first.start()
             try:
                 self.assertTrue(first_entered.wait(5))
@@ -94,6 +94,26 @@ class E2ETests(unittest.TestCase):
             self.assertIn('CODE_SIGNING_ALLOWED=YES', command)
             self.assertFalse(any(argument.startswith('CODE_SIGN_IDENTITY=') for argument in command))
 
+    def test_retry_is_limited_to_two_attempts(self):
+        with patch.object(e2e, 'run'), patch.object(e2e, 'monitored_test', return_value=65) as run:
+            self.assertEqual(e2e.execute(Path('/source'), [], Path('/result'), retry=True), 65)
+            command = run.call_args.args[0]
+            self.assertIn('-retry-tests-on-failure', command)
+            self.assertEqual(command[command.index('-test-iterations') + 1], '2')
+            self.assertEqual(command[command.index('-test-repetition-relaunch-enabled') + 1], 'YES')
+
+    def test_explicit_result_bundle_survives_a_failed_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = Path(directory) / 'evidence/Tests.xcresult'
+            def execute(root, tests, path, require_production, retry):
+                path.mkdir()
+                (path / 'failure').write_text('failed')
+                return 65
+            args = argparse.Namespace(result_bundle=result, retry=True, verify_production=False, test=[])
+            with patch.object(e2e, 'execute', side_effect=execute):
+                self.assertEqual(e2e.main(args), 65)
+            self.assertEqual((result / 'failure').read_text(), 'failed')
+
     def test_production_monitor_requires_both_app_and_server(self):
         with patch.object(e2e, 'production_processes', return_value={(10, ('start',)): 'app'}), patch.object(e2e.subprocess, 'Popen') as popen:
             with self.assertRaises(ValueError):
@@ -117,9 +137,9 @@ class E2ETests(unittest.TestCase):
                 bundle.mkdir(parents=True)
                 with (bundle / 'Info.plist').open('wb') as file:
                     e2e.plistlib.dump({'CFBundleIdentifier': identifier}, file)
-                paths[app_pid] = str(bundle / 'MacOS/Releash')
+                paths[app_pid] = str(bundle / 'MacOS' / ('Releash Preview' if name == 'Production' else 'Releash'))
                 paths[daemon_pid] = str(bundle / 'Helpers/releashd')
-            rows = '\n'.join(f'{pid} Mon Oct 12 10:00:00 2026 S {"Releash" if pid % 20 == 10 else "releashd"}' for pid in paths)
+            rows = '\n'.join(f'{pid} Mon Oct 12 10:00:00 2026 S {"Releash Preview" if pid == 10 else "Releash" if pid % 20 == 10 else "releashd"}' for pid in paths)
             rows += '\n70 Mon Oct 12 10:00:00 2026 Z releashd'
             library = MagicMock()
 

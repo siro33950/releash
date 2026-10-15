@@ -122,7 +122,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/Releash.app"
+          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/\"Releash Preview.app\""
         ],
         "cwd": ".",
         "parallel": false

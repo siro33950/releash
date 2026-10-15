@@ -19,6 +19,7 @@ def build_helpers(configuration, architectures):
         subprocess.run([
             "cargo", "build", "--locked", "--profile", "dev" if profile == "debug" else "release",
             "--target", target, "-p", "releashd", "--bin", "releashd", "-p", "releash", "--bin", "releash",
+            *(["--features", "releashd/vendored-openssl"] if configuration == "Release" else []),
         ], cwd=ROOT, check=True)
     output = ROOT / "clients/macos/.build/Helpers" / configuration
     output.mkdir(parents=True, exist_ok=True)
