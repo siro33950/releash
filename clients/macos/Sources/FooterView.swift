@@ -26,7 +26,13 @@ struct FooterView: View {
         }
         Spacer(minLength: 0)
         if let info = model.daemonInfo {
-          Menu {
+          let serverLabel =
+            "v\(info.release) · \(model.releaseCompatibility ?? "") · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))"
+          Menu(
+            serverLabel,
+            systemImage: model.releaseCompatibility == "compatible"
+              ? "server.rack" : "exclamationmark.triangle"
+          ) {
             if model.releaseCompatibility == "server_older" {
               Text("サーバが古いため、再起動で更新できます")
             } else if model.releaseCompatibility == "client_older" {
@@ -34,25 +40,12 @@ struct FooterView: View {
             }
             Button("サーバを停止") { Task { await model.stopDaemon() } }
             Button("サーバを再起動") { Task { await model.restartDaemon() } }
-          } label: {
-            HStack(spacing: UIStyle.statusSpacing) {
-              Image(
-                systemName: model.releaseCompatibility == "compatible"
-                  ? "server.rack" : "exclamationmark.triangle"
-              )
-              .accessibilityHidden(true)
-              Text(
-                "v\(info.release) · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))"
-              )
-              Text(model.releaseCompatibility ?? "")
-            }
           }
+          .labelStyle(.titleAndIcon)
           .menuStyle(.borderlessButton)
           .fixedSize()
           .disabled(model.serverOperation)
-          .accessibilityLabel(
-            "v\(info.release) · \(model.releaseCompatibility ?? "") · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))"
-          )
+          .accessibilityLabel(serverLabel)
           .accessibilityIdentifier("footer-server")
           if model.releaseCompatibility == "server_older" {
             Text("再起動で更新できます").foregroundStyle(UIStyle.attention)
