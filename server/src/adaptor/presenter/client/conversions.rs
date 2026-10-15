@@ -1924,10 +1924,31 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeContentDto> for wire::Worksp
     }
 }
 
+impl TryFrom<crate::usecase::workflow::WorkspaceNodeAttemptDto> for wire::WorkspaceNodeAttemptDto {
+    type Error = String;
+    fn try_from(value: crate::usecase::workflow::WorkspaceNodeAttemptDto) -> Result<Self, String> {
+        Ok(Self {
+            id: Some(value.id),
+            title: Some(value.title),
+            error_reason: value.error_reason,
+            updated_at: Some(value.updated_at),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::WorkspaceNodeDetailDto {
     type Error = String;
     fn try_from(value: crate::usecase::workflow::WorkspaceNodeDetailDto) -> Result<Self, String> {
         Ok(Self {
+            classification: Some(cv(value.classification)?),
+            node_execution_id: value.node_execution_id,
+            node_name: value.node_name,
+            model: value.model,
+            past_attempts: value
+                .past_attempts
+                .into_iter()
+                .map(cv)
+                .collect::<Result<_, _>>()?,
             execution_id: value.execution_id,
             can_abort: Some(value.can_abort),
             process_presence: Some(cv(value.process_presence)?),
@@ -2172,7 +2193,6 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                             file_base: tab.file_base.map(|base| base.as_str().into()),
                             kind: match tab.kind {
                                 PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
-                                PaneTabKind::Workflow => wire::PaneTabKind::Workflow,
                                 PaneTabKind::File => wire::PaneTabKind::File,
                                 PaneTabKind::Session => wire::PaneTabKind::Session,
                                 PaneTabKind::Command => wire::PaneTabKind::Command,
@@ -2242,7 +2262,6 @@ impl TryFrom<wire::PaneLayout>
                                 .map_err(|error| error.to_string())?,
                             kind: match wire::PaneTabKind::try_from(tab.kind) {
                                 Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
-                                Ok(wire::PaneTabKind::Workflow) => PaneTabKind::Workflow,
                                 Ok(wire::PaneTabKind::File) => PaneTabKind::File,
                                 Ok(wire::PaneTabKind::Session) => PaneTabKind::Session,
                                 Ok(wire::PaneTabKind::Command) => PaneTabKind::Command,

@@ -27,6 +27,7 @@ fn node(kind: WorkspaceNodeKind, status: WorkspaceNodeStatus) -> WorkspaceTreeNo
         completion_signals: NodeCompletionSignalState::Pending,
         has_artifact: false,
         session_id: (kind == WorkspaceNodeKind::WorkflowSession).then(|| "session".into()),
+        model: None,
         provider: None,
         can_rename: false,
         can_approve: false,

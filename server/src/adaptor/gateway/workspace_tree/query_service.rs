@@ -4,7 +4,9 @@ use super::SqliteWorkspaceTreeRepository;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
-use crate::domain::workspace_tree::{WorkspaceIdentity, WorkspaceNodeKind, WorkspaceTreeNode};
+use crate::domain::workspace_tree::{
+    WorkspaceIdentity, WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTreeNode,
+};
 use crate::usecase::workflow::{
     WorkspaceCommandNodeContentDto, WorkspaceCommandResultDto, WorkspaceNodeCapabilitiesDto,
     WorkspaceNodeContentDto, WorkspaceNodeDetailDto, WorkspaceSessionNodeContentDto,
@@ -78,15 +80,69 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        let Some((node, workflow)) = self
+        let workspace = workspace_identity.as_str();
+        let trees = self
             .repository
-            .load_node_with_workflow(workspace_identity, node_id)
+            .folded_workspace_trees(workspace)
             .await
-            .map_err(query_error)?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(node_detail_with_workflow(node, workflow.as_ref())))
+            .map_err(query_error)?;
+        for execution in trees {
+            let (folded, record) = &*execution;
+            let nodes = self
+                .repository
+                .tree_nodes(workspace, folded, record)
+                .map_err(query_error)?;
+            let node = WorkspacePublicRoot::resolve_node(&nodes, node_id);
+            let Some(node) = node else { continue };
+            let attempts = node
+                .past_attempt_ids
+                .iter()
+                .filter_map(|id| nodes.iter().find(|attempt| &attempt.id == id))
+                .map(
+                    |attempt| crate::usecase::workflow::WorkspaceNodeAttemptDto {
+                        id: attempt.id.clone(),
+                        title: attempt.title.clone(),
+                        updated_at: attempt.updated_at(),
+                        error_reason: attempt.failure_reason(),
+                    },
+                )
+                .collect();
+            let workflow = nodes.iter().find(|node| {
+                node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
+            });
+            let mut detail = node_detail_with_workflow(node, workflow);
+            detail.past_attempts = attempts;
+            return Ok(Some(detail));
+        }
+        Ok(None)
+    }
+
+    async fn node_artifact(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<crate::usecase::workflow::WorkflowGetOutputResult, WorkflowError> {
+        use crate::domain::workflow::NodeFact;
+        use crate::usecase::workflow::WorkflowGetOutputResult;
+        let record = crate::adaptor::gateway::workflow::fact_log::read_latest_record_for_node_with_event_types(
+            &self.repository.fact_backend(), node_execution_id, &["artifact_produced"],
+        ).await.map_err(WorkflowError::from)?;
+        Ok(match record {
+            Some(record) => match record.fact {
+                NodeFact::ArtifactProduced(artifact) => WorkflowGetOutputResult::Submitted {
+                    contract: artifact.contract,
+                    structured_output: artifact.value,
+                    submitted_at: Some(record.timestamp_ms as f64 / 1000.0),
+                    request_id: artifact.request_id,
+                    timestamp: record.timestamp_ms as f64 / 1000.0,
+                },
+                _ => {
+                    return Err(WorkflowError::CorruptStoredState(
+                        "Expected ArtifactProduced fact".into(),
+                    ))
+                }
+            },
+            None => WorkflowGetOutputResult::NotSubmitted,
+        })
     }
 
     async fn execution_summaries(
@@ -147,6 +203,11 @@ pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDet
         }),
     };
     WorkspaceNodeDetailDto {
+        classification: node.status_classification.as_public_str().into(),
+        node_execution_id: node.node_execution_id,
+        node_name: node.node_name,
+        model: node.model,
+        past_attempts: Vec::new(),
         execution_id: node.execution_id,
         can_abort,
         process_presence: node.process_presence.as_str(),

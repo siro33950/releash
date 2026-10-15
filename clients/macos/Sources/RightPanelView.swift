@@ -12,7 +12,7 @@ struct RightPanelView: View {
       case .files: "ファイル"
       case .sourceControl: "Source Control"
       case .threads: "Thread"
-      case .roots: "Root の一覧"
+      case .roots: "Node"
       }
     }
     var icon: String {
@@ -58,11 +58,6 @@ struct RightPanelView: View {
         FileTreeView(model: model, worktree: path).id(path)
       } else { Spacer(minLength: 0) }
     }
-    .frame(
-      minWidth: expanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth,
-      idealWidth: expanded ? UIStyle.sidebarWidth : UIStyle.collapsedPanelWidth,
-      maxWidth: expanded ? UIStyle.sidebarMaximumWidth : UIStyle.collapsedPanelWidth
-    )
     .frame(maxHeight: .infinity)
   }
 }

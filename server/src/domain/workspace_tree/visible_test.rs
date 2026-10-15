@@ -38,6 +38,7 @@ fn node(id: &str, parent_id: Option<&str>, kind: WorkspaceNodeKind) -> Workspace
         completion_signals: NodeCompletionSignalState::Pending,
         has_artifact: false,
         session_id: None,
+        model: None,
         provider: None,
         can_rename: false,
         can_approve: false,

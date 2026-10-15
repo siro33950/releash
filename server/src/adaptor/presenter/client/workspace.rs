@@ -213,6 +213,7 @@ fn tree_item(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceTreeItem,
         variant: Some(match node.kind {
             WorkspaceNodeKind::Fanout => Variant::Fanout(wire::WorkspaceFanout {
                 worktree: node_worktree(node),
+                can_approve: Some(node.can_approve),
                 id: Some(item.id().to_owned()),
                 title: Some(item.title().to_owned()),
                 status: Some(cv(node.status_classification.as_public_str())?),
@@ -222,6 +223,7 @@ fn tree_item(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceTreeItem,
             }),
             WorkspaceNodeKind::Sequence => Variant::Sequence(wire::WorkspaceSequence {
                 worktree: node_worktree(node),
+                can_approve: Some(node.can_approve),
                 id: Some(item.id().to_owned()),
                 title: Some(item.title().to_owned()),
                 status: Some(cv(node.status_classification.as_public_str())?),
@@ -248,6 +250,12 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(wire::WorkspaceNode {
+        execution_id: node.execution_id.clone(),
+        node_execution_id: node.node_execution_id.clone(),
+        node_name: node.node_name.clone(),
+        attempt: node.attempt,
+        has_artifact: Some(node.has_artifact),
+        model: node.model.clone(),
         provider: item.provider().map(Into::into),
         process_presence: Some(cv(node.process_presence.as_str())?),
         id: Some(item.id().to_owned()),

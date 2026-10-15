@@ -388,3 +388,14 @@ fn test_ファイル購読_境界外の相対pathを受け付けない() {
         }
     }
 }
+
+#[test]
+fn test_node_artifact購読_node実行idだけを保持する() {
+    // Given / When
+    let target = SubscriptionTarget::from_parts("node-artifact", &["node-1"]);
+    // Then
+    assert_eq!(
+        target.unwrap(),
+        SubscriptionTarget::NodeArtifact("node-1".into())
+    );
+}

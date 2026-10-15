@@ -727,7 +727,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                 PaneTab {
                     node_id: None,
                     id: "workflow".into(),
-                    kind: PaneTabKind::Workflow,
+                    kind: PaneTabKind::Command,
                     file_path: None,
                     file_mode: None,
                     file_base: None,

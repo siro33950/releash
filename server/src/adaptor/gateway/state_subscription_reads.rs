@@ -17,6 +17,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
             T::DaemonInfo
                 | T::WorkflowExecution(_)
                 | T::WorkflowOutput(..)
+                | T::NodeArtifact(_)
                 | T::ReviewSessionThreads(..)
                 | T::ReviewWorktreeThreads(..)
                 | T::ReviewSessionThread(..)

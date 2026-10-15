@@ -244,6 +244,7 @@ fn test_cli購読通知_実行は全worktreeでreviewは全comment通知で読�
     for target in [
         SubscriptionTarget::WorkflowExecution("id".into()),
         SubscriptionTarget::WorkflowOutput("id".into(), "node".into()),
+        SubscriptionTarget::NodeArtifact("node-execution".into()),
     ] {
         assert!(target.affected_by(&StateChangeSource::Worktree("/other".into())));
         assert!(!target.affected_by(&StateChangeSource::ReviewComments(None)));

@@ -12,6 +12,9 @@ struct SessionHistoryView: View {
   var archived: [Releash_Client_V1_AgentSessionItemDto] {
     model.repositories.flatMap(\.worktrees.items).first { $0.path == path }?.snapshot.archivedSessions.items ?? []
   }
+  var workflows: [Releash_Client_V1_WorkspaceWorkflowHistoryItem] {
+    model.repositories.flatMap(\.worktrees.items).first { $0.path == path }?.workflowHistory.items ?? []
+  }
   var body: some View {
     VStack(alignment: .leading) {
       Text("History").font(.headline)
@@ -24,6 +27,11 @@ struct SessionHistoryView: View {
               Spacer()
               if session.operations.canDelete { Button("Delete", role: .destructive) { delete(session) } }
             }
+          }
+        }
+        Section("Archive 済みのWorkflow") {
+          ForEach(workflows, id: \.executionID) { workflow in
+            Button(workflow.title) { restoreWorkflow(workflow.executionID) }
           }
         }
         Section("Provider の履歴") {
@@ -54,6 +62,16 @@ struct SessionHistoryView: View {
           dismiss()
         }
       } catch { failure = model.failureMessage(error) }
+    }
+  }
+  func restoreWorkflow(_ id: String) {
+    guard let client = model.client else { return }
+    var request = Releash_Client_V1_RestoreWorkspaceWorkflowExecutionRequest()
+    request.worktreePath = path; request.executionID = id
+    perform {
+      _ = try await client.restoreWorkspaceWorkflowExecution(request: request, headers: model.headers).result.get()
+      dismiss()
+      return nil
     }
   }
   func restore(_ session: Releash_Client_V1_AgentSessionItemDto) {

@@ -70,3 +70,32 @@ final class SessionHistoryViewTests: XCTestCase {
     }
   }
 }
+
+extension SessionHistoryViewTests {
+  @MainActor func testWorkflowHistoryRestoresExecutionAndReportsFailure() async throws {
+    let http = TestHTTPClient()
+    var history = Releash_Client_V1_WorkspaceWorkflowHistoryItem(); history.executionID = "archived-flow"; history.title = "Archived workflow"
+    var tree = Releash_Client_V1_WorkspaceWorktreeList(); tree.path = "/repo"; tree.workflowHistory.items = [history]
+    var repo = Releash_Client_V1_WorkspaceRepositoryList(); repo.worktrees.items = [tree]
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo"); try await eventually { model.layoutLoaded }
+    let host = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
+    try await eventuallyView(host) { host.element("Archived workflow") != nil }
+    http.state.withLock { $0.failedMethod = "RestoreWorkspaceWorkflowExecution" }
+    try await host.press("Archived workflow")
+    try await eventuallyView(host) { host.texts().contains("RestoreWorkspaceWorkflowExecution failed") }
+    http.state.withLock { $0.failedMethod = nil }
+    try await host.press("Archived workflow")
+    try await eventually { http.requests("RestoreWorkspaceWorkflowExecution").count == 2 }
+    let request = try Releash_Client_V1_RestoreWorkspaceWorkflowExecutionRequest(serializedBytes: XCTUnwrap(http.requests("RestoreWorkspaceWorkflowExecution").last?.message))
+    XCTAssertEqual(request.worktreePath, "/repo"); XCTAssertEqual(request.executionID, "archived-flow")
+    var root = Releash_Client_V1_WorkspaceTreeItem(); root.sequence.id = "archived-flow"; root.sequence.title = "Archived workflow"
+    tree.workflowHistory.items = []; tree.snapshot.nodes.items = [root]; repo.worktrees.items = [tree]
+    var payload = Releash_Client_V1_StatePayload(); payload.workspaces.repositories.items = [repo]
+    try http.publish(payload, target: "workspaces")
+    let nodes = await ViewHarness(RootListView(model: model, path: "/repo"))
+    try await eventuallyView(nodes) { nodes.element("root:archived-flow") != nil }
+    nodes.close(); host.close(); await model.stop()
+  }
+}

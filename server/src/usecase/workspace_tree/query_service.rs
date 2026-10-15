@@ -11,6 +11,11 @@ pub trait WorkspaceQueryService: Send + Sync {
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError>;
 
+    async fn node_artifact(
+        &self,
+        node_execution_id: &str,
+    ) -> Result<crate::usecase::workflow::WorkflowGetOutputResult, WorkflowError>;
+
     async fn execution_summaries(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,

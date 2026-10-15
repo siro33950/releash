@@ -25,6 +25,19 @@ impl<'a> WorkspacePublicRoot<'a> {
             .find(|root| root.public_id() == execution_id)
     }
 
+    pub fn resolve_node(
+        nodes: &'a [WorkspaceTreeNode],
+        node_id: &str,
+    ) -> Option<WorkspaceTreeNode> {
+        Self::for_execution(nodes, node_id)
+            .map(|root| {
+                let mut node = root.node().clone();
+                node.id = node_id.to_string();
+                node
+            })
+            .or_else(|| nodes.iter().find(|node| node.id == node_id).cloned())
+    }
+
     pub fn for_node(nodes: &'a [WorkspaceTreeNode], node_id: &str) -> Option<Self> {
         Self::all(nodes)
             .into_iter()

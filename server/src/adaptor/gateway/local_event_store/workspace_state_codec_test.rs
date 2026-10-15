@@ -98,7 +98,7 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
     // Given
     for axis in ["horizontal", "vertical"] {
         let json = format!(
-            r#"{{"kind":"split","id":"root","axis":"{axis}","ratio":0.7,"first":{{"kind":"pane","id":"a","tabs":[{{"id":"terminal","kind":"terminal"}}],"active_tab":"terminal"}},"second":{{"kind":"pane","id":"b","tabs":[{{"id":"workflow","kind":"workflow"}},{{"id":"file","kind":"file"}},{{"id":"session","kind":"session"}}],"active_tab":"file"}}}}"#
+            r#"{{"kind":"split","id":"root","axis":"{axis}","ratio":0.7,"first":{{"kind":"pane","id":"a","tabs":[{{"id":"terminal","kind":"terminal"}}],"active_tab":"terminal"}},"second":{{"kind":"pane","id":"b","tabs":[{{"id":"file","kind":"file"}},{{"id":"session","kind":"session"}}],"active_tab":"file"}}}}"#
         );
         // When
         let dto: StoredPaneLayout = serde_json::from_str(&json).unwrap();
@@ -154,6 +154,35 @@ fn test_保存タブ_未知の表示と比較を拒否する() {
                 stored
             )
             .is_err()
+        );
+    }
+}
+
+#[test]
+fn test_pane読み込み_workflowタブを除いて残りと分割を保つ() {
+    // Given
+    for active in ["workflow", "terminal"] {
+        let raw = serde_json::json!({"kind":"split","id":"split","axis":"horizontal","ratio":0.5,
+            "first":{"kind":"pane","id":"a","tabs":[{"id":"workflow","kind":"workflow"},{"id":"terminal","kind":"terminal"}],"active_tab":active},
+            "second":{"kind":"pane","id":"b","tabs":[],"active_tab":null}});
+        let stored: StoredPaneLayout = serde_json::from_value(raw).unwrap();
+        // When
+        let layout: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout =
+            stored.try_into().unwrap();
+        let written = serde_json::to_value(StoredPaneLayout::from(&layout)).unwrap();
+        // Then
+        assert_eq!(
+            written["first"]["tabs"],
+            serde_json::json!([{"id":"terminal","kind":"terminal"}])
+        );
+        assert_eq!(written["second"]["id"], "b");
+        assert_eq!(
+            written["first"]["active_tab"],
+            if active == "terminal" {
+                serde_json::json!("terminal")
+            } else {
+                serde_json::Value::Null
+            }
         );
     }
 }

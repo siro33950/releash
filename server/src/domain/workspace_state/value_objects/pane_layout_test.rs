@@ -55,7 +55,6 @@ fn test_pane配置_異なるidの分割比率と全種類のタブを復元で�
     let second = PaneLayout::pane(
         "two".into(),
         vec![
-            tab("workflow", PaneTabKind::Workflow),
             tab("file", PaneTabKind::File),
             tab("session", PaneTabKind::Session),
         ],

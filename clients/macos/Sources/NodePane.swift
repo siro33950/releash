@@ -19,6 +19,7 @@ struct NodePane: View {
       } else { ProgressView() }
     }.frame(maxWidth: .infinity, maxHeight: .infinity)
     .onAppear {
+      if let subscription { model.unsubscribe(subscription) }
       subscription = model.subscribe("node-detail", [path, nodeID]) { payload in
         if case .nodeDetail(let value) = payload.value {
           detail = value.hasValue ? value.value : nil
@@ -77,13 +78,7 @@ struct CommandPane: View {
   let path: String
   let detail: Releash_Client_V1_WorkspaceNodeDetailDto
   let command: Releash_Client_V1_WorkspaceCommandNodeContentDto
-  var attempts: [Releash_Client_V1_WorkspaceNode] {
-    let roots = model.repositories.flatMap(\.worktrees.items).first { $0.path == path }?.snapshot.nodes.items ?? []
-    for root in roots where root.rootID == detail.id {
-      if case .node(let node) = root.variant { return node.pastAttempts.items.compactMap { if case .node(let v) = $0.variant { return v }; return nil } }
-    }
-    return []
-  }
+  var attempts: [Releash_Client_V1_WorkspaceNodeAttemptDto] { detail.pastAttempts }
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: UIStyle.padding) {
@@ -96,8 +91,8 @@ struct CommandPane: View {
             if command.hasResult { Text("Exit code: \(command.result.exitCode) · \(command.result.duration) ms").accessibilityIdentifier("command-result") }
           }.textSelection(.enabled)
           Spacer()
-          if detail.capabilities.canRetry { Button("Retry") { retry() } }
-          if detail.canAbort { Button("Abort") { abort() } }
+          if detail.capabilities.canRetry { Button("Retry") { model.retryNode(path: path, id: detail.id) } }
+          if detail.canAbort { Button("Abort") { if detail.hasExecutionID { model.abortExecution(id: detail.executionID) } } }
         }
         if detail.hasErrorReason { Text(detail.errorReason).foregroundStyle(.red).textSelection(.enabled) }
         Text("STDOUT").font(.headline)
@@ -114,17 +109,5 @@ struct CommandPane: View {
         }
       }.padding(UIStyle.padding).frame(maxWidth: .infinity, alignment: .leading)
     }
-  }
-  func retry() {
-    guard let client = model.client else { return }
-    var request = Releash_Client_V1_RetryWorkspaceNodeRequest()
-    request.worktreePath = path; request.nodeID = detail.id
-    model.perform { _ = try await client.retryWorkspaceNode(request: request, headers: model.headers).result.get() }
-  }
-  func abort() {
-    guard let client = model.client, detail.hasExecutionID else { return }
-    var request = Releash_Client_V1_AbortWorkflowRequest()
-    request.executionID = detail.executionID
-    model.perform { _ = try await client.abortWorkflow(request: request, headers: model.headers).result.get() }
   }
 }

@@ -37,6 +37,7 @@ fn node() -> WorkspaceTreeNode {
         completion_signals: Default::default(),
         has_artifact: false,
         session_id: None,
+        model: None,
         provider: None,
         can_rename: false,
         can_approve: true,
@@ -1180,4 +1181,52 @@ fn test_sessionカード_providerを正しいenumで配信する() {
             Some(expected as i32)
         );
     }
+}
+
+#[test]
+fn test_実行木の転送_nodeの実行識別とartifactとmodelと合成nodeの承認可否を保持する() {
+    // Given
+    let owner = tree_owner("execution");
+    let mut sequence = child_node(
+        "sequence",
+        "execution",
+        "execution",
+        WorkspaceNodeKind::Sequence,
+        "main",
+    );
+    sequence.can_approve = true;
+    let mut fanout = child_node(
+        "fanout",
+        "sequence",
+        "execution",
+        WorkspaceNodeKind::Fanout,
+        "parallel",
+    );
+    fanout.can_approve = true;
+    let mut session = child_node(
+        "node",
+        "fanout",
+        "execution",
+        WorkspaceNodeKind::WorkflowSession,
+        "review",
+    );
+    session.execution_id = Some("execution".into());
+    session.node_execution_id = Some("visit".into());
+    session.node_name = Some("review".into());
+    session.attempt = Some(2);
+    session.has_artifact = true;
+    session.model = Some("test-model".into());
+    let tree = WorkspaceTree::restore("/repo", vec![owner, sequence, fanout, session]).unwrap();
+    // When
+    let json = nodes_json(&tree);
+    // Then
+    assert_eq!(json[0]["canApprove"], true);
+    assert_eq!(json[0]["children"][0]["canApprove"], true);
+    let node = &json[0]["children"][0]["children"][0];
+    assert_eq!(node["executionId"], "execution");
+    assert_eq!(node["nodeExecutionId"], "visit");
+    assert_eq!(node["nodeName"], "review");
+    assert_eq!(node["attempt"], 2);
+    assert_eq!(node["hasArtifact"], true);
+    assert_eq!(node["model"], "test-model");
 }

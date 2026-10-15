@@ -14,9 +14,8 @@ use crate::domain::workflow::services::fact_replay::{self, FoldedTree, TreeFold}
 use crate::domain::workflow::{ExecutionTreeLaunch, WorkflowError};
 use crate::domain::workspace_tree::WorkspaceExecution;
 use crate::domain::workspace_tree::{
-    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspaceNodeKind, WorkspacePublicRoot,
-    WorkspaceStructureFact, WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector,
-    WorkspaceTreeRepository,
+    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact,
+    WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
 };
 
 #[derive(Clone)]
@@ -77,39 +76,6 @@ pub struct SqliteWorkspaceTreeRepository {
 }
 
 impl SqliteWorkspaceTreeRepository {
-    pub(super) async fn load_node_with_workflow(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        node_id: &str,
-    ) -> Result<Option<(WorkspaceTreeNode, Option<WorkspaceTreeNode>)>, LocalEventQueryError> {
-        let workspace = workspace_identity.as_str().to_string();
-        let trees = self.folded_workspace_trees(&workspace).await?;
-        for execution in &trees {
-            let (folded, record) = &**execution;
-            let nodes = self.tree_nodes(&workspace, folded, record)?;
-            let node = if folded.aggregate.id == node_id {
-                WorkspacePublicRoot::for_execution(&nodes, &folded.aggregate.id).map(|root| {
-                    let mut node = root.node().clone();
-                    node.id = node_id.to_string();
-                    node
-                })
-            } else {
-                None
-            }
-            .or_else(|| nodes.iter().find(|node| node.id == node_id).cloned());
-            if let Some(node) = node {
-                let workflow = nodes
-                    .iter()
-                    .find(|node| {
-                        node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
-                    })
-                    .cloned();
-                return Ok(Some((node, workflow)));
-            }
-        }
-        Ok(None)
-    }
-
     pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::Live(store),
@@ -568,10 +534,16 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         workspace_identity: &WorkspaceIdentity,
         node_id: &str,
     ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
-        Ok(self
-            .load_node_with_workflow(workspace_identity, node_id)
-            .await?
-            .map(|(node, _)| node))
+        let workspace = workspace_identity.as_str();
+        let trees = self.folded_workspace_trees(workspace).await?;
+        for execution in &trees {
+            let (folded, record) = &**execution;
+            let nodes = self.tree_nodes(workspace, folded, record)?;
+            if let Some(node) = WorkspacePublicRoot::resolve_node(&nodes, node_id) {
+                return Ok(Some(node));
+            }
+        }
+        Ok(None)
     }
 }
 

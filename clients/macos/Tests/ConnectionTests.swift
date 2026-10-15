@@ -17,7 +17,7 @@ final class ConnectionTests: XCTestCase {
     model.refresh()
     try await eventually { !http.requests("RefreshWorkspaces").isEmpty }
     let previousIDs = http.state.withLock { $0.subscriptions.map(\.subscriptionID) }
-    let updated = connectionLayout(.workflow)
+    let updated = connectionLayout(.command)
     var state = Releash_Client_V1_WorkspaceStateDto()
     state.paneLayout = updated.message
     repository.status.error = "read failed while disconnected"
@@ -99,7 +99,7 @@ extension ConnectionTests {
       let removedCount = http.state.withLock {
         $0.subscriptions.filter { $0.target == "removed" }.count
       }
-      let updated = connectionLayout(.workflow)
+      let updated = connectionLayout(.command)
       var state = Releash_Client_V1_WorkspaceStateDto()
       state.paneLayout = updated.message
       var repository = Releash_Client_V1_WorkspaceRepositoryList()

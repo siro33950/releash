@@ -10,7 +10,9 @@ enum UIStyle {
   static let statusSpacing: CGFloat = 3
   static let cardIconWidth: CGFloat = 14
   static let sidebarWidth: CGFloat = 280
-  static let rightPanelMinimumWidth: CGFloat = 200
+  static let centerMinimumWidth = (windowMinimumWidth - sidebarWidth) / 2
+  static let rightPanelMinimumWidth = centerMinimumWidth
+  static let centerInitialWidth = (windowWidth - windowPadding * 2 - sidebarWidth) / 2
   static let dividerWidth: CGFloat = 1
   static let dividerCursorWidth: CGFloat = 8
   static let sidebarMaximumWidth: CGFloat = 400

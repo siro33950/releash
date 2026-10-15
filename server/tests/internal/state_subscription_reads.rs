@@ -1278,7 +1278,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
         vec![PaneTab {
             node_id: None,
             id: "workflow".into(),
-            kind: PaneTabKind::Workflow,
+            kind: PaneTabKind::Command,
             file_path: None,
             file_mode: None,
             file_base: None,

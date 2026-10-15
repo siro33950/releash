@@ -48,6 +48,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub fn test_thread保存_小数秒の時刻を読み戻しても保持する() {
+        use releashd::test_support::integration::platform::ReviewClock;
+
+        struct Clock;
+        impl ReviewClock for Clock {
+            fn now(&self) -> f64 {
+                1_792_026_000.000_002_1
+            }
+        }
+        // Given
+        let dir = TempDir::new().unwrap();
+        let comments = ReviewCommentUsecase::new(
+            Arc::new(FileReviewEventStore::default()),
+            Arc::new(Clock),
+            Arc::new(UuidReviewIdGenerator),
+        );
+        // When
+        let created = comments
+            .create_thread(dir.path(), "wt", ReviewActor::human(), target(), "A".into())
+            .unwrap();
+        let loaded = comments.get_thread(dir.path(), "wt", &created.id).unwrap();
+        // Then
+        assert_eq!(loaded, created);
+    }
+
+    #[test]
     pub fn missing_state_file_loads_as_empty_list() {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(FileReviewEventStore::default());

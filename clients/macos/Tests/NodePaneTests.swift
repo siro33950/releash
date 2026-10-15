@@ -16,7 +16,7 @@ final class NodePaneTests: XCTestCase {
     let model = try await testModel(http)
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
-    let host = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "node", focused: true))
+    let host = await ViewHarness(AnyView(NodePane(model: model, path: "/repo", nodeID: "node", focused: true)))
     try await eventuallyView(host) { host.element("terminal:agent") != nil }
     session.clearAvailability()
     var payload = Releash_Client_V1_StatePayload()
@@ -24,6 +24,14 @@ final class NodePaneTests: XCTestCase {
     try http.publish(payload, target: "agent-session")
     try await eventuallyView(host) { host.element("terminal:agent") == nil }
     try await eventually { model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil }
+    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.first { $0.target == "node-detail" && $0.args == ["/repo", "node"] } })
+    let hostingView = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
+    hostingView.rootView = AnyView(EmptyView())
+    try await eventually {
+      http.requests("StopStateSubscription").contains {
+        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data()).subscriptionID) == subscription.subscriptionID
+      }
+    }
     host.close(); await model.stop()
   }
 
@@ -138,13 +146,19 @@ final class NodePaneTests: XCTestCase {
     var root = Releash_Client_V1_WorkspaceTreeItem(); root.node.id = "root"; root.node.contentKind.value = .command
     var attempt = Releash_Client_V1_WorkspacePastAttempt(); attempt.node.id = "old"; attempt.node.updatedAt = 12345; attempt.node.errorReason = "old failure"
     root.node.pastAttempts.items = [attempt]
+    old.updatedAt = 12345
+    var summary = Releash_Client_V1_WorkspaceNodeAttemptDto(); summary.id = old.id; summary.title = old.title; summary.updatedAt = old.updatedAt; summary.errorReason = old.errorReason
+    detail.pastAttempts = [summary]
     var tree = Releash_Client_V1_WorkspaceWorktreeList(); tree.path = "/repo"; tree.snapshot.nodes.items = [root]
     var repo = Releash_Client_V1_WorkspaceRepositoryList(); repo.path = "/repo"; repo.worktrees.items = [tree]
     http.state.withLock { $0.repositories = [repo]; $0.nodeDetails = ["root": detail, "old": old] }
     let model = try await testModel(http)
     model.selectWorktree("/repo"); try await eventually { model.layoutLoaded }
     let host = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "root", focused: true))
-    try await eventuallyView(host) { host.element("command-stdout") != nil }
+    try await eventuallyView(host) {
+      host.value(host.element("command-stdout")) == "current stdout"
+        && host.value(host.element("command-stderr")) == "current stderr"
+    }
     for text in ["printf current", "/actual/worktree", "/bin/sh", "current failure", "Exit code: 2 · 123 ms"] { XCTAssertTrue(host.texts().contains(text), text) }
     XCTAssertEqual(host.value(host.element("command-stdout")), "current stdout")
     XCTAssertEqual(host.value(host.element("command-stderr")), "current stderr")
@@ -157,7 +171,10 @@ final class NodePaneTests: XCTestCase {
     try await host.press(label)
     try await eventually { (try? model.panes.layout().tabs.last?.nodeID) == "old" }
     let oldHost = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "old", focused: true))
-    try await eventuallyView(oldHost) { oldHost.element("command-stdout") != nil }
+    try await eventuallyView(oldHost) {
+      oldHost.value(oldHost.element("command-stdout")) == "old stdout"
+        && oldHost.value(oldHost.element("command-stderr")) == "old stderr"
+    }
     XCTAssertEqual(oldHost.value(oldHost.element("command-stdout")), "old stdout")
     XCTAssertEqual(oldHost.value(oldHost.element("command-stderr")), "old stderr")
     XCTAssertTrue(oldHost.texts().contains("Exit code: 7 · 123 ms"))

@@ -34,6 +34,7 @@ fn node() -> WorkspaceTreeNode {
         completion_signals: Default::default(),
         has_artifact: false,
         session_id: None,
+        model: None,
         provider: None,
         can_rename: false,
         can_approve: true,
@@ -310,4 +311,20 @@ fn test_node詳細_完了したworkflowの節のabort不可を配る() {
     // Then
     assert_eq!(detail.id, "node");
     assert!(!detail.can_abort);
+}
+
+#[test]
+fn test_node詳細_node実行idと名前とmodelを配る() {
+    // Given
+    let mut node = node();
+    node.node_execution_id = Some("visit-1".into());
+    node.node_name = Some("review".into());
+    node.model = Some("model".into());
+    // When
+    let detail = node_detail(node, false);
+    // Then
+    assert_eq!(detail.classification, "attention");
+    assert_eq!(detail.node_execution_id.as_deref(), Some("visit-1"));
+    assert_eq!(detail.node_name.as_deref(), Some("review"));
+    assert_eq!(detail.model.as_deref(), Some("model"));
 }

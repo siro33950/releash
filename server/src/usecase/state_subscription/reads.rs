@@ -199,6 +199,14 @@ impl WorkspaceStateReads {
                     .map(StateValue::WorkflowExecution)
                     .map_err(error)
             }
+            T::NodeArtifact(id) => {
+                return self
+                    .workflow
+                    .get_workspace_node_artifact(id)
+                    .await
+                    .map(|output| StateValue::WorkflowOutput(Some(output)))
+                    .map_err(error);
+            }
             T::WorkflowOutput(id, node) => {
                 return match self.workflow.get_output(id, node).await {
                     Ok(output) => Ok(StateValue::WorkflowOutput(Some(output))),
@@ -460,7 +468,7 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
+            T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
             | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_) | T::FilteredIssues(..)
             | T::Terminal(_)
             | T::Workspaces
