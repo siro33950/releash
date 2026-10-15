@@ -36,8 +36,14 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 統合（CLI） | `clients/cli/tests/` | `cargo test --test '*' -p releash` | PR 層の `test` target |
 | 統合（desktop 画面） | `clients/desktop/tests/integration/` | `pnpm test:integration` | PR 層の `test` target |
 | 振る舞い（desktop） | `clients/desktop/tests/behavior/` | `pnpm test:behavior` | nightly 層 |
-| 単体（macOS） | `clients/macos/Tests/` | `./nx run macos:test` | PR 層 |
-| 振る舞い（macOS） | `clients/macos/UITests/` | `./nx run macos:e2e` | #1766 で追加。それまでは画面の機能を足す・変える PR で手元で全件実行 |
+| 単体（macOS） | `clients/macos/Tests/Unit/` | `./nx run macos:test-unit` | PR 層 |
+| 統合（macOS） | `clients/macos/Tests/Integration/` | `./nx run macos:test-integration` | PR 層 |
+| 振る舞い（macOS） | `clients/macos/UITests/` | `./nx run macos:e2e` | Nightly の公開関門。失敗したテストは 1 回再試行し、失敗が残れば Issue を作成または追記して公開を停止 |
+
+macOS のテストは、通信や操作の境界を差し替えて状態・入出力を確かめるものを単体に置く。
+実ウィンドウ、アクセシビリティ、terminal の描画、アプリ bundle やファイルの読み書きとの接続を検証するものは統合に置く。
+共通のテスト補助は `clients/macos/Tests/Shared/` に置く。
+FileViewer の JavaScript 単体テストは `macos:test-unit` に含める。
 
 手動で実行するテストはコミットしない。
 

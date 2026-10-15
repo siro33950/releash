@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import Releash
 
 final class E2EFixtureTests: XCTestCase {
@@ -7,13 +8,15 @@ final class E2EFixtureTests: XCTestCase {
       for removeFails in [false, true] {
         var calls: [String] = []
         do {
-          try Fixture.cleanUp(stop: {
-            calls.append("stop")
-            if stopFails { throw NSError(domain: "stop", code: 1) }
-          }, remove: {
-            calls.append("remove")
-            if removeFails { throw NSError(domain: "remove", code: 2) }
-          })
+          try Fixture.cleanUp(
+            stop: {
+              calls.append("stop")
+              if stopFails { throw NSError(domain: "stop", code: 1) }
+            },
+            remove: {
+              calls.append("remove")
+              if removeFails { throw NSError(domain: "remove", code: 2) }
+            })
           XCTAssertFalse(stopFails || removeFails)
         } catch {
           XCTAssertEqual((error as NSError).domain, stopFails ? "stop" : "remove")
@@ -60,22 +63,29 @@ final class E2EFixtureTests: XCTestCase {
     repository.worktrees.items = [worktree]
     var snapshot = Releash_Client_V1_WorkspaceListSnapshot()
     snapshot.repositories.items = [repository]
-    XCTAssertTrue(Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
+    XCTAssertTrue(
+      Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
     var withoutMain = snapshot
     withoutMain.repositories.items[0].branches.items[0].isMainWorktree = false
-    XCTAssertFalse(Fixture.hasRunningWorkflow(withoutMain, repository: "/repo", executionID: "execution"))
+    XCTAssertFalse(
+      Fixture.hasRunningWorkflow(withoutMain, repository: "/repo", executionID: "execution"))
     withoutMain.repositories.items[0].branches.items.removeAll()
-    XCTAssertFalse(Fixture.hasRunningWorkflow(withoutMain, repository: "/repo", executionID: "execution"))
-    XCTAssertFalse(Fixture.hasRunningWorkflow(snapshot, repository: "/other", executionID: "execution"))
+    XCTAssertFalse(
+      Fixture.hasRunningWorkflow(withoutMain, repository: "/repo", executionID: "execution"))
+    XCTAssertFalse(
+      Fixture.hasRunningWorkflow(snapshot, repository: "/other", executionID: "execution"))
     XCTAssertFalse(Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "other"))
     for status in ["attention", "idle", ""] {
       snapshot.repositories.items[0].worktrees.items[0].executions[0].status = status
-      XCTAssertFalse(Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
+      XCTAssertFalse(
+        Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
     }
     snapshot.repositories.items[0].worktrees.items[0].executions[0].status = "active"
     snapshot.repositories.items[0].worktrees.items[0].executions[0].isWorkflow = false
-    XCTAssertFalse(Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
+    XCTAssertFalse(
+      Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
     snapshot.repositories.items[0].worktrees.items[0].path = "/other"
-    XCTAssertFalse(Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
+    XCTAssertFalse(
+      Fixture.hasRunningWorkflow(snapshot, repository: "/repo", executionID: "execution"))
   }
 }

@@ -109,13 +109,15 @@ Nx Cloud は使わない。
 
 ```bash
 ./nx run-many -t lint test build --exclude=macos
+./nx run macos:lint
 ./nx run macos:test
 ./nx run macos:build
 ```
 
 PR と main push の CI は `nx show projects --affected` で変更の影響を受けるプロジェクトを判定し、検証の種類ごとに別の job から Nx を呼ぶ。
-必須チェックは `plan`、各 `*-checks / <target>`、`macos-checks` を直接指定する。
-対象外の Linux 検証も同じチェック名を作り、実行ステップを省略する。変更判定の失敗は必須の `plan` で止める。
+必須チェックは `frontend-required`、`server-required`、`shell-required`、`cli-required`、`quality-required`、`macos-required` を指定する。
+各集約 job は `plan` とそのグループの全チェックの成功を要求し、失敗・キャンセル・job のスキップを通さない。
+変更対象外の検証も同じチェック名を作り、実行ステップを省略する。変更判定の失敗は各集約 job で止める。
 macos は macOS runner、それ以外は Linux runner で実行する。
 nightly のリリース前検証では全プロジェクトを対象にする。
 
@@ -123,14 +125,17 @@ nightly のリリース前検証では全プロジェクトを対象にする。
 |---|---|
 | server、cli | `lint`、`test`、`build` |
 | desktop | `lint`、`test`、`build`、`e2e`、`dev`、`tauri` |
-| macos | `generate`、`helpers`、`build`、`test`、`e2e`、`dev` |
+| macos | `lint`、`generate`、`helpers`、`build`、`test`、`test-unit`、`test-integration`、`e2e`、`dev` |
 | workspace | `lint`、`coverage` |
 
 `test` は各テスト target を集約する。
 server と cli の `test` は `test-unit`（単体・doc）と `test-integration`、desktop の `test` は `rust-test-unit`、`rust-test-integration`、`frontend-test-unit`、`frontend-test-integration` を集約する。
 desktop の `lint` は `rust-lint` と `frontend-lint` を集約する。
 バイナリの build 依存は Rust の統合テストにだけ置く。
-macOS の CI は `macos:test` でアプリのビルドとテストを行い、`macos:build` を重ねて実行しない。
+macOS の CI は `lint`、`test-unit`、`test-integration` を別々の job で実行する。
+`macos:test` は単体と統合を集約する。各テストは必要なアプリをビルドするため、CI で `macos:build` を重ねて実行しない。
+同じ Nx 実行内では macOS の単体・統合テストを直列に実行し、アプリとウィンドウの競合を避ける。CI では別々の runner で並列に実行する。
+Swift の lint は Xcode 付属の `swift-format lint --strict` を使い、`Sources/`、`Tests/`、`UITests/` と `BuildTools/Package.swift` を対象にする。生成コードと依存ライブラリは対象に含めない。
 macOS の回帰の E2E は、次のコマンドで実行する。
 画面がロックされておらず、アプリを前面に出せる Mac が必要である。
 
@@ -144,7 +149,8 @@ macOS の回帰の E2E は、次のコマンドで実行する。
 `--test` を省略すると回帰の E2E を全部回す。複数指定には `--test` を繰り返す。
 本番との共存確認では、本番のアプリとサーバを起動した状態で `--verify-production` を付ける。実行前の PID と起動時刻を、E2E の実行中とテスト環境の終了処理後に照合する。本番が起動していなければ失敗する。
 同じ Mac の E2E は排他で実行し、後から呼んだコマンドは待つ。
-CI で回帰の E2E を回すのは #1766 からであり、それまでは画面の機能を足す・変える PR で手元で全件を回す。
+Nightly は macOS の回帰の E2E を全件実行する。失敗したテストは 1 回だけ再試行し、再試行後も失敗したら Issue を作成または既存 Issue に追記し、リリースしない。
+画面の機能を足す・変える PR で、手元の回帰 E2E の全件実行は必須としない。変更した機能の確認と証跡の記録は引き続き行う。
 
 `macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
 Cargo、pnpm、SwiftPM のキャッシュは GitHub Actions で再利用する。Nx のローカルキャッシュは runner 間で共有しない。
@@ -182,7 +188,7 @@ rustup component add llvm-tools-preview
 子プロセス強制終了時の profile 保持と負荷干渉を避ける設定は、この target 内だけに適用する。
 
 版上げは `./nx release version patch`（`minor`、`major` も可）を使う。
-Nx は desktop の `package.json` を更新し、bump workflow が `tauri.conf.json` と Cargo workspace の版を同期する。
+Nx は desktop の `package.json` を更新し、bump workflow が `tauri.conf.json`、Swift 版の `MARKETING_VERSION`、Cargo workspace の版を同期する。
 `@monodon/rust` の version actions は `version.workspace = true` に対応していないため、Rust の版同期は workflow に残す。
 タグとリリースノートは `nx release changelog`、draft Release の作成と成果物が揃った後の公開は GitHub API で行う。
 
@@ -226,10 +232,10 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 対応プラットフォームは macOS。
 
 1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動する。main の HEAD を対象とし、日次は直近の公開済み nightly のタグが指す commit と同じならスキップする。手動起動は常に実行する。
-2. PR 層の検証一式がすべて成功したら、tauri-action で署名・公証済みの macOS universal ビルドを作り、prerelease を公開する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
+2. PR 層の検証一式と macOS の回帰 E2E がすべて成功したら、Tauri 版と Swift 版の署名・公証済み macOS universal ビルドを別々の job で作る。両方が揃ってから同じ prerelease を公開する。Swift 版は `Releash Preview.app` として配布し、Tauri 版の `Releash.app` と共存する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
 3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
 4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
-5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
+5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`clients/macos/project.yml` の `MARKETING_VERSION`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
 
 ## セキュリティ
 

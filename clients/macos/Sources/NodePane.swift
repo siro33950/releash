@@ -12,21 +12,31 @@ struct NodePane: View {
     Group {
       if let detail {
         if case .session(let session) = detail.content.variant, session.hasSessionID {
-          AgentSessionPane(model: model, path: path, nodeID: nodeID, sessionID: session.sessionID, canResume: detail.capabilities.canResumeSession, focused: focused).id(session.sessionID)
+          AgentSessionPane(
+            model: model, path: path, nodeID: nodeID, sessionID: session.sessionID,
+            canResume: detail.capabilities.canResumeSession, focused: focused
+          ).id(session.sessionID)
         } else if case .command(let command) = detail.content.variant {
           CommandPane(model: model, path: path, detail: detail, command: command)
-        } else { Text("Nodeの内容がありません").foregroundStyle(.secondary) }
-      } else { ProgressView() }
+        } else {
+          Text("Nodeの内容がありません").foregroundStyle(.secondary)
+        }
+      } else {
+        ProgressView()
+      }
     }.frame(maxWidth: .infinity, maxHeight: .infinity)
-    .onAppear {
-      if let subscription { model.unsubscribe(subscription) }
-      subscription = model.subscribe("node-detail", [path, nodeID]) { payload in
-        if case .nodeDetail(let value) = payload.value {
-          detail = value.hasValue ? value.value : nil
+      .onAppear {
+        if let subscription { model.unsubscribe(subscription) }
+        subscription = model.subscribe("node-detail", [path, nodeID]) { payload in
+          if case .nodeDetail(let value) = payload.value {
+            detail = value.hasValue ? value.value : nil
+          }
         }
       }
-    }
-    .onDisappear { if let subscription { model.unsubscribe(subscription) }; subscription = nil }
+      .onDisappear {
+        if let subscription { model.unsubscribe(subscription) }
+        subscription = nil
+      }
   }
 }
 
@@ -44,7 +54,9 @@ struct AgentSessionPane: View {
     VStack {
       if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
       switch session?.availability {
-      case .open: TerminalPane(session: model.terminal(path: path, id: sessionID, agent: true), focused: focused)
+      case .open:
+        TerminalPane(
+          session: model.terminal(path: path, id: sessionID, agent: true), focused: focused)
       case .paused:
         Text("Sessionは停止しています")
         if canResume { Button("Resume") { model.resumeNode(path: path, id: nodeID) } }
@@ -57,17 +69,24 @@ struct AgentSessionPane: View {
       subscription = model.subscribe("agent-session", [sessionID]) { payload in
         if case .agentSession(let value) = payload.value {
           session = value.hasValue ? value.value : nil
-          if !value.hasValue || value.value.availability != .open { model.releaseAgentTerminal(path: path, id: sessionID) }
+          if !value.hasValue || value.value.availability != .open {
+            model.releaseAgentTerminal(path: path, id: sessionID)
+          }
         }
       }
       guard let client = model.client else { return }
       var request = Releash_Client_V1_OpenAgentSessionRequest()
-      request.agentSessionID = sessionID; request.rows = UIStyle.terminalRows; request.cols = UIStyle.terminalColumns; request.callerRequestID = UUID().uuidString
-      do { _ = try await client.openAgentSession(request: request, headers: model.headers).result.get() }
-      catch { failure = model.failureMessage(error) }
+      request.agentSessionID = sessionID
+      request.rows = UIStyle.terminalRows
+      request.cols = UIStyle.terminalColumns
+      request.callerRequestID = UUID().uuidString
+      do {
+        _ = try await client.openAgentSession(request: request, headers: model.headers).result.get()
+      } catch { failure = model.failureMessage(error) }
     }
     .onDisappear {
-      if let subscription { model.unsubscribe(subscription) }; subscription = nil
+      if let subscription { model.unsubscribe(subscription) }
+      subscription = nil
       model.releaseAgentTerminal(path: path, id: sessionID)
     }
   }
@@ -88,22 +107,41 @@ struct CommandPane: View {
             Text(command.displayCommand).font(.system(.body, design: .monospaced))
             Text(command.hasCwd ? command.cwd : "作業ディレクトリは未記録")
             Text(command.hasShell ? command.shell : "shellは未記録")
-            if command.hasResult { Text("Exit code: \(command.result.exitCode) · \(command.result.duration) ms").accessibilityIdentifier("command-result") }
+            if command.hasResult {
+              Text("Exit code: \(command.result.exitCode) · \(command.result.duration) ms")
+                .accessibilityIdentifier("command-result")
+            }
           }.textSelection(.enabled)
           Spacer()
-          if detail.capabilities.canRetry { Button("Retry") { model.retryNode(path: path, id: detail.id) } }
-          if detail.canAbort { Button("Abort") { if detail.hasExecutionID { model.abortExecution(id: detail.executionID) } } }
+          if detail.capabilities.canRetry {
+            Button("Retry") { model.retryNode(path: path, id: detail.id) }
+          }
+          if detail.canAbort {
+            Button("Abort") {
+              if detail.hasExecutionID { model.abortExecution(id: detail.executionID) }
+            }
+          }
         }
-        if detail.hasErrorReason { Text(detail.errorReason).foregroundStyle(.red).textSelection(.enabled) }
+        if detail.hasErrorReason {
+          Text(detail.errorReason).foregroundStyle(.red).textSelection(.enabled)
+        }
         Text("STDOUT").font(.headline)
-        Text(command.result.stdout).font(.system(.body, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("command-stdout")
+        Text(command.result.stdout).font(.system(.body, design: .monospaced)).textSelection(
+          .enabled
+        ).accessibilityIdentifier("command-stdout")
         Text("STDERR").font(.headline)
-        Text(command.result.stderr).font(.system(.body, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("command-stderr")
+        Text(command.result.stderr).font(.system(.body, design: .monospaced)).textSelection(
+          .enabled
+        ).accessibilityIdentifier("command-stderr")
         if !attempts.isEmpty {
           Text("過去の試行").font(.headline)
           ForEach(attempts, id: \.id) { attempt in
-            Button { model.openNode(.command, id: attempt.id, title: attempt.title) } label: {
-              Text("\(Date(timeIntervalSince1970: attempt.updatedAt).formatted()) · \(attempt.errorReason)")
+            Button {
+              model.openNode(.command, id: attempt.id, title: attempt.title)
+            } label: {
+              Text(
+                "\(Date(timeIntervalSince1970: attempt.updatedAt).formatted()) · \(attempt.errorReason)"
+              )
             }
           }
         }

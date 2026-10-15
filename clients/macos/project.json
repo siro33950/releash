@@ -60,8 +60,6 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "swift run --package-path BuildTools xcodegen generate",
-          "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
           "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO build"
         ],
         "cwd": "clients/macos",
@@ -69,9 +67,7 @@
         "forwardAllArgs": false
       },
       "dependsOn": [
-        "generate",
-        "helpers",
-        "file-viewer"
+        "prepare"
       ],
       "outputs": [
         "{projectRoot}/.build/DerivedData"
@@ -87,42 +83,23 @@
       }
     },
     "test": {
-      "executor": "nx:run-commands",
-      "options": {
-        "commands": [
-          "python3 ../../.github/scripts/macos-build.test.py",
-          "python3 ../../.github/scripts/macos-e2e.test.py",
-          "swift run --package-path BuildTools xcodegen generate",
-          "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile",
-          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
-        ],
-        "cwd": "clients/macos",
-        "parallel": false,
-        "forwardAllArgs": false
-      },
+      "executor": "nx:noop",
       "dependsOn": [
-        "generate",
-        "helpers",
-        "file-viewer"
+        "test-unit",
+        "test-integration"
       ],
-      "outputs": [
-        "{projectRoot}/.build/DerivedData"
-      ],
+      "cache": false,
       "defaultConfiguration": "debug",
       "configurations": {
-        "debug": {
-          "configuration": "Debug"
-        },
-        "release": {
-          "configuration": "Release"
-        }
+        "debug": {},
+        "release": {}
       }
     },
     "dev": {
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/Releash.app"
+          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/\"Releash Preview.app\""
         ],
         "cwd": ".",
         "parallel": false
@@ -178,7 +155,6 @@
       "options": {
         "commands": [
           "pnpm install --frozen-lockfile",
-          "pnpm test",
           "pnpm build"
         ],
         "cwd": "clients/macos/FileViewer",
@@ -191,6 +167,95 @@
         "{projectRoot}/FileViewer/**/*",
         "sharedGlobals"
       ]
+    },
+    "test-unit": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "pnpm --dir FileViewer install --frozen-lockfile",
+          "pnpm --dir FileViewer test",
+          "xcodebuild -project Releash.xcodeproj -scheme ReleashUnitTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-unit -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
+        ],
+        "cwd": "clients/macos",
+        "parallel": false,
+        "forwardAllArgs": false
+      },
+      "dependsOn": [
+        "prepare"
+      ],
+      "outputs": [
+        "{projectRoot}/.build/Tests-unit"
+      ],
+      "defaultConfiguration": "debug",
+      "configurations": {
+        "debug": {
+          "configuration": "Debug"
+        },
+        "release": {
+          "configuration": "Release"
+        }
+      },
+      "cache": false,
+      "parallelism": false
+    },
+    "test-integration": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "xcodebuild -project Releash.xcodeproj -scheme ReleashIntegrationTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-integration -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
+        ],
+        "cwd": "clients/macos",
+        "parallel": false,
+        "forwardAllArgs": false
+      },
+      "dependsOn": [
+        "prepare"
+      ],
+      "outputs": [
+        "{projectRoot}/.build/Tests-integration"
+      ],
+      "defaultConfiguration": "debug",
+      "configurations": {
+        "debug": {
+          "configuration": "Debug"
+        },
+        "release": {
+          "configuration": "Release"
+        }
+      },
+      "cache": false,
+      "parallelism": false
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "xcrun swift-format lint --strict --recursive Sources Tests UITests BuildTools/Package.swift",
+        "cwd": "clients/macos"
+      },
+      "cache": false
+    },
+    "prepare": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "generate",
+        "helpers",
+        "file-viewer"
+      ],
+      "options": {
+        "commands": [
+          "swift run --package-path BuildTools xcodegen generate",
+          "xcodebuild -resolvePackageDependencies -project Releash.xcodeproj -scheme Releash -clonedSourcePackagesDirPath .build/SourcePackages -onlyUsePackageVersionsFromResolvedFile"
+        ],
+        "cwd": "clients/macos",
+        "parallel": false,
+        "forwardAllArgs": false
+      },
+      "cache": false,
+      "defaultConfiguration": "debug",
+      "configurations": {
+        "debug": {},
+        "release": {}
+      }
     }
   }
 }

@@ -11,16 +11,24 @@ final class WorkspaceActionsTests: XCTestCase {
     let model = try await testModel(http)
     var detail = Releash_Client_V1_CommandError()
     detail.message.value = "開始できない理由"
-    let packed = ConnectError.Detail(type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
+    let packed = ConnectError.Detail(
+      type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
     for method in ["CreateAgentSession", "StartWorkflow"] {
       for serverDetail in [nil, packed] {
-        http.state.withLock { $0.failedMethod = method; $0.failureDetail = serverDetail }
+        http.state.withLock {
+          $0.failedMethod = method
+          $0.failureDetail = serverDetail
+        }
         do {
-          if method == "CreateAgentSession" { try await model.startSession(provider: "codex", path: "/repo/a") }
-          else { try await model.startWorkflow(name: "review", path: "/repo/a") }
+          if method == "CreateAgentSession" {
+            try await model.startSession(provider: "codex", path: "/repo/a")
+          } else {
+            try await model.startWorkflow(name: "review", path: "/repo/a")
+          }
           XCTFail("Expected launch failure")
         } catch {
-          XCTAssertEqual(model.failureMessage(error), serverDetail == nil ? "\(method) failed" : "開始できない理由")
+          XCTAssertEqual(
+            model.failureMessage(error), serverDetail == nil ? "\(method) failed" : "開始できない理由")
         }
         XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
       }
@@ -157,8 +165,10 @@ final class WorkspaceActionsTests: XCTestCase {
     root.sequence.id = "workflow-execution"
     root.sequence.title = "review"
     var tree = Releash_Client_V1_WorkspaceWorktreeList()
-    tree.path = branch.worktreePath; tree.snapshot.nodes.items = [root]
-    repository.worktrees.items = [tree]; model.repositories = [repository]
+    tree.path = branch.worktreePath
+    tree.snapshot.nodes.items = [root]
+    repository.worktrees.items = [tree]
+    model.repositories = [repository]
     try await model.startWorkflow(name: "review", path: branch.worktreePath)
     XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session])
     model.panes.closeCurrentTab()
@@ -184,7 +194,9 @@ final class WorkspaceActionsTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func testUnknownRemovalRequirementUsesNormalConfirmationAndPreservesWorktreeOnFailure() async throws {
+  @MainActor func testUnknownRemovalRequirementUsesNormalConfirmationAndPreservesWorktreeOnFailure()
+    async throws
+  {
     let http = TestHTTPClient()
     var repository = Releash_Client_V1_WorkspaceRepositoryList()
     repository.path = "/repo"
@@ -220,7 +232,8 @@ final class WorkspaceActionsTests: XCTestCase {
     XCTAssertEqual(removal.repoPath, repository.path)
     XCTAssertEqual(removal.worktreePath, branch.worktreePath)
     XCTAssertFalse(removal.force)
-    XCTAssertEqual(model.repositories.first?.branches.items.map(\.worktreePath), [branch.worktreePath])
+    XCTAssertEqual(
+      model.repositories.first?.branches.items.map(\.worktreePath), [branch.worktreePath])
     XCTAssertEqual(model.selectedWorktree, branch.worktreePath)
     await model.stop()
   }

@@ -56,7 +56,9 @@ struct RightPanelView: View {
         RootListView(model: model, path: path).id(path)
       } else if expanded, selected == .files, let path = model.selectedWorktree {
         FileTreeView(model: model, worktree: path).id(path)
-      } else { Spacer(minLength: 0) }
+      } else {
+        Spacer(minLength: 0)
+      }
     }
     .frame(maxHeight: .infinity)
   }

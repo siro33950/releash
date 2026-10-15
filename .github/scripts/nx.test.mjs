@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -62,22 +62,27 @@ test("protocol changes select all clients and build integration prerequisites", 
   }
 });
 
-test("native selection propagates the Release configuration to helpers", () => {
+test("native selection propagates Release through preparation and separates test outputs", () => {
   const { tasks, dependencies } = graph("clients/macos/project.yml",
     "--exclude=server,cli,desktop,workspace", "--configuration=release");
-  assert.deepEqual(Object.keys(tasks).sort(), [
-    "macos:build:release", "macos:file-viewer", "macos:generate", "macos:helpers:release", "macos:test:release",
-  ]);
-  for (const target of ["build", "test"]) {
-    assert.deepEqual(dependencies[`macos:${target}:release`].sort(), ["macos:file-viewer", "macos:generate", "macos:helpers:release"]);
+  for (const target of ["build", "test-unit", "test-integration"]) {
+    assert.deepEqual(dependencies[`macos:${target}:release`], ["macos:prepare:release"]);
   }
+  assert.deepEqual(dependencies["macos:prepare:release"].sort(),
+    ["macos:file-viewer", "macos:generate", "macos:helpers:release"]);
+  assert.deepEqual(dependencies["macos:test:release"].sort(),
+    ["macos:test-integration:release", "macos:test-unit:release"]);
+  const native = JSON.parse(readFileSync("clients/macos/project.json", "utf8"));
+  assert.notDeepEqual(native.targets["test-unit"].outputs, native.targets["test-integration"].outputs);
+  const lint = Object.values(tasks).find(task => task.target.target === "lint");
+  assert.deepEqual(dependencies[lint.id], []);
 });
 
 test("server changes also select CLI integration tests", () => {
   assert.ok(graph("server/src/lib.rs", "--exclude=macos").tasks["cli:test"]);
 });
 
-test("CI lanes cover the aggregate checks without sharing a runner or building macOS twice", () => {
+test("CI lanes cover the aggregate checks without a redundant native build job", () => {
   const { jobs } = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
   const checks = parse(readFileSync(".github/workflows/ci-checks.yml", "utf8"));
   assert.equal(checks.jobs.check.strategy["fail-fast"], false);
@@ -94,9 +99,13 @@ test("CI lanes cover the aggregate checks without sharing a runner or building m
         ["server:build", "cli:build"].includes(id)) continue;
     assert.ok(selected.has(id), `${id} missing from CI`);
   }
-  const native = jobs["macos-checks"].steps.find(step => step.name === "Build and test native client");
-  assert.match(native.run, /nx run macos:test/);
-  assert.doesNotMatch(native.run, /macos:build/);
+  const native = jobs["macos-checks"];
+  assert.deepEqual(native.strategy.matrix.target, ["lint", "test-unit", "test-integration"]);
+  assert.equal(native.strategy["fail-fast"], false);
+  assert.equal(native.if, undefined);
+  const run = native.steps.find(step => step.name === "Run check");
+  assert.match(run.run, /macos:\$NX_TARGET/);
+
 });
 
 test("unaffected projects retain their check names without executing validation", () => {
@@ -118,6 +127,9 @@ test("unaffected projects retain their check names without executing validation"
       `${step.name || step.uses} must not execute for unaffected projects`);
   }
   assert.equal(jobs["macos-checks"].needs, "plan");
+  for (const step of jobs["macos-checks"].steps) {
+    assert.match(step.if, /^contains\(fromJSON\(needs.plan.outputs.projects\), 'macos'\)/);
+  }
 });
 
 test("changes inside every project select the workspace quality checks", () => {
@@ -131,5 +143,25 @@ test("changes inside every project select the workspace quality checks", () => {
     }));
     assert.ok(projects.includes("workspace"), `${file} must select the quality job`);
     assert.ok(graph(file).tasks["workspace:lint"], `${file} must select the quality target`);
+  }
+});
+
+test("each required group rejects failed, cancelled or skipped planning and checks", () => {
+  const { jobs } = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  for (const group of ["frontend", "server", "shell", "cli", "quality", "macos"]) {
+    const gate = jobs[`${group}-required`];
+    assert.deepEqual(gate.needs, ["plan", `${group}-checks`]);
+    assert.equal(gate.if, "${{ always() }}");
+    const step = gate.steps[0];
+    assert.equal(step.env.PLAN_RESULT, "${{ needs.plan.result }}");
+    assert.equal(step.env.CHECK_RESULT, "${{ needs." + group + "-checks.result }}");
+    for (const plan of ["success", "failure", "cancelled", "skipped"]) {
+      for (const check of ["success", "failure", "cancelled", "skipped"]) {
+        const result = spawnSync("bash", ["-e", "-c", step.run], {
+          env: { ...process.env, PLAN_RESULT: plan, CHECK_RESULT: check },
+        });
+        assert.equal(result.status === 0, plan === "success" && check === "success", `${group}: ${plan}/${check}`);
+      }
+    }
   }
 });

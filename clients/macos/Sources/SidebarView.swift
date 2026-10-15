@@ -15,7 +15,8 @@ struct SidebarView: View {
         Spacer()
         Button(action: model.addRepository) {
           Image(systemName: "folder.badge.plus")
-        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加").accessibilityLabel("Repositoryを追加")
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加").accessibilityLabel(
+          "Repositoryを追加")
         Button(action: model.refresh) {
           Image(systemName: "arrow.clockwise")
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("再読み込み").accessibilityLabel("再読み込み")
@@ -23,7 +24,8 @@ struct SidebarView: View {
           creating = true
         } label: {
           Image(systemName: "plus")
-        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Worktreeを作成").accessibilityLabel("Worktreeを作成")
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Worktreeを作成").accessibilityLabel(
+          "Worktreeを作成")
       }
       .frame(height: UIStyle.iconButtonHeight)
       .padding(UIStyle.padding)
@@ -53,7 +55,10 @@ struct SidebarView: View {
               }
               .accessibilityIdentifier("worktree:\(branch.name)")
               .buttonStyle(.plain)
-              .foregroundStyle(model.selectedWorktree == branch.worktreePath ? UIStyle.sidebarSelectionText : .primary)
+              .foregroundStyle(
+                model.selectedWorktree == branch.worktreePath
+                  ? UIStyle.sidebarSelectionText : .primary
+              )
               .accessibilityAddTraits(
                 model.selectedWorktree == branch.worktreePath ? .isSelected : [])
             }

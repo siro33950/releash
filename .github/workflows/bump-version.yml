@@ -33,6 +33,7 @@ jobs:
           jq --arg v "$VERSION" '.version = $v' clients/desktop/tauri.conf.json > tmp.json && mv tmp.json clients/desktop/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/;}' Cargo.lock
+          sed -i -E "s/^(    MARKETING_VERSION:).*/\\1 '$VERSION'/" clients/macos/project.yml
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v8

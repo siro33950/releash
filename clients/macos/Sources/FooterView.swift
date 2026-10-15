@@ -11,17 +11,23 @@ struct FooterView: View {
             $0.provider.value == (provider == "claude" ? .claude : .codex)
           }
           if usage != nil || !warnings.isEmpty {
-            ProviderFooterView(provider: provider, usage: usage, warnings: warnings, now: context.date)
+            ProviderFooterView(
+              provider: provider, usage: usage, warnings: warnings, now: context.date)
           }
         }
         if !model.hookHealth.readErrors.isEmpty || model.hookSubscriptionFailure != nil {
           Image(systemName: "exclamationmark.triangle.fill")
             .foregroundStyle(UIStyle.attention)
-            .help(([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors).joined(separator: "\n"))
+            .help(
+              ([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors)
+                .joined(separator: "\n")
+            )
             .accessibilityLabel("hookの状態を確認できません")
         }
         Spacer(minLength: 0)
         if let info = model.daemonInfo {
+          let serverLabel =
+            "v\(info.release) · \(model.releaseCompatibility ?? "") · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))"
           Menu {
             if model.releaseCompatibility == "server_older" {
               Text("サーバが古いため、再起動で更新できます")
@@ -31,16 +37,23 @@ struct FooterView: View {
             Button("サーバを停止") { Task { await model.stopDaemon() } }
             Button("サーバを再起動") { Task { await model.restartDaemon() } }
           } label: {
-            HStack(spacing: UIStyle.statusSpacing) {
-              Image(systemName: model.releaseCompatibility == "compatible" ? "server.rack" : "exclamationmark.triangle")
-              Text("v\(info.release) · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))")
-              Text(model.releaseCompatibility ?? "")
+            Label {
+              Text(serverLabel)
+            } icon: {
+              if let icon = NSImage(
+                systemSymbolName: model.releaseCompatibility == "compatible"
+                  ? "server.rack" : "exclamationmark.triangle",
+                accessibilityDescription: serverLabel)
+              {
+                Image(nsImage: icon)
+              }
             }
           }
+          .labelStyle(.titleAndIcon)
           .menuStyle(.borderlessButton)
           .fixedSize()
           .disabled(model.serverOperation)
-          .accessibilityLabel("v\(info.release) · \(model.releaseCompatibility ?? "") · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))")
+          .accessibilityLabel(serverLabel)
           .accessibilityIdentifier("footer-server")
           if model.releaseCompatibility == "server_older" {
             Text("再起動で更新できます").foregroundStyle(UIStyle.attention)
@@ -69,7 +82,9 @@ private struct ProviderFooterView: View {
   let now: Date
   @State private var expanded = false
   var body: some View {
-    Button { expanded.toggle() } label: {
+    Button {
+      expanded.toggle()
+    } label: {
       HStack(spacing: UIStyle.statusSpacing) {
         Image(systemName: provider == "claude" ? "sparkles" : "terminal")
           .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
@@ -108,9 +123,10 @@ private struct ProviderFooterView: View {
   }
 
   private var providerLabel: String {
-    let summary = usage?.windows.map {
-      String(format: "%.0f%% %@", $0.usedPercent, windowLabel($0.windowMinutes))
-    }.joined(separator: " · ") ?? ""
+    let summary =
+      usage?.windows.map {
+        String(format: "%.0f%% %@", $0.usedPercent, windowLabel($0.windowMinutes))
+      }.joined(separator: " · ") ?? ""
     let usageWarning = usage?.windows.contains(where: { $0.warning }) == true ? " 使用率の警告" : ""
     let hookWarning = warnings.isEmpty ? "" : " hook警告"
     return "\(provider) \(summary)\(usageWarning)\(hookWarning)"

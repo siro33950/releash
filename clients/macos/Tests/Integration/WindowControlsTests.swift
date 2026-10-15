@@ -7,7 +7,8 @@ final class WindowControlsTests: XCTestCase {
   @MainActor func testControlsTargetTheirFocusableWindowWithoutATitleBar() throws {
     let window = WorkspaceWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
-      styleMask: [.borderless, .resizable, .closable, .miniaturizable], backing: .buffered, defer: false)
+      styleMask: [.borderless, .resizable, .closable, .miniaturizable], backing: .buffered,
+      defer: false)
     window.isReleasedWhenClosed = false
     defer { window.close() }
     let controls = WindowControls.ControlsView(frame: NSRect(x: 0, y: 0, width: 68, height: 33))

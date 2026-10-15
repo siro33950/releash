@@ -51,17 +51,25 @@ struct FileTreeView: NSViewRepresentable {
     }
     func subscribe(_ directory: String) {
       guard subscriptions[directory] == nil else { return }
-      subscriptions[directory] = model.subscribe("directory", [worktree, directory]) { [weak self] payload in
+      subscriptions[directory] = model.subscribe("directory", [worktree, directory]) {
+        [weak self] payload in
         guard let self, case .directory(let value) = payload.value else { return }
         apply(value, directory: directory)
       }
     }
     func apply(_ value: Releash_Client_V1_DirectorySnapshot, directory: String) {
       var current = value.delta ? children[directory, default: []] : []
-      let removed = value.delta ? value.removed : children[directory, default: []].map { $0.entry.path }.filter { old in !value.entries.contains(where: { $0.path == old }) }
+      let removed =
+        value.delta
+        ? value.removed
+        : children[directory, default: []].map { $0.entry.path }.filter { old in
+          !value.entries.contains(where: { $0.path == old })
+        }
       for path in removed {
         removeDirectory(path)
-        for key in Array(items.keys) where key == path || key.hasPrefix(path + "/") { items.removeValue(forKey: key) }
+        for key in Array(items.keys) where key == path || key.hasPrefix(path + "/") {
+          items.removeValue(forKey: key)
+        }
       }
       current.removeAll { removed.contains($0.entry.path) }
       for entry in value.entries {
@@ -75,14 +83,19 @@ struct FileTreeView: NSViewRepresentable {
       children[directory] = value.order.compactMap { byPath[$0] }
       applying = true
       defer { applying = false }
-      if directory == "." { outline?.reloadData() }
-      else if let item = items[directory] { outline?.reloadItem(item, reloadChildren: true) }
+      if directory == "." {
+        outline?.reloadData()
+      } else if let item = items[directory] {
+        outline?.reloadItem(item, reloadChildren: true)
+      }
     }
     func removeDirectory(_ path: String) {
       for key in Array(subscriptions.keys) where key == path || key.hasPrefix(path + "/") {
         if let id = subscriptions.removeValue(forKey: key) { model.unsubscribe(id) }
       }
-      for key in Array(children.keys) where key == path || key.hasPrefix(path + "/") { children.removeValue(forKey: key) }
+      for key in Array(children.keys) where key == path || key.hasPrefix(path + "/") {
+        children.removeValue(forKey: key)
+      }
     }
     func stop() {
       for id in subscriptions.values { model.unsubscribe(id) }
@@ -100,20 +113,26 @@ struct FileTreeView: NSViewRepresentable {
     func outlineViewItemDidExpand(_ notification: Notification) {
       guard !applying, let item = notification.userInfo?["NSObject"] as? Item else { return }
       subscribe(item.entry.path)
-      for child in items.values where child.entry.path.hasPrefix(item.entry.path + "/") && child.entry.directory {
+      for child in items.values
+      where child.entry.path.hasPrefix(item.entry.path + "/") && child.entry.directory {
         if outline?.isItemExpanded(child) == true { subscribe(child.entry.path) }
       }
     }
     func outlineViewItemDidCollapse(_ notification: Notification) {
       guard !applying, let item = notification.userInfo?["NSObject"] as? Item else { return }
-      for path in Array(subscriptions.keys) where path == item.entry.path || path.hasPrefix(item.entry.path + "/") {
+      for path in Array(subscriptions.keys)
+      where path == item.entry.path || path.hasPrefix(item.entry.path + "/") {
         if let id = subscriptions.removeValue(forKey: path) { model.unsubscribe(id) }
       }
     }
-    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any)
+      -> NSView?
+    {
       guard let item = item as? Item else { return nil }
       let identifier = NSUserInterfaceItemIdentifier("file-row")
-      let cell = (outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView) ?? NSTableCellView()
+      let cell =
+        (outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView)
+        ?? NSTableCellView()
       cell.identifier = identifier
       if cell.textField == nil {
         let text = NSTextField(labelWithString: "")
@@ -128,7 +147,8 @@ struct FileTreeView: NSViewRepresentable {
       }
       cell.textField?.setAccessibilityIdentifier("file:\(item.entry.path)")
       cell.textField?.stringValue = item.entry.name
-      cell.textField?.textColor = item.entry.ignored ? .tertiaryLabelColor : color(item.entry.status)
+      cell.textField?.textColor =
+        item.entry.ignored ? .tertiaryLabelColor : color(item.entry.status)
       cell.setAccessibilityIdentifier("file:\(item.entry.path)")
       return cell
     }
@@ -141,10 +161,16 @@ struct FileTreeView: NSViewRepresentable {
       }
     }
     @objc func clickRow() {
-      guard let outline, outline.clickedRow >= 0, let item = outline.item(atRow: outline.clickedRow) as? Item else { return }
-      if !item.entry.directory { model.openFile(item.entry.path) }
-      else if outline.isItemExpanded(item) { outline.collapseItem(item) }
-      else { outline.expandItem(item) }
+      guard let outline, outline.clickedRow >= 0,
+        let item = outline.item(atRow: outline.clickedRow) as? Item
+      else { return }
+      if !item.entry.directory {
+        model.openFile(item.entry.path)
+      } else if outline.isItemExpanded(item) {
+        outline.collapseItem(item)
+      } else {
+        outline.expandItem(item)
+      }
     }
   }
 }
