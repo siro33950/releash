@@ -155,7 +155,10 @@ final class NodePaneTests: XCTestCase {
     let model = try await testModel(http)
     model.selectWorktree("/repo"); try await eventually { model.layoutLoaded }
     let host = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "root", focused: true))
-    try await eventuallyView(host) { host.element("command-stdout") != nil }
+    try await eventuallyView(host) {
+      host.value(host.element("command-stdout")) == "current stdout"
+        && host.value(host.element("command-stderr")) == "current stderr"
+    }
     for text in ["printf current", "/actual/worktree", "/bin/sh", "current failure", "Exit code: 2 · 123 ms"] { XCTAssertTrue(host.texts().contains(text), text) }
     XCTAssertEqual(host.value(host.element("command-stdout")), "current stdout")
     XCTAssertEqual(host.value(host.element("command-stderr")), "current stderr")
@@ -168,7 +171,10 @@ final class NodePaneTests: XCTestCase {
     try await host.press(label)
     try await eventually { (try? model.panes.layout().tabs.last?.nodeID) == "old" }
     let oldHost = await ViewHarness(NodePane(model: model, path: "/repo", nodeID: "old", focused: true))
-    try await eventuallyView(oldHost) { oldHost.element("command-stdout") != nil }
+    try await eventuallyView(oldHost) {
+      oldHost.value(oldHost.element("command-stdout")) == "old stdout"
+        && oldHost.value(oldHost.element("command-stderr")) == "old stderr"
+    }
     XCTAssertEqual(oldHost.value(oldHost.element("command-stdout")), "old stdout")
     XCTAssertEqual(oldHost.value(oldHost.element("command-stderr")), "old stderr")
     XCTAssertTrue(oldHost.texts().contains("Exit code: 7 · 123 ms"))
