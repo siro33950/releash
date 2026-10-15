@@ -109,6 +109,7 @@ Nx Cloud は使わない。
 
 ```bash
 ./nx run-many -t lint test build --exclude=macos
+./nx run macos:lint
 ./nx run macos:test
 ./nx run macos:build
 ```
