@@ -28,11 +28,7 @@ struct FooterView: View {
         if let info = model.daemonInfo {
           let serverLabel =
             "v\(info.release) · \(model.releaseCompatibility ?? "") · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))"
-          Menu(
-            serverLabel,
-            systemImage: model.releaseCompatibility == "compatible"
-              ? "server.rack" : "exclamationmark.triangle"
-          ) {
+          Menu {
             if model.releaseCompatibility == "server_older" {
               Text("サーバが古いため、再起動で更新できます")
             } else if model.releaseCompatibility == "client_older" {
@@ -40,6 +36,18 @@ struct FooterView: View {
             }
             Button("サーバを停止") { Task { await model.stopDaemon() } }
             Button("サーバを再起動") { Task { await model.restartDaemon() } }
+          } label: {
+            Label {
+              Text(serverLabel)
+            } icon: {
+              if let icon = NSImage(
+                systemSymbolName: model.releaseCompatibility == "compatible"
+                  ? "server.rack" : "exclamationmark.triangle",
+                accessibilityDescription: serverLabel)
+              {
+                Image(nsImage: icon)
+              }
+            }
           }
           .labelStyle(.titleAndIcon)
           .menuStyle(.borderlessButton)
