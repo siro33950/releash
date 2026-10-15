@@ -69,7 +69,7 @@ struct RootListView: View {
           TableColumn("ART") { item in artifactCell(item) }.width(24)
         } rows: {
           WorkspaceTableRows(items: roots, expanded: $expanded)
-        }.frame(minHeight: 120)
+        }.scrollContentBackground(.hidden).alternatingRowBackgrounds(.disabled).frame(minHeight: 120)
         if let selected {
           NodeInspector(model: model, path: path, nodeID: selected).id(selected).frame(minHeight: 150)
         } else {
@@ -77,7 +77,6 @@ struct RootListView: View {
         }
       }
     }
-    .background(Color(nsColor: .textBackgroundColor))
     .sheet(isPresented: $history) { SessionHistoryView(model: model, path: path) }
     .alert("実行をAbortしてArchiveしますか？", isPresented: Binding(get: { archive != nil }, set: { if !$0 { archive = nil } })) {
       Button("キャンセル", role: .cancel) { archive = nil }
