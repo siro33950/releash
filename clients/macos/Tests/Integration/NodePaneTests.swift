@@ -122,20 +122,25 @@ final class NodePaneTests: XCTestCase {
     var session = Releash_Client_V1_AgentSessionItemDto()
     session.id = "agent"
     session.availability = .paused
+    session.workspaceWorktreePath = "/repo/a"
     var sessionNode = Releash_Client_V1_WorkspaceNodeDetailDto()
     sessionNode.id = "session-node"
+    sessionNode.title = "Restored Session"
     sessionNode.content.session.sessionID = "agent"
     var commandNode = Releash_Client_V1_WorkspaceNodeDetailDto()
     commandNode.id = "command-node"
     commandNode.content.command.result.stdout = "saved command output"
     http.state.withLock {
-      $0.sessions["agent"] = session
+      var snapshot = Releash_Client_V1_SessionTabSnapshot()
+      snapshot.session = session
+      snapshot.node = sessionNode
+      $0.sessionTabs["agent"] = snapshot
       $0.nodeDetails = ["session-node": sessionNode, "command-node": commandNode]
     }
     let model = try await testModel(http)
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
-    let sessionTab = PaneTab(kind: .session, nodeID: "session-node")
+    let sessionTab = PaneTab(kind: .session, agentSessionID: "agent")
     let commandTab = PaneTab(kind: .command, nodeID: "command-node")
     let layout = PaneLayout.split(
       id: "split", axis: .horizontal, ratio: 0.5,
@@ -164,22 +169,25 @@ final class NodePaneTests: XCTestCase {
       restored.selectWorktree("/repo/a")
       try await eventually { restored.layoutLoaded && restored.layout == layout }
       XCTAssertEqual(
-        try restored.panes.layout().tabs.map(\.nodeID), ["session-node", "command-node"])
+        try restored.panes.layout().tabs.map(\.nodeID), [nil, "command-node"])
       http.state.withLock { $0.subscriptions.removeAll { $0.target == "node-detail" } }
       let host = await ViewHarness(WorkspacePaneView(model: restored))
       try await eventually {
         http.state.withLock { state in
-          ["session-node", "command-node"].allSatisfy { id in
-            state.subscriptions.contains {
-              $0.target == "node-detail" && $0.args == ["/repo/a", id]
+          state.subscriptions.contains { $0.target == "session-tab" && $0.args == ["agent"] }
+            && state.subscriptions.contains {
+              $0.target == "node-detail" && $0.args == ["/repo/a", "command-node"]
             }
-          }
         }
       }
       try await eventuallyView(host) {
         host.texts().contains("Sessionは停止しています")
           && host.value(host.element("command-stdout")) == "saved command output"
       }
+      XCTAssertTrue(
+        restored.panes.controller.allTabIds.contains {
+          restored.panes.controller.tab($0)?.title == "Restored Session"
+        })
       host.close()
       if restarting { await restored.stop() }
     }

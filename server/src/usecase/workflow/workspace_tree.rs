@@ -185,6 +185,20 @@ impl WorkflowUsecase {
         self.workspace_query.node_detail(&workspace, node_id).await
     }
 
+    pub(crate) async fn get_session_node_detail(
+        &self,
+        session: &crate::usecase::agent_session::AgentSessionItemDto,
+    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
+        self.workspace_query
+            .session_node_detail(
+                &WorkspaceIdentity::new(session.workspace_worktree_path.clone()),
+                &session.tree_location.tree_id,
+                &session.tree_location.node_execution_id,
+                self.failures.as_ref(),
+            )
+            .await
+    }
+
     pub(crate) async fn get_workspace_node_artifact(
         &self,
         node_execution_id: &str,

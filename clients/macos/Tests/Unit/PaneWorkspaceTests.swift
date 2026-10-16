@@ -148,7 +148,12 @@ extension PaneWorkspaceTests {
     workspace.openNode(.command, id: "command-node", title: "command")
     workspace.openNode(.session, id: "session-node", title: "before")
     XCTAssertEqual(workspace.controller.allTabIds.count, 2)
-    workspace.renameNode("session-node", title: "after")
+    var snapshot = Releash_Client_V1_SessionTabSnapshot()
+    snapshot.node.title = "after"
+    workspace.updateSession(
+      try XCTUnwrap(
+        workspace.controller.selectedTab(inPane: workspace.controller.allPaneIds[0])?.id),
+      snapshot: snapshot)
     let pane = try XCTUnwrap(workspace.controller.focusedPaneId)
     XCTAssertEqual(workspace.controller.selectedTab(inPane: pane)?.title, "after")
     var called = false

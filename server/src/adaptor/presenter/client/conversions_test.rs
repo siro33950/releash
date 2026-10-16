@@ -82,6 +82,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
         "a".into(),
         vec![
             PaneTab {
+                agent_session_id: None,
                 node_id: None,
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
@@ -90,6 +91,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: None,
             },
             PaneTab {
+                agent_session_id: None,
                 node_id: None,
                 id: "workflow".into(),
                 kind: PaneTabKind::Command,
@@ -98,6 +100,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: None,
             },
             PaneTab {
+                agent_session_id: None,
                 node_id: None,
                 id: "file".into(),
                 kind: PaneTabKind::File,
@@ -106,7 +109,8 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: Some(crate::domain::code::ReviewBase::BranchBase),
             },
             PaneTab {
-                node_id: Some("session-node".into()),
+                agent_session_id: Some("agent-session".into()),
+                node_id: None,
                 id: "session".into(),
                 kind: PaneTabKind::Session,
                 file_path: None,
@@ -114,6 +118,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 file_base: None,
             },
             PaneTab {
+                agent_session_id: None,
                 node_id: Some("command-node".into()),
                 id: "command".into(),
                 kind: PaneTabKind::Command,

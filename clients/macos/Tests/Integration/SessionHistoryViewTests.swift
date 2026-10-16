@@ -35,6 +35,9 @@ final class SessionHistoryViewTests: XCTestCase {
       let model = try await testModel(http)
       model.selectWorktree("/repo")
       try await eventually { model.layoutLoaded }
+      if method != "DeleteAgentSession" {
+        model.openNode(.session, id: "agent-session", title: "Session")
+      }
       let host = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
       try await eventuallyView(host) { host.element("Codex · History session") != nil }
       try await host.press("さらに読み込む")
@@ -61,10 +64,11 @@ final class SessionHistoryViewTests: XCTestCase {
         method == "DeleteAgentSession"
         ? "Delete"
         : method == "RestoreAgentSession" ? "Claude · archived-provider" : "Codex · History session"
+      let tabsBeforeFailure = model.panes.controller.allTabIds
       http.state.withLock { $0.failedMethod = method }
       try await host.press(action)
       try await eventuallyView(host) { host.texts().contains("\(method) failed") }
-      XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+      XCTAssertEqual(model.panes.controller.allTabIds, tabsBeforeFailure)
       XCTAssertNotNil(host.element("Claude · archived-provider"))
       http.state.withLock { $0.failedMethod = nil }
       try await host.press(action)
@@ -75,8 +79,11 @@ final class SessionHistoryViewTests: XCTestCase {
           serializedBytes: XCTUnwrap(http.requests(method).last?.message))
         XCTAssertEqual(request.agentSessionID, "archived")
       } else {
-        try await eventually { (try? model.panes.layout().tabs.last?.nodeID) == "session-node" }
+        try await eventually {
+          (try? model.panes.layout().tabs.last?.agentSessionID) == "agent-session"
+        }
         XCTAssertEqual(try model.panes.layout().tabs.last?.kind, .session)
+        XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
         if method == "RestoreAgentSession" {
           let request = try Releash_Client_V1_RestoreAgentSessionRequest(
             serializedBytes: XCTUnwrap(http.requests(method).last?.message))
@@ -94,6 +101,7 @@ final class SessionHistoryViewTests: XCTestCase {
       if method != "DeleteAgentSession" {
         var root = Releash_Client_V1_WorkspaceTreeItem()
         root.node.id = "session-node"
+        root.node.sessionID = "agent-session"
         root.node.title = "Restored session"
         root.node.contentKind.value = .session
         tree.snapshot.nodes.items = [root]
@@ -104,7 +112,17 @@ final class SessionHistoryViewTests: XCTestCase {
       try http.publish(payload, target: "workspaces")
       try await eventuallyView(host) { host.element("Claude · archived-provider") == nil }
       if method != "DeleteAgentSession" {
-        let roots = await ViewHarness(RootListView(model: model, path: "/repo"))
+        var snapshot = Releash_Client_V1_SessionTabSnapshot()
+        snapshot.session.id = "agent-session"
+        snapshot.session.workspaceWorktreePath = "/repo"
+        snapshot.session.availability = .paused
+        snapshot.node.title = "Restored session"
+        http.state.withLock { $0.sessionTabs["agent-session"] = snapshot }
+        let roots = await ViewHarness(
+          VStack {
+            RootListView(model: model, path: "/repo")
+            WorkspacePaneView(model: model)
+          })
         try await eventually { roots.element("root:session-node") != nil }
         try await eventually {
           model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }

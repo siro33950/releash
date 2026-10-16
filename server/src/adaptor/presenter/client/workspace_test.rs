@@ -202,6 +202,7 @@ fn standalone_session_is_a_public_node_root_with_backend_lifecycle_capabilities(
     assert_eq!(json[0]["kind"], "node");
     assert_eq!(json[0]["id"], execution_id);
     assert_eq!(json[0]["contentKind"], "session");
+    assert_eq!(json[0]["sessionId"], "session-ref");
     assert_eq!(json[0]["sessionCapabilities"]["sessionRef"], "session-ref");
     assert_eq!(json[0]["sessionCapabilities"]["canArchive"], true);
     assert_eq!(json[0]["sessionCapabilities"]["canDelete"], false);

@@ -1533,3 +1533,125 @@ pub async fn test_node_artifact購読_同名の周回と再提出をnode実行id
         Err(releashd::test_support::integration::workflow::WorkflowError::CorruptStoredState(_))
     ));
 }
+
+#[tokio::test]
+pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色を読み別workspaceを拒否する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-session-tab");
+    let session_id = "session-tab";
+    let sessions =
+        AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+    sessions
+        .create(
+            session_id,
+            workspace.clone(),
+            "workspace-session-tab".into(),
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+            "create-session-tab",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    use releashd::test_support::integration::sessions::{
+        AgentSessionQueryService, LocalAgentSessionQueryService,
+    };
+    let item = LocalAgentSessionQueryService::new(store)
+        .get(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let failures = releashd::test_support::integration::platform::FailureRecordStore::default();
+    // When / Then
+    for (activity, expected) in [
+        (AgentSessionActivity::Working, "active"),
+        (AgentSessionActivity::AwaitingAnswer, "attention"),
+        (AgentSessionActivity::AwaitingInstruction, "idle"),
+    ] {
+        sessions
+            .observe_activity(session_id, activity, &format!("observe-{expected}"))
+            .await
+            .unwrap();
+        let detail = query
+            .session_node_detail(
+                &workspace,
+                &item.tree_location.tree_id,
+                &item.tree_location.node_execution_id,
+                &failures,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.classification, expected);
+        let tree = load_tree(&repository, &workspace).await;
+        let visible = tree.visible();
+        let row = visible.roots()[0];
+        assert_eq!(detail.title, row.title());
+        assert_eq!(
+            detail.classification,
+            row.node().status_classification.as_public_str()
+        );
+        assert!(detail.capabilities.can_rename);
+        assert!(
+            matches!(detail.content, WorkspaceNodeContentDto::Session(ref value) if value.session_id.as_deref() == Some(session_id))
+        );
+    }
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, TechnicalFailureNature, WorkFailure,
+    };
+    failures.observe(
+        &FailureKey::new("session-tab", &item.tree_location.node_execution_id),
+        WorkFailure {
+            kind: Failure::Technical(TechnicalFailureNature::Other),
+            message: "background failure".into(),
+        },
+    );
+    let detail = query
+        .session_node_detail(
+            &workspace,
+            &item.tree_location.tree_id,
+            &item.tree_location.node_execution_id,
+            &failures,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.classification, "attention");
+    assert!(query
+        .session_node_detail(
+            &WorkspaceIdentity::new("other-workspace"),
+            &item.tree_location.tree_id,
+            &item.tree_location.node_execution_id,
+            &failures,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(query
+        .session_node_detail(
+            &workspace,
+            "missing",
+            &item.tree_location.node_execution_id,
+            &failures
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(query
+        .session_node_detail(
+            &workspace,
+            &item.tree_location.tree_id,
+            "missing",
+            &failures
+        )
+        .await
+        .unwrap()
+        .is_none());
+}

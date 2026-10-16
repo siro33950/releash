@@ -2,6 +2,10 @@ import Bonsplit
 import SwiftUI
 
 @MainActor @Observable final class PaneWorkspace: @preconcurrency BonsplitDelegate {
+  var sessionSnapshots: [TabID: Releash_Client_V1_SessionTabSnapshot] = [:]
+  var renamingSession: Releash_Client_V1_SessionTabSnapshot?
+  var archivingSession: Releash_Client_V1_SessionTabSnapshot?
+  var sessionName = ""
   var requestClose: ((PaneTab) async -> Bool)?
   private var closing: Set<TabID> = []
   private var approved: Set<TabID> = []
@@ -105,7 +109,11 @@ import SwiftUI
   func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil) {
     let live = Set(controller.allTabIds.map { $0.id.uuidString })
     tabs = tabs.filter { live.contains($0.key) }
-    if let existing = controller.allTabIds.first(where: { tabs[$0.id.uuidString]?.nodeID == nodeID }
+    if let existing = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.kind == kind
+        && (kind == .session
+          ? tabs[$0.id.uuidString]?.agentSessionID : tabs[$0.id.uuidString]?.nodeID) == nodeID
+    }
     ) {
       controller.selectTab(existing)
       return
@@ -114,13 +122,25 @@ import SwiftUI
       let id = controller.createTab(
         title: title, icon: kind.icon, inPane: pane ?? controller.focusedPaneId)
     else { return }
-    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: kind, nodeID: nodeID)
+    tabs[id.id.uuidString] = PaneTab(
+      id: id.id.uuidString, kind: kind, nodeID: kind == .session ? nil : nodeID,
+      agentSessionID: kind == .session ? nodeID : nil)
   }
 
   func renameNode(_ nodeID: String, title: String) {
-    for id in controller.allTabIds where tabs[id.id.uuidString]?.nodeID == nodeID {
+    for id in controller.allTabIds
+    where tabs[id.id.uuidString]?.kind == .command && tabs[id.id.uuidString]?.nodeID == nodeID {
       controller.updateTab(id, title: title)
     }
+  }
+
+  func updateSession(_ id: TabID, snapshot: Releash_Client_V1_SessionTabSnapshot) {
+    sessionSnapshots[id] = snapshot
+    controller.updateTab(
+      id, title: snapshot.hasNode ? snapshot.node.title : "Session",
+      iconColor: .some(
+        snapshot.hasNode
+          ? UIStyle.statusColor(String(describing: snapshot.node.classification.value)) : nil))
   }
 
   func isFocused(_ tab: TabID, in pane: PaneID) -> Bool {
@@ -219,6 +239,13 @@ struct WorkspacePaneView: View {
           session: model.terminal(path: path, id: value.id),
           focused: model.panes.isFocused(tab.id, in: pane)
         ).id(path + value.id)
+      } else if model.layoutLoaded, let value = model.panes.tab(tab.id),
+        let sessionID = value.agentSessionID, value.kind == .session
+      {
+        SessionTabPane(
+          model: model, tabID: tab.id, sessionID: sessionID,
+          focused: model.panes.isFocused(tab.id, in: pane)
+        ).id(sessionID)
       } else if model.layoutLoaded, let value = model.panes.tab(tab.id), let nodeID = value.nodeID,
         let path = model.selectedWorktree, value.kind == .session || value.kind == .command
       {
@@ -239,9 +266,39 @@ struct WorkspacePaneView: View {
     }
     .onAppear {
       model.panes.requestClose = { [weak model] tab in await model?.closeTerminal(tab) ?? false }
+      model.panes.controller.tabContextMenu = { [weak model] id in
+        guard let model else { return AnyView(EmptyView()) }
+        return AnyView(SessionTabMenu(model: model, tabID: id))
+      }
       model.panes.controller.tabBarAccessory = { [weak model] pane in
         guard let model else { return AnyView(EmptyView()) }
         return AnyView(PaneOpenMenu(model: model, pane: pane))
+      }
+    }
+    .alert(
+      "Rename",
+      isPresented: Binding(
+        get: { model.panes.renamingSession != nil },
+        set: { if !$0 { model.panes.renamingSession = nil } })
+    ) {
+      TextField("名前", text: $model.panes.sessionName)
+      Button("キャンセル", role: .cancel) { model.panes.renamingSession = nil }
+      Button("保存") {
+        if let snapshot = model.panes.renamingSession {
+          model.renameSessionTab(snapshot, name: model.panes.sessionName)
+        }
+        model.panes.renamingSession = nil
+      }
+    }
+    .alert(
+      "実行をAbortしてArchiveしますか？",
+      isPresented: Binding(
+        get: { model.panes.archivingSession != nil },
+        set: { if !$0 { model.panes.archivingSession = nil } })
+    ) {
+      Button("キャンセル", role: .cancel) { model.panes.archivingSession = nil }
+      Button("Abort and Archive", role: .destructive) {
+        model.confirmArchiveSessionTab()
       }
     }
     .onChange(of: model.panes.controller.treeSnapshot()) { _, _ in

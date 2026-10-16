@@ -2188,6 +2188,7 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                         .map(|tab| wire::PaneTab {
                             id: tab.id.clone(),
                             node_id: tab.node_id.clone(),
+                            agent_session_id: tab.agent_session_id.clone(),
                             file_path: tab.file_path.clone(),
                             file_mode: tab.file_mode.map(|mode| mode.as_str().into()),
                             file_base: tab.file_base.map(|base| base.as_str().into()),
@@ -2247,6 +2248,7 @@ impl TryFrom<wire::PaneLayout>
                         Ok(PaneTab {
                             id: tab.id,
                             node_id: tab.node_id,
+                            agent_session_id: tab.agent_session_id,
                             file_path: tab.file_path,
                             file_mode: tab
                                 .file_mode

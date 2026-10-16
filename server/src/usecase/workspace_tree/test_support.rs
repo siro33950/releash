@@ -27,6 +27,17 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
+    async fn session_node_detail(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        _tree_id: &str,
+        node_execution_id: &str,
+        _failures: &dyn crate::domain::failure::FailureRecordRepository,
+    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
+        self.node_detail(workspace_identity, node_execution_id)
+            .await
+    }
+
     async fn node_artifact(
         &self,
         _: &str,

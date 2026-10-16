@@ -625,7 +625,7 @@ extension AppModel {
     request.callerRequestID = UUID().uuidString
     let selection = try await client.createAgentSession(request: request, headers: headers).result
       .get()
-    openNode(.session, id: selection.nodeID, title: "Session")
+    openNode(.session, id: selection.agentSessionID, title: "Session")
   }
 
   func startWorkflow(name: String, path: String) async throws {
@@ -640,7 +640,12 @@ extension AppModel {
 
   func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
     guard let kind = root.rootKind else { return }
-    openNode(kind, id: root.rootID, title: root.rootTabTitle)
+    if kind == .session {
+      guard case .node(let node) = root.variant, node.hasSessionID else { return }
+      openNode(.session, id: node.sessionID, title: node.title)
+    } else {
+      openNode(kind, id: root.rootID, title: root.rootTabTitle)
+    }
   }
   func resumeNode(path: String, id: String) {
     guard let client else { return }

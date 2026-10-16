@@ -11,6 +11,14 @@ pub trait WorkspaceQueryService: Send + Sync {
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError>;
 
+    async fn session_node_detail(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        tree_id: &str,
+        node_execution_id: &str,
+        failures: &dyn crate::domain::failure::FailureRecordRepository,
+    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError>;
+
     async fn node_artifact(
         &self,
         node_execution_id: &str,

@@ -117,6 +117,69 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         Ok(None)
     }
 
+    async fn session_node_detail(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        tree_id: &str,
+        node_execution_id: &str,
+        failures: &dyn crate::domain::failure::FailureRecordRepository,
+    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
+        let Some(execution) = self
+            .repository
+            .folded_tree(tree_id)
+            .await
+            .map_err(query_error)?
+        else {
+            return Ok(None);
+        };
+        let (folded, record) = &*execution;
+        if folded.root.worktree_path != workspace_identity.as_str() {
+            return Ok(None);
+        }
+        let mut nodes = self
+            .repository
+            .tree_nodes(workspace_identity.as_str(), folded, record)
+            .map_err(query_error)?;
+        let observations = nodes
+            .iter()
+            .flat_map(|node| {
+                [
+                    Some(node.id.clone()),
+                    node.node_execution_id.clone(),
+                    node.execution_id.clone(),
+                ]
+            })
+            .flatten()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .flat_map(|target| {
+                failures
+                    .attention_messages(&target)
+                    .into_iter()
+                    .map(move |message| (target.clone(), message))
+            })
+            .collect::<Vec<_>>();
+        if !observations.is_empty() {
+            crate::domain::workspace_tree::observe_background_failures(
+                &mut nodes,
+                observations
+                    .iter()
+                    .map(|(target, message)| (target.as_str(), message.as_str())),
+            );
+        }
+        Ok(nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id))
+            .map(|node| {
+                node_detail_with_workflow(
+                    node.clone(),
+                    nodes.iter().find(|owner| {
+                        owner.kind == WorkspaceNodeKind::Workflow && owner.id == tree_id
+                    }),
+                )
+            }))
+    }
+
     async fn node_artifact(
         &self,
         node_execution_id: &str,

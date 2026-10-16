@@ -10,6 +10,7 @@ pub enum SubscriptionTarget {
     Selection(String, String),
     NodeDetail(String, String),
     AgentSession(String),
+    SessionTab(String),
     SessionHistory(String, usize),
     Providers,
     Branches(String, Option<String>),
@@ -200,6 +201,7 @@ impl SubscriptionTarget {
             C::Worktree(path) => match self {
                 Self::Workspaces
                 | Self::AgentSession(_)
+                | Self::SessionTab(_)
                 | Self::Workflows
                 | Self::WorkflowExecution(_)
                 | Self::WorkflowOutput(..)
@@ -211,7 +213,7 @@ impl SubscriptionTarget {
                 | Self::SessionHistory(p, _) => p == path,
                 _ => false,
             },
-            C::WorkspaceList => matches!(self, Self::Workspaces),
+            C::WorkspaceList => matches!(self, Self::Workspaces | Self::SessionTab(_)),
             C::WorkspaceState(name) => matches!(self, Self::WorkspaceState(n, _) if n == name),
             C::ProviderHistory => matches!(self, Self::SessionHistory(_, _)),
             C::Providers => matches!(self, Self::Providers | Self::ProviderAvailability),

@@ -711,6 +711,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
         PaneLayout::pane(
             "left".into(),
             vec![PaneTab {
+                agent_session_id: None,
                 node_id: None,
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
@@ -725,6 +726,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
             "right".into(),
             vec![
                 PaneTab {
+                    agent_session_id: None,
                     node_id: None,
                     id: "workflow".into(),
                     kind: PaneTabKind::Command,
@@ -733,6 +735,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                     file_base: None,
                 },
                 PaneTab {
+                    agent_session_id: None,
                     node_id: None,
                     id: "file".into(),
                     kind: PaneTabKind::File,
@@ -741,7 +744,8 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                     file_base: None,
                 },
                 PaneTab {
-                    node_id: Some("session-node".into()),
+                    agent_session_id: Some("agent-session".into()),
+                    node_id: None,
                     id: "session".into(),
                     kind: PaneTabKind::Session,
                     file_path: None,
@@ -749,6 +753,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                     file_base: None,
                 },
                 PaneTab {
+                    agent_session_id: None,
                     node_id: Some("command-node".into()),
                     id: "command".into(),
                     kind: PaneTabKind::Command,

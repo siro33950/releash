@@ -11,6 +11,7 @@ pub(crate) mod services;
 pub(crate) mod value_objects;
 pub(crate) mod visible;
 
+pub(crate) use entities::observe_background_failures;
 pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, RuntimeSnapshotNodeProjection};
 pub use repository::WorkspaceTreeRepository;

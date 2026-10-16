@@ -1055,6 +1055,115 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
 }
 
 #[tokio::test]
+pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解消を同じ購読へ配信する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, FailureRecordingUsecase, TechnicalFailureNature,
+        WorkFailure,
+    };
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::{
+        AgentSessionTreeLocation, AgentSessionUsecase, LocalAgentSessionQueryService,
+        LocalAgentSessionRepository,
+    };
+    use releashd::test_support::integration::workflow::AgentSessionActivity;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+
+    // Given
+    let fixture = Fixture::new();
+    let archive = archive_fixture();
+    let sessions = AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(
+        archive.store.clone(),
+    )));
+    sessions
+        .create(
+            "session-tab",
+            WorkspaceIdentity::new(&fixture.path),
+            &fixture.path,
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root("session-tab").unwrap(),
+            "create-session-tab",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_activity(
+            "session-tab",
+            AgentSessionActivity::AwaitingInstruction,
+            "idle-session-tab",
+        )
+        .await
+        .unwrap();
+    let item = LocalAgentSessionQueryService::new(archive.store.clone())
+        .get("session-tab")
+        .await
+        .unwrap()
+        .unwrap();
+    *fixture.sessions.item.lock() = Some(item.clone());
+    let failures = Arc::new(FailureRecordStore::default());
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            failures.clone(),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions =
+        fixture
+            .subscriptions
+            .with_reads(Arc::new(reads.clone()), None, vec![], String::new());
+    let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
+    let target = SubscriptionTarget::SessionTab(item.id);
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    start_read(&subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    let initial = reads.read(&target).await.unwrap();
+    assert!(
+        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.classification == "idle")
+    );
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
+    );
+    stream.next().await;
+
+    // When / Then
+    let key = FailureKey::new(
+        "workflow_delegate_injection",
+        &item.tree_location.node_execution_id,
+    );
+    for expected_classification in ["attention", "idle"] {
+        if expected_classification == "attention" {
+            recording.observed(
+                &key,
+                WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Other),
+                    message: "delegate injection failed".into(),
+                },
+            );
+        } else {
+            recording.resolved(&key);
+        }
+        let expected = reads.read(&target).await.unwrap();
+        assert!(
+            matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.classification == expected_classification)
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("background attention change must reach the session tab");
+        assert!(
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
+        );
+    }
+}
+
+#[tokio::test]
 pub async fn test_agent_session購読_状態変更通知から再読取して同じ購読へ配信する() {
     // Given
     let fixture = Fixture::new();
@@ -1276,6 +1385,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     let panes = PaneLayout::pane(
         "pane".into(),
         vec![PaneTab {
+            agent_session_id: None,
             node_id: None,
             id: "workflow".into(),
             kind: PaneTabKind::Command,
@@ -1330,4 +1440,76 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     // Then
     react.panes = state.panes;
     assert_eq!(actual, StateValue::WorkspaceState(Some(react.into())));
+}
+
+#[tokio::test]
+pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を配り不在も扱う() {
+    // Given
+    let fixture = Fixture::new();
+    let item = AgentSessionItemDto {
+        id: "session".into(),
+        workspace_identity: fixture.path.clone(),
+        worktree_path: fixture.path.clone(),
+        workspace_worktree_path: fixture.path.clone(),
+        provider: AgentSessionProviderDto::Codex,
+        tree_location: AgentSessionTreeLocationDto {
+            tree_id: "tree".into(),
+            node_execution_id: "node".into(),
+        },
+        lifecycle: AgentSessionLifecycleDto::Open,
+        provider_session_id: None,
+        transcript_ref: None,
+        operations: AgentSessionOperationsDto {
+            can_archive: false,
+            can_restore: false,
+            can_delete: false,
+        },
+        last_exit_abnormal: false,
+        terminal_presence: Some("live".into()),
+    };
+    *fixture.sessions.item.lock() = Some(item.clone());
+    // When / Then
+    let value = fixture
+        .reads
+        .read(&T::SessionTab("session".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        value,
+        StateValue::SessionTab {
+            session: Some((item.clone(), AgentSessionAvailability::Open)),
+            node: None
+        }
+    );
+    let mut archived = item;
+    archived.lifecycle = AgentSessionLifecycleDto::Archived;
+    *fixture.sessions.item.lock() = Some(archived.clone());
+    let value = fixture
+        .reads
+        .read(&T::SessionTab("session".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        value,
+        StateValue::SessionTab {
+            session: Some((archived, AgentSessionAvailability::Archived)),
+            node: None
+        }
+    );
+    *fixture.sessions.item.lock() = None;
+    assert_eq!(
+        fixture
+            .reads
+            .read(&T::SessionTab("session".into()))
+            .await
+            .unwrap(),
+        StateValue::SessionTab {
+            session: None,
+            node: None
+        }
+    );
+    assert_eq!(
+        *fixture.sessions.calls.lock(),
+        vec!["session", "session", "session"]
+    );
 }

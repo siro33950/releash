@@ -356,6 +356,7 @@ pub mod platform {
     pub use crate::infrastructure::platform::path_aliases::PathAlias;
     pub use crate::infrastructure::platform::path_aliases::PathAliases;
     pub use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
+    pub use crate::usecase::failure::FailureRecordingUsecase;
     pub use crate::usecase::git_host::git_host_usecase::IssueListing;
 
     pub use crate::infrastructure::terminal::shell_integration::create_shell_integration_files;

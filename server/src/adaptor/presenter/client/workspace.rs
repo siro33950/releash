@@ -250,6 +250,7 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(wire::WorkspaceNode {
+        session_id: node.session_id.clone(),
         execution_id: node.execution_id.clone(),
         node_execution_id: node.node_execution_id.clone(),
         node_name: node.node_name.clone(),

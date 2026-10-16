@@ -668,7 +668,7 @@ extension AppModelTests {
 }
 
 extension AppModelTests {
-  @MainActor func testRestoredNodeTabTitlesUseAlreadyReceivedRoots() async throws {
+  @MainActor func testRestoredCommandTitlesUseRootsAndSessionTitlesUseOwnSnapshot() async throws {
     let http = TestHTTPClient()
     var roots: [Releash_Client_V1_WorkspaceTreeItem] = []
     for (id, title, kind) in [
@@ -679,6 +679,7 @@ extension AppModelTests {
       root.node.id = id
       root.node.title = title
       root.node.contentKind.value = kind
+      if kind == .session { root.node.sessionID = "agent-session" }
       roots.append(root)
     }
     var worktree = Releash_Client_V1_WorkspaceWorktreeList()
@@ -697,6 +698,21 @@ extension AppModelTests {
     try await eventually { model.layoutLoaded }
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
+    let tab = try XCTUnwrap(
+      model.panes.controller.allTabIds.first {
+        model.panes.tab($0)?.agentSessionID == "agent-session"
+      })
+    var snapshot = Releash_Client_V1_SessionTabSnapshot()
+    snapshot.node.title = "Session name"
+    model.panes.updateSession(tab, snapshot: snapshot)
+    repository.worktrees.items[0].snapshot.nodes.items[0].node.title = "List title"
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaces.repositories.items = [repository]
+    try http.publish(payload, target: "workspaces")
+    try await eventually {
+      model.repositories.first?.worktrees.items.first?.snapshot.nodes.items.first?.node.title
+        == "List title"
+    }
     XCTAssertEqual(
       model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.map(
         \.title), ["Session name", "Command name"])

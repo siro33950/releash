@@ -2,6 +2,7 @@ use super::*;
 
 fn tab(id: &str, kind: PaneTabKind) -> PaneTab {
     PaneTab {
+        agent_session_id: None,
         node_id: None,
         id: id.into(),
         kind,
@@ -169,4 +170,64 @@ fn test_node参照_sessionとcommandで保持し空文字と他の種類を拒�
     let mut value = tab("terminal", PaneTabKind::Terminal);
     value.node_id = Some("node".into());
     assert!(PaneLayout::pane("pane".into(), vec![value], None).is_err());
+}
+
+#[test]
+fn test_sessionタブ_専用idだけを許可し旧node参照を変換する() {
+    // Given
+    let mut session = tab("session", PaneTabKind::Session);
+    session.agent_session_id = Some("agent-session".into());
+    assert!(PaneLayout::pane("pane".into(), vec![session.clone()], None).is_ok());
+    for invalid in ["", " ", "bad\0id"] {
+        session.agent_session_id = Some(invalid.into());
+        assert!(PaneLayout::pane("pane".into(), vec![session.clone()], None).is_err());
+    }
+    session.agent_session_id = Some("agent-session".into());
+    session.node_id = Some("node".into());
+    assert!(PaneLayout::pane("pane".into(), vec![session.clone()], None).is_err());
+    session.node_id = None;
+    session.kind = PaneTabKind::Command;
+    assert!(PaneLayout::pane("pane".into(), vec![session], None).is_err());
+    let mut legacy = tab("legacy", PaneTabKind::Session);
+    legacy.node_id = Some("tree".into());
+    let mut command = tab("command", PaneTabKind::Command);
+    command.node_id = Some("tree".into());
+    let mut layout = PaneLayout::split(
+        "split".into(),
+        SplitAxis::Horizontal,
+        0.5,
+        PaneLayout::pane("first".into(), vec![legacy], Some("legacy".into())).unwrap(),
+        PaneLayout::pane("second".into(), vec![command], None).unwrap(),
+    )
+    .unwrap();
+    // When
+    assert_eq!(layout.legacy_session_nodes(), vec!["tree"]);
+    layout.resolve_legacy_sessions(&std::collections::HashMap::new());
+    assert_eq!(layout.legacy_session_nodes(), vec!["tree"]);
+    layout.resolve_legacy_sessions(&std::collections::HashMap::from([(
+        "tree".into(),
+        "agent-session".into(),
+    )]));
+    // Then
+    assert!(layout.legacy_session_nodes().is_empty());
+    if let PaneLayoutView::Split { first, second, .. } = layout.view() {
+        if let PaneLayoutView::Pane {
+            tabs, active_tab, ..
+        } = first.view()
+        {
+            assert_eq!(tabs[0].agent_session_id.as_deref(), Some("agent-session"));
+            assert_eq!(tabs[0].node_id, None);
+            assert_eq!(active_tab, Some("legacy"));
+        } else {
+            panic!("pane");
+        }
+        if let PaneLayoutView::Pane { tabs, .. } = second.view() {
+            assert_eq!(tabs[0].node_id.as_deref(), Some("tree"));
+            assert_eq!(tabs[0].agent_session_id, None);
+        } else {
+            panic!("pane");
+        }
+    } else {
+        panic!("split");
+    }
 }

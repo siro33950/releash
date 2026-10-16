@@ -1213,3 +1213,20 @@ async fn test_daemon状態payload_get_server_infoと同じ投影を使う() {
         ))
     );
 }
+
+#[test]
+fn test_sessionタブ購読_不在snapshotを専用payloadで配る() {
+    // Given / When
+    let snapshot = payload(&StateValue::SessionTab {
+        session: None,
+        node: None,
+    })
+    .unwrap();
+    // Then
+    assert_eq!(
+        snapshot.value,
+        Some(wire::state_payload::Value::SessionTab(
+            wire::SessionTabSnapshot::default()
+        ))
+    );
+}

@@ -25,6 +25,7 @@ pub struct PaneTab {
     pub id: String,
     pub kind: PaneTabKind,
     pub node_id: Option<String>,
+    pub agent_session_id: Option<String>,
     pub file_path: Option<String>,
     pub file_mode: Option<FileMode>,
     pub file_base: Option<ReviewBase>,
@@ -110,6 +111,43 @@ impl PaneLayout {
             },
         }
     }
+    pub fn legacy_session_nodes(&self) -> Vec<String> {
+        match &self.0 {
+            PaneLayoutNode::Pane { tabs, .. } => tabs
+                .iter()
+                .filter(|tab| tab.kind == PaneTabKind::Session && tab.agent_session_id.is_none())
+                .filter_map(|tab| tab.node_id.clone())
+                .collect(),
+            PaneLayoutNode::Split { first, second, .. } => {
+                let mut ids = first.legacy_session_nodes();
+                ids.extend(second.legacy_session_nodes());
+                ids
+            }
+        }
+    }
+
+    pub fn resolve_legacy_sessions(
+        &mut self,
+        sessions: &std::collections::HashMap<String, String>,
+    ) {
+        match &mut self.0 {
+            PaneLayoutNode::Pane { tabs, .. } => {
+                for tab in tabs.iter_mut().filter(|tab| {
+                    tab.kind == PaneTabKind::Session && tab.agent_session_id.is_none()
+                }) {
+                    if let Some(id) = tab.node_id.as_ref().and_then(|id| sessions.get(id)) {
+                        tab.agent_session_id = Some(id.clone());
+                        tab.node_id = None;
+                    }
+                }
+            }
+            PaneLayoutNode::Split { first, second, .. } => {
+                first.resolve_legacy_sessions(sessions);
+                second.resolve_legacy_sessions(sessions);
+            }
+        }
+    }
+
     fn checked(
         node: PaneLayoutNode,
     ) -> Result<Self, crate::domain::workspace_state::WorkspaceStateError> {
@@ -137,6 +175,12 @@ impl PaneLayout {
                                 .is_none_or(|id| !id.trim().is_empty() && !id.contains('\0'))
                             && (matches!(tab.kind, PaneTabKind::Session | PaneTabKind::Command)
                                 || tab.node_id.is_none())
+                            && tab
+                                .agent_session_id
+                                .as_deref()
+                                .is_none_or(|id| !id.trim().is_empty() && !id.contains('\0'))
+                            && (tab.agent_session_id.is_none()
+                                || (tab.kind == PaneTabKind::Session && tab.node_id.is_none()))
                             && tab
                                 .file_path
                                 .as_deref()

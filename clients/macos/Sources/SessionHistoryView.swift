@@ -74,7 +74,7 @@ struct SessionHistoryView: View {
       defer { busy = false }
       do {
         if let selection = try await action() {
-          model.openNode(.session, id: selection.nodeID, title: "Session")
+          model.openNode(.session, id: selection.agentSessionID, title: "Session")
           dismiss()
         }
       } catch { failure = model.failureMessage(error) }

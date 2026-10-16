@@ -248,6 +248,21 @@ impl WorkspaceStateReads {
                     .map(StateValue::ReviewSessionThreadHistory)
                     .map_err(error);
             }
+            T::SessionTab(id) => {
+                let session = self.sessions.get(id).await.map_err(error)?;
+                let node = match &session {
+                    Some((item, _)) => self
+                        .workflow
+                        .get_session_node_detail(item)
+                        .await
+                        .map_err(error)?,
+                    None => None,
+                };
+                return Ok(StateValue::SessionTab {
+                    session,
+                    node: node.map(Box::new),
+                });
+            }
             T::AgentSession(id) => {
                 return self
                     .sessions
@@ -280,15 +295,35 @@ impl WorkspaceStateReads {
                 ))
             }
             T::WorkspaceState(name, path) => {
-                return Ok(StateValue::WorkspaceState(
-                    crate::usecase::workspace_state::usecase::load_workspace_state(
-                        self.workspace_state.as_ref(),
-                        name,
-                        path,
-                    )
-                    .await
-                    .map_err(error)?,
-                ));
+                let mut state = crate::usecase::workspace_state::usecase::load_workspace_state(
+                    self.workspace_state.as_ref(),
+                    name,
+                    path,
+                )
+                .await
+                .map_err(error)?;
+                if let Some(layout) = state.as_mut().and_then(|state| state.panes.as_mut()) {
+                    let mut sessions = std::collections::HashMap::new();
+                    for id in layout.legacy_session_nodes() {
+                        if let Some(detail) = self
+                            .workflow
+                            .get_workspace_node_detail(path, &id)
+                            .await
+                            .map_err(error)?
+                        {
+                            if let crate::usecase::workflow::WorkspaceNodeContentDto::Session(
+                                content,
+                            ) = detail.content
+                            {
+                                if let Some(session) = content.session_id {
+                                    sessions.insert(id, session);
+                                }
+                            }
+                        }
+                    }
+                    layout.resolve_legacy_sessions(&sessions);
+                }
+                return Ok(StateValue::WorkspaceState(state));
             }
             T::RepositoryGroupState(path) => {
                 return Ok(StateValue::RepositoryGroupState(
@@ -474,6 +509,7 @@ impl WorkspaceStateReads {
             | T::Workspaces
             | T::Workflows
             | T::AgentSession(_)
+            | T::SessionTab(_)
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)

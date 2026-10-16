@@ -23,6 +23,10 @@ pub enum StateValue {
     Selection(crate::domain::workspace_tree::WorkspaceTree, bool),
     NodeDetail(Option<WorkspaceNodeDetailDto>),
     AgentSession(Option<(AgentSessionItemDto, AgentSessionAvailability)>),
+    SessionTab {
+        session: Option<(AgentSessionItemDto, AgentSessionAvailability)>,
+        node: Option<Box<crate::usecase::workflow::WorkspaceNodeDetailDto>>,
+    },
     SessionHistory(AgentSessionHistoryPageDto),
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),

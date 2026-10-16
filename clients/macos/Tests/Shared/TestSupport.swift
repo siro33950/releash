@@ -24,6 +24,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
     var sessions: [String: Releash_Client_V1_AgentSessionItemDto] = [:]
+    var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
     var history = Releash_Client_V1_AgentSessionHistoryPageDto()
     var failedMethod: String?
     var failureDetail: ConnectError.Detail?
@@ -93,6 +94,8 @@ final class TestHTTPClient: HTTPClientInterface {
             if let value = state.artifacts[subscription.args[0]] {
               payload.workflowOutput.value = value
             }
+          } else if subscription.target == "session-tab" {
+            payload.sessionTab = state.sessionTabs[subscription.args[0]] ?? .init()
           } else if subscription.target == "agent-session" {
             payload.agentSession = .init()
             if let value = state.sessions[subscription.args[0]] {
