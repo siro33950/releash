@@ -982,3 +982,150 @@ mod reference_path_test {
         }
     }
 }
+
+#[test]
+fn test_node参照解決_委任先の成果と隔離worktreeを正しいnodeから解決する() {
+    // Given
+    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+        r#"
+name: delegated-reference
+description: test
+schemas:
+  result:
+    type: object
+    properties: {passed: {type: boolean}}
+    required: [passed]
+nodes:
+  main:
+    session: {provider: codex}
+    worktree: isolated
+    completion:
+      delegate: {child: group, when: child.worker.passed, max_iterations: 1}
+  group: {sequence: {children: [worker]}}
+  worker:
+    session: {provider: codex}
+    artifact: result
+    completion:
+      delegate: {child: isolated, when: passed, max_iterations: 1}
+  isolated: {session: {provider: codex}, worktree: isolated}
+"#,
+    )
+    .unwrap();
+    for (name, path, schema) in [
+        ("main", "child.worker.passed", SchemaDef::Boolean),
+        ("main", "worktree.path", SchemaDef::String { r#enum: None }),
+        (
+            "main",
+            "child.worker.child.worktree.path",
+            SchemaDef::String { r#enum: None },
+        ),
+        (
+            "worker",
+            "child.worktree.branch",
+            SchemaDef::String { r#enum: None },
+        ),
+    ] {
+        // When
+        let result = resolve_node_field_path(
+            &workflow,
+            workflow.node_by_name(name).unwrap(),
+            &FieldPath::from_dotted(path).unwrap(),
+        );
+        // Then
+        assert_eq!(
+            result,
+            Ok(ResolvedNodeField::Leaf {
+                schema,
+                required: true
+            }),
+            "{name}.{path}"
+        );
+    }
+    // When / Then
+    assert_eq!(
+        resolve_node_field_path(
+            &workflow,
+            workflow.node_by_name("worker").unwrap(),
+            &FieldPath::from_dotted("worktree.path").unwrap()
+        ),
+        Err(missing_node_field(0, "worktree"))
+    );
+    assert_eq!(
+        resolve_node_field_path(
+            &workflow,
+            workflow.node_by_name("main").unwrap(),
+            &FieldPath::from_dotted("child.worktree.path").unwrap()
+        ),
+        Err(missing_node_field(1, "worktree"))
+    );
+}
+
+#[test]
+fn test_node参照解決_委任先の欠落と成果なしと循環を絶対位置で拒否する() {
+    // Given
+    let mut workflow = composite_workflow();
+    workflow.nodes.push(NodeDefinition {
+        name: "delegator".into(),
+        artifact: Some("result".into()),
+        completion: crate::domain::workflow::NodeCompletion {
+            delegate: Some(crate::domain::workflow::SessionDelegate {
+                child: "writer".into(),
+                when: crate::domain::workflow::Predicate::Ref("passed".into()),
+                max_iterations: 1,
+                inputs: vec![],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    workflow.nodes.push(NodeDefinition {
+        name: "missing_contract".into(),
+        artifact: Some("missing".into()),
+        ..Default::default()
+    });
+    for (child, path, position) in [
+        ("missing", "child.passed", 0),
+        ("silent", "child.passed", 0),
+        ("missing_contract", "child.passed", 0),
+        ("delegator", "child.passed", 0),
+        ("main", "child.delegator.child", 1),
+    ] {
+        workflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.name == "delegator")
+            .unwrap()
+            .completion
+            .delegate
+            .as_mut()
+            .unwrap()
+            .child = child.into();
+        if child == "main" {
+            let NodeKind::Sequence(sequence) = &mut workflow
+                .nodes
+                .iter_mut()
+                .find(|node| node.name == "main")
+                .unwrap()
+                .kind
+            else {
+                panic!("sequence")
+            };
+            sequence.children = vec![ChildEntry::reference("delegator")];
+        }
+        // When
+        let result = resolve_node_field_path(
+            &workflow,
+            workflow.node_by_name("delegator").unwrap(),
+            &FieldPath::from_dotted(path).unwrap(),
+        );
+        // Then
+        assert_eq!(
+            result,
+            Err(missing_node_field(
+                position,
+                if position == 0 { "child" } else { "delegator" }
+            )),
+            "{child}.{path}"
+        );
+    }
+}

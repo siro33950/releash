@@ -1023,7 +1023,7 @@ pub mod workflow {
     pub use crate::domain::workflow::services::secret_masker::mask_sensitive_text;
     pub use crate::domain::workflow::services::test_helpers::{
         composite_dynamic_fanout_facts, composite_routing_facts, delegated_routing_facts,
-        isolated_session_timestamp_facts, retried_delegate_parent_facts,
+        isolated_delegate_facts, isolated_session_timestamp_facts, retried_delegate_parent_facts,
         scoped_dynamic_fanout_facts, session_timestamp_facts, sibling_sequence_timestamp_facts,
         stop_first_delegate_facts,
     };

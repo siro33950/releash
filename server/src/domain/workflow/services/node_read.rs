@@ -557,16 +557,11 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                     .sequences
                     .entry(parent.to_string())
                     .or_default()
-                    .record_child_result(crate::domain::workflow::value_objects::RuntimeArtifact {
-                        node_name: record.meta.node_name.clone(),
-                        attempt: record.meta.attempt,
-                        session_id: None,
-                        result: None,
-                        artifact: self.state.artifacts.get(id).cloned(),
-                        contract: None,
-                        token_usage: None,
-                        completed_at: record.timestamp_ms as f64 / 1000.0,
-                    });
+                    .record_child_result(read_child_result(
+                        &record.meta,
+                        self.state.artifacts.get(id).cloned(),
+                        record.timestamp_ms,
+                    ));
             }
         }
         Ok(())
@@ -900,6 +895,15 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
             {
                 continue;
             }
+            if !start.meta.kind.is_composite_kind() {
+                if let NodeFact::Started(started) = &start.fact {
+                    if let Some(worktree) = &started.worktree {
+                        let artifact = worktree.with_artifact(self.state.artifacts.remove(id));
+                        self.state.artifacts.insert(id.to_string(), artifact);
+                        self.state.nodes.get_mut(id).unwrap().has_artifact = true;
+                    }
+                }
+            }
             self.state
                 .nodes
                 .get_mut(id)
@@ -925,18 +929,11 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                 transition::CompletionParent::Scope(parent) => {
                     let sequence = self.state.sequences.entry(parent.to_string()).or_default();
                     if parent_definition.sequence().is_some() {
-                        sequence.record_child_result(
-                            crate::domain::workflow::value_objects::RuntimeArtifact {
-                                node_name: start.meta.node_name.clone(),
-                                attempt: start.meta.attempt,
-                                session_id: None,
-                                result: None,
-                                artifact: self.state.artifacts.get(id).cloned(),
-                                contract: None,
-                                token_usage: None,
-                                completed_at: record.timestamp_ms as f64 / 1000.0,
-                            },
-                        );
+                        sequence.record_child_result(read_child_result(
+                            &start.meta,
+                            self.state.artifacts.get(id).cloned(),
+                            record.timestamp_ms,
+                        ));
                     }
                     let children = read_scope_children(
                         &self.state.children_by_parent,
@@ -1106,4 +1103,21 @@ fn expand_fields(value: &serde_json::Value) -> serde_json::Value {
         }
     }
     expanded
+}
+
+fn read_child_result(
+    meta: &crate::domain::workflow::NodeFactMeta,
+    artifact: Option<serde_json::Value>,
+    timestamp_ms: i64,
+) -> crate::domain::workflow::value_objects::RuntimeArtifact {
+    crate::domain::workflow::value_objects::RuntimeArtifact {
+        node_name: meta.node_name.clone(),
+        attempt: meta.attempt,
+        session_id: None,
+        result: None,
+        artifact,
+        contract: None,
+        token_usage: None,
+        completed_at: timestamp_ms as f64 / 1000.0,
+    }
 }

@@ -2060,11 +2060,13 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
 pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的並列のスコープを保つ() {
     use releashd::test_support::integration::workflow::{
         append_single_fact, composite_dynamic_fanout_facts, composite_routing_facts,
-        delegated_routing_facts, retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
-        stop_first_delegate_facts,
+        delegated_routing_facts, isolated_delegate_facts, retried_delegate_parent_facts,
+        scoped_dynamic_fanout_facts, stop_first_delegate_facts,
     };
     // Given
     for records in [
+        isolated_delegate_facts(false),
+        isolated_delegate_facts(true),
         retried_delegate_parent_facts(),
         scoped_dynamic_fanout_facts(),
         composite_dynamic_fanout_facts(),
@@ -2076,6 +2078,7 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
         composite_routing_facts(true, false),
         stop_first_delegate_facts(),
     ] {
+        let isolated = records.iter().any(|record| matches!(&record.fact, NodeFact::Started(started) if started.worktree.is_some()));
         let retry = records.iter().any(|record| record.meta.attempt == 2);
         let target = records
             .iter()
@@ -2139,14 +2142,18 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
                 read.detail.classification,
                 list.status_classification.as_public_str()
             );
-            assert_eq!(
-                read.detail.classification,
-                if index + 1 == boundary {
-                    "active"
-                } else {
-                    "attention"
-                }
-            );
+            if isolated {
+                assert_eq!(read.detail.status, "running");
+            } else {
+                assert_eq!(
+                    read.detail.classification,
+                    if index + 1 == boundary {
+                        "active"
+                    } else {
+                        "attention"
+                    }
+                );
+            }
         }
     }
 }
@@ -2808,6 +2815,7 @@ pub async fn test_session時刻の並行照会_スナップショットより前
     let snapshots = Arc::new(AtomicUsize::new(0));
     let observed = snapshots.clone();
     query.set_session_read_observer(Some(Arc::new(move |phase| match phase {
+        SessionReadPhase::WorkspaceReferenceSearch => {}
         SessionReadPhase::WaitingForClock => {
             waiting_tx.send(()).unwrap();
         }
@@ -2920,4 +2928,72 @@ pub async fn test_旧参照取得失敗_相関idが毎回変わっても失敗�
         .await;
     // Then
     assert!(recovered.failures.is_empty());
+}
+
+#[tokio::test]
+pub async fn test_旧会話参照照会_未発見の単独参照で全workspace検索せず後からの追加を解決する() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, SessionExecutionTreeRootFacts,
+    };
+    use releashd::test_support::integration::workspace::{standalone_reference, SessionReadPhase};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    let searches = Arc::new(AtomicUsize::new(0));
+    let observed = searches.clone();
+    query.set_session_read_observer(Some(Arc::new(move |phase| {
+        if matches!(phase, SessionReadPhase::WorkspaceReferenceSearch) {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }
+    })));
+    let workspace = WorkspaceIdentity::new("/repo");
+    let alias = standalone_reference("later", "session");
+    // When / Then
+    for _ in 0..2 {
+        let result = query
+            .resolve_session_nodes(&workspace, std::slice::from_ref(&alias))
+            .await;
+        assert!(result.sessions.is_empty());
+        assert!(result.failures.is_empty());
+        assert_eq!(searches.load(Ordering::SeqCst), 0);
+    }
+    // Given
+    let root =
+        SessionExecutionTreeRootFacts::new("later", "/repo", "/repo", ProviderKind::Claude, None)
+            .unwrap();
+    append_single_fact(&store, &root.meta, &root.started, 1000)
+        .await
+        .unwrap();
+    append_single_fact(&store, &root.meta, &root.attached, 2000)
+        .await
+        .unwrap();
+    // When
+    let result = query
+        .resolve_session_nodes(&workspace, &[alias.clone(), "unknown-legacy".into()])
+        .await;
+    // Then
+    assert_eq!(result.sessions[&alias], "later");
+    assert!(result.failures.is_empty());
+    assert_eq!(searches.load(Ordering::SeqCst), 1);
+    // When
+    rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3"))
+        .unwrap()
+        .execute("DELETE FROM node_events WHERE tree_id = 'later'", [])
+        .unwrap();
+    for _ in 0..2 {
+        let result = query
+            .resolve_session_nodes(&workspace, std::slice::from_ref(&alias))
+            .await;
+        // Then
+        assert!(result.sessions.is_empty());
+        assert!(result.failures.is_empty());
+        assert_eq!(searches.load(Ordering::SeqCst), 1);
+    }
 }

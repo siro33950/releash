@@ -227,7 +227,6 @@ final class AppModelTests: XCTestCase {
     // Then
     let saved = try Releash_Client_V1_SaveWorkspaceStateRequest(
       serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
-    XCTAssertTrue(saved.state.readErrors.isEmpty)
     XCTAssertTrue(saved.state.readFailures.isEmpty)
     await model.stop()
   }

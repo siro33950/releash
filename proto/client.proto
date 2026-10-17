@@ -2008,7 +2008,6 @@ message WorkspaceStateReadFailure {
 
 message WorkspaceStateDto {
   repeated WorkspaceStateReadFailure read_failures = 6 [json_name = "readFailures", (json_omit_empty) = true];
-  repeated string read_errors = 5 [json_name = "readErrors", (json_omit_empty) = true];
   PaneLayout pane_layout = 4;
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
   optional WorkspaceTabsStateDto tabs = 2 [json_name = "tabs", (json_required) = true];

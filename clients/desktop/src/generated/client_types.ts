@@ -476,7 +476,6 @@ export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
 
 export type WorkspaceStateDto = {
 	readFailures?: Array<WorkspaceStateReadFailure>;
-	readErrors?: Array<string>;
 	paneLayout?: PaneLayout;
 	version: 1;
 	tabs: WorkspaceTabsStateDto;
@@ -1750,7 +1749,6 @@ export type InputSaveWorkspaceStateRequest = {
 
 export type InputWorkspaceStateDto = {
 	readFailures?: Array<InputWorkspaceStateReadFailure>;
-	readErrors?: Array<string>;
 	paneLayout?: InputPaneLayout;
 	version: 1;
 	tabs: InputWorkspaceTabsStateDto;

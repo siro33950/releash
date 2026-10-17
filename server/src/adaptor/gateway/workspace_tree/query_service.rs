@@ -18,6 +18,7 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 pub enum SessionReadPhase {
     WaitingForClock,
     SnapshotEstablished,
+    WorkspaceReferenceSearch,
 }
 
 #[cfg(feature = "test-support")]
@@ -568,6 +569,8 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         let workspace = workspace_identity.as_str().to_string();
         let ids = node_ids.to_vec();
         let index = Arc::clone(&self.references);
+        #[cfg(feature = "test-support")]
+        let observer = self.session_read_observer.lock().clone();
         let rows = self
             .repository
             .fact_backend()
@@ -616,11 +619,16 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                     if let Some(owner) = owner {
                         selected.insert(owner.clone());
                         owners.insert(id.clone(), owner);
-                    } else {
+                    } else if !crate::domain::workspace_tree::entities::is_standalone_reference(id)
+                    {
                         needs_workspace = true;
                     }
                 }
                 if needs_workspace {
+                    #[cfg(feature = "test-support")]
+                    if let Some(observer) = &observer {
+                        observer(SessionReadPhase::WorkspaceReferenceSearch);
+                    }
                     selected.extend(
                         node_events::workspace_reference_trees(&transaction, &workspace)
                             .map_err(unavailable)?,

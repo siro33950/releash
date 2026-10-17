@@ -91,7 +91,6 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
                 if let Some(state) = &mut value.value {
-                    state.read_errors = failures.iter().map(|failure| failure.failure.message.clone()).collect();
                     state.read_failures = failures.iter().map(|failure| wire::WorkspaceStateReadFailure {
                         reference_id: failure.reference_id.clone(), message: failure.failure.message.clone(),
                     }).collect();

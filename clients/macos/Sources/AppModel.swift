@@ -472,7 +472,6 @@ import SwiftProtobuf
     }
     if value.hasValue {
       workspaceState = value.value
-      workspaceState.readErrors = []
       workspaceState.readFailures = []
       if value.value.hasPaneLayout {
         do {

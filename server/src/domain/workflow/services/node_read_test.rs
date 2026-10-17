@@ -1135,6 +1135,8 @@ fn test_会話時刻の差分投影_同じ成果と変更と委任の受理を�
     // Given
     for records in [
         super::super::test_helpers::session_timestamp_facts(),
+        super::super::test_helpers::isolated_delegate_facts(false),
+        super::super::test_helpers::isolated_delegate_facts(true),
         super::super::test_helpers::stop_first_delegate_facts(),
         super::super::test_helpers::isolated_session_timestamp_facts(),
         super::super::test_helpers::sibling_sequence_timestamp_facts(),
@@ -1297,6 +1299,8 @@ fn test_時刻プレビュー_伝播が触るnodeだけを退避し成功時も�
 fn test_事実再生_全件と任意の分割位置の差分で完了と時刻が一致する() {
     // Given
     for records in [
+        super::super::test_helpers::isolated_delegate_facts(false),
+        super::super::test_helpers::isolated_delegate_facts(true),
         super::super::test_helpers::stop_first_delegate_facts(),
         super::super::test_helpers::delegated_routing_facts(true),
         super::super::test_helpers::sibling_sequence_timestamp_facts(),
@@ -1350,5 +1354,95 @@ fn test_定義再生の回復_終端と定義の有無により一度だけ全�
         assert_eq!(replay, expected);
         assert_eq!(state.seq, if expected { 0 } else { 3 });
         assert!(!state.request_replay(&root, terminal));
+    }
+}
+
+#[test]
+fn test_隔離委任子の完了_成果なしでもworktreeを精算しプレビュー後は復元する() {
+    // Given
+    for submitted in [false, true] {
+        let records = super::super::test_helpers::isolated_delegate_facts(submitted);
+        let NodeFact::Started(started) = &records[0].fact else {
+            panic!("root")
+        };
+        let root = started.root.as_deref().unwrap();
+        let selected = selected_artifact_records(root, &records);
+        let retries = HashMap::new();
+        let mut projection =
+            NodeReadProjection::new(root, root.definition.as_ref(), &retries, None);
+        let last = selected.last().unwrap();
+        let child = last.meta.node_execution_id.as_str();
+        projection
+            .drive(&selected[..selected.len() - 1], None, false)
+            .unwrap();
+        let before = projection.state.artifacts.get(child).cloned();
+        let rules = projection.state.nodes[child].clone();
+        assert_eq!(rules.status, NodeExecutionStatus::Running);
+        assert_eq!(rules.has_artifact, submitted);
+        let NodeFact::Started(started) = &records
+            .iter()
+            .find(|record| {
+                record.meta.node_execution_id == child
+                    && matches!(record.fact, NodeFact::Started(_))
+            })
+            .unwrap()
+            .fact
+        else {
+            panic!("child")
+        };
+        let worktree = started.worktree.as_ref().unwrap();
+        let completed = last.clone();
+        projection.apply_record(&completed).unwrap();
+        let rules = projection.state.nodes[child].clone();
+        let mut journal = CompletionJournal::new(projection.state.applied);
+        // When
+        projection
+            .propagate_completion(&completed, None, Some(&mut journal))
+            .unwrap();
+        // Then
+        assert_eq!(
+            projection.state.nodes[child].status,
+            NodeExecutionStatus::Succeeded
+        );
+        assert!(projection.state.nodes[child].has_artifact);
+        assert_eq!(
+            projection.state.artifacts[child]["worktree"]["path"],
+            worktree.path
+        );
+        if submitted {
+            assert_eq!(projection.state.artifacts[child]["passed"], true);
+        }
+        let parent = records[0].meta.node_execution_id.as_str();
+        assert_eq!(
+            projection.state.nodes[parent].status,
+            NodeExecutionStatus::Running
+        );
+        assert_eq!(
+            projection.state.artifacts[parent]["child"],
+            projection.state.artifacts[child]
+        );
+        // When
+        journal.restore(&mut projection.state);
+        // Then
+        assert_eq!(projection.state.artifacts.get(child), before.as_ref());
+        assert_eq!(projection.state.nodes[child], rules);
+        assert_eq!(
+            projection.state.artifacts[parent]["child"],
+            serde_json::Value::Null
+        );
+        // When
+        projection
+            .propagate_completion(&completed, None, None)
+            .unwrap();
+        let read = projection.finish(None).unwrap();
+        let execution =
+            super::super::fact_replay::fold_execution_tree(&records[0].meta.tree_id, &records)
+                .unwrap()
+                .unwrap();
+        // Then
+        for node in &execution.aggregate.node_executions {
+            assert_eq!(read.0[&node.id].status, node.status);
+            assert_eq!(read.0[&node.id].completed_at, node.completed_at);
+        }
     }
 }

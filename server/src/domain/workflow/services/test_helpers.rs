@@ -952,3 +952,85 @@ pub fn isolated_session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFa
     })
     .collect()
 }
+
+pub fn isolated_delegate_facts(submitted: bool) -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let mut records = retried_delegate_parent_facts();
+    records.retain(|record| {
+        record.meta.attempt == 1
+            && !matches!(record.fact, NodeFact::RetryRequested)
+            && (submitted
+                || record.meta.node_name != "judge"
+                || !matches!(record.fact, NodeFact::ArtifactProduced(_)))
+    });
+    let NodeFact::Started(started) = &mut records[0].fact else {
+        unreachable!()
+    };
+    let root = started.root.as_mut().unwrap();
+    root.repository_root = Some("/repo".into());
+    let definition = root.definition.as_mut().unwrap();
+    let main = definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "main")
+        .unwrap();
+    main.artifact = Some("result".into());
+    main.completion = NodeCompletion {
+        delegate: Some(SessionDelegate {
+            child: "judge".into(),
+            inputs: vec![],
+            when: if submitted {
+                Predicate::And(vec![
+                    Predicate::Ref("done".into()),
+                    Predicate::Ref("child.passed".into()),
+                ])
+            } else {
+                Predicate::Ref("done".into())
+            },
+            max_iterations: 1,
+        }),
+        ..Default::default()
+    };
+    definition.schemas.insert(
+        "result".into(),
+        SchemaDef::Object {
+            properties: [("done".into(), SchemaDef::Boolean)].into(),
+            required: ["done".into()].into(),
+        },
+    );
+    let judge = definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "judge")
+        .unwrap();
+    judge.worktree = Some(WorktreeMode::Isolated);
+    if submitted {
+        judge.artifact = Some("judgment".into());
+        definition.schemas.insert(
+            "judgment".into(),
+            SchemaDef::Object {
+                properties: [("passed".into(), SchemaDef::Boolean)].into(),
+                required: ["passed".into()].into(),
+            },
+        );
+    }
+    for (index, record) in records.iter_mut().enumerate() {
+        if let NodeFact::ArtifactProduced(artifact) = &mut record.fact {
+            if record.meta.node_name == "main" {
+                artifact.value = serde_json::json!({"done": false});
+            }
+        }
+        if record.meta.node_name == "judge" {
+            if let NodeFact::Started(started) = &mut record.fact {
+                started.worktree = Some(IsolatedWorktree::for_attempt(
+                    "/repo",
+                    &record.meta.node_execution_id,
+                    1,
+                ));
+            }
+        }
+        record.seq = index as i64 + 1;
+        record.timestamp_ms = record.seq * 1000;
+    }
+    records
+}

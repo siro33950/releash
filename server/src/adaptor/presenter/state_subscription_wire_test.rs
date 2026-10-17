@@ -602,7 +602,6 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             ),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
-                    read_errors: vec!["Session lookup failed".into()],
                     read_failures: vec![wire::WorkspaceStateReadFailure { reference_id: "session-node".into(), message: "Session lookup failed".into() }],
                     pane_layout: None,
                     version: Some(1),
