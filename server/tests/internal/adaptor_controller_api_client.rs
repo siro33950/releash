@@ -882,18 +882,16 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         *gateway.resizes.lock(),
         vec![(third.session_key.clone(), 30, 120)]
     );
-    let mut resynchronized = None;
-    for _ in 0..4 {
+    let resynchronized = loop {
         let event = next_event!();
         if event.subscription_id != "input-/third" {
             continue;
         }
         if let Some(Event::Snapshot(payload)) = event.event {
-            resynchronized = Some(payload);
-            break;
+            break payload;
         }
-    }
-    let Some(Value::Terminal(event)) = resynchronized.expect("snapshot after resize").value else {
+    };
+    let Some(Value::Terminal(event)) = resynchronized.value else {
         panic!("terminal payload");
     };
     assert!(matches!(event.item, Some(Item::Snapshot(_))));
