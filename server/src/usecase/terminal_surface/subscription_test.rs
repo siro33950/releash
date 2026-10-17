@@ -153,6 +153,51 @@ async fn test_terminal作り直し予約_一つのworkerで追加clientのreset�
     );
 }
 
+fn resizable_terminal(
+    gateway: Arc<crate::usecase::terminal_surface::test_helpers::FakePtyGateway>,
+) -> Arc<super::super::application::TerminalSurfaceApplication> {
+    let hub =
+        Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
+    Arc::new(super::super::application::TerminalSurfaceApplication::new(
+        Arc::new(crate::usecase::test_helpers::NoopPerformance),
+        gateway,
+        Arc::new(
+            crate::adaptor::gateway::terminal_surface::event_source::TerminalSurfaceEventSourceGateway::new(
+                hub.event_sender(),
+            ),
+        ),
+        hub,
+        crate::test_support::terminal_config(""),
+    ))
+}
+
+#[tokio::test]
+async fn test_terminalサイズ更新_resize後に購読者へsnapshotの再送を求める() {
+    use crate::usecase::terminal_surface::test_helpers::{workspace_owner, FakePtyGateway};
+    // Given
+    let owner = workspace_owner("/repo");
+    let gateway = Arc::new(FakePtyGateway::new());
+    let output = Arc::new(FakeOutput::default());
+    let (requests, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(resizable_terminal(gateway.clone())),
+        requests,
+    );
+    // When
+    usecase.prepare_resize(owner.clone(), 30, 100).unwrap()().unwrap();
+    // Then
+    assert_eq!(
+        gateway.resizes.lock().as_slice(),
+        [(owner.stable_key(), 30, 100)]
+    );
+    assert_eq!(
+        output.required.lock().as_slice(),
+        [SubscriptionTarget::Terminal(owner)]
+    );
+    assert!(receiver.try_recv().is_err());
+}
+
 async fn snapshot_shell_state(
     state: Option<crate::domain::terminal_surface::TerminalShellState>,
     exited: bool,

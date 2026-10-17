@@ -1150,3 +1150,62 @@ async fn wait_shell_state(
         panic!("shell state subscription cwd={cwd:?} busy={busy}, last={last:?}, output={output:?}: {error}")
     });
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_terminal_surfaceのresizeが購読中のattachmentへ新しい寸法のsnapshotを再送する() {
+    let queue =
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let cwd = tempfile::TempDir::new().unwrap();
+    let path = cwd.path().to_string_lossy().into_owned();
+    let owner = workspace_owner(&path);
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
+    runtime
+        .get_or_spawn(
+            24,
+            80,
+            Some(path.clone()),
+            owner.clone(),
+            Some("resize snapshot".to_string()),
+        )
+        .expect("spawn PTY");
+    let mut monitor = runtime
+        .subscribe("resize-monitor".to_string(), owner.clone())
+        .await
+        .expect("attach monitor");
+    let initial = snapshot(&[monitor.next().await.expect("initial snapshot")]);
+    assert_eq!(
+        (initial.terminal_surface.cols, initial.terminal_surface.rows),
+        (80, 24)
+    );
+
+    runtime
+        .resize(owner.clone(), 37, 111)
+        .expect("resize Terminal Surface");
+
+    let resynchronized = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let TerminalSurfaceStreamItemV1::Snapshot { surface } = monitor
+                .next()
+                .await
+                .expect("stream closed before the snapshot after resize")
+            {
+                break surface;
+            }
+        }
+    })
+    .await
+    .expect("snapshot after resize");
+    assert_eq!(
+        (
+            resynchronized.terminal_surface.cols,
+            resynchronized.terminal_surface.rows
+        ),
+        (111, 37)
+    );
+    runtime.kill(owner).expect("kill PTY");
+}

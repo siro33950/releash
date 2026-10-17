@@ -579,8 +579,13 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/second")).unwrap(),
         None,
     );
+    let third = TerminalSurface::new(
+        3,
+        TerminalSurfaceOwner::workspace(WorkspaceIdentity::new("/third")).unwrap(),
+        None,
+    );
     let mut gateway = FakePtyGateway::new();
-    gateway.additional_surfaces = vec![first.clone(), second.clone()];
+    gateway.additional_surfaces = vec![first.clone(), second.clone(), third.clone()];
     let gateway = Arc::new(gateway);
     let hub = Arc::new(TerminalSurfaceEventHub::with_flags(256, true));
     hub.initialize(
@@ -599,6 +604,16 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
             "/second",
             None,
             2,
+            0,
+        ),
+    )
+    .unwrap();
+    hub.initialize(
+        releashd::test_support::integration::subscriptions::registration(
+            &third.session_key,
+            "/third",
+            None,
+            3,
             0,
         ),
     )
@@ -627,13 +642,14 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
             Arc::new(releashd::test_support::integration::workflow::NoopArchiveRepository),
         ),
     ));
-    let mut dispatch = dispatch();
-    dispatch.register_dependencies(&dependencies);
     let subscriptions = StateSubscriptionUsecase::new(
         vec!["/repo".into()],
         releashd::test_support::integration::subscriptions::read_driver(),
     );
     let subscriptions = subscriptions.with_terminal(terminal);
+    subscriptions.wire_client_dependencies(&mut dependencies);
+    let mut dispatch = dispatch();
+    dispatch.register_dependencies(&dependencies);
     let deps = releashd::test_support::integration::transport::client_api_deps(Arc::new(dispatch))
         .with_state_subscriptions(subscriptions.deps());
     assert_eq!(*gateway.list_summaries_calls.lock(), 0);
@@ -681,7 +697,7 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
 
     // When / Then: terminal is wired after subscriptions, as in build_router.
     let mut initial_version = None;
-    for path in ["/first", "/second"] {
+    for path in ["/first", "/second", "/third"] {
         client
             .start_state_subscription(rpc::StartStateSubscriptionRequest {
                 client_id: "terminal-client".into(),
@@ -760,7 +776,7 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         .await
         .is_err());
 
-    // Then: another terminal, another RPC, and resize of the paused terminal progress.
+    // Then: another terminal and another RPC progress.
     hub.publish(TerminalSurfaceOutputEvent::Output {
         session_key: second.session_key.clone(),
         data: "still running".into(),
@@ -782,25 +798,6 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
     .await
     .expect("other RPC deadline")
     .unwrap();
-    let request = wire::command_request_from_value("resize_terminal_surface", serde_json::json!({"owner": {"kind": "workspace", "workspacePath": "/first"}, "rows": 30, "cols": 120})).unwrap();
-    let wire::command_request::Command::ResizeTerminalSurface(request) = request.command.unwrap()
-    else {
-        unreachable!()
-    };
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        client.resize_terminal_surface(
-            to_rpc::<rpc::ResizeTerminalSurfaceRequest>(&request).unwrap(),
-        ),
-    )
-    .await
-    .expect("paused terminal resize deadline")
-    .unwrap();
-    assert_eq!(
-        *gateway.resizes.lock(),
-        vec![(first.session_key.clone(), 30, 120)]
-    );
-    assert!(!paused.is_finished());
 
     // When / Then: only valid processed units release the source below the low watermark.
     let request = |units| rpc::ReportTerminalProcessedRequest {
@@ -865,6 +862,39 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
     let bookmark = bookmark.expect("resumed terminal bookmark");
     assert_eq!(bookmark.version.unwrap().sequence, 1);
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
+
+    // When / Then: resize resynchronizes the subscriber with a snapshot.
+    let request = wire::command_request_from_value("resize_terminal_surface", serde_json::json!({"owner": {"kind": "workspace", "workspacePath": "/third"}, "rows": 30, "cols": 120})).unwrap();
+    let wire::command_request::Command::ResizeTerminalSurface(request) = request.command.unwrap()
+    else {
+        unreachable!()
+    };
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client.resize_terminal_surface(
+            to_rpc::<rpc::ResizeTerminalSurfaceRequest>(&request).unwrap(),
+        ),
+    )
+    .await
+    .expect("terminal resize deadline")
+    .unwrap();
+    assert_eq!(
+        *gateway.resizes.lock(),
+        vec![(third.session_key.clone(), 30, 120)]
+    );
+    let resynchronized = loop {
+        let event = next_event!();
+        if event.subscription_id != "input-/third" {
+            continue;
+        }
+        if let Some(Event::Snapshot(payload)) = event.event {
+            break payload;
+        }
+    };
+    let Some(Value::Terminal(event)) = resynchronized.value else {
+        panic!("terminal payload");
+    };
+    assert!(matches!(event.item, Some(Item::Snapshot(_))));
     drop(stream);
     server.abort();
 }

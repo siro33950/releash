@@ -1,5 +1,7 @@
 use super::application::TerminalSurfaceApplication;
+use super::error::UsecaseError;
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::usecase::state_subscription::{
     StateReadError, StateReadFailure, StateSubscriptionDelivery, StateValue, SubscriptionError,
     SubscriptionTarget,
@@ -22,6 +24,7 @@ pub(crate) trait TerminalSubscriptionOutput: Send + Sync {
         target: &SubscriptionTarget,
         error: StateReadError,
     ) -> Result<(), SubscriptionError>;
+    fn require_snapshot(&self, target: &SubscriptionTarget) -> Result<(), SubscriptionError>;
 }
 
 type TerminalClientSubscriptions = HashMap<SubscriptionTarget, Vec<String>>;
@@ -305,6 +308,34 @@ impl TerminalSubscriptionUsecase {
         })
         .await
         .map_err(read_error)?
+    }
+
+    pub(crate) fn prepare_resize(
+        &self,
+        owner: TerminalSurfaceOwner,
+        rows: u16,
+        cols: u16,
+    ) -> Result<impl FnOnce() -> Result<(), UsecaseError> + Send + 'static, UsecaseError> {
+        let terminal = self.terminal.clone().ok_or_else(|| {
+            UsecaseError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message: "Terminal unavailable".into(),
+            })
+        })?;
+        let resize = terminal.prepare_resize(owner.clone(), rows, cols);
+        let usecase = self.clone();
+        Ok(move || {
+            resize()?;
+            usecase
+                .publisher
+                .require_snapshot(&SubscriptionTarget::Terminal(owner))
+                .map_err(|error| {
+                    UsecaseError::Technical(TechnicalFailure {
+                        nature: TechnicalFailureNature::Other,
+                        message: error.to_string(),
+                    })
+                })
+        })
     }
 
     pub(crate) fn schedule_terminal_refresh(

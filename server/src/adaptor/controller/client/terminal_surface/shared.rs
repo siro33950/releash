@@ -65,7 +65,7 @@ pub(crate) fn register_shared(
         );
     }
     {
-        let state = deps.app_state.clone();
+        let subscriptions = deps.terminal_subscriptions.clone();
         router.register_domain(
             &["resize_terminal_surface"],
             Box::new(move |command| {
@@ -74,11 +74,11 @@ pub(crate) fn register_shared(
                     else {
                         return Err(invalid_request("Mismatched command"));
                     };
-                    let state = state
+                    let subscriptions = subscriptions
                         .as_ref()
                         .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                     Ok(commands::resize_terminal_surface_shared(
-                        state,
+                        subscriptions,
                         convert(required(args.owner, "owner")?)?,
                         convert(required(args.rows, "rows")?)?,
                         convert(required(args.cols, "cols")?)?,

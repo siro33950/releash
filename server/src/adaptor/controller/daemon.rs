@@ -558,6 +558,7 @@ pub async fn compose(
         installation_usecase: Some(installation),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),
         app_state: Some(app_state),
+        terminal_subscriptions: Some(terminal_subscriptions.clone()),
         workspace_state_store: Some(workspace_state_store),
         agent_session_lifecycle_usecase: Some(agent_session_lifecycle),
         agent_session_launch_usecase: Some(agent_session_launch),

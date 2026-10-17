@@ -6,6 +6,8 @@ pub struct ClientDependencies {
     pub(crate) workspace_node_command_usecase:
         Option<std::sync::Arc<crate::usecase::workflow::WorkspaceNodeCommandUsecase>>,
     pub app_state: Option<crate::adaptor::controller::state::AppState>,
+    pub(crate) terminal_subscriptions:
+        Option<crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase>,
     pub workspace_state_store:
         Option<std::sync::Arc<dyn crate::domain::workspace_state::WorkspaceStateRepository>>,
     pub(crate) agent_session_lifecycle_usecase:

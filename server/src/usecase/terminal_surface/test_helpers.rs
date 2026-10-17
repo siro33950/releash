@@ -299,6 +299,7 @@ pub(crate) mod subscription {
         pub(crate) stops: Mutex<usize>,
         pub(crate) snapshots: Mutex<Vec<(u64, u64, StateValue)>>,
         pub(crate) failures: Mutex<Vec<StateReadError>>,
+        pub(crate) required: Mutex<Vec<SubscriptionTarget>>,
     }
 
     impl TerminalSubscriptionOutput for FakeOutput {
@@ -318,6 +319,10 @@ pub(crate) mod subscription {
             error: StateReadError,
         ) -> Result<(), SubscriptionError> {
             self.failures.lock().push(error);
+            Ok(())
+        }
+        fn require_snapshot(&self, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+            self.required.lock().push(target.clone());
             Ok(())
         }
     }
