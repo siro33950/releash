@@ -839,6 +839,8 @@ fn test_会話詳細の動的並列_別スコープの後発成果を予定件�
 fn test_会話詳細の合成参照とstop先着_実行側と同じ承認待ちを導出する() {
     // Given
     for records in [
+        super::super::test_helpers::delegated_routing_facts(true),
+        super::super::test_helpers::delegated_routing_facts(false),
         super::super::test_helpers::composite_dynamic_fanout_facts(),
         super::super::test_helpers::composite_routing_facts(false, true),
         super::super::test_helpers::composite_routing_facts(true, true),
@@ -1143,11 +1145,6 @@ fn test_会話時刻の差分投影_同じ成果と変更と委任の受理を�
         let root = started.root.as_deref().unwrap();
         let mut state = NodeReadState::default();
         for end in 1..=records.len() {
-            if records.get(end).is_some_and(|next| {
-                super::super::fact_replay::is_submitted_artifact_pair(&records[end - 1], next)
-            }) {
-                continue;
-            }
             let selected = selected_artifact_records(root, &records[state.seq as usize..end]);
             // When
             let applied = update_read_state(
@@ -1168,6 +1165,12 @@ fn test_会話時刻の差分投影_同じ成果と変更と委任の受理を�
                 },
             )
             .unwrap();
+            if records.get(end).is_some_and(|next| {
+                super::super::fact_replay::is_submitted_artifact_pair(&records[end - 1], next)
+            }) {
+                assert_eq!(state.seq, records[end - 1].seq);
+                continue;
+            }
             let folded = super::super::fact_replay::fold_execution_tree(
                 &records[0].meta.tree_id,
                 &records[..end],
@@ -1288,4 +1291,64 @@ fn test_時刻プレビュー_伝播が触るnodeだけを退避し成功時も�
         .unwrap();
     // Then
     assert!(journal.entries.is_empty());
+}
+
+#[test]
+fn test_事実再生_全件と任意の分割位置の差分で完了と時刻が一致する() {
+    // Given
+    for records in [
+        super::super::test_helpers::stop_first_delegate_facts(),
+        super::super::test_helpers::delegated_routing_facts(true),
+        super::super::test_helpers::sibling_sequence_timestamp_facts(),
+    ] {
+        let NodeFact::Started(started) = &records[0].fact else {
+            panic!("root")
+        };
+        let root = started.root.as_deref().unwrap();
+        let retries = super::super::history::retry_predecessors(&records);
+        let selected = selected_artifact_records(root, &records);
+        let expected = subtree_read_projection(root, &selected, None, &retries, None).unwrap();
+        for split in 1..selected.len() {
+            let mut projection =
+                NodeReadProjection::new(root, root.definition.as_ref(), &retries, None);
+            // When
+            projection.drive(&selected[..split], None, true).unwrap();
+            projection.drive(&selected[split..], None, false).unwrap();
+            let actual = projection.finish(None).unwrap();
+            // Then
+            assert_eq!(actual.0, expected.0, "split {split}");
+            assert_eq!(
+                actual.1.timestamp_ms, expected.1.timestamp_ms,
+                "split {split}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_定義再生の回復_終端と定義の有無により一度だけ全件再生を要求する() {
+    // Given
+    let records = super::super::test_helpers::sibling_sequence_timestamp_facts();
+    let NodeFact::Started(started) = &records[0].fact else {
+        panic!("root")
+    };
+    let root = started.root.as_deref().unwrap();
+    let mut terminal = records.last().unwrap().clone();
+    terminal.fact = NodeFact::ExecutionCompleted;
+    for (root, terminal, expected) in [
+        (root.clone(), None, false),
+        (root.without_definition(), Some(&terminal), false),
+        (root.clone(), Some(&terminal), true),
+    ] {
+        let mut state = NodeReadState {
+            seq: 3,
+            ..Default::default()
+        };
+        // When
+        let replay = state.request_replay(&root, terminal);
+        // Then
+        assert_eq!(replay, expected);
+        assert_eq!(state.seq, if expected { 0 } else { 3 });
+        assert!(!state.request_replay(&root, terminal));
+    }
 }

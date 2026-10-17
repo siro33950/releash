@@ -23,6 +23,9 @@ use releashd::test_support::integration::workspace::WorkspaceQueryService;
 use releashd::test_support::integration::workspace::WorkspaceTree;
 use releashd::test_support::integration::workspace::WorkspaceTreeRepository;
 use releashd::test_support::integration::workspace::WorkspaceVisibleNode;
+use releashd::test_support::integration::workspace::{
+    session_artifact_projection, SessionClock, SessionFactSource, StandaloneReferences,
+};
 use std::sync::Arc;
 
 fn service(repository: &Arc<SqliteWorkspaceTreeRepository>) -> Arc<SqliteWorkspaceQueryService> {
@@ -2057,13 +2060,16 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
 pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的並列のスコープを保つ() {
     use releashd::test_support::integration::workflow::{
         append_single_fact, composite_dynamic_fanout_facts, composite_routing_facts,
-        retried_delegate_parent_facts, scoped_dynamic_fanout_facts, stop_first_delegate_facts,
+        delegated_routing_facts, retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
+        stop_first_delegate_facts,
     };
     // Given
     for records in [
         retried_delegate_parent_facts(),
         scoped_dynamic_fanout_facts(),
         composite_dynamic_fanout_facts(),
+        delegated_routing_facts(true),
+        delegated_routing_facts(false),
         composite_routing_facts(false, true),
         composite_routing_facts(true, true),
         composite_routing_facts(false, false),
@@ -2312,6 +2318,19 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
         .await
         .unwrap()
         .unwrap();
+    let mut other =
+        releashd::test_support::integration::workflow::isolated_session_timestamp_facts();
+    if let NodeFact::Started(started) = &mut other[0].fact {
+        let root = started.root.as_mut().unwrap();
+        root.worktree_path = "/other".into();
+        root.workspace_identity = "/other".into();
+    }
+    for record in &other {
+        append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
+            .await
+            .unwrap();
+    }
+
     let connection =
         rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
     let seq = records[boundary - 1].seq;
@@ -2345,12 +2364,24 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
         .unwrap()
         .unwrap();
         connection.execute("UPDATE node_events SET detail = 'already consumed' WHERE tree_id = ?1 AND seq = ?2", rusqlite::params![tree, seq]).unwrap();
-        let detail = query
-            .session_node_detail(&workspace, tree, "node-main")
+        query
+            .session_node_detail(
+                &WorkspaceIdentity::new("/other"),
+                &other[0].meta.tree_id,
+                &other[0].meta.node_execution_id,
+            )
             .await
             .unwrap()
-            .unwrap()
-            .detail;
+            .unwrap();
+        let (first, second) = tokio::join!(
+            query.session_node_detail(&workspace, tree, "node-main"),
+            query.session_node_detail(&workspace, tree, "node-main"),
+        );
+        let detail = first.unwrap().unwrap().detail;
+        assert_eq!(
+            detail.updated_at,
+            second.unwrap().unwrap().detail.updated_at
+        );
         assert_eq!(detail.updated_at, listed.updated_at());
         assert_eq!(
             detail.updated_at,
@@ -2461,4 +2492,432 @@ pub async fn test_隔離sessionの成果再提出_受理済みworktree情報を�
             listed.status_classification.as_public_str()
         );
     }
+}
+
+fn fact_connection(
+    records: &[releashd::test_support::integration::workflow::NodeFactRecord],
+) -> rusqlite::Connection {
+    use releashd::test_support::integration::{persistence as node_events, workflow as fact_log};
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection.execute_batch("CREATE TABLE node_events (tree_id TEXT, seq INTEGER, node_execution_id TEXT, parent_id TEXT, node_name TEXT, kind TEXT, attempt INTEGER, event_type TEXT, session_id TEXT, detail TEXT, timestamp INTEGER, PRIMARY KEY(tree_id, seq));").unwrap();
+    for record in records {
+        let pending =
+            fact_log::pending_single_fact(&record.meta, &record.fact, record.timestamp_ms).unwrap();
+        node_events::append_node_event(&connection, &pending.row, pending.timestamp_ms).unwrap();
+    }
+    connection
+}
+
+#[test]
+pub fn test_成果取得境界_技術的失敗を破損へ変換せず復号不能な事実は拒否する() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::platform::LocalEventQueryError;
+    use releashd::test_support::integration::workflow::NodeFact;
+    // Given
+    let records = releashd::test_support::integration::workflow::session_timestamp_facts();
+    let connection = fact_connection(&records);
+    let NodeFact::Started(started) = &records[0].fact else {
+        panic!("root")
+    };
+    let root = started.root.as_deref().unwrap();
+    let selection = session_artifact_projection(
+        releashd::test_support::integration::workspace::artifact_fields(root),
+    );
+    let retries = Default::default();
+    let mut terminal = records.last().unwrap().clone();
+    terminal.fact = NodeFact::ExecutionCompleted;
+    let source = SessionFactSource {
+        connection: &connection,
+        tree: &records[0].meta.tree_id,
+        root,
+        selection: &selection,
+        terminal: Some(&terminal),
+        retries: &retries,
+    };
+    let seqs = records
+        .iter()
+        .filter(|record| matches!(record.fact, NodeFact::ArtifactProduced(_)))
+        .map(|record| record.seq)
+        .collect();
+    for code in [
+        rusqlite::ffi::SQLITE_BUSY,
+        rusqlite::ffi::SQLITE_LOCKED,
+        rusqlite::ffi::SQLITE_IOERR,
+    ] {
+        // When
+        let error = ReadFailure::Sqlite(code)
+            .run(&connection, |_| source.artifact_values(&seqs))
+            .unwrap_err();
+        // Then
+        if code == rusqlite::ffi::SQLITE_IOERR {
+            assert!(matches!(
+                error,
+                LocalEventQueryError::StorageAccessRequired { .. }
+            ));
+        } else {
+            assert!(matches!(error, LocalEventQueryError::QueryBusy));
+        }
+    }
+    // When
+    connection.execute("UPDATE node_events SET detail = '{\"value\":{},\"contract\":123}' WHERE event_type = 'artifact_produced'", []).unwrap();
+    let mut clock = SessionClock::default();
+    let row = releashd::test_support::integration::persistence::first_row_of_tree(
+        &connection,
+        source.tree,
+    )
+    .unwrap()
+    .unwrap();
+    let error = source.execution_updated_at(&mut clock, &row).unwrap_err();
+    // Then
+    assert!(matches!(error, LocalEventQueryError::Corrupt { .. }));
+    assert_eq!(clock.progress().0, 0);
+}
+
+#[test]
+pub fn test_投影付き読取_部分木と差分の両入口で列順と必要項目を保つ() {
+    use releashd::test_support::integration::persistence as node_events;
+    use releashd::test_support::integration::workflow::NodeFact;
+    // Given
+    let records = releashd::test_support::integration::workflow::delegated_routing_facts(true);
+    let connection = fact_connection(&records);
+    let NodeFact::Started(started) = &records[0].fact else {
+        panic!("root")
+    };
+    let root = started.root.as_deref().unwrap();
+    let selection = session_artifact_projection(
+        releashd::test_support::integration::workspace::artifact_fields(root),
+    );
+    let tree = &records[0].meta.tree_id;
+    // When
+    let subtree = node_events::read_subtrees(
+        &connection,
+        tree,
+        &[records[0].meta.node_execution_id.clone()],
+        &selection.0,
+        &selection.1,
+        |row| row,
+    )
+    .unwrap();
+    let delta = node_events::projected_tree_after(
+        &connection,
+        tree,
+        0,
+        &selection.0,
+        &selection.1,
+        |row| row,
+    )
+    .unwrap();
+    // Then
+    assert_eq!(subtree, delta);
+    assert_eq!(delta.len(), records.len());
+    for (row, original) in delta.iter().zip(&records) {
+        let decoded = node_events::record_from_row(row).unwrap().unwrap();
+        assert_eq!(decoded.meta, original.meta);
+        assert_eq!(decoded.timestamp_ms, original.timestamp_ms);
+        if let NodeFact::ArtifactProduced(artifact) = decoded.fact {
+            assert!(!artifact.value.to_string().contains("private"));
+            if row.node_name == "maker" {
+                assert_eq!(artifact.value["verdict"], "READY");
+            }
+        }
+    }
+}
+
+#[test]
+pub fn test_時刻要約_定義の回復を全件投影と共有し終端後は判定状態を解放する() {
+    use releashd::test_support::integration::workflow::{NodeFact, NodeKind};
+    use releashd::test_support::integration::{persistence as node_events, workflow as fact_log};
+    // Given
+    for broken in [false, true] {
+        for terminal in [false, true] {
+            let mut records =
+                releashd::test_support::integration::workflow::sibling_sequence_timestamp_facts();
+            if broken {
+                let NodeFact::Started(started) = &mut records[0].fact else {
+                    panic!("root")
+                };
+                started
+                    .root
+                    .as_mut()
+                    .unwrap()
+                    .definition
+                    .as_mut()
+                    .unwrap()
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.name == "side")
+                    .unwrap()
+                    .kind = NodeKind::Session(Default::default());
+            }
+            if terminal {
+                let mut end = records.last().unwrap().clone();
+                end.seq += 1;
+                end.timestamp_ms += 1000;
+                end.fact = NodeFact::ExecutionCompleted;
+                records.push(end);
+            }
+            let connection = fact_connection(&records);
+            let NodeFact::Started(started) = &records[0].fact else {
+                panic!("root")
+            };
+            let root = started.root.as_deref().unwrap();
+            let selection = session_artifact_projection(
+                releashd::test_support::integration::workspace::artifact_fields(root),
+            );
+            let retries = std::collections::HashMap::new();
+            let source = SessionFactSource {
+                connection: &connection,
+                tree: &records[0].meta.tree_id,
+                root,
+                selection: &selection,
+                terminal: terminal.then(|| records.last().unwrap()),
+                retries: &retries,
+            };
+            let root_row = node_events::first_row_of_tree(&connection, source.tree)
+                .unwrap()
+                .unwrap();
+            let mut clock = SessionClock::default();
+            // When
+            let all = source.projected_timestamp(&[records[0].meta.node_execution_id.clone()]);
+            let delta = source.execution_updated_at(&mut clock, &root_row);
+            // Then
+            if broken && !terminal {
+                assert!(all.is_err());
+                assert!(delta.is_err());
+                continue;
+            }
+            let expected = all.unwrap();
+            assert_eq!(delta.unwrap(), expected);
+            assert_eq!(clock.progress().0, records.last().unwrap().seq);
+            assert_eq!(clock.progress().1.is_none(), terminal);
+            if terminal {
+                let last = records.last().unwrap();
+                let pending = fact_log::pending_single_fact(
+                    &last.meta,
+                    &NodeFact::ApprovalGranted(
+                        releashd::test_support::integration::workflow::ApprovalGrantedFact {
+                            comment: None,
+                        },
+                    ),
+                    last.timestamp_ms + 1000,
+                )
+                .unwrap();
+                node_events::append_node_event(&connection, &pending.row, pending.timestamp_ms)
+                    .unwrap();
+                // When / Then
+                assert_eq!(
+                    source.execution_updated_at(&mut clock, &root_row).unwrap(),
+                    expected
+                );
+                assert_eq!(clock.progress().0, last.seq + 1);
+                assert!(clock.progress().1.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+pub fn test_単独会話の別名索引_未変更の開始を再解析せず追記と削除と再構築を反映する() {
+    use releashd::test_support::integration::workflow::{NodeFact, SessionExecutionTreeRootFacts};
+    use releashd::test_support::integration::{persistence as node_events, workflow as fact_log};
+    // Given
+    let root =
+        SessionExecutionTreeRootFacts::new("session", "/repo", "/repo", ProviderKind::Claude, None)
+            .unwrap();
+    let records = [
+        releashd::test_support::integration::workflow::NodeFactRecord {
+            meta: root.meta.clone(),
+            seq: 1,
+            timestamp_ms: 1000,
+            fact: root.started,
+        },
+    ];
+    let connection = fact_connection(&records);
+    let mut index = StandaloneReferences::default();
+    let alias =
+        releashd::test_support::integration::workspace::standalone_reference("session", "session");
+    // When
+    index.update(&connection).unwrap();
+    connection
+        .execute("UPDATE node_events SET detail = 'broken'", [])
+        .unwrap();
+    index.update(&connection).unwrap();
+    // Then
+    assert_eq!(index.owner(&alias).unwrap(), "session");
+    // When
+    let pending =
+        fact_log::pending_single_fact(&root.meta, &NodeFact::ExecutionCompleted, 2000).unwrap();
+    node_events::append_node_event(&connection, &pending.row, pending.timestamp_ms).unwrap();
+    index.update(&connection).unwrap();
+    assert_eq!(index.owner(&alias).unwrap(), "session");
+    node_events::delete_tree(&connection, "session").unwrap();
+    index.update(&connection).unwrap();
+    // Then
+    assert!(index.owner(&alias).is_none());
+    // When
+    let pending = fact_log::pending_single_fact(&root.meta, &records[0].fact, 3000).unwrap();
+    node_events::append_node_event(&connection, &pending.row, pending.timestamp_ms).unwrap();
+    index.update(&connection).unwrap();
+    // Then
+    assert_eq!(index.owner(&alias).unwrap(), "session");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+pub async fn test_session時刻の並行照会_スナップショットより前に木を排他し追記後も進行位置を戻さない(
+) {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, sibling_sequence_timestamp_facts,
+    };
+    use releashd::test_support::integration::workspace::SessionReadPhase;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+    // Given
+    let records = sibling_sequence_timestamp_facts();
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    let workspace = WorkspaceIdentity::new("/repo");
+    let tree = records[0].meta.tree_id.clone();
+    let boundary = records.len() - 1;
+    for record in &records[..boundary] {
+        append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
+            .await
+            .unwrap();
+    }
+    let expected_old = releashd::test_support::integration::workspace::node_for_execution(
+        &*repository,
+        &workspace,
+        "node-main",
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .updated_at();
+    let (snapshot_tx, snapshot_rx) = mpsc::channel();
+    let (waiting_tx, waiting_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = parking_lot::Mutex::new(release_rx);
+    let snapshots = Arc::new(AtomicUsize::new(0));
+    let observed = snapshots.clone();
+    query.set_session_read_observer(Some(Arc::new(move |phase| match phase {
+        SessionReadPhase::WaitingForClock => {
+            waiting_tx.send(()).unwrap();
+        }
+        SessionReadPhase::SnapshotEstablished => {
+            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                snapshot_tx.send(()).unwrap();
+                release_rx
+                    .lock()
+                    .recv_timeout(Duration::from_secs(30))
+                    .unwrap();
+            }
+        }
+    })));
+    let first_query = query.clone();
+    let first_tree = tree.clone();
+    let first = tokio::spawn(async move {
+        first_query
+            .session_node_detail(&WorkspaceIdentity::new("/repo"), &first_tree, "node-main")
+            .await
+    });
+    tokio::task::spawn_blocking(move || snapshot_rx.recv_timeout(Duration::from_secs(30)).unwrap())
+        .await
+        .unwrap();
+    waiting_rx.try_recv().unwrap();
+    // When / Then
+    let clock = query.session_clock(&tree).unwrap();
+    assert!(
+        clock.try_lock().is_none(),
+        "the old snapshot must already own the tree clock"
+    );
+    let added = &records[boundary];
+    append_single_fact(&store, &added.meta, &added.fact, added.timestamp_ms)
+        .await
+        .unwrap();
+    let second_query = query.clone();
+    let second_tree = tree.clone();
+    let second = tokio::spawn(async move {
+        second_query
+            .session_node_detail(&WorkspaceIdentity::new("/repo"), &second_tree, "node-main")
+            .await
+    });
+    tokio::task::spawn_blocking(move || waiting_rx.recv_timeout(Duration::from_secs(30)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(snapshots.load(Ordering::SeqCst), 1);
+    release_tx.send(()).unwrap();
+    let first = first.await.unwrap().unwrap().unwrap().detail;
+    let second = second.await.unwrap().unwrap().unwrap().detail;
+    assert_eq!(first.updated_at, expected_old);
+    assert_eq!(second.updated_at, added.timestamp_ms as f64 / 1000.0);
+    assert_eq!(clock.lock().progress(), (added.seq, Some(added.seq)));
+    query.set_session_read_observer(None);
+    // When
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    connection
+        .execute(
+            "UPDATE node_events SET detail = 'already consumed' WHERE tree_id = ?1 AND seq = ?2",
+            rusqlite::params![tree, records[boundary - 1].seq],
+        )
+        .unwrap();
+    let next = query
+        .session_node_detail(&workspace, &tree, "node-main")
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(next.detail.updated_at, second.updated_at);
+    assert_eq!(clock.lock().progress(), (added.seq, Some(added.seq)));
+}
+
+#[tokio::test]
+pub async fn test_旧参照取得失敗_相関idが毎回変わっても失敗した参照を同じidで返す() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let query = service(&SqliteWorkspaceTreeRepository::new(store.clone()));
+    let references = vec!["first-reference".into(), "second-reference".into()];
+    let mut messages = Vec::new();
+    for _ in 0..2 {
+        store.fail_next_read(ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR));
+        // When
+        let result = query
+            .resolve_session_nodes(&WorkspaceIdentity::new("/repo"), &references)
+            .await;
+        // Then
+        assert_eq!(
+            result
+                .failures
+                .iter()
+                .map(|failure| &failure.reference_id)
+                .collect::<Vec<_>>(),
+            references.iter().collect::<Vec<_>>()
+        );
+        messages.push(result.failures[0].failure.message.clone());
+        assert!(result.sessions.is_empty());
+    }
+    assert_ne!(messages[0], messages[1]);
+    assert!(messages
+        .iter()
+        .all(|message| message.contains("correlation_id")));
+    // When
+    let recovered = query
+        .resolve_session_nodes(&WorkspaceIdentity::new("/repo"), &references)
+        .await;
+    // Then
+    assert!(recovered.failures.is_empty());
 }

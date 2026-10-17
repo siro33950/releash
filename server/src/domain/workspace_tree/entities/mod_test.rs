@@ -2364,7 +2364,7 @@ fn test_公開会話id_所有する実行木だけを取り出し不正な形式
 
 #[test]
 fn test_単独会話の旧参照_開始の同定情報だけで自身の別名を照合し他の会話を拒否する() {
-    use super::{is_standalone_reference, standalone_reference_matches, NodeIdentityIndex};
+    use super::{is_standalone_reference, standalone_reference, NodeIdentityIndex};
     use crate::domain::workflow::{NodeFactMeta, NodeKindName};
     // Given
     let meta = NodeFactMeta {
@@ -2383,20 +2383,11 @@ fn test_単独会話の旧参照_開始の同定情報だけで自身の別名�
     for reference in ["missing", "node-s-short", "node-w-invalid"] {
         assert!(!is_standalone_reference(reference));
     }
-    assert!(standalone_reference_matches(
-        &meta.tree_id,
-        &meta.node_name,
-        alias
-    ));
-    assert!(!standalone_reference_matches(
-        "other",
-        &meta.node_name,
-        alias
-    ));
-    assert!(!standalone_reference_matches(&meta.tree_id, "other", alias));
-    assert!(!standalone_reference_matches(
-        &meta.tree_id,
-        &meta.node_name,
+    assert_eq!(&standalone_reference(&meta.tree_id, &meta.node_name), alias);
+    assert_ne!(&standalone_reference("other", &meta.node_name), alias);
+    assert_ne!(&standalone_reference(&meta.tree_id, "other"), alias);
+    assert_ne!(
+        standalone_reference(&meta.tree_id, &meta.node_name),
         "unrelated"
-    ));
+    );
 }

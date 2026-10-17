@@ -35,7 +35,7 @@ impl ReadFailure {
         ]
     }
 
-    pub(super) fn run<T>(
+    pub fn run<T>(
         self,
         connection: &Connection,
         run: impl FnOnce(&Connection) -> Result<T, LocalEventQueryError>,

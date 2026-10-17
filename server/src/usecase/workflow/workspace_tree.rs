@@ -190,7 +190,7 @@ impl WorkflowUsecase {
     ) -> Result<
         (
             Option<crate::domain::workspace_state::WorkspaceState>,
-            Vec<crate::domain::failure::WorkFailure>,
+            Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
         ),
         crate::domain::workspace_state::WorkspaceStateError,
     > {
@@ -231,13 +231,11 @@ impl WorkflowUsecase {
         };
         for (target, message) in self.failure_observations(read.classification.iter().cloned()) {
             for node in &mut read.classification {
-                let mut reason = None;
-                let reason = if node.id == read.detail.id {
-                    &mut read.detail.error_reason
-                } else {
-                    &mut reason
-                };
-                node.observe_background_failure(&target, &message, reason);
+                if let Some(reason) = node.observe_background_failure(&target, &message) {
+                    if node.id == read.detail.id {
+                        read.detail.error_reason = Some(reason.into());
+                    }
+                }
             }
         }
         read.detail.classification =

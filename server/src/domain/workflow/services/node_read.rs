@@ -25,7 +25,7 @@ impl AppliedFactTime {
 
 pub(crate) type NodeReadProjectionResult = (HashMap<String, NodeReadRules>, AppliedFactTime);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NodeReadRules {
     pub status: NodeExecutionStatus,
     pub completed_at: Option<f64>,
@@ -36,7 +36,7 @@ pub(crate) struct NodeReadRules {
     pub hidden: bool,
 }
 
-pub(crate) fn artifact_fields(root: &TreeRootFact) -> Vec<String> {
+pub fn artifact_fields(root: &TreeRootFact) -> Vec<String> {
     let mut fields = HashSet::new();
     if let Some(definition) = &root.definition {
         for node in &definition.nodes {
@@ -105,9 +105,9 @@ fn collect_artifact_field(
     let Some(node) = definition.node_by_name(node) else {
         return;
     };
-    let child = super::reference::composite_artifact_child(node, key);
+    let child = super::reference::artifact_child_name(node, key);
     if let Some(child) = child {
-        collect_artifact_field(definition, &child.name, rest, fields);
+        collect_artifact_field(definition, child, rest, fields);
     }
 }
 
@@ -118,52 +118,33 @@ pub(crate) fn subtree_read_projection(
     retries: &HashMap<String, String>,
     mut artifact_value: Option<&mut dyn FnMut(i64) -> Result<serde_json::Value, String>>,
 ) -> Result<NodeReadProjectionResult, String> {
-    match project_read_rules(
-        root,
-        root.definition.as_ref(),
-        records,
-        terminal,
-        retries,
-        artifact_value
-            .as_mut()
-            .map(|value| &mut **value as &mut dyn FnMut(i64) -> Result<serde_json::Value, String>),
-    ) {
-        Err(_) if terminal.is_some() && root.definition.is_some() => {
-            // Terminal history remains readable when its saved definition can no longer replay it.
-            project_read_rules(root, None, records, terminal, retries, artifact_value)
+    let mut state = NodeReadState::default();
+    loop {
+        let definition = state.definition(root);
+        let mut projection = NodeReadProjection::new(
+            root,
+            definition,
+            retries,
+            artifact_value.as_mut().map(|value| {
+                &mut **value as &mut dyn FnMut(i64) -> Result<serde_json::Value, String>
+            }),
+        );
+        projection.state = state;
+        let result = projection.drive(records, terminal, false);
+        match result {
+            Err(_) if projection.state.request_replay(root, terminal) => {
+                state = projection.state;
+            }
+            Err(error) => return Err(error),
+            Ok(_) => return projection.finish(terminal),
         }
-        result => result,
     }
-}
-
-fn project_read_rules(
-    root: &TreeRootFact,
-    saved_definition: Option<&crate::domain::workflow::WorkflowDefinition>,
-    records: &[NodeFactRecord],
-    terminal: Option<&NodeFactRecord>,
-    retries: &HashMap<String, String>,
-    artifact_value: Option<&mut dyn FnMut(i64) -> Result<serde_json::Value, String>>,
-) -> Result<NodeReadProjectionResult, String> {
-    let mut projection = NodeReadProjection::new(root, saved_definition, retries, artifact_value);
-    for (position, record) in records.iter().enumerate() {
-        if terminal.is_some_and(|terminal| record.seq > terminal.seq) {
-            break;
-        }
-        projection.apply_record(record)?;
-        if records
-            .get(position + 1)
-            .is_some_and(|next| super::fact_replay::is_submitted_artifact_pair(record, next))
-        {
-            continue;
-        }
-        projection.propagate_completion(record, records.get(position + 1), None)?;
-    }
-    projection.finish(terminal)
 }
 
 #[derive(Default)]
 pub(crate) struct NodeReadState {
     pub seq: i64,
+    without_definition: bool,
     pub applied: AppliedFactTime,
     sessions: HashMap<String, String>,
     current_session: Option<String>,
@@ -182,7 +163,7 @@ pub(crate) struct NodeReadState {
     propagated: HashSet<String>,
     predecessors: HashMap<String, String>,
     continuations: DelegateContinuations<String>,
-    children_by_parent: HashMap<String, Vec<NodeFactRecord>>,
+    children_by_parent: HashMap<String, Vec<String>>,
     pending: Option<NodeFactRecord>,
 }
 
@@ -193,33 +174,53 @@ pub(crate) fn update_read_state(
     retries: &HashMap<String, String>,
     artifact_value: &mut dyn FnMut(i64) -> Result<serde_json::Value, String>,
 ) -> Result<AppliedFactTime, String> {
-    let mut projection = NodeReadProjection::new(
-        root,
-        root.definition.as_ref(),
-        retries,
-        Some(artifact_value),
-    );
+    let mut projection =
+        NodeReadProjection::new(root, state.definition(root), retries, Some(artifact_value));
     projection.state = std::mem::take(state);
-    for record in records {
-        if let Some(previous) = projection.state.pending.take() {
-            if !super::fact_replay::is_submitted_artifact_pair(&previous, record) {
-                projection.propagate_completion(&previous, Some(record), None)?;
+    let result = projection.drive(records, None, true);
+    *state = projection.state;
+    result
+}
+
+impl NodeReadState {
+    fn definition<'a>(
+        &self,
+        root: &'a TreeRootFact,
+    ) -> Option<&'a crate::domain::workflow::WorkflowDefinition> {
+        if self.without_definition {
+            None
+        } else {
+            root.definition.as_ref()
+        }
+    }
+
+    pub(crate) fn request_replay(
+        &mut self,
+        root: &TreeRootFact,
+        terminal: Option<&NodeFactRecord>,
+    ) -> bool {
+        if terminal.is_none() || self.without_definition || root.definition.is_none() {
+            return false;
+        }
+        *self = Self {
+            without_definition: true,
+            ..Default::default()
+        };
+        true
+    }
+
+    pub(crate) fn artifact_seqs(&self, records: &[NodeFactRecord]) -> HashSet<i64> {
+        let mut seqs = HashSet::new();
+        for record in records {
+            if matches!(record.fact, NodeFact::ArtifactProduced(_)) {
+                seqs.insert(record.seq);
+                if let Some(previous) = self.artifact_rows.get(&record.meta.node_execution_id) {
+                    seqs.insert(*previous);
+                }
             }
         }
-        projection.apply_record(record)?;
-        projection.state.seq = record.seq;
-        let mut pending = record.clone();
-        if let NodeFact::Started(started) = &mut pending.fact {
-            started.root = None;
-        }
-        projection.state.pending = Some(pending);
+        seqs
     }
-    let applied = match projection.state.pending.clone() {
-        Some(last) => projection.preview_completion(&last)?,
-        None => projection.state.applied,
-    };
-    *state = projection.state;
-    Ok(applied)
 }
 
 struct CompletionCheckpoint {
@@ -317,6 +318,43 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
         }
     }
 
+    fn drive(
+        &mut self,
+        records: &[NodeFactRecord],
+        terminal: Option<&NodeFactRecord>,
+        preview: bool,
+    ) -> Result<AppliedFactTime, String> {
+        for record in records {
+            if terminal.is_some_and(|terminal| record.seq > terminal.seq) {
+                break;
+            }
+            if let Some(previous) = self.state.pending.take() {
+                if !super::fact_replay::is_submitted_artifact_pair(&previous, record) {
+                    self.propagate_completion(&previous, Some(record), None)?;
+                }
+            }
+            self.apply_record(record)?;
+            self.state.seq = record.seq;
+            let mut pending = record.clone();
+            if let NodeFact::Started(started) = &mut pending.fact {
+                started.root = None;
+            }
+            self.state.pending = Some(pending);
+        }
+        match self.state.pending.clone() {
+            Some(last) if preview && matches!(last.fact, NodeFact::SubmitReceived(_)) => {
+                Ok(self.state.applied)
+            }
+            Some(last) if preview => self.preview_completion(&last),
+            Some(last) => {
+                self.propagate_completion(&last, None, None)?;
+                self.state.pending = None;
+                Ok(self.state.applied)
+            }
+            None => Ok(self.state.applied),
+        }
+    }
+
     fn definition(&self, id: &str) -> Option<&'a NodeDefinition> {
         self.saved_definition?
             .node_by_name(&self.state.starts.get(id)?.meta.node_name)
@@ -380,7 +418,7 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                 .children_by_parent
                 .entry(parent.to_string())
                 .or_default()
-                .push(start);
+                .push(id.to_string());
         }
         if let Some(previous) = predecessor {
             if let Some((state, artifact, signals)) =
@@ -711,6 +749,80 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
         result
     }
 
+    fn complete_empty_fanout(
+        &mut self,
+        record: &NodeFactRecord,
+        next: Option<&NodeFactRecord>,
+        journal: Option<&mut CompletionJournal>,
+    ) -> Result<(), String> {
+        if !matches!(record.fact, NodeFact::Started(_)) {
+            return Ok(());
+        }
+        let id = record.meta.node_execution_id.as_str();
+        let Some(node_definition) = self.definition(id) else {
+            return Ok(());
+        };
+        let NodeKind::Fanout(_) = &node_definition.kind else {
+            return Ok(());
+        };
+        let item_count = self.state.fanout_counts.get(id).copied();
+        let isolated =
+            matches!(&record.fact, NodeFact::Started(started) if started.worktree.is_some());
+        let failed = next.is_some_and(|next| {
+            matches!(next.fact, NodeFact::RuntimeFailureObserved(_))
+                && next.meta.node_execution_id == id
+        });
+        let active = !next.is_some_and(|next| matches!(next.fact, NodeFact::AbortRequested(_)));
+        if super::transition::is_empty_isolated_fanout(item_count, isolated)
+            && self.state.nodes.get(id).is_some_and(|node| {
+                super::transition::empty_isolated_fanout_ready(active, node.status, failed)
+            })
+        {
+            if let Some(journal) = journal {
+                journal.capture(&self.state, id);
+            }
+            let children = read_scope_children(
+                &self.state.children_by_parent,
+                &self.state.starts,
+                id,
+                &self.state.nodes,
+                &self.state.artifacts,
+                &self.state.predecessors,
+            );
+            let completion = transition::finish_composite(
+                node_definition,
+                self.state.nodes[id].status,
+                false,
+                item_count,
+                &children,
+            )
+            .map_err(|error| error.to_string())?;
+            self.apply_composite_completion(id, completion, record);
+        }
+        Ok(())
+    }
+
+    fn apply_composite_completion(
+        &mut self,
+        id: &str,
+        completion: Option<(NodeExecutionStatus, Option<serde_json::Value>)>,
+        record: &NodeFactRecord,
+    ) -> bool {
+        let Some((status, artifact)) = completion else {
+            return false;
+        };
+        let node = self.state.nodes.get_mut(id).unwrap();
+        if node.status != status {
+            self.state.applied.record(record);
+        }
+        node.status = status;
+        node.has_artifact = artifact.is_some();
+        if let Some(artifact) = artifact {
+            self.state.artifacts.insert(id.to_string(), artifact);
+        }
+        true
+    }
+
     fn propagate_completion(
         &mut self,
         record: &NodeFactRecord,
@@ -719,61 +831,7 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
     ) -> Result<(), String> {
         let id = record.meta.node_execution_id.as_str();
         let mut pending = std::collections::VecDeque::from([id.to_string()]);
-        for start in
-            std::iter::once(record).filter(|record| matches!(record.fact, NodeFact::Started(_)))
-        {
-            let empty_id = &id;
-            let Some(node_definition) = self.definition(empty_id) else {
-                continue;
-            };
-            let NodeKind::Fanout(_) = &node_definition.kind else {
-                continue;
-            };
-            let item_count = self.state.fanout_counts.get(*empty_id).copied();
-            let isolated =
-                matches!(&start.fact, NodeFact::Started(started) if started.worktree.is_some());
-            let failed = next.is_some_and(|next| {
-                matches!(next.fact, NodeFact::RuntimeFailureObserved(_))
-                    && next.meta.node_execution_id == *empty_id
-            });
-            let active = !next.is_some_and(|next| matches!(next.fact, NodeFact::AbortRequested(_)));
-            if super::transition::is_empty_isolated_fanout(item_count, isolated)
-                && self.state.nodes.get(*empty_id).is_some_and(|node| {
-                    super::transition::empty_isolated_fanout_ready(active, node.status, failed)
-                })
-            {
-                if let Some(journal) = journal.as_deref_mut() {
-                    journal.capture(&self.state, empty_id);
-                }
-                let children = read_scope_children(
-                    &self.state.children_by_parent,
-                    empty_id,
-                    &self.state.nodes,
-                    &self.state.artifacts,
-                    &self.state.predecessors,
-                );
-                if let Some((status, artifact)) = transition::finish_composite(
-                    node_definition,
-                    self.state.nodes[*empty_id].status,
-                    false,
-                    item_count,
-                    &children,
-                )
-                .map_err(|error| error.to_string())?
-                {
-                    let node = self.state.nodes.get_mut(*empty_id).unwrap();
-                    if node.status != status {
-                        self.state.applied.record(record);
-                    }
-                    node.status = status;
-                    node.has_artifact = artifact.is_some();
-                    if let Some(artifact) = artifact {
-                        self.state.artifacts.insert(empty_id.to_string(), artifact);
-                    }
-                }
-                pending.push_back(empty_id.to_string());
-            }
-        }
+        self.complete_empty_fanout(record, next, journal.as_deref_mut())?;
         while let Some(id) = pending.pop_front() {
             let id = id.as_str();
             let Some(node) = self.state.nodes.get(id) else {
@@ -820,30 +878,21 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                 {
                     let children = read_scope_children(
                         &self.state.children_by_parent,
+                        &self.state.starts,
                         id,
                         &self.state.nodes,
                         &self.state.artifacts,
                         &self.state.predecessors,
                     );
-                    if let Some((status, artifact)) = transition::finish_composite(
+                    let completion = transition::finish_composite(
                         node_definition,
                         self.state.nodes[id].status,
                         true,
                         self.state.fanout_counts.get(id).copied(),
                         &children,
                     )
-                    .map_err(|error| error.to_string())?
-                    {
-                        let node = self.state.nodes.get_mut(id).unwrap();
-                        if node.status != status {
-                            self.state.applied.record(record);
-                        }
-                        node.status = status;
-                        node.has_artifact = artifact.is_some();
-                        if let Some(artifact) = artifact {
-                            self.state.artifacts.insert(id.to_string(), artifact);
-                        }
-                    }
+                    .map_err(|error| error.to_string())?;
+                    self.apply_composite_completion(id, completion, record);
                 }
             }
             if self.state.nodes[id].status != NodeExecutionStatus::Succeeded
@@ -891,6 +940,7 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                     }
                     let children = read_scope_children(
                         &self.state.children_by_parent,
+                        &self.state.starts,
                         parent,
                         &self.state.nodes,
                         &self.state.artifacts,
@@ -906,24 +956,15 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                     )
                     .map_err(|error| error.to_string())?;
                     if matches!(route, Some(super::routing::RouteDecision::Completed)) {
-                        if let Some((status, artifact)) = transition::finish_composite(
+                        let completion = transition::finish_composite(
                             parent_definition,
                             self.state.nodes[parent].status,
                             false,
                             self.state.fanout_counts.get(parent).copied(),
                             &children,
                         )
-                        .map_err(|error| error.to_string())?
-                        {
-                            let node = self.state.nodes.get_mut(parent).unwrap();
-                            if node.status != status {
-                                self.state.applied.record(record);
-                            }
-                            node.status = status;
-                            node.has_artifact = artifact.is_some();
-                            if let Some(artifact) = artifact {
-                                self.state.artifacts.insert(parent.to_string(), artifact);
-                            }
+                        .map_err(|error| error.to_string())?;
+                        if self.apply_composite_completion(parent, completion, record) {
                             pending.push_back(parent.to_string());
                         }
                     }
@@ -1014,7 +1055,8 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
 }
 
 fn read_scope_children<'a>(
-    children: &'a HashMap<String, Vec<NodeFactRecord>>,
+    children: &'a HashMap<String, Vec<String>>,
+    starts: &'a HashMap<String, NodeFactRecord>,
     parent: &str,
     nodes: &'a HashMap<String, NodeReadRules>,
     artifacts: &'a HashMap<String, serde_json::Value>,
@@ -1024,7 +1066,8 @@ fn read_scope_children<'a>(
         .get(parent)
         .into_iter()
         .flatten()
-        .filter_map(|record| {
+        .filter_map(|id| {
+            let record = starts.get(id)?;
             let NodeFact::Started(started) = &record.fact else {
                 return None;
             };

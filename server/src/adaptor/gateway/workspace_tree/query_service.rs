@@ -13,10 +13,26 @@ use crate::usecase::workflow::{
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy)]
+pub enum SessionReadPhase {
+    WaitingForClock,
+    SnapshotEstablished,
+}
+
+#[cfg(feature = "test-support")]
+type SessionReadObserver = Arc<dyn Fn(SessionReadPhase) + Send + Sync>;
+
 pub struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
+    #[cfg(feature = "test-support")]
+    session_read_observer: parking_lot::Mutex<Option<SessionReadObserver>>,
     references: Arc<parking_lot::Mutex<ReferenceIndex>>,
-    clocks: Arc<parking_lot::Mutex<std::collections::HashMap<String, SessionClock>>>,
+    clocks: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<String, Arc<parking_lot::Mutex<SessionClock>>>,
+        >,
+    >,
 }
 
 #[derive(Default)]
@@ -24,6 +40,50 @@ struct ReferenceIndex {
     workspace: Option<String>,
     trees: std::collections::HashMap<String, ReferenceTree>,
     aliases: std::collections::HashMap<String, (String, String)>,
+    standalone: StandaloneReferences,
+}
+
+#[derive(Default)]
+pub struct StandaloneReferences {
+    heads: std::collections::HashMap<String, i64>,
+    aliases: std::collections::HashMap<String, String>,
+}
+
+impl StandaloneReferences {
+    pub fn owner(&self, alias: &str) -> Option<&str> {
+        self.aliases.get(alias).map(String::as_str)
+    }
+
+    pub fn update(&mut self, connection: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
+        use crate::adaptor::gateway::local_event_store::node_events;
+        let heads: std::collections::HashMap<_, _> =
+            node_events::tree_heads(connection)?.into_iter().collect();
+        self.aliases.retain(|_, tree| {
+            heads.get(tree).is_some_and(|head| {
+                self.heads
+                    .get(tree)
+                    .is_some_and(|previous| head >= previous)
+            })
+        });
+        for (tree, head) in &heads {
+            let after = self
+                .heads
+                .get(tree)
+                .copied()
+                .filter(|previous| previous <= head)
+                .unwrap_or_default();
+            if *head == after {
+                continue;
+            }
+            for name in node_events::standalone_roots_after(connection, tree, after)? {
+                let alias =
+                    crate::domain::workspace_tree::entities::standalone_reference(tree, &name);
+                self.aliases.insert(alias, tree.clone());
+            }
+        }
+        self.heads = heads;
+        Ok(())
+    }
 }
 
 impl ReferenceIndex {
@@ -52,7 +112,9 @@ impl ReferenceIndex {
                     if let Some(record) = record {
                         if let crate::domain::workflow::NodeFact::Started(started) = &record.fact {
                             if let Some(root) = &started.root {
-                                if root.worktree_path.trim().is_empty() {
+                                if !crate::domain::workflow::TreeRootFact::valid_worktree_path(
+                                    &root.worktree_path,
+                                ) {
                                     return Err(format!(
                                         "tree {} has an empty root workspace",
                                         row.tree_id
@@ -94,7 +156,9 @@ impl ReferenceIndex {
                                 &row.detail,
                             )
                         {
-                            if !header.worktree_path.trim().is_empty() {
+                            if crate::domain::workflow::TreeRootFact::valid_worktree_path(
+                                &header.worktree_path,
+                            ) {
                                 held.workspace = Some(header.worktree_path);
                             }
                         }
@@ -218,24 +282,42 @@ struct ReferenceTree {
 }
 
 #[derive(Default)]
-struct SessionClock {
+pub struct SessionClock {
     root: Option<(String, i64, [u8; 32])>,
-    workspace: String,
-    state: crate::domain::workflow::services::node_read::NodeReadState,
+    checked_head: i64,
+    state: Option<crate::domain::workflow::services::node_read::NodeReadState>,
     timestamp_ms: i64,
-    without_definition: bool,
 }
 
-struct SessionFactSource<'a> {
-    connection: &'a rusqlite::Connection,
-    tree: &'a str,
-    root: &'a crate::domain::workflow::TreeRootFact,
-    selection: &'a (String, Vec<String>),
-    terminal: Option<&'a crate::domain::workflow::NodeFactRecord>,
-    retries: &'a std::collections::HashMap<String, String>,
+#[cfg(feature = "test-support")]
+impl SessionClock {
+    pub fn progress(&self) -> (i64, Option<i64>) {
+        (
+            self.checked_head,
+            self.state.as_ref().map(|state| state.seq),
+        )
+    }
+}
+
+pub struct SessionFactSource<'a> {
+    pub connection: &'a rusqlite::Connection,
+    pub tree: &'a str,
+    pub root: &'a crate::domain::workflow::TreeRootFact,
+    pub selection: &'a (String, Vec<String>),
+    pub terminal: Option<&'a crate::domain::workflow::NodeFactRecord>,
+    pub retries: &'a std::collections::HashMap<String, String>,
 }
 
 impl SessionFactSource<'_> {
+    #[cfg(feature = "test-support")]
+    pub fn projected_timestamp(
+        &self,
+        roots: &[String],
+    ) -> Result<i64, crate::domain::local_event::LocalEventQueryError> {
+        self.read_scope(roots)
+            .map(|(_, projection)| projection.1.timestamp_ms)
+    }
+
     fn read_scope(
         &self,
         roots: &[String],
@@ -276,14 +358,23 @@ impl SessionFactSource<'_> {
         Ok((records, projection))
     }
 
-    fn artifact_value(&self, seq: i64) -> Result<serde_json::Value, String> {
-        let text = crate::adaptor::gateway::local_event_store::node_events::artifact_value(
-            self.connection,
-            self.tree,
-            seq,
-        )
-        .map_err(|error| error.to_string())?;
-        serde_json::from_str(&text).map_err(|error| error.to_string())
+    pub fn artifact_values(
+        &self,
+        seqs: &std::collections::HashSet<i64>,
+    ) -> Result<
+        std::collections::HashMap<i64, serde_json::Value>,
+        crate::domain::local_event::LocalEventQueryError,
+    > {
+        use crate::adaptor::gateway::local_event_store::{node_events, reader};
+        node_events::artifact_values(self.connection, self.tree, seqs)
+            .map_err(|error| reader::storage_unavailable(&error))?
+            .into_iter()
+            .map(|(seq, text)| {
+                serde_json::from_str(&text)
+                    .map(|value| (seq, value))
+                    .map_err(|error| reader::corrupt(&error.to_string()))
+            })
+            .collect()
     }
 
     fn records_after(
@@ -316,7 +407,7 @@ impl SessionFactSource<'_> {
         .map_err(|error| reader::corrupt(&error))
     }
 
-    fn execution_updated_at(
+    pub fn execution_updated_at(
         &self,
         held: &mut SessionClock,
         root_row: &crate::adaptor::gateway::local_event_store::node_events::NodeEventRow,
@@ -336,51 +427,58 @@ impl SessionFactSource<'_> {
             root_row.timestamp_ms,
             sha2::Sha256::digest(root_row.detail.as_bytes()).into(),
         );
-        if held.root.as_ref() != Some(&root) || head < held.state.seq {
+        if held.root.as_ref() != Some(&root) || head < held.checked_head {
             *held = SessionClock {
                 root: Some(root),
-                workspace: self.root.worktree_path.clone(),
                 ..Default::default()
             };
         }
-        if head == held.state.seq {
+        if head == held.checked_head {
             return Ok(held.timestamp_ms);
         }
-        let records = self.records_after(held.state.seq)?;
-        let root = if held.without_definition {
-            self.root.without_definition()
-        } else {
-            self.root.clone()
-        };
-        let result = crate::domain::workflow::services::node_read::update_read_state(
-            &mut held.state,
-            &root,
-            &records,
-            self.retries,
-            &mut |seq| self.artifact_value(seq),
-        );
-        let result = match result {
-            Err(_)
-                if self.terminal.is_some()
-                    && !held.without_definition
-                    && self.root.definition.is_some() =>
-            {
-                held.state = Default::default();
-                held.without_definition = true;
-                let records = self.records_after(0)?;
-                crate::domain::workflow::services::node_read::update_read_state(
-                    &mut held.state,
-                    &self.root.without_definition(),
-                    &records,
-                    self.retries,
-                    &mut |seq| self.artifact_value(seq),
-                )
-            }
-            result => result,
+        if held.state.is_none() && held.checked_head != 0 {
+            held.checked_head = head;
+            return Ok(held.timestamp_ms);
         }
-        .map_err(|error| reader::corrupt(&error))?;
-        held.state.seq = head;
-        held.timestamp_ms = result.timestamp_ms;
+        let state = held.state.get_or_insert_default();
+        loop {
+            let records = self.records_after(state.seq)?;
+            let mut replay = false;
+            for batch in records.chunks(64) {
+                let values = self.artifact_values(&state.artifact_seqs(batch))?;
+                let result = crate::domain::workflow::services::node_read::update_read_state(
+                    state,
+                    self.root,
+                    batch,
+                    self.retries,
+                    &mut |seq| {
+                        values
+                            .get(&seq)
+                            .cloned()
+                            .ok_or_else(|| format!("Missing artifact {seq}"))
+                    },
+                );
+                match result {
+                    Ok(applied) => held.timestamp_ms = applied.timestamp_ms,
+                    Err(_) if state.request_replay(self.root, self.terminal) => {
+                        replay = true;
+                        break;
+                    }
+                    Err(error) => {
+                        *held = SessionClock::default();
+                        return Err(reader::corrupt(&error));
+                    }
+                }
+            }
+            if !replay {
+                break;
+            }
+        }
+        held.checked_head = head;
+        if self.terminal.is_some() {
+            held.state = None;
+        }
+
         Ok(held.timestamp_ms)
     }
 }
@@ -391,7 +489,19 @@ impl SqliteWorkspaceQueryService {
             repository,
             references: Default::default(),
             clocks: Default::default(),
+            #[cfg(feature = "test-support")]
+            session_read_observer: Default::default(),
         })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn set_session_read_observer(&self, observer: Option<SessionReadObserver>) {
+        *self.session_read_observer.lock() = observer;
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn session_clock(&self, tree: &str) -> Option<Arc<parking_lot::Mutex<SessionClock>>> {
+        self.clocks.lock().get(tree).cloned()
     }
 
     pub async fn execution_records(
@@ -466,6 +576,21 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                     crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
                 };
                 let transaction = connection.unchecked_transaction().map_err(unavailable)?;
+                let mut index = index.lock();
+                if index.workspace.as_deref() != Some(&workspace) {
+                    let standalone = std::mem::take(&mut index.standalone);
+                    *index = ReferenceIndex {
+                        workspace: Some(workspace.clone()),
+                        standalone,
+                        ..Default::default()
+                    };
+                }
+                if ids
+                    .iter()
+                    .any(|id| crate::domain::workspace_tree::entities::is_standalone_reference(id))
+                {
+                    index.standalone.update(&transaction).map_err(unavailable)?;
+                }
                 let mut selected = std::collections::HashSet::new();
                 let mut owners = std::collections::HashMap::new();
                 let mut needs_workspace = false;
@@ -476,9 +601,12 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                         &["started"],
                     )
                     .map_err(unavailable)?;
-                    let owner = direct.map(|row| row.tree_id).or(
-                        crate::domain::workspace_tree::entities::public_node_tree(id),
-                    );
+                    let owner = direct
+                        .map(|row| row.tree_id)
+                        .or_else(|| index.standalone.owner(id).map(str::to_string))
+                        .or(crate::domain::workspace_tree::entities::public_node_tree(
+                            id,
+                        ));
                     let owner = match owner {
                         Some(owner) => Some(owner),
                         None => node_events::first_row_of_tree(&transaction, id)
@@ -493,33 +621,10 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                     }
                 }
                 if needs_workspace {
-                    let standalone: Vec<_> = ids
-                        .iter()
-                        .filter(|id| crate::domain::workspace_tree::entities::is_standalone_reference(id))
-                        .collect();
-                    if !standalone.is_empty() {
-                        for (tree, name) in node_events::corrupt_standalone_roots(&transaction)
-                            .map_err(unavailable)?
-                        {
-                            for id in standalone.iter().copied() {
-                                if crate::domain::workspace_tree::entities::standalone_reference_matches(&tree, &name, id) {
-                                    selected.insert(tree.clone());
-                                    owners.insert(id.clone(), tree.clone());
-                                }
-                            }
-                        }
-                    }
                     selected.extend(
                         node_events::workspace_reference_trees(&transaction, &workspace)
                             .map_err(unavailable)?,
                     );
-                }
-                let mut index = index.lock();
-                if index.workspace.as_deref() != Some(&workspace) {
-                    *index = ReferenceIndex {
-                        workspace: Some(workspace.clone()),
-                        ..Default::default()
-                    };
                 }
                 selected.extend(index.trees.keys().cloned());
                 let heads =
@@ -554,17 +659,22 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                             result.sessions.insert(id, attached.session_id);
                         }
                         Ok(_) => {}
-                        Err(error) => result
-                            .failures
-                            .push(crate::domain::failure::WorkFailure::from_error(&error)),
+                        Err(error) => result.failures.push(crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                            reference_id: id,
+                            failure: crate::domain::failure::WorkFailure::from_error(&error),
+                        }),
                     }
                 }
             }
-            Err(error) => result
-                .failures
-                .push(crate::domain::failure::WorkFailure::from_error(
-                    &query_error(error),
-                )),
+            Err(error) => {
+                let failure = crate::domain::failure::WorkFailure::from_error(&query_error(error));
+                result.failures.extend(node_ids.iter().map(|id| {
+                    crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                        reference_id: id.clone(),
+                        failure: failure.clone(),
+                    }
+                }));
+            }
         }
         result
     }
@@ -640,19 +750,44 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         let (tree, target) = (tree_id.to_string(), node_execution_id.to_string());
         let workspace = workspace_identity.as_str().to_string();
         let clocks = Arc::clone(&self.clocks);
+        #[cfg(feature = "test-support")]
+        let observer = self.session_read_observer.lock().clone();
         let read = backend
             .run_indexed(move |connection| {
                 use crate::adaptor::gateway::local_event_store::{node_events, reader};
                 let unavailable = |error: rusqlite::Error| reader::storage_unavailable(&error);
+                let tracked = clocks.lock().keys().cloned().collect();
+                let live: std::collections::HashSet<_> =
+                    node_events::reference_heads(connection, &tracked)
+                        .map_err(unavailable)?
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
+                let clock = {
+                    let mut clocks = clocks.lock();
+                    clocks.retain(|id, clock| {
+                        !tracked.contains(id) || live.contains(id) || Arc::strong_count(clock) > 1
+                    });
+                    Arc::clone(clocks.entry(tree.clone()).or_default())
+                };
+                #[cfg(feature = "test-support")]
+                if let Some(observer) = &observer {
+                    observer(SessionReadPhase::WaitingForClock);
+                }
+                let mut clock_state = clock.lock();
                 let transaction = connection.unchecked_transaction().map_err(unavailable)?;
                 let connection = &*transaction;
                 let Some(root_row) =
                     node_events::first_root_row_of_tree(connection, &tree, "started")
                         .map_err(unavailable)?
                 else {
-                    clocks.lock().remove(&tree);
+                    *clock_state = SessionClock::default();
                     return Ok(None);
                 };
+                #[cfg(feature = "test-support")]
+                if let Some(observer) = &observer {
+                    observer(SessionReadPhase::SnapshotEstablished);
+                }
                 let Some(root_record) = fact_log::record_from_row(&root_row)
                     .map_err(|error| reader::corrupt(&error))?
                 else {
@@ -707,17 +842,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                     retries: &retries,
                 };
                 let (records, projection) = source.read_scope(&roots)?;
-                let mut clocks = clocks.lock();
-                let tracked = clocks.keys().cloned().collect();
-                let live: std::collections::HashSet<_> =
-                    node_events::reference_heads(connection, &tracked)
-                        .map_err(unavailable)?
-                        .into_iter()
-                        .map(|(id, _)| id)
-                        .collect();
-                clocks.retain(|id, held| live.contains(id) && held.workspace == workspace);
-                let updated_at = source
-                    .execution_updated_at(clocks.entry(tree.clone()).or_default(), &root_row)?;
+                let updated_at = source.execution_updated_at(&mut clock_state, &root_row)?;
                 let rules = projection.0;
                 let starts = lineage;
                 Ok(Some((
@@ -1084,7 +1209,7 @@ pub(super) fn query_error(
     }
 }
 
-fn session_artifact_projection(fields: Vec<String>) -> (String, Vec<String>) {
+pub fn session_artifact_projection(fields: Vec<String>) -> (String, Vec<String>) {
     let mut parameters = Vec::new();
     let mut inputs = Vec::new();
     for field in fields {

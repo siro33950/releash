@@ -530,6 +530,89 @@ pub fn composite_routing_facts(
     records
 }
 
+pub fn delegated_routing_facts(switch: bool) -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let mut records = composite_routing_facts(false, switch);
+    let NodeFact::Started(started) = &mut records[0].fact else {
+        unreachable!()
+    };
+    let definition = started.root.as_mut().unwrap().definition.as_mut().unwrap();
+    let group = definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "group")
+        .unwrap();
+    let NodeKind::Sequence(group) = &mut group.kind else {
+        unreachable!()
+    };
+    match &mut group.children[0].rules.as_mut().unwrap()[0] {
+        Rule::Switch { on, .. } => *on = "child.verdict".into(),
+        Rule::When { on, .. } => *on = Predicate::Ref("child.passed".into()),
+        _ => unreachable!(),
+    }
+    let producer = definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "producer")
+        .unwrap();
+    producer.kind = NodeKind::Session(Default::default());
+    producer.completion.delegate = Some(SessionDelegate {
+        child: "maker".into(),
+        inputs: Vec::new(),
+        max_iterations: 2,
+        when: Predicate::Ref("child.passed".into()),
+    });
+    let inner = definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "inner")
+        .unwrap();
+    let NodeKind::Fanout(inner) = &mut inner.kind else {
+        unreachable!()
+    };
+    inner.items = Some(ItemsSource::ArtifactField {
+        node: "producer".into(),
+        field_path: FieldPath::from_dotted("child.items").unwrap(),
+    });
+    let mut expanded = Vec::new();
+    for mut record in records {
+        if record.meta.node_name == "producer" && matches!(record.fact, NodeFact::Started(_)) {
+            record.meta.kind = NodeKindName::Session;
+            expanded.push(record.clone());
+            for fact in [
+                NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+                NodeFact::ArtifactProduced(ArtifactProducedFact {
+                    value: serde_json::json!({"body":"private-worker"}),
+                    contract: None,
+                    request_id: None,
+                }),
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: None,
+                    token_usage: None,
+                }),
+            ] {
+                let mut submission = record.clone();
+                submission.fact = fact;
+                expanded.push(submission);
+            }
+            continue;
+        }
+        if record.meta.node_name == "maker" {
+            if let NodeFact::Started(started) = &mut record.fact {
+                started.parent = Some(ExecutionParentRef::delegate_child(
+                    record.meta.parent_id.as_ref().unwrap(),
+                ));
+            }
+        }
+        expanded.push(record);
+    }
+    for (index, record) in expanded.iter_mut().enumerate() {
+        record.seq = index as i64 + 1;
+        record.timestamp_ms = record.seq * 1000;
+    }
+    expanded
+}
+
 pub fn stop_first_delegate_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
     let mut records = retried_delegate_parent_facts();
     let end = records.len();

@@ -475,11 +475,17 @@ export type StartupWorktree = {
 export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
 
 export type WorkspaceStateDto = {
+	readFailures?: Array<WorkspaceStateReadFailure>;
 	readErrors?: Array<string>;
 	paneLayout?: PaneLayout;
 	version: 1;
 	tabs: WorkspaceTabsStateDto;
 	layout: WorkspaceLayoutStateDto;
+};
+
+export type WorkspaceStateReadFailure = {
+	referenceId?: string;
+	message?: string;
 };
 
 export type PaneLayout = {
@@ -1743,11 +1749,17 @@ export type InputSaveWorkspaceStateRequest = {
 };
 
 export type InputWorkspaceStateDto = {
+	readFailures?: Array<InputWorkspaceStateReadFailure>;
 	readErrors?: Array<string>;
 	paneLayout?: InputPaneLayout;
 	version: 1;
 	tabs: InputWorkspaceTabsStateDto;
 	layout: InputWorkspaceLayoutStateDto;
+};
+
+export type InputWorkspaceStateReadFailure = {
+	referenceId?: string;
+	message?: string;
 };
 
 export type InputPaneLayout = {

@@ -14,12 +14,12 @@ import SwiftProtobuf
   var panes = PaneWorkspace()
   private enum Failure {
     case operation(String)
-    case workspace(Set<String>)
+    case workspace([String: String])
 
     var message: String {
       switch self {
       case .operation(let message): return message
-      case .workspace(let errors): return errors.sorted().joined(separator: "\n")
+      case .workspace(let errors): return Set(errors.values).sorted().joined(separator: "\n")
       }
     }
   }
@@ -418,7 +418,7 @@ import SwiftProtobuf
   }
   func dismissFailure() {
     if case .workspace(let errors) = displayedFailure {
-      for error in errors where workspaceReadErrors[error] != nil {
+      for error in errors.keys where workspaceReadErrors[error] != nil {
         workspaceReadErrors[error] = true
       }
     }
@@ -458,19 +458,22 @@ import SwiftProtobuf
   }
   func receiveWorkspaceState(_ value: Releash_Client_V1_NullableWorkspaceStateDto, path: String) {
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
-    let errors = Set(value.hasValue ? value.value.readErrors : [])
-    let hasNewError = errors.contains { workspaceReadErrors[$0] == nil }
+    let errors = Dictionary(
+      (value.hasValue ? value.value.readFailures : []).map { ($0.referenceID, $0.message) },
+      uniquingKeysWith: { _, latest in latest })
+    let hasNewError = errors.keys.contains { workspaceReadErrors[$0] == nil }
     workspaceReadErrors = Dictionary(
-      uniqueKeysWithValues: errors.map {
+      uniqueKeysWithValues: errors.keys.map {
         ($0, workspaceReadErrors[$0] ?? false)
       })
     if hasNewError {
-      let visible = Set(workspaceReadErrors.filter { !$0.value }.keys)
+      let visible = errors.filter { workspaceReadErrors[$0.key] == false }
       if !visible.isEmpty { displayedFailure = .workspace(visible) }
     }
     if value.hasValue {
       workspaceState = value.value
       workspaceState.readErrors = []
+      workspaceState.readFailures = []
       if value.value.hasPaneLayout {
         do {
           layout = try PaneLayout(value.value.paneLayout)

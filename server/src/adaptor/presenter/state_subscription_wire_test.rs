@@ -591,16 +591,19 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                         selected_diff_file: None,
                     },
                 }),
-                vec![crate::domain::failure::WorkFailure {
+                vec![crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                    reference_id: "session-node".into(),
+                    failure: crate::domain::failure::WorkFailure {
                     kind: crate::domain::failure::Failure::Technical(
                         crate::domain::failure::TechnicalFailureNature::Other,
                     ),
                     message: "Session lookup failed".into(),
-                }],
+                }}],
             ),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
                     read_errors: vec!["Session lookup failed".into()],
+                    read_failures: vec![wire::WorkspaceStateReadFailure { reference_id: "session-node".into(), message: "Session lookup failed".into() }],
                     pane_layout: None,
                     version: Some(1),
                     tabs: Some(wire::WorkspaceTabsStateDto {

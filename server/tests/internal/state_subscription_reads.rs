@@ -1913,17 +1913,20 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             usize::from(fails),
             "reference {id}"
         );
+        if fails {
+            assert_eq!(resolution.failures[0].reference_id, id);
+        }
         individual_failures.extend(
             resolution
                 .failures
                 .into_iter()
-                .map(|failure| failure.message),
+                .map(|failure| failure.failure.message),
         );
     }
     individual_failures.sort();
     let mut messages: Vec<_> = failures
         .iter()
-        .map(|failure| failure.message.clone())
+        .map(|failure| failure.failure.message.clone())
         .collect();
     messages.sort();
     assert_eq!(failures.len(), 4, "{messages:?}");

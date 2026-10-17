@@ -41,7 +41,7 @@ pub async fn load_workspace_state(
 ) -> Result<
     (
         Option<WorkspaceState>,
-        Vec<crate::domain::failure::WorkFailure>,
+        Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
     ),
     WorkspaceStateError,
 > {

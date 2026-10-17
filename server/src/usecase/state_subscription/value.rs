@@ -53,7 +53,7 @@ pub enum StateValue {
     StartupRepository(Option<crate::usecase::repository_dto::StartupWorktree>),
     WorkspaceState(
         Option<crate::domain::workspace_state::WorkspaceState>,
-        Vec<crate::domain::failure::WorkFailure>,
+        Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
     ),
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FileTab(crate::usecase::code_dto::FileTabViewDto),

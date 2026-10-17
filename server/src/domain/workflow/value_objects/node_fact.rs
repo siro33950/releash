@@ -123,6 +123,10 @@ pub struct TreeRootFact {
 }
 
 impl TreeRootFact {
+    pub(crate) fn valid_worktree_path(path: &str) -> bool {
+        !path.trim().is_empty()
+    }
+
     pub fn without_definition(&self) -> Self {
         Self {
             repository_root: self.repository_root.clone(),
@@ -170,7 +174,7 @@ impl SessionExecutionTreeRootFacts {
             return Err(SessionExecutionTreeRootFactsError::WorkspaceIdentity);
         }
         let worktree_path = worktree_path.into();
-        if worktree_path.trim().is_empty() {
+        if !TreeRootFact::valid_worktree_path(&worktree_path) {
             return Err(SessionExecutionTreeRootFactsError::WorktreePath);
         }
         let node_name = "session".to_string();

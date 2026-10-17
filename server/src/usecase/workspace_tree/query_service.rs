@@ -39,7 +39,13 @@ pub trait WorkspaceQueryService: Send + Sync {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionNodeResolutionDto {
     pub sessions: std::collections::HashMap<String, String>,
-    pub failures: Vec<crate::domain::failure::WorkFailure>,
+    pub failures: Vec<SessionNodeResolutionFailureDto>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionNodeResolutionFailureDto {
+    pub reference_id: String,
+    pub failure: crate::domain::failure::WorkFailure,
 }
 
 pub struct SessionNodeDetailDto {

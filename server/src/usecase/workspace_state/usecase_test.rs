@@ -693,9 +693,12 @@ async fn test_旧会話参照の復元_解決を保存して再照会せず未�
         .lock()
         .sessions
         .insert("resolved".into(), "agent".into());
-    let failure = crate::domain::failure::WorkFailure::from_error(
-        &crate::domain::workflow::WorkflowError::external("lookup failed"),
-    );
+    let failure = crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+        reference_id: "failed".into(),
+        failure: crate::domain::failure::WorkFailure::from_error(
+            &crate::domain::workflow::WorkflowError::external("lookup failed"),
+        ),
+    };
     query.session_nodes.lock().failures.push(failure.clone());
     let original = legacy_state();
     let store = Store {

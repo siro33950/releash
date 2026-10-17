@@ -89,8 +89,16 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> Result<NodeEventRow, rusqlite::Error
     })
 }
 
-const ROW_COLUMNS: &str = "tree_id, seq, node_execution_id, parent_id, node_name, \
-     kind, attempt, event_type, session_id, detail, timestamp";
+const ROW_COLUMNS: &str = concat!(
+    "tree_id, seq, node_execution_id, parent_id, node_name, ",
+    "kind, attempt, event_type, session_id, detail, timestamp"
+);
+
+fn projected_columns(detail: &str) -> String {
+    let mut columns: Vec<_> = ROW_COLUMNS.split(", ").collect();
+    columns[9] = detail;
+    columns.join(", ")
+}
 
 /// Read one tree's facts in append order.
 pub fn read_tree(
@@ -162,18 +170,25 @@ pub(crate) fn reference_heads(
     Ok(heads)
 }
 
-pub(crate) fn artifact_value(
+pub(crate) fn artifact_values(
     connection: &Connection,
     tree: &str,
-    seq: i64,
-) -> Result<String, rusqlite::Error> {
-    connection.query_row(
-        "SELECT detail -> '$.value' FROM node_events WHERE tree_id = ?1 AND seq = ?2 AND event_type = 'artifact_produced'",
-        rusqlite::params![tree, seq], |row| row.get(0),
-    )
+    seqs: &std::collections::HashSet<i64>,
+) -> Result<Vec<(i64, String)>, rusqlite::Error> {
+    if seqs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let seqs = serde_json::to_string(seqs).expect("artifact sequences");
+    let mut statement = connection.prepare(
+        "SELECT seq, detail -> '$.value' FROM node_events WHERE tree_id = ?1 AND seq IN (SELECT value FROM json_each(?2)) AND event_type = 'artifact_produced'"
+    )?;
+    let rows = statement.query_map(rusqlite::params![tree, seqs], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
 }
 
-pub(crate) fn projected_tree_after<T>(
+pub fn projected_tree_after<T>(
     connection: &Connection,
     tree: &str,
     after: i64,
@@ -181,7 +196,7 @@ pub(crate) fn projected_tree_after<T>(
     parameters: &[String],
     mut project: impl FnMut(NodeEventRow) -> T,
 ) -> Result<Vec<T>, rusqlite::Error> {
-    let columns = ROW_COLUMNS.replace(", detail,", &format!(", {projection} AS detail,"));
+    let columns = projected_columns(projection);
     let mut values: Vec<&dyn rusqlite::ToSql> = vec![&tree, &after];
     values.extend(parameters.iter().map(|value| value as &dyn rusqlite::ToSql));
     let mut statement = connection.prepare(&format!(
@@ -205,19 +220,16 @@ pub(crate) fn workspace_reference_trees(
     rows.collect()
 }
 
-pub(crate) fn corrupt_standalone_roots(
+pub(crate) fn standalone_roots_after(
     connection: &Connection,
-) -> Result<Vec<(String, String)>, rusqlite::Error> {
+    tree: &str,
+    after: i64,
+) -> Result<Vec<String>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT tree_id, node_name FROM node_events WHERE event_type = 'started'
-         AND parent_id IS NULL AND kind = 'session' AND node_execution_id = tree_id
-         AND CASE WHEN json_valid(detail)
-             THEN COALESCE(json_type(detail, '$.root.worktreePath'), '') != 'text'
-                 OR trim(json_extract(detail, '$.root.worktreePath')) = ''
-             ELSE 1 END
-         ORDER BY tree_id, seq",
+        "SELECT node_name FROM node_events WHERE tree_id = ?1 AND seq > ?2 AND event_type = 'started'
+         AND parent_id IS NULL AND kind = 'session' AND node_execution_id = tree_id ORDER BY seq"
     )?;
-    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let rows = statement.query_map(rusqlite::params![tree, after], |row| row.get(0))?;
     rows.collect()
 }
 
@@ -263,7 +275,7 @@ pub(crate) fn tree_rows_with_event_types(
     rows.collect()
 }
 
-pub(crate) fn read_subtrees<T>(
+pub fn read_subtrees<T>(
     connection: &Connection,
     tree_id: &str,
     node_ids: &[String],
@@ -271,7 +283,7 @@ pub(crate) fn read_subtrees<T>(
     projection_parameters: &[String],
     mut project: impl FnMut(NodeEventRow) -> T,
 ) -> Result<Vec<T>, rusqlite::Error> {
-    let columns = ROW_COLUMNS.replace(", detail,", &format!(", {detail_projection} AS detail,"));
+    let columns = projected_columns(detail_projection);
     let node_ids = serde_json::to_string(node_ids).expect("node ids");
     let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&tree_id, &node_ids];
     parameters.extend(

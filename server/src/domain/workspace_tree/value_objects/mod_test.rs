@@ -505,7 +505,9 @@ fn test_背景失敗の観測_自身と実行の理由と分類を詳細入力�
         let mut input = listed.classification_input();
         let mut reason = listed.error_reason.clone();
         // When
-        input.observe_background_failure(target, "background", &mut reason);
+        if let Some(observed) = input.observe_background_failure(target, "background") {
+            reason = Some(observed.into());
+        }
         if input.observes(target) {
             listed.observe_background_failure("background");
         }

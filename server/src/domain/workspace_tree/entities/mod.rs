@@ -1299,8 +1299,8 @@ pub(crate) fn is_standalone_reference(reference: &str) -> bool {
     })
 }
 
-pub(crate) fn standalone_reference_matches(tree: &str, name: &str, reference: &str) -> bool {
-    opaque_standalone_session_node_id(tree, &workflow_node_occurrence_key(name, 0)) == reference
+pub fn standalone_reference(tree: &str, name: &str) -> String {
+    opaque_standalone_session_node_id(tree, &workflow_node_occurrence_key(name, 0))
 }
 
 pub(crate) fn node_identities(

@@ -6,6 +6,17 @@ import XCTest
 
 @testable import Releash
 
+private func workspaceFailures(_ messages: [String])
+  -> [Releash_Client_V1_WorkspaceStateReadFailure]
+{
+  messages.map { message in
+    var failure = Releash_Client_V1_WorkspaceStateReadFailure()
+    failure.referenceID = message
+    failure.message = message
+    return failure
+  }
+}
+
 final class AppModelTests: XCTestCase {
   @MainActor func testDeletingSelectedWorktreeClearsLayoutWithoutChangingAnotherSelection() {
     let model = AppModel()
@@ -68,30 +79,30 @@ final class AppModelTests: XCTestCase {
     let model = AppModel()
     model.selectWorktree("/repo")
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
-    state.value.readErrors = ["first", "second"]
+    state.value.readFailures = workspaceFailures(["first", "second"])
     // When
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
     XCTAssertEqual(model.failure, "first\nsecond")
     // When
     model.dismissFailure()
-    state.value.readErrors.reverse()
+    state.value.readFailures.reverse()
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
     XCTAssertNil(model.failure)
     // When
-    state.value.readErrors = ["second", "third"]
+    state.value.readFailures = workspaceFailures(["second", "third"])
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
     XCTAssertEqual(model.failure, "third")
     // When
     model.dismissFailure()
-    state.value.readErrors = ["second"]
+    state.value.readFailures = workspaceFailures(["second"])
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
     XCTAssertNil(model.failure)
     // When
-    state.value.readErrors = ["first", "second"]
+    state.value.readFailures = workspaceFailures(["first", "second"])
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
     XCTAssertEqual(model.failure, "first")
@@ -108,23 +119,58 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.failure, "first\nsecond")
   }
 
+  @MainActor func test_配置復元エラー_診断文言が変わっても参照の閉じた状態を維持する() {
+    // Given
+    let model = AppModel()
+    model.selectWorktree("/repo")
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    var first = Releash_Client_V1_WorkspaceStateReadFailure()
+    first.referenceID = "first-reference"
+    first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
+    state.value.readFailures = [first]
+    model.receiveWorkspaceState(state, path: "/repo")
+    model.dismissFailure()
+    // When
+    first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
+    state.value.readFailures = [first]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    var second = first
+    second.referenceID = "second-reference"
+    state.value.readFailures = [first, second]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, second.message)
+    // When
+    model.dismissFailure()
+    state.value.readFailures = [second]
+    model.receiveWorkspaceState(state, path: "/repo")
+    first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
+    state.value.readFailures = [first, second]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, first.message)
+  }
+
   @MainActor func test_配置復元エラー_表示中に解消してから閉じても再発を表示する() {
     for remaining in [[], ["second"]] {
       // Given
       let model = AppModel()
       model.selectWorktree("/repo")
       var state = Releash_Client_V1_NullableWorkspaceStateDto()
-      state.value.readErrors = ["first", "second"]
+      state.value.readFailures = workspaceFailures(["first", "second"])
       model.receiveWorkspaceState(state, path: "/repo")
       // When
-      state.value.readErrors = remaining
+      state.value.readFailures = workspaceFailures(remaining)
       model.receiveWorkspaceState(state, path: "/repo")
       model.dismissFailure()
       model.receiveWorkspaceState(state, path: "/repo")
       // Then
       XCTAssertNil(model.failure)
       // When
-      state.value.readErrors = ["first", "second"]
+      state.value.readFailures = workspaceFailures(["first", "second"])
       model.receiveWorkspaceState(state, path: "/repo")
       // Then
       XCTAssertEqual(model.failure, remaining.isEmpty ? "first\nsecond" : "first")
@@ -136,7 +182,7 @@ final class AppModelTests: XCTestCase {
       let model = AppModel()
       model.selectWorktree("/repo")
       var state = Releash_Client_V1_NullableWorkspaceStateDto()
-      state.value.readErrors = ["same failure"]
+      state.value.readFailures = workspaceFailures(["same failure"])
       model.receiveWorkspaceState(state, path: "/repo")
       model.failure = "same failure"
       if switchWorkspace {
@@ -144,11 +190,11 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.failure, "same failure")
       } else {
         model.dismissFailure()
-        state.value.readErrors = ["same failure", "new failure"]
+        state.value.readFailures = workspaceFailures(["same failure", "new failure"])
         model.receiveWorkspaceState(state, path: "/repo")
         XCTAssertEqual(model.failure, "new failure\nsame failure")
         model.failure = "same failure"
-        state.value.readErrors = []
+        state.value.readFailures = workspaceFailures([])
         model.receiveWorkspaceState(state, path: "/repo")
         XCTAssertEqual(model.failure, "same failure")
       }
@@ -168,7 +214,7 @@ final class AppModelTests: XCTestCase {
       ], active: "ready")
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
     state.value.paneLayout = layout.message
-    state.value.readErrors = ["Session reference could not be read"]
+    state.value.readFailures = workspaceFailures(["Session reference could not be read"])
     // When
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
@@ -182,6 +228,7 @@ final class AppModelTests: XCTestCase {
     let saved = try Releash_Client_V1_SaveWorkspaceStateRequest(
       serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
     XCTAssertTrue(saved.state.readErrors.isEmpty)
+    XCTAssertTrue(saved.state.readFailures.isEmpty)
     await model.stop()
   }
 }

@@ -216,23 +216,11 @@ pub(crate) fn resolve_node_field_path(
     let mut position = 0;
     let mut visited = HashSet::from([node.name.as_str()]);
     loop {
-        if let Some(delegate) = &current.completion.delegate {
-            if field_path
-                .segments()
-                .get(position)
-                .is_some_and(|segment| segment == "child")
-            {
-                let child = workflow
-                    .node_by_name(&delegate.child)
-                    .filter(|child| node_has_artifact(child))
-                    .filter(|child| visited.insert(child.name.as_str()))
-                    .ok_or_else(|| missing_node_field(position, "child"))?;
-                current = child;
-                position += 1;
-                continue;
-            }
-        }
-        if !current.is_composite() {
+        let delegated_child = field_path
+            .segments()
+            .get(position)
+            .is_some_and(|segment| segment == "child" && current.completion.delegate.is_some());
+        if !current.is_composite() && !delegated_child {
             break;
         }
         if current.is_isolated()
@@ -246,8 +234,8 @@ pub(crate) fn resolve_node_field_path(
         let Some(segment) = field_path.segments().get(position) else {
             return Ok(ResolvedNodeField::Map);
         };
-        let child = composite_artifact_child(current, segment)
-            .and_then(|entry| workflow.node_by_name(&entry.name))
+        let child = artifact_child_name(current, segment)
+            .and_then(|name| workflow.node_by_name(name))
             .filter(|child| node_has_artifact(child))
             .filter(|child| visited.insert(child.name.as_str()))
             .ok_or_else(|| missing_node_field(position, segment))?;
@@ -277,6 +265,15 @@ pub(crate) fn resolve_node_field_path(
         schema: resolved.schema.clone(),
         required: resolved.required,
     })
+}
+
+pub(crate) fn artifact_child_name<'a>(node: &'a NodeDefinition, key: &str) -> Option<&'a str> {
+    if key == "child" {
+        if let Some(delegate) = &node.completion.delegate {
+            return Some(&delegate.child);
+        }
+    }
+    composite_artifact_child(node, key).map(|child| child.name.as_str())
 }
 
 pub(crate) fn composite_artifact_child<'a>(

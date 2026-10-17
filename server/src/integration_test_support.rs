@@ -42,6 +42,11 @@ pub mod daemon {
     pub use crate::usecase::daemon::DaemonUsecase;
 }
 pub mod persistence {
+    pub use crate::adaptor::gateway::local_event_store::node_events::{
+        projected_tree_after, read_subtrees,
+    };
+    pub use crate::adaptor::gateway::workflow::fact_log::record_from_row;
+
     pub use crate::adaptor::gateway::app_data_gc::apply_canonical_runtime_owners;
     pub use crate::adaptor::gateway::app_data_gc::build_startup_gc_request;
     pub use crate::adaptor::gateway::app_data_gc::StdGcFileSystem;
@@ -840,6 +845,7 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::EnvironmentVariableName;
     pub use crate::domain::workflow::value_objects::definition::InputParameterRef;
     pub use crate::domain::workflow::value_objects::field_path::FieldPath;
+    pub use crate::domain::workflow::ApprovalGrantedFact;
     pub use crate::usecase::workflow::dto::facet_summary_to_dto;
     pub use crate::usecase::workflow::node_startup::NodeStartupGateway;
     pub use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
@@ -1016,9 +1022,10 @@ pub mod workflow {
     pub use crate::domain::workflow::services::routing::RouteDecision;
     pub use crate::domain::workflow::services::secret_masker::mask_sensitive_text;
     pub use crate::domain::workflow::services::test_helpers::{
-        composite_dynamic_fanout_facts, composite_routing_facts, isolated_session_timestamp_facts,
-        retried_delegate_parent_facts, scoped_dynamic_fanout_facts, session_timestamp_facts,
-        sibling_sequence_timestamp_facts, stop_first_delegate_facts,
+        composite_dynamic_fanout_facts, composite_routing_facts, delegated_routing_facts,
+        isolated_session_timestamp_facts, retried_delegate_parent_facts,
+        scoped_dynamic_fanout_facts, session_timestamp_facts, sibling_sequence_timestamp_facts,
+        stop_first_delegate_facts,
     };
     pub use crate::domain::workflow::services::validation::validate;
     pub use crate::domain::workflow::services::validation::ValidationError;
@@ -1136,6 +1143,13 @@ pub mod workflow {
     pub use crate::usecase::workflow::workspace_tree::WorkspaceNodeContentDto;
 }
 pub mod workspace {
+    pub use crate::adaptor::gateway::workspace_tree::query_service::SessionReadPhase;
+    pub use crate::adaptor::gateway::workspace_tree::query_service::{
+        session_artifact_projection, SessionClock, SessionFactSource, StandaloneReferences,
+    };
+    pub use crate::domain::workflow::services::node_read::artifact_fields;
+    pub use crate::domain::workspace_tree::entities::standalone_reference;
+
     pub async fn node_for_execution(
         repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
         workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
