@@ -460,6 +460,19 @@ final class SessionTabPaneTests: XCTestCase {
     // Then
     try await eventually { stopped(preparing.subscriptionID) }
     XCTAssertNotNil(model.terminalAttachment(path: "/repo", id: "agent", agent: true))
+    let attachment = try XCTUnwrap(
+      model.terminalAttachment(path: "/repo", id: "agent", agent: true))
+    // When
+    for _ in 0..<3 {
+      model.openRoot(root)
+      try http.publish(payload, target: "node-detail")
+    }
+    // Then
+    try await eventuallyView(host) { host.element("terminal:agent") != nil }
+    XCTAssertEqual(model.panes.controller.allTabIds, [tab])
+    XCTAssertEqual(http.requests("OpenAgentSession").count, 1)
+    XCTAssertEqual(
+      model.terminalAttachment(path: "/repo", id: "agent", agent: true), attachment)
     // When
     model.panes.controller.closeTab(tab)
     // Then
@@ -468,6 +481,97 @@ final class SessionTabPaneTests: XCTestCase {
         && model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
     }
     await model.stop()
+  }
+
+  @MainActor func test_準備中の会話タブ_遅い紐付けは別ペインの既存会話へ戻り余分な購読を解放する() async throws {
+    for fromDetail in [false, true] {
+      // Given
+      let http = TestHTTPClient()
+      var snapshot = Releash_Client_V1_SessionTabSnapshot()
+      snapshot.session.id = "agent"
+      snapshot.session.workspaceWorktreePath = "/repo"
+      snapshot.session.availability = .open
+      snapshot.node.title = "Ready"
+      var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
+      detail.id = "node"
+      detail.content.session = Releash_Client_V1_WorkspaceSessionNodeContentDto()
+      http.state.withLock {
+        $0.sessionTabs["agent"] = snapshot
+        $0.nodeDetails["node"] = detail
+      }
+      let model = try await testModel(http)
+      model.selectWorktree("/repo")
+      try await eventually { model.layoutLoaded }
+      model.openNode(.session, id: "agent", title: "Session")
+      let existing = try XCTUnwrap(model.panes.controller.allTabIds.first)
+      let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+      let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
+      let host = await ViewHarness(WorkspacePaneView(model: model))
+      try await eventuallyView(host) { host.element("terminal:agent") != nil }
+      let attachment = try XCTUnwrap(
+        model.terminalAttachment(path: "/repo", id: "agent", agent: true))
+      model.panes.controller.focusPane(second)
+      var root = Releash_Client_V1_WorkspaceTreeItem()
+      root.node.id = "node"
+      root.node.contentKind.value = .session
+      model.openRoot(root)
+      try await eventuallyView(host) { host.texts().contains("Sessionを準備しています") }
+      let opens = http.requests("OpenAgentSession").count
+      let subscriptions = http.state.withLock {
+        $0.subscriptions.filter { $0.target == "session-tab" || $0.target == "terminal" }
+      }
+      let preparing = try XCTUnwrap(
+        http.state.withLock { $0.subscriptions.last { $0.target == "node-detail" } })
+      detail.content.session.sessionID = "agent"
+      var payload = Releash_Client_V1_StatePayload()
+      payload.nodeDetail.value = detail
+      // When
+      if fromDetail {
+        try http.publish(payload, target: "node-detail")
+      } else {
+        var bound = root
+        bound.node.sessionID = "agent"
+        model.openRoot(bound)
+      }
+      // Then
+      try await eventually {
+        model.panes.controller.allTabIds == [existing]
+          && http.requests("StopStateSubscription").contains {
+            (try? Releash_Client_V1_StopStateSubscriptionRequest(
+              serializedBytes: $0.message ?? Data()
+            ).subscriptionID) == preparing.subscriptionID
+          }
+      }
+      // When
+      for _ in 0..<3 {
+        model.openRoot(root)
+        try http.publish(payload, target: "node-detail")
+      }
+      // Then
+      try await eventuallyView(host) { host.element("terminal:agent") != nil }
+      XCTAssertEqual(model.panes.controller.allTabIds, [existing])
+      XCTAssertEqual(model.panes.controller.focusedPaneId, first)
+      XCTAssertEqual(model.panes.controller.selectedTab(inPane: first)?.id, existing)
+      XCTAssertEqual(http.requests("OpenAgentSession").count, opens)
+      XCTAssertEqual(
+        model.terminalAttachment(path: "/repo", id: "agent", agent: true), attachment)
+      XCTAssertEqual(
+        http.state.withLock {
+          $0.subscriptions.filter { $0.target == "session-tab" || $0.target == "terminal" }
+        }, subscriptions)
+      XCTAssertTrue(http.requests("ArchiveWorkspaceWorkflowExecution").isEmpty)
+      XCTAssertTrue(http.requests("AbortWorkflow").isEmpty)
+      try await eventually {
+        guard let data = http.requests("SaveWorkspaceState").last?.message,
+          let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data),
+          let layout = try? PaneLayout(saved.state.paneLayout)
+        else { return false }
+        return layout.tabs.count == 1 && layout.tabs.first?.agentSessionID == "agent"
+          && layout.tabs.first?.nodeID == nil
+      }
+      host.close()
+      await model.stop()
+    }
   }
 
   @MainActor func test_準備中の会話タブ_一覧の紐付けが先に届いても同じタブを保存し購読する() async throws {

@@ -82,6 +82,59 @@ final class SessionTabTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_会話タブ_詳細の紐付け後に古い一覧を繰り返し開いても同じタブを選ぶ() throws {
+    // Given
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    workspace.openPendingSession(id: "node", title: "Preparing")
+    let tab = try XCTUnwrap(workspace.controller.allTabIds.first)
+    // When
+    XCTAssertEqual(workspace.bindSession(tab, sessionID: "agent"), tab)
+    for _ in 0..<3 { workspace.openPendingSession(id: "node", title: "Preparing") }
+    // Then
+    XCTAssertEqual(workspace.controller.allTabIds, [tab])
+    XCTAssertEqual(
+      workspace.controller.selectedTab(inPane: workspace.controller.allPaneIds[0])?.id, tab)
+    XCTAssertEqual(try workspace.layout().tabs.first?.agentSessionID, "agent")
+    XCTAssertNil(try workspace.layout().tabs.first?.nodeID)
+    // When
+    workspace.controller.closeTab(tab)
+    workspace.openPendingSession(id: "node", title: "Preparing")
+    // Then
+    let reopened = try XCTUnwrap(workspace.controller.allTabIds.first)
+    XCTAssertNotEqual(reopened, tab)
+    XCTAssertNil(workspace.bindSession(tab, sessionID: "agent"))
+    XCTAssertNil(workspace.tab(reopened)?.agentSessionID)
+  }
+
+  @MainActor func test_会話タブ_別ペインの既存会話へ準備中タブの解決を集約する() throws {
+    for detailFirst in [false, true] {
+      // Given
+      let workspace = PaneWorkspace()
+      try workspace.restore(.empty())
+      workspace.openNode(.session, id: "agent", title: "Ready")
+      let existing = try XCTUnwrap(workspace.controller.allTabIds.first)
+      let first = try XCTUnwrap(workspace.controller.allPaneIds.first)
+      let second = try XCTUnwrap(workspace.controller.splitPane(first, orientation: .vertical))
+      workspace.controller.focusPane(second)
+      workspace.openPendingSession(id: "node", title: "Preparing")
+      let pending = try XCTUnwrap(workspace.controller.allTabIds.first { $0 != existing })
+      // When
+      if detailFirst {
+        XCTAssertEqual(workspace.bindSession(pending, sessionID: "agent"), existing)
+      } else {
+        workspace.openSession(id: "agent", nodeID: "node", title: "Ready")
+      }
+      workspace.openPendingSession(id: "node", title: "Preparing")
+      // Then
+      XCTAssertEqual(workspace.controller.allTabIds, [existing])
+      XCTAssertEqual(workspace.controller.focusedPaneId, first)
+      XCTAssertEqual(workspace.controller.selectedTab(inPane: first)?.id, existing)
+      XCTAssertNil(workspace.bindSession(pending, sessionID: "agent"))
+      XCTAssertEqual(try workspace.layout().tabs.map(\.agentSessionID), ["agent"])
+    }
+  }
+
   @MainActor func test_配置保存の監視_分割率と選択と参照の変更を検知する() throws {
     // Given
     let workspace = PaneWorkspace()

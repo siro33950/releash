@@ -14,6 +14,7 @@ import SwiftUI
   let controller = BonsplitController()
   private var identifiers: [String: String] = [:]
   private var tabs: [String: PaneTab] = [:]
+  private var pendingSessionTabs: [String: TabID] = [:]
   private var nextTerminalNumber = 1
 
   init() {
@@ -69,6 +70,7 @@ import SwiftUI
     try controller.restoreLayout(snapshot, tabs: metadata)
     identifiers = ids
     self.tabs = restoredTabs
+    pendingSessionTabs = [:]
     nextTerminalNumber = terminalNumber
   }
 
@@ -152,27 +154,29 @@ import SwiftUI
   }
 
   func openSession(id sessionID: String, nodeID: String, title: String) {
-    if let existing = controller.allTabIds.first(where: {
-      tabs[$0.id.uuidString]?.kind == .session
-        && tabs[$0.id.uuidString]?.agentSessionID == sessionID
-    }) {
-      controller.selectTab(existing)
-      return
-    }
     if let pending = controller.allTabIds.first(where: {
       tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
     }) {
-      bindSession(pending, sessionID: sessionID)
-      controller.selectTab(pending)
+      if let selected = bindSession(pending, sessionID: sessionID) {
+        controller.selectTab(selected)
+      }
     } else {
       openNode(.session, id: sessionID, title: title)
+      if let selected = controller.allTabIds.first(where: {
+        tabs[$0.id.uuidString]?.agentSessionID == sessionID
+      }) {
+        pendingSessionTabs[nodeID] = selected
+      }
     }
   }
 
   func openPendingSession(id nodeID: String, title: String) {
-    if let existing = controller.allTabIds.first(where: {
-      tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
-    }) {
+    pendingSessionTabs = pendingSessionTabs.filter { controller.allTabIds.contains($0.value) }
+    if let existing = pendingSessionTabs[nodeID]
+      ?? controller.allTabIds.first(where: {
+        tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
+      })
+    {
       controller.selectTab(existing)
       return
     }
@@ -180,13 +184,33 @@ import SwiftUI
       return
     }
     tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: .session, nodeID: nodeID)
+    pendingSessionTabs[nodeID] = id
   }
 
-  func bindSession(_ id: TabID, sessionID: String) {
-    guard var tab = tabs[id.id.uuidString], tab.kind == .session else { return }
+  @discardableResult
+  func bindSession(_ id: TabID, sessionID: String) -> TabID? {
+    guard controller.allTabIds.contains(id),
+      var tab = tabs[id.id.uuidString], tab.kind == .session
+    else { return nil }
+    if let nodeID = tab.nodeID { pendingSessionTabs[nodeID] = id }
+    if let existing = controller.allTabIds.first(where: {
+      $0 != id && tabs[$0.id.uuidString]?.kind == .session
+        && tabs[$0.id.uuidString]?.agentSessionID == sessionID
+    }) {
+      pendingSessionTabs = pendingSessionTabs.mapValues { $0 == id ? existing : $0 }
+      controller.closeTab(id, preservingPane: true)
+      controller.selectTab(existing)
+      return existing
+    }
     tab.agentSessionID = sessionID
     tab.nodeID = nil
     tabs[id.id.uuidString] = tab
+    return id
+  }
+
+  func splitTabBar(_ controller: BonsplitController, didCloseTab id: TabID, fromPane pane: PaneID) {
+    tabs.removeValue(forKey: id.id.uuidString)
+    pendingSessionTabs = pendingSessionTabs.filter { $0.value != id }
   }
 
   func renameNode(_ nodeID: String, title: String) {

@@ -65,6 +65,21 @@ final class BonsplitTests: XCTestCase {
     }
 
     @MainActor
+    func test_タブ整理_空ペインの維持を指定した場合だけ分割を保つ() throws {
+        for preservingPane in [false, true] {
+            // Given
+            let (controller, first, second) = makeTwoPaneController()
+            let tab = try XCTUnwrap(controller.createTab(title: "Preparing", inPane: second))
+            // When
+            XCTAssertTrue(controller.closeTab(tab, preservingPane: preservingPane))
+            // Then
+            XCTAssertNil(controller.tab(tab))
+            XCTAssertTrue(controller.allPaneIds.contains(first))
+            XCTAssertEqual(controller.allPaneIds.contains(second), preservingPane)
+        }
+    }
+
+    @MainActor
     func testConfiguration() {
         let config = BonsplitConfiguration(
             allowSplits: false,

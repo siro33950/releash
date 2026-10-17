@@ -155,9 +155,9 @@ public final class BonsplitController {
     /// - Parameter tabId: The tab to close
     /// - Returns: true if the tab was closed, false if vetoed by delegate
     @discardableResult
-    public func closeTab(_ tabId: TabID) -> Bool {
+    public func closeTab(_ tabId: TabID, preservingPane: Bool = false) -> Bool {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return false }
-        return closeTab(tabId, with: tabIndex, in: pane)
+        return closeTab(tabId, with: tabIndex, in: pane, preservingPane: preservingPane)
     }
     
     /// Close a tab by ID in a specific pane.
@@ -176,7 +176,7 @@ public final class BonsplitController {
     /// - Parameter tabId: The tab to close
     /// - Parameter tabIndex: The position of the tab within the pane
     /// - Parameter pane: The pane in which to close the tab
-    private func closeTab(_ tabId: TabID, with tabIndex: Int, in pane: PaneState) -> Bool {
+    private func closeTab(_ tabId: TabID, with tabIndex: Int, in pane: PaneState, preservingPane: Bool = false) -> Bool {
         let tabItem = pane.tabs[tabIndex]
         let tab = Tab(from: tabItem)
         let paneId = pane.id
@@ -186,7 +186,7 @@ public final class BonsplitController {
             return false
         }
 
-        internalController.closeTab(tabId.id, inPane: pane.id)
+        internalController.closeTab(tabId.id, inPane: pane.id, preservingPane: preservingPane)
 
         // Notify delegate
         delegate?.splitTabBar(self, didCloseTab: tabId, fromPane: paneId)
