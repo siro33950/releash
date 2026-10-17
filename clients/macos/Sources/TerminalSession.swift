@@ -103,6 +103,7 @@ import SwiftTerm
       resize()
       flushInput()
       failure = nil
+      screen.needsDisplay = true
     case .output(let output):
       guard attachment == current else { return }
       screen.feed(text: output.data)
@@ -130,7 +131,6 @@ import SwiftTerm
       showExit(exit.hasExitCode ? exit.exitCode : nil)
     case nil: failure = "Terminalのイベントがありません"
     }
-    screen.needsDisplay = true
   }
 
   private func apply(_ status: Releash_Client_V1_TerminalStatus?) {
