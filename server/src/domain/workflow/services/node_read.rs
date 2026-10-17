@@ -10,62 +10,20 @@ use crate::domain::workflow::{
     Predicate, Rule, TreeRootFact,
 };
 
-pub(crate) const CLOCK_FACT_TYPES: &[&str] = &[
-    "started",
-    "session_attached",
-    "command_spawned",
-    "artifact_produced",
-    "submit_received",
-    "stop_received",
-    "approval_granted",
-    "retry_requested",
-    "delegate_result_injected",
-    "standalone_session_node_completed",
-    "process_exited",
-    "execution_completed",
-    "abort_requested",
-];
-
-pub(crate) fn clock_scope<'a>(
-    target: &'a str,
-    starts: &HashMap<&str, &'a NodeFactRecord>,
-) -> &'a str {
-    let mut current = target;
-    while let Some(start) = starts
-        .get(current)
-        .filter(|start| start.meta.kind.is_composite_kind())
-    {
-        let Some(parent) = start.meta.parent_id.as_deref().filter(|parent| {
-            starts
-                .get(*parent)
-                .is_some_and(|parent| parent.meta.kind.is_composite_kind())
-        }) else {
-            break;
-        };
-        current = parent;
-    }
-    current
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AppliedFactTime {
-    pub seq: i64,
     pub timestamp_ms: i64,
 }
 
 impl AppliedFactTime {
     fn record(&mut self, fact: &NodeFactRecord) {
         *self = Self {
-            seq: fact.seq,
             timestamp_ms: fact.timestamp_ms,
         };
     }
 }
 
-pub(crate) struct NodeReadProjectionResult {
-    pub nodes: HashMap<String, NodeReadRules>,
-    pub applied: AppliedFactTime,
-}
+pub(crate) type NodeReadProjectionResult = (HashMap<String, NodeReadRules>, AppliedFactTime);
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeReadRules {
@@ -93,17 +51,19 @@ pub(crate) fn artifact_fields(root: &TreeRootFact) -> Vec<String> {
                 }
             }
             if let NodeKind::Sequence(sequence) = &node.kind {
-                for rule in sequence
-                    .children
-                    .iter()
-                    .flat_map(|child| child.rules.iter().flatten())
-                {
-                    match rule {
-                        Rule::When { on, .. } => collect_fields(on, &mut fields),
-                        Rule::Switch { on, .. } => {
-                            fields.insert(on.clone());
+                for child in &sequence.children {
+                    for rule in child.rules.iter().flatten() {
+                        let mut references = HashSet::new();
+                        match rule {
+                            Rule::When { on, .. } => collect_fields(on, &mut references),
+                            Rule::Switch { on, .. } => {
+                                references.insert(on.clone());
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                        for field in references {
+                            collect_artifact_field(definition, &child.name, &field, &mut fields);
+                        }
                     }
                 }
             }
@@ -156,7 +116,7 @@ pub(crate) fn subtree_read_projection(
     records: &[NodeFactRecord],
     terminal: Option<&NodeFactRecord>,
     retries: &HashMap<String, String>,
-    artifact_changes: &HashMap<i64, bool>,
+    mut artifact_value: Option<&mut dyn FnMut(i64) -> Result<serde_json::Value, String>>,
 ) -> Result<NodeReadProjectionResult, String> {
     match project_read_rules(
         root,
@@ -164,11 +124,13 @@ pub(crate) fn subtree_read_projection(
         records,
         terminal,
         retries,
-        artifact_changes,
+        artifact_value
+            .as_mut()
+            .map(|value| &mut **value as &mut dyn FnMut(i64) -> Result<serde_json::Value, String>),
     ) {
         Err(_) if terminal.is_some() && root.definition.is_some() => {
             // Terminal history remains readable when its saved definition can no longer replay it.
-            project_read_rules(root, None, records, terminal, retries, artifact_changes)
+            project_read_rules(root, None, records, terminal, retries, artifact_value)
         }
         result => result,
     }
@@ -180,10 +142,9 @@ fn project_read_rules(
     records: &[NodeFactRecord],
     terminal: Option<&NodeFactRecord>,
     retries: &HashMap<String, String>,
-    artifact_changes: &HashMap<i64, bool>,
+    artifact_value: Option<&mut dyn FnMut(i64) -> Result<serde_json::Value, String>>,
 ) -> Result<NodeReadProjectionResult, String> {
-    let mut projection =
-        NodeReadProjection::new(root, saved_definition, records, retries, artifact_changes);
+    let mut projection = NodeReadProjection::new(root, saved_definition, retries, artifact_value);
     for (position, record) in records.iter().enumerate() {
         if terminal.is_some_and(|terminal| record.seq > terminal.seq) {
             break;
@@ -195,82 +156,183 @@ fn project_read_rules(
         {
             continue;
         }
-        projection.propagate_completion(record, records.get(position + 1))?;
+        projection.propagate_completion(record, records.get(position + 1), None)?;
     }
     projection.finish(terminal)
 }
 
-struct NodeReadProjection<'a> {
-    applied: AppliedFactTime,
-    artifact_changes: &'a HashMap<i64, bool>,
-    sessions: HashMap<&'a str, &'a str>,
-    current_session: Option<&'a str>,
-    commands: HashMap<&'a str, (&'a str, Option<&'a str>, Option<&'a str>)>,
-    root: &'a TreeRootFact,
-    saved_definition: Option<&'a crate::domain::workflow::WorkflowDefinition>,
-    starts: HashMap<&'a str, &'a NodeFactRecord>,
-    retry_predecessors: &'a HashMap<String, String>,
+#[derive(Default)]
+pub(crate) struct NodeReadState {
+    pub seq: i64,
+    pub applied: AppliedFactTime,
+    sessions: HashMap<String, String>,
+    current_session: Option<String>,
+    commands: HashMap<String, (String, Option<String>, Option<String>)>,
+    starts: HashMap<String, NodeFactRecord>,
     nodes: HashMap<String, NodeReadRules>,
     artifacts: HashMap<String, serde_json::Value>,
+    artifact_rows: HashMap<String, i64>,
     delegates: HashMap<String, DelegateRuntime>,
     fanout_counts: HashMap<String, usize>,
     sequences: HashMap<
         String,
         crate::domain::workflow::entities::workflow_execution::SequenceScopeRuntime,
     >,
-    approved: HashSet<&'a str>,
+    approved: HashSet<String>,
     propagated: HashSet<String>,
     predecessors: HashMap<String, String>,
-    continuations: DelegateContinuations<'a>,
-    children_by_parent: HashMap<&'a str, Vec<&'a NodeFactRecord>>,
+    continuations: DelegateContinuations<String>,
+    children_by_parent: HashMap<String, Vec<NodeFactRecord>>,
+    pending: Option<NodeFactRecord>,
 }
 
-impl<'a> NodeReadProjection<'a> {
+pub(crate) fn update_read_state(
+    state: &mut NodeReadState,
+    root: &TreeRootFact,
+    records: &[NodeFactRecord],
+    retries: &HashMap<String, String>,
+    artifact_value: &mut dyn FnMut(i64) -> Result<serde_json::Value, String>,
+) -> Result<AppliedFactTime, String> {
+    let mut projection = NodeReadProjection::new(
+        root,
+        root.definition.as_ref(),
+        retries,
+        Some(artifact_value),
+    );
+    projection.state = std::mem::take(state);
+    for record in records {
+        if let Some(previous) = projection.state.pending.take() {
+            if !super::fact_replay::is_submitted_artifact_pair(&previous, record) {
+                projection.propagate_completion(&previous, Some(record), None)?;
+            }
+        }
+        projection.apply_record(record)?;
+        projection.state.seq = record.seq;
+        let mut pending = record.clone();
+        if let NodeFact::Started(started) = &mut pending.fact {
+            started.root = None;
+        }
+        projection.state.pending = Some(pending);
+    }
+    let applied = match projection.state.pending.clone() {
+        Some(last) => projection.preview_completion(&last)?,
+        None => projection.state.applied,
+    };
+    *state = projection.state;
+    Ok(applied)
+}
+
+struct CompletionCheckpoint {
+    id: String,
+    node: NodeReadRules,
+    artifact: Option<serde_json::Value>,
+    sequence: Option<crate::domain::workflow::entities::workflow_execution::SequenceScopeRuntime>,
+    delegate: Option<DelegateRuntime>,
+    propagated: bool,
+}
+
+impl CompletionCheckpoint {
+    fn restore(self, state: &mut NodeReadState) {
+        fn restore_entry<T>(map: &mut HashMap<String, T>, id: &str, value: Option<T>) {
+            match value {
+                Some(value) => {
+                    map.insert(id.to_string(), value);
+                }
+                None => {
+                    map.remove(id);
+                }
+            }
+        }
+        state.nodes.insert(self.id.clone(), self.node);
+        restore_entry(&mut state.artifacts, &self.id, self.artifact);
+        restore_entry(&mut state.sequences, &self.id, self.sequence);
+        restore_entry(&mut state.delegates, &self.id, self.delegate);
+        if !self.propagated {
+            state.propagated.remove(&self.id);
+        }
+    }
+}
+
+struct CompletionJournal {
+    entries: Vec<CompletionCheckpoint>,
+    seen: HashSet<String>,
+    applied: AppliedFactTime,
+}
+
+impl CompletionJournal {
+    fn new(applied: AppliedFactTime) -> Self {
+        Self {
+            entries: Vec::new(),
+            seen: HashSet::new(),
+            applied,
+        }
+    }
+
+    fn capture(&mut self, state: &NodeReadState, id: &str) {
+        let Some(node) = state.nodes.get(id) else {
+            return;
+        };
+        if !self.seen.insert(id.to_string()) {
+            return;
+        }
+        self.entries.push(CompletionCheckpoint {
+            id: id.to_string(),
+            node: node.clone(),
+            artifact: state.artifacts.get(id).cloned(),
+            sequence: state.sequences.get(id).cloned(),
+            delegate: state.delegates.get(id).cloned(),
+            propagated: state.propagated.contains(id),
+        });
+    }
+
+    fn restore(self, state: &mut NodeReadState) {
+        for entry in self.entries {
+            entry.restore(state);
+        }
+        state.applied = self.applied;
+    }
+}
+
+struct NodeReadProjection<'a, 'v> {
+    state: NodeReadState,
+    artifact_value: Option<&'v mut dyn FnMut(i64) -> Result<serde_json::Value, String>>,
+    root: &'a TreeRootFact,
+    saved_definition: Option<&'a crate::domain::workflow::WorkflowDefinition>,
+    retry_predecessors: &'a HashMap<String, String>,
+}
+
+impl<'a, 'v> NodeReadProjection<'a, 'v> {
     fn new(
         root: &'a TreeRootFact,
         saved_definition: Option<&'a crate::domain::workflow::WorkflowDefinition>,
-        records: &'a [NodeFactRecord],
         retries: &'a HashMap<String, String>,
-        artifact_changes: &'a HashMap<i64, bool>,
+        artifact_value: Option<&'v mut dyn FnMut(i64) -> Result<serde_json::Value, String>>,
     ) -> Self {
         Self {
-            applied: AppliedFactTime::default(),
-            artifact_changes,
-            sessions: HashMap::new(),
-            current_session: None,
-            commands: HashMap::new(),
+            state: NodeReadState::default(),
             root,
             saved_definition,
-            starts: records
-                .iter()
-                .filter(|record| matches!(record.fact, NodeFact::Started(_)))
-                .map(|record| (record.meta.node_execution_id.as_str(), record))
-                .collect(),
             retry_predecessors: retries,
-            nodes: HashMap::new(),
-            artifacts: HashMap::new(),
-            delegates: HashMap::new(),
-            fanout_counts: HashMap::new(),
-            sequences: HashMap::new(),
-            approved: HashSet::new(),
-            propagated: HashSet::new(),
-            predecessors: HashMap::new(),
-            continuations: DelegateContinuations::default(),
-            children_by_parent: HashMap::new(),
+            artifact_value,
         }
     }
 
     fn definition(&self, id: &str) -> Option<&'a NodeDefinition> {
         self.saved_definition?
-            .node_by_name(&self.starts.get(id)?.meta.node_name)
+            .node_by_name(&self.state.starts.get(id)?.meta.node_name)
     }
 
     fn start_node(
         &mut self,
-        record: &'a NodeFactRecord,
+        record: &NodeFactRecord,
         started: &crate::domain::workflow::StartedFact,
     ) -> Result<(), String> {
         let id = record.meta.node_execution_id.as_str();
+        let mut start = record.clone();
+        if let NodeFact::Started(started) = &mut start.fact {
+            started.root = None;
+        }
+        self.state.starts.insert(id.into(), start.clone());
 
         if self.saved_definition.is_some()
             && self
@@ -282,8 +344,8 @@ impl<'a> NodeReadProjection<'a> {
                 record.meta.node_name
             ));
         }
-        self.applied.record(record);
-        self.nodes.insert(
+        self.state.applied.record(record);
+        self.state.nodes.insert(
             id.into(),
             NodeReadRules {
                 status: NodeExecutionStatus::Running,
@@ -303,50 +365,55 @@ impl<'a> NodeReadProjection<'a> {
                     .meta
                     .parent_id
                     .as_ref()
-                    .and_then(|parent| self.sequences.get(parent))
+                    .and_then(|parent| self.state.sequences.get(parent))
                     .and_then(|sequence| sequence.artifact_field(node, field_path))
                     .and_then(serde_json::Value::as_u64)
                     .map(|count| count as usize),
             };
             if let Some(count) = count {
-                self.fanout_counts.insert(id.to_string(), count);
+                self.state.fanout_counts.insert(id.to_string(), count);
             }
         }
         let predecessor = self.retry_predecessors.get(id).map(String::as_str);
         if let Some(parent) = record.meta.parent_id.as_deref() {
-            self.children_by_parent
-                .entry(parent)
+            self.state
+                .children_by_parent
+                .entry(parent.to_string())
                 .or_default()
-                .push(record);
+                .push(start);
         }
         if let Some(previous) = predecessor {
             if let Some((state, artifact, signals)) =
-                self.delegates.get(previous).and_then(|state| {
+                self.state.delegates.get(previous).and_then(|state| {
                     state.inherit_pending_result(
-                        self.artifacts.get(previous),
-                        self.nodes[previous].completion_signals,
+                        self.state.artifacts.get(previous),
+                        self.state.nodes[previous].completion_signals,
                     )
                 })
             {
                 if let Some(artifact) = artifact {
-                    self.artifacts.insert(id.to_string(), artifact);
+                    self.state.artifacts.insert(id.to_string(), artifact);
                 }
-                let node = self.nodes.get_mut(id).unwrap();
+                let node = self.state.nodes.get_mut(id).unwrap();
                 node.completion_signals = signals;
-                node.has_artifact = self.artifacts.contains_key(id);
+                node.has_artifact = self.state.artifacts.contains_key(id);
                 node.delegate_waits_for_child = state.waits_for_child();
-                self.delegates.insert(id.to_string(), state);
+                self.state.delegates.insert(id.to_string(), state);
             }
-            self.predecessors
+            self.state
+                .predecessors
                 .insert(id.to_string(), previous.to_string());
         }
-        self.continuations.record(id, predecessor);
+        self.state
+            .continuations
+            .record(id.to_string(), predecessor.map(str::to_string));
         if let Some(parent) = &record.meta.parent_id {
             if self
                 .definition(parent)
                 .is_some_and(|node| matches!(node.kind, NodeKind::Sequence(_)))
             {
-                self.sequences
+                self.state
+                    .sequences
                     .entry(parent.clone())
                     .or_default()
                     .replay_child_start(&record.meta.node_name, record.meta.attempt);
@@ -357,14 +424,18 @@ impl<'a> NodeReadProjection<'a> {
             .as_ref()
             .filter(|parent| parent.is_delegate_child())
         {
-            let parent_id = self.continuations.resolve(&parent.parent_id);
-            let state = self.delegates.entry(parent_id.to_string()).or_default();
+            let parent_id = self.state.continuations.resolve(parent.parent_id.clone());
+            let state = self
+                .state
+                .delegates
+                .entry(parent_id.to_string())
+                .or_default();
             if predecessor.is_none() {
                 state.child_started(id);
             } else {
                 state.child_restarted(id);
             }
-            if let Some(parent) = self.nodes.get_mut(parent_id) {
+            if let Some(parent) = self.state.nodes.get_mut(&parent_id) {
                 parent.delegate_waits_for_child = state.waits_for_child();
             }
         }
@@ -373,12 +444,12 @@ impl<'a> NodeReadProjection<'a> {
 
     fn record_artifact(
         &mut self,
-        record: &'a NodeFactRecord,
+        record: &NodeFactRecord,
         artifact: &crate::domain::workflow::ArtifactProducedFact,
     ) -> Result<(), String> {
         let id = record.meta.node_execution_id.as_str();
 
-        if !self.nodes.contains_key(id) {
+        if !self.state.nodes.contains_key(id) {
             return Ok(());
         }
         let mut value = expand_fields(&artifact.value);
@@ -389,11 +460,11 @@ impl<'a> NodeReadProjection<'a> {
             .definition(id)
             .and_then(|node| node.completion.delegate.as_ref())
         {
-            let state = self.delegates.entry(id.to_string()).or_default();
+            let state = self.state.delegates.entry(id.to_string()).or_default();
             let last = state
                 .last_child
                 .as_ref()
-                .and_then(|id| self.artifacts.get(id));
+                .and_then(|id| self.state.artifacts.get(id));
             let Some(prepared) = state.prepare_artifact(delegate, value, last) else {
                 return Ok(());
             };
@@ -404,27 +475,48 @@ impl<'a> NodeReadProjection<'a> {
                     Some(&value),
                 ),
             );
-            if let Some(node) = self.nodes.get_mut(id) {
+            if let Some(node) = self.state.nodes.get_mut(id) {
                 node.delegate_waits_for_child = state.waits_for_child();
             }
         }
-        if transition::artifact_changes_execution(
-            delegated,
-            self.artifact_changes
-                .get(&record.seq)
+        if let Some(artifact_value) = &mut self.artifact_value {
+            let previous = self
+                .state
+                .artifact_rows
+                .get(id)
                 .copied()
-                .ok_or_else(|| format!("artifact change is missing for fact {}", record.seq))?,
-        ) {
-            self.applied.record(record);
+                .map(&mut **artifact_value)
+                .transpose()?;
+            let previous = previous.map(|value| {
+                match self
+                    .state
+                    .starts
+                    .get(id)
+                    .and_then(|start| match &start.fact {
+                        NodeFact::Started(started) if !start.meta.kind.is_composite_kind() => {
+                            started.worktree.as_ref()
+                        }
+                        _ => None,
+                    }) {
+                    Some(worktree) => worktree.with_artifact(Some(value)),
+                    None => value,
+                }
+            });
+            let current = artifact_value(record.seq)?;
+            if transition::artifact_changes_execution(delegated, previous.as_ref(), &current) {
+                self.state.applied.record(record);
+                self.state.artifact_rows.insert(id.to_string(), record.seq);
+            }
         }
-        self.nodes.get_mut(id).unwrap().has_artifact = true;
-        self.artifacts.insert(id.to_string(), value);
-        if self.nodes[id].status == NodeExecutionStatus::Succeeded {
+        self.state.nodes.get_mut(id).unwrap().has_artifact = true;
+        self.state.artifacts.insert(id.to_string(), value);
+        if self.state.nodes[id].status == NodeExecutionStatus::Succeeded {
             if let Some(parent) = record.meta.parent_id.as_deref().filter(|parent| {
                 self.definition(parent)
                     .is_some_and(|node| node.sequence().is_some())
             }) {
-                self.sequences
+                self.state
+                    .sequences
                     .entry(parent.to_string())
                     .or_default()
                     .record_child_result(crate::domain::workflow::value_objects::RuntimeArtifact {
@@ -432,7 +524,7 @@ impl<'a> NodeReadProjection<'a> {
                         attempt: record.meta.attempt,
                         session_id: None,
                         result: None,
-                        artifact: self.artifacts.get(id).cloned(),
+                        artifact: self.state.artifacts.get(id).cloned(),
                         contract: None,
                         token_usage: None,
                         completed_at: record.timestamp_ms as f64 / 1000.0,
@@ -442,31 +534,33 @@ impl<'a> NodeReadProjection<'a> {
         Ok(())
     }
 
-    fn apply_record(&mut self, record: &'a NodeFactRecord) -> Result<(), String> {
+    fn apply_record(&mut self, record: &NodeFactRecord) -> Result<(), String> {
         let id = record.meta.node_execution_id.as_str();
         match &record.fact {
             NodeFact::Started(started) => self.start_node(record, started)?,
             NodeFact::ArtifactProduced(artifact) => self.record_artifact(record, artifact)?,
             NodeFact::SessionAttached(attached) => {
-                let fanout_child = self.starts.get(id).is_some_and(|start| matches!(&start.fact,
+                let fanout_child = self.state.starts.get(id).is_some_and(|start| matches!(&start.fact,
                     NodeFact::Started(started) if started.parent.as_ref().is_some_and(|parent| parent.is_fanout_child())));
                 use crate::domain::workflow::entities::workflow_execution::{
                     RuntimeNodeExecution, TransitionOutcome,
                 };
-                if self.nodes.get(id).is_some_and(|node| {
+                if self.state.nodes.get(id).is_some_and(|node| {
                     RuntimeNodeExecution::session_attachment_transition(
                         node.status,
-                        self.sessions.get(id).copied(),
-                        self.current_session,
+                        self.state.sessions.get(id).map(String::as_str),
+                        self.state.current_session.as_deref(),
                         &attached.session_id,
                         fanout_child,
                     ) == TransitionOutcome::Applied
                 }) {
-                    self.sessions.insert(id, &attached.session_id);
+                    self.state
+                        .sessions
+                        .insert(id.to_string(), attached.session_id.clone());
                     if !fanout_child {
-                        self.current_session = Some(&attached.session_id);
+                        self.state.current_session = Some(attached.session_id.clone());
                     }
-                    self.applied.record(record);
+                    self.state.applied.record(record);
                 }
             }
             NodeFact::CommandSpawned(command) => {
@@ -478,24 +572,34 @@ impl<'a> NodeReadProjection<'a> {
                 use crate::domain::workflow::entities::workflow_execution::{
                     RuntimeNodeExecution, TransitionOutcome,
                 };
-                if self.nodes.get(id).is_some_and(|node| {
+                if self.state.nodes.get(id).is_some_and(|node| {
                     RuntimeNodeExecution::command_preparation_transition(
                         node.status,
-                        self.commands.get(id).copied(),
+                        self.state.commands.get(id).map(|value| {
+                            (value.0.as_str(), value.1.as_deref(), value.2.as_deref())
+                        }),
                         value,
                     ) == TransitionOutcome::Applied
                 }) {
-                    self.commands.insert(id, value);
-                    self.applied.record(record);
+                    self.state.commands.insert(
+                        id.to_string(),
+                        (
+                            value.0.into(),
+                            value.1.map(str::to_string),
+                            value.2.map(str::to_string),
+                        ),
+                    );
+                    self.state.applied.record(record);
                 }
             }
             NodeFact::SubmitReceived(_) | NodeFact::StopReceived(_) => {
                 if matches!(&record.fact, NodeFact::StopReceived(stop) if stop.result_summary.is_some() || stop.token_usage.is_some())
-                    && self.nodes.contains_key(id)
+                    && self.state.nodes.contains_key(id)
                 {
-                    self.applied.record(record);
+                    self.state.applied.record(record);
                 }
                 if let Some(node) = self
+                    .state
                     .nodes
                     .get_mut(id)
                     .filter(|node| node.status.is_active())
@@ -509,39 +613,38 @@ impl<'a> NodeReadProjection<'a> {
                         },
                     );
                     if node.completion_signals != previous {
-                        self.applied.record(record);
+                        self.state.applied.record(record);
                     }
                 }
             }
             NodeFact::DelegateResultInjected(child) => {
-                if let (Some(node), Some(state)) =
-                    (self.nodes.get_mut(id), self.delegates.get_mut(id))
-                {
+                if let (Some(node), Some(state)) = (
+                    self.state.nodes.get_mut(id),
+                    self.state.delegates.get_mut(id),
+                ) {
                     if state.inject_result(child, node.status, &mut node.completion_signals) {
                         node.delegate_waits_for_child = state.waits_for_child();
-                        self.applied.record(record);
+                        self.state.applied.record(record);
                     }
                 }
             }
             NodeFact::StandaloneSessionNodeCompleted => {
-                if let Some(node) = self.nodes.get_mut(id).filter(|node| {
+                if let Some(node) = self.state.nodes.get_mut(id).filter(|node| {
                     node.status.can_complete_standalone(
                         self.root.launched_as,
                         record.meta.kind,
                         record.meta.parent_id.is_none(),
                     )
                 }) {
-                    self.applied.record(record);
+                    self.state.applied.record(record);
                     node.status = NodeExecutionStatus::Succeeded;
                     node.completed_at = Some(record.timestamp_ms as f64 / 1000.0);
                 }
             }
             NodeFact::ApprovalGranted(_) => {
-                if !self.nodes.get(id).is_some_and(|node| {
-                    node.status.accepts_approval(
-                        self.root.launched_as == ExecutionTreeLaunch::Workflow
-                            && self.saved_definition.is_some(),
-                    )
+                if !self.state.nodes.get(id).is_some_and(|node| {
+                    node.status
+                        .accepts_approval(self.saved_definition.is_some())
                 }) {
                     return Ok(());
                 }
@@ -549,63 +652,73 @@ impl<'a> NodeReadProjection<'a> {
                     .definition(id)
                     .is_some_and(|node| node.kind_name().is_composite_kind())
                 {
-                    self.applied.record(record);
-                    self.approved.insert(id);
-                } else if let Some(node) = self
-                    .nodes
-                    .get_mut(id)
-                    .filter(|node| node.status.is_active())
-                {
-                    self.applied.record(record);
-                    node.status = NodeExecutionStatus::Succeeded;
-                    node.completed_at = Some(record.timestamp_ms as f64 / 1000.0);
+                    self.state.applied.record(record);
+                    self.state.approved.insert(id.to_string());
+                } else if let Some(node) = self.state.nodes.get_mut(id) {
+                    self.state.applied.record(record);
+                    node.status.apply_approval(
+                        &mut node.completed_at,
+                        self.saved_definition.is_some(),
+                        record.timestamp_ms as f64 / 1000.0,
+                    );
                 }
             }
             NodeFact::ProcessExited(exit)
                 if record.meta.kind == NodeKindName::Command && exit.exit_code == Some(0) =>
             {
-                if exit.result_summary.is_some() && self.nodes.contains_key(id) {
-                    self.applied.record(record);
+                if exit.result_summary.is_some() && self.state.nodes.contains_key(id) {
+                    self.state.applied.record(record);
                 }
                 let status = self
                     .definition(id)
                     .map(|node| scope_completion_status(node, false))
                     .unwrap_or(NodeExecutionStatus::Succeeded);
                 if let Some(node) = self
+                    .state
                     .nodes
                     .get_mut(id)
                     .filter(|node| node.status.is_active())
                 {
                     if node.status != status {
-                        self.applied.record(record);
+                        self.state.applied.record(record);
                     }
                     node.status = status;
                 }
             }
             NodeFact::RetryRequested => {
-                if let Some(node) = self.nodes.get_mut(id).filter(|node| {
+                if let Some(node) = self.state.nodes.get_mut(id).filter(|node| {
                     self.saved_definition.is_none() || node.status.can_restart(record.meta.kind)
                 }) {
-                    self.applied.record(record);
+                    self.state.applied.record(record);
                     node.status = NodeExecutionStatus::Aborted;
                     node.completed_at = Some(record.timestamp_ms as f64 / 1000.0);
                 }
             }
             NodeFact::ExecutionCompleted | NodeFact::AbortRequested(_) => {
-                self.applied.record(record)
+                self.state.applied.record(record)
             }
             _ => {}
         }
         Ok(())
     }
 
+    fn preview_completion(&mut self, record: &NodeFactRecord) -> Result<AppliedFactTime, String> {
+        let mut journal = CompletionJournal::new(self.state.applied);
+        let result = self
+            .propagate_completion(record, None, Some(&mut journal))
+            .map(|()| self.state.applied);
+        journal.restore(&mut self.state);
+        result
+    }
+
     fn propagate_completion(
         &mut self,
-        record: &'a NodeFactRecord,
+        record: &NodeFactRecord,
         next: Option<&NodeFactRecord>,
+        mut journal: Option<&mut CompletionJournal>,
     ) -> Result<(), String> {
         let id = record.meta.node_execution_id.as_str();
-        let mut pending = std::collections::VecDeque::from([id]);
+        let mut pending = std::collections::VecDeque::from([id.to_string()]);
         for start in
             std::iter::once(record).filter(|record| matches!(record.fact, NodeFact::Started(_)))
         {
@@ -616,7 +729,7 @@ impl<'a> NodeReadProjection<'a> {
             let NodeKind::Fanout(_) = &node_definition.kind else {
                 continue;
             };
-            let item_count = self.fanout_counts.get(*empty_id).copied();
+            let item_count = self.state.fanout_counts.get(*empty_id).copied();
             let isolated =
                 matches!(&start.fact, NodeFact::Started(started) if started.worktree.is_some());
             let failed = next.is_some_and(|next| {
@@ -625,52 +738,60 @@ impl<'a> NodeReadProjection<'a> {
             });
             let active = !next.is_some_and(|next| matches!(next.fact, NodeFact::AbortRequested(_)));
             if super::transition::is_empty_isolated_fanout(item_count, isolated)
-                && self.nodes.get(*empty_id).is_some_and(|node| {
+                && self.state.nodes.get(*empty_id).is_some_and(|node| {
                     super::transition::empty_isolated_fanout_ready(active, node.status, failed)
                 })
             {
+                if let Some(journal) = journal.as_deref_mut() {
+                    journal.capture(&self.state, empty_id);
+                }
                 let children = read_scope_children(
-                    &self.children_by_parent,
+                    &self.state.children_by_parent,
                     empty_id,
-                    &self.nodes,
-                    &self.artifacts,
-                    &self.predecessors,
+                    &self.state.nodes,
+                    &self.state.artifacts,
+                    &self.state.predecessors,
                 );
                 if let Some((status, artifact)) = transition::finish_composite(
                     node_definition,
-                    self.nodes[*empty_id].status,
+                    self.state.nodes[*empty_id].status,
                     false,
                     item_count,
                     &children,
                 )
                 .map_err(|error| error.to_string())?
                 {
-                    let node = self.nodes.get_mut(*empty_id).unwrap();
+                    let node = self.state.nodes.get_mut(*empty_id).unwrap();
                     if node.status != status {
-                        self.applied.record(record);
+                        self.state.applied.record(record);
                     }
                     node.status = status;
                     node.has_artifact = artifact.is_some();
                     if let Some(artifact) = artifact {
-                        self.artifacts.insert(empty_id.to_string(), artifact);
+                        self.state.artifacts.insert(empty_id.to_string(), artifact);
                     }
                 }
-                pending.push_back(empty_id);
+                pending.push_back(empty_id.to_string());
             }
         }
         while let Some(id) = pending.pop_front() {
-            let Some(node) = self.nodes.get(id) else {
+            let id = id.as_str();
+            let Some(node) = self.state.nodes.get(id) else {
                 continue;
             };
-            let Some(start) = self.starts.get(id) else {
+            let Some(start) = self.state.starts.get(id).cloned() else {
                 continue;
             };
+            if let Some(journal) = journal.as_deref_mut() {
+                journal.capture(&self.state, id);
+            }
             if node.status == NodeExecutionStatus::Running
                 && start.meta.kind == NodeKindName::Session
                 && (self
                     .definition(id)
                     .is_none_or(|node| node.completion.delegate.is_none())
                     || self
+                        .state
                         .delegates
                         .get(id)
                         .is_some_and(|state| state.handshake(node.completion_signals).is_none()))
@@ -687,50 +808,51 @@ impl<'a> NodeReadProjection<'a> {
                     _ => None,
                 };
                 if let Some(status) = status {
-                    self.nodes.get_mut(id).unwrap().status = status;
+                    self.state.nodes.get_mut(id).unwrap().status = status;
                 }
             }
             if let Some(node_definition) = self
                 .definition(id)
                 .filter(|node| node.kind_name().is_composite_kind())
             {
-                if self.nodes[id].status == NodeExecutionStatus::Succeeded
-                    || self.approved.contains(id)
+                if self.state.nodes[id].status == NodeExecutionStatus::Succeeded
+                    || self.state.approved.contains(id)
                 {
                     let children = read_scope_children(
-                        &self.children_by_parent,
+                        &self.state.children_by_parent,
                         id,
-                        &self.nodes,
-                        &self.artifacts,
-                        &self.predecessors,
+                        &self.state.nodes,
+                        &self.state.artifacts,
+                        &self.state.predecessors,
                     );
                     if let Some((status, artifact)) = transition::finish_composite(
                         node_definition,
-                        self.nodes[id].status,
+                        self.state.nodes[id].status,
                         true,
-                        self.fanout_counts.get(id).copied(),
+                        self.state.fanout_counts.get(id).copied(),
                         &children,
                     )
                     .map_err(|error| error.to_string())?
                     {
-                        let node = self.nodes.get_mut(id).unwrap();
+                        let node = self.state.nodes.get_mut(id).unwrap();
                         if node.status != status {
-                            self.applied.record(record);
+                            self.state.applied.record(record);
                         }
                         node.status = status;
                         node.has_artifact = artifact.is_some();
                         if let Some(artifact) = artifact {
-                            self.artifacts.insert(id.to_string(), artifact);
+                            self.state.artifacts.insert(id.to_string(), artifact);
                         }
                     }
                 }
             }
-            if self.nodes[id].status != NodeExecutionStatus::Succeeded
-                || !self.propagated.insert(id.to_string())
+            if self.state.nodes[id].status != NodeExecutionStatus::Succeeded
+                || !self.state.propagated.insert(id.to_string())
             {
                 continue;
             }
-            self.nodes
+            self.state
+                .nodes
                 .get_mut(id)
                 .unwrap()
                 .completed_at
@@ -738,17 +860,21 @@ impl<'a> NodeReadProjection<'a> {
             let Some(parent) = start.meta.parent_id.as_deref() else {
                 continue;
             };
-            let parent = self.continuations.resolve(parent);
+            let parent = self.state.continuations.resolve(parent.to_string());
+            let parent = parent.as_str();
             let Some(parent_definition) = self.definition(parent) else {
                 continue;
             };
+            if let Some(journal) = journal.as_deref_mut() {
+                journal.capture(&self.state, parent);
+            }
             match transition::completion_parent(Some(parent), |id| {
                 self.definition(id)
                     .is_some_and(|node| node.completion.delegate.is_some())
             }) {
                 transition::CompletionParent::Root => {}
                 transition::CompletionParent::Scope(parent) => {
-                    let sequence = self.sequences.entry(parent.to_string()).or_default();
+                    let sequence = self.state.sequences.entry(parent.to_string()).or_default();
                     if parent_definition.sequence().is_some() {
                         sequence.record_child_result(
                             crate::domain::workflow::value_objects::RuntimeArtifact {
@@ -756,7 +882,7 @@ impl<'a> NodeReadProjection<'a> {
                                 attempt: start.meta.attempt,
                                 session_id: None,
                                 result: None,
-                                artifact: self.artifacts.get(id).cloned(),
+                                artifact: self.state.artifacts.get(id).cloned(),
                                 contract: None,
                                 token_usage: None,
                                 completed_at: record.timestamp_ms as f64 / 1000.0,
@@ -764,46 +890,46 @@ impl<'a> NodeReadProjection<'a> {
                         );
                     }
                     let children = read_scope_children(
-                        &self.children_by_parent,
+                        &self.state.children_by_parent,
                         parent,
-                        &self.nodes,
-                        &self.artifacts,
-                        &self.predecessors,
+                        &self.state.nodes,
+                        &self.state.artifacts,
+                        &self.state.predecessors,
                     );
                     let route = transition::advance_composite(
                         self.saved_definition.expect("node definition"),
                         parent_definition,
                         &start.meta.node_name,
                         &sequence.child_counts,
-                        self.fanout_counts.get(parent).copied(),
+                        self.state.fanout_counts.get(parent).copied(),
                         &children,
                     )
                     .map_err(|error| error.to_string())?;
                     if matches!(route, Some(super::routing::RouteDecision::Completed)) {
                         if let Some((status, artifact)) = transition::finish_composite(
                             parent_definition,
-                            self.nodes[parent].status,
+                            self.state.nodes[parent].status,
                             false,
-                            self.fanout_counts.get(parent).copied(),
+                            self.state.fanout_counts.get(parent).copied(),
                             &children,
                         )
                         .map_err(|error| error.to_string())?
                         {
-                            let node = self.nodes.get_mut(parent).unwrap();
+                            let node = self.state.nodes.get_mut(parent).unwrap();
                             if node.status != status {
-                                self.applied.record(record);
+                                self.state.applied.record(record);
                             }
                             node.status = status;
                             node.has_artifact = artifact.is_some();
                             if let Some(artifact) = artifact {
-                                self.artifacts.insert(parent.to_string(), artifact);
+                                self.state.artifacts.insert(parent.to_string(), artifact);
                             }
-                            pending.push_back(parent);
+                            pending.push_back(parent.to_string());
                         }
                     }
                 }
                 transition::CompletionParent::Delegate(parent) => {
-                    let Some(state) = self.delegates.get_mut(parent) else {
+                    let Some(state) = self.state.delegates.get_mut(parent) else {
                         continue;
                     };
                     let delegate = parent_definition
@@ -815,18 +941,18 @@ impl<'a> NodeReadProjection<'a> {
                         .settle_child(
                             delegate,
                             id,
-                            self.artifacts.get(parent),
-                            self.artifacts.get(id),
+                            self.state.artifacts.get(parent),
+                            self.state.artifacts.get(id),
                         )
                         .map_err(|error| error.to_string())?
                     else {
                         continue;
                     };
-                    self.artifacts.insert(parent.to_string(), artifact);
-                    let node = self.nodes.get_mut(parent).unwrap();
+                    self.state.artifacts.insert(parent.to_string(), artifact);
+                    let node = self.state.nodes.get_mut(parent).unwrap();
                     node.delegate_waits_for_child = state.waits_for_child();
                     if state.handshake(node.completion_signals).is_none() {
-                        pending.push_back(parent);
+                        pending.push_back(parent.to_string());
                     }
                 }
             }
@@ -839,8 +965,9 @@ impl<'a> NodeReadProjection<'a> {
         terminal: Option<&NodeFactRecord>,
     ) -> Result<NodeReadProjectionResult, String> {
         if let Some(terminal) = terminal {
-            self.applied.record(terminal);
+            self.state.applied.record(terminal);
             for node in self
+                .state
                 .nodes
                 .values_mut()
                 .filter(|node| node.status.is_active())
@@ -853,43 +980,41 @@ impl<'a> NodeReadProjection<'a> {
                 };
             }
         }
-        for (id, node) in &mut self.nodes {
+        for (id, node) in &mut self.state.nodes {
             let parent = self
+                .state
                 .starts
                 .get(id.as_str())
                 .and_then(|start| start.meta.parent_id.as_deref());
             if let Some(parent) = parent.filter(|parent| {
                 self.saved_definition
                     .and_then(|definition| {
-                        definition.node_by_name(&self.starts.get(*parent)?.meta.node_name)
+                        definition.node_by_name(&self.state.starts.get(*parent)?.meta.node_name)
                     })
                     .is_some_and(|node| node.completion.delegate.is_some())
             }) {
-                node.parent_id = Some(self.continuations.resolve(parent).to_string());
+                node.parent_id = Some(self.state.continuations.resolve(parent.to_string()));
             }
         }
         let histories =
-            super::history::retry_history_chains(self.nodes.iter().map(|(id, node)| {
+            super::history::retry_history_chains(self.state.nodes.iter().map(|(id, node)| {
                 (
                     id.as_str(),
-                    self.predecessors.get(id).map(String::as_str),
+                    self.state.predecessors.get(id).map(String::as_str),
                     !node.status.is_active(),
                 )
             }));
         for (_, chain) in histories {
             for id in chain {
-                self.nodes.get_mut(&id).unwrap().hidden = true;
+                self.state.nodes.get_mut(&id).unwrap().hidden = true;
             }
         }
-        Ok(NodeReadProjectionResult {
-            nodes: self.nodes,
-            applied: self.applied,
-        })
+        Ok((self.state.nodes, self.state.applied))
     }
 }
 
 fn read_scope_children<'a>(
-    children: &'a HashMap<&str, Vec<&'a NodeFactRecord>>,
+    children: &'a HashMap<String, Vec<NodeFactRecord>>,
     parent: &str,
     nodes: &'a HashMap<String, NodeReadRules>,
     artifacts: &'a HashMap<String, serde_json::Value>,

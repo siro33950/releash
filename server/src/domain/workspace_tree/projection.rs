@@ -199,9 +199,11 @@ pub fn runtime_snapshot_nodes(
             execution_active,
             runtime.kind,
             node.process_presence,
-            node_executions.iter().all(|candidate| {
-                !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
-            }),
+            || {
+                node_executions.iter().all(|candidate| {
+                    !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
+                })
+            },
         );
         node.provider = workflow_definition
             .and_then(|definition| definition.node_by_name(&runtime.node_name))

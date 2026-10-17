@@ -2402,7 +2402,8 @@ impl ExecutionTree {
         }
         if !workflow_transition::artifact_changes_execution(
             self.is_delegate_parent(node_execution_id),
-            execution.artifact.as_ref() != Some(&value),
+            execution.artifact.as_ref(),
+            &value,
         ) {
             return TransitionOutcome::AlreadyApplied;
         }
@@ -2987,8 +2988,8 @@ impl ExecutionTree {
                 .iter_mut()
                 .find(|node| node.id == node_execution_id)
             {
-                node.status = RuntimeNodeExecutionStatus::Succeeded;
-                node.completed_at = Some(timestamp);
+                node.status
+                    .apply_approval(&mut node.completed_at, false, timestamp);
             }
             self.runtime.updated_at = timestamp;
             return Ok(());

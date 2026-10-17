@@ -1229,39 +1229,51 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
     stream.next().await;
 
     // When / Then
-    let key = FailureKey::new("workflow_delegate_injection", &child.node_execution_id);
-    for expected_classification in ["attention", "idle"] {
-        if expected_classification == "attention" {
-            recording.observed(
-                &key,
-                WorkFailure {
-                    kind: Failure::Technical(TechnicalFailureNature::Other),
-                    message: "delegate injection failed".into(),
-                },
+    for failed_target in [
+        &child.node_execution_id,
+        &parent.node_execution_id,
+        &parent.tree_id,
+    ] {
+        let key = FailureKey::new("workflow_delegate_injection", failed_target);
+        for expected_classification in ["attention", "idle"] {
+            if expected_classification == "attention" {
+                recording.observed(
+                    &key,
+                    WorkFailure {
+                        kind: Failure::Technical(TechnicalFailureNature::Other),
+                        message: "delegate injection failed".into(),
+                    },
+                );
+            } else {
+                recording.resolved(&key);
+            }
+            let expected = reads.read(&target).await.unwrap();
+            assert!(
+                matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.classification == expected_classification)
             );
-        } else {
-            recording.resolved(&key);
+            let list = reads.workflow.workspace_tree(&fixture.path).await.unwrap();
+            let listed = list
+                .nodes()
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some(&parent.node_execution_id))
+                .unwrap();
+            assert_eq!(
+                listed.status_classification.as_public_str(),
+                expected_classification
+            );
+            if let StateValue::SessionTab {
+                node: Some(detail), ..
+            } = &expected
+            {
+                assert_eq!(detail.error_reason, listed.failure_reason());
+            }
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .expect("background attention change must reach the session tab");
+            assert!(
+                matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
+            );
         }
-        let expected = reads.read(&target).await.unwrap();
-        assert!(
-            matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.classification == expected_classification)
-        );
-        let list = reads.workflow.workspace_tree(&fixture.path).await.unwrap();
-        let listed = list
-            .nodes()
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some(&parent.node_execution_id))
-            .unwrap();
-        assert_eq!(
-            listed.status_classification.as_public_str(),
-            expected_classification
-        );
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await
-            .expect("background attention change must reach the session tab");
-        assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
-        );
     }
 }
 
@@ -1787,10 +1799,13 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     let connection =
         rusqlite::Connection::open(archive.directory.path().join("local-event-store.sqlite3"))
             .unwrap();
+    let original_root: String = connection.query_row(
+        "SELECT detail FROM node_events WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [], |row| row.get(0),
+    ).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken' AND event_type = 'session_attached'", []).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root' AND event_type = 'started'", []).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'unrelated' AND event_type = 'started'", []).unwrap();
-    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = '{}' WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", []).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'workflow-session' AND event_type = 'started'", []).unwrap();
     let panes = PaneLayout::pane(
         "pane".into(),
@@ -1872,13 +1887,56 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     let mut expected = state;
     expected.panes.as_mut().unwrap().resolve_legacy_sessions(
         &[
-            (ready_node, "ready".into()),
+            (ready_node.clone(), "ready".into()),
             (public.into(), "next-agent".into()),
             (first.node_execution_id.clone(), "first-agent".into()),
         ]
         .into(),
     );
     assert_eq!(actual, expected);
-    assert_eq!(failures.len(), 4);
-    assert!(!failures[0].message.is_empty());
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    use releashd::test_support::integration::workspace::WorkspaceQueryService;
+    let mut individual_failures = Vec::new();
+    for (id, fails) in [
+        (broken_child_alias.as_str(), true),
+        (broken_node.as_str(), true),
+        ("broken-root", true),
+        (broken_root_alias.as_str(), true),
+        ("00000000-0000-4000-8000-000000002063", false),
+        ("missing", false),
+    ] {
+        let resolution = query
+            .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[id.into()])
+            .await;
+        assert_eq!(
+            resolution.failures.len(),
+            usize::from(fails),
+            "reference {id}"
+        );
+        individual_failures.extend(
+            resolution
+                .failures
+                .into_iter()
+                .map(|failure| failure.message),
+        );
+    }
+    individual_failures.sort();
+    let mut messages: Vec<_> = failures
+        .iter()
+        .map(|failure| failure.message.clone())
+        .collect();
+    messages.sort();
+    assert_eq!(failures.len(), 4, "{messages:?}");
+    assert_eq!(messages, individual_failures);
+    // When: a structurally valid header with an empty workspace is also corrupt.
+    connection.execute(
+        "UPDATE node_events SET detail = json_set(?1, '$.root.worktreePath', '') WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [&original_root],
+    ).unwrap();
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let resolution = query
+        .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[broken_root_alias])
+        .await;
+    // Then
+    assert!(resolution.sessions.is_empty());
+    assert_eq!(resolution.failures.len(), 1);
 }

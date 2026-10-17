@@ -40,8 +40,12 @@ pub(crate) fn decide_session_completion(
     }
 }
 
-pub(crate) fn artifact_changes_execution(delegated: bool, changed: bool) -> bool {
-    delegated || changed
+pub(crate) fn artifact_changes_execution(
+    delegated: bool,
+    previous: Option<&serde_json::Value>,
+    value: &serde_json::Value,
+) -> bool {
+    delegated || previous != Some(value)
 }
 
 pub(crate) fn fanout_complete(expected: usize, children: impl IntoIterator<Item = bool>) -> bool {

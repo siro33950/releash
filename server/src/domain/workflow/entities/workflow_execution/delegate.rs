@@ -184,29 +184,40 @@ pub(crate) fn delegate_continuation<'a>(
     continuations.resolve(parent)
 }
 
-#[derive(Default)]
-pub(crate) struct DelegateContinuations<'a> {
-    roots: HashMap<&'a str, &'a str>,
-    heads: HashMap<&'a str, &'a str>,
+pub(crate) struct DelegateContinuations<T> {
+    roots: HashMap<T, T>,
+    heads: HashMap<T, T>,
 }
 
-impl<'a> DelegateContinuations<'a> {
-    pub(crate) fn record(&mut self, id: &'a str, predecessor: Option<&'a str>) {
+impl<T> Default for DelegateContinuations<T> {
+    fn default() -> Self {
+        Self {
+            roots: HashMap::new(),
+            heads: HashMap::new(),
+        }
+    }
+}
+
+impl<T: Clone + Eq + std::hash::Hash> DelegateContinuations<T> {
+    pub(crate) fn record(&mut self, id: T, predecessor: Option<T>) {
         let root = predecessor
             .and_then(|previous| {
-                let root = self.roots.get(previous).copied().unwrap_or(previous);
-                (self.heads.get(root).is_none_or(|head| *head == previous)).then_some(root)
+                let root = self.roots.get(&previous).unwrap_or(&previous);
+                self.heads
+                    .get(root)
+                    .is_none_or(|head| *head == previous)
+                    .then(|| root.clone())
             })
-            .unwrap_or(id);
-        self.roots.insert(id, root);
+            .unwrap_or_else(|| id.clone());
+        self.roots.insert(id.clone(), root.clone());
         self.heads.insert(root, id);
     }
 
-    pub(crate) fn resolve(&self, parent: &'a str) -> &'a str {
+    pub(crate) fn resolve(&self, parent: T) -> T {
         self.roots
-            .get(parent)
+            .get(&parent)
             .and_then(|root| self.heads.get(root))
-            .copied()
+            .cloned()
             .unwrap_or(parent)
     }
 }

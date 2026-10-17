@@ -5,6 +5,7 @@ use crate::domain::workflow::{
 
 #[test]
 fn test_合成子の成果_再試行前の子を除き開始順と最新成果を保つ() {
+    // Given
     let artifacts = [
         serde_json::json!("old"),
         serde_json::json!("other"),
@@ -37,12 +38,14 @@ fn test_合成子の成果_再試行前の子を除き開始順と最新成果�
             artifact: Some(&artifacts[2]),
         },
     ];
+    // When / Then
     assert_eq!(
         current_children(&children)
             .map(|child| child.id)
             .collect::<Vec<_>>(),
         ["other", "new"]
     );
+    // Given
     let node = NodeDefinition {
         name: "scope".into(),
         kind: NodeKind::Sequence(SequenceSpec {
@@ -51,6 +54,7 @@ fn test_合成子の成果_再試行前の子を除き開始順と最新成果�
         }),
         ..Default::default()
     };
+    // When / Then
     assert_eq!(
         finish_composite(&node, S::Running, false, None, &children).unwrap(),
         Some((

@@ -231,12 +231,13 @@ impl WorkflowUsecase {
         };
         for (target, message) in self.failure_observations(read.classification.iter().cloned()) {
             for node in &mut read.classification {
-                if node.observes(&target) {
-                    node.background_failure = true;
-                    if node.id == read.detail.id {
-                        read.detail.error_reason = Some(message.clone());
-                    }
-                }
+                let mut reason = None;
+                let reason = if node.id == read.detail.id {
+                    &mut read.detail.error_reason
+                } else {
+                    &mut reason
+                };
+                node.observe_background_failure(&target, &message, reason);
             }
         }
         read.detail.classification =

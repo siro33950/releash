@@ -492,3 +492,34 @@ fn test_node更新時刻_開始と成果と承認待ちと終端に共通の時�
         );
     }
 }
+
+#[test]
+fn test_背景失敗の観測_自身と実行の理由と分類を詳細入力と同じ操作で反映する() {
+    // Given
+    for target in ["node", "node-execution", "workflow", "unrelated"] {
+        let mut listed = node(
+            WorkspaceNodeKind::WorkflowSession,
+            WorkspaceNodeStatus::Completed,
+        );
+        listed.error_reason = Some("existing".into());
+        let mut input = listed.classification_input();
+        let mut reason = listed.error_reason.clone();
+        // When
+        input.observe_background_failure(target, "background", &mut reason);
+        if input.observes(target) {
+            listed.observe_background_failure("background");
+        }
+        // Then
+        assert_eq!(input.background_failure, listed.background_failure);
+        assert_eq!(input.classify([]), listed.classify_status([]));
+        assert_eq!(reason, listed.error_reason);
+        assert_eq!(
+            reason.as_deref(),
+            Some(if target == "unrelated" {
+                "existing"
+            } else {
+                "background"
+            })
+        );
+    }
+}

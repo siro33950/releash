@@ -127,6 +127,20 @@ impl NodeExecutionStatus {
         !workflow || self == Self::WaitingApproval
     }
 
+    pub(crate) fn apply_approval(
+        &mut self,
+        completed_at: &mut Option<f64>,
+        workflow: bool,
+        timestamp: f64,
+    ) -> bool {
+        if !self.accepts_approval(workflow) {
+            return false;
+        }
+        *self = Self::Succeeded;
+        *completed_at = Some(timestamp);
+        true
+    }
+
     pub(crate) fn can_restart(self, kind: NodeKindName) -> bool {
         !kind.is_composite_kind()
             && (self == Self::Running
@@ -138,9 +152,9 @@ impl NodeExecutionStatus {
         execution_active: bool,
         kind: NodeKindName,
         presence: NodeProcessPresence,
-        latest: bool,
+        latest: impl FnOnce() -> bool,
     ) -> bool {
-        execution_active && latest && self.can_retry(kind, presence)
+        execution_active && self.can_retry(kind, presence) && latest()
     }
 
     pub fn can_retry(self, kind: NodeKindName, presence: NodeProcessPresence) -> bool {

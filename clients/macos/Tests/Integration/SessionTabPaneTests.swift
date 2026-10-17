@@ -1,12 +1,152 @@
 import AppKit
 import Bonsplit
 import Connect
+import SwiftProtobuf
 import SwiftUI
 import XCTest
 
 @testable import Releash
 
 final class SessionTabPaneTests: XCTestCase {
+  @MainActor func test_会話タブ購読_利用可否未設定で端末と購読を解放する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var session = Releash_Client_V1_AgentSessionItemDto()
+    session.id = "agent"
+    session.availability = .open
+    var node = Releash_Client_V1_WorkspaceNodeDetailDto()
+    node.id = "node"
+    node.content.session.sessionID = "agent"
+    http.state.withLock {
+      var snapshot = Releash_Client_V1_SessionTabSnapshot()
+      snapshot.session = session
+      snapshot.session.workspaceWorktreePath = "/repo"
+      snapshot.node = node
+      $0.sessionTabs["agent"] = snapshot
+    }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    // When
+    model.openNode(.session, id: "agent", title: "Session")
+    let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
+    let host = await ViewHarness(
+      AnyView(SessionTabPane(model: model, tabID: tab, sessionID: "agent", focused: true)))
+    // Then
+    try await eventuallyView(host) { host.element("terminal:agent") != nil }
+    session.clearAvailability()
+    var payload = Releash_Client_V1_StatePayload()
+    payload.sessionTab.session = session
+    payload.sessionTab.session.workspaceWorktreePath = "/repo"
+    payload.sessionTab.node = node
+    // When
+    try http.publish(payload, target: "session-tab")
+    // Then
+    try await eventuallyView(host) { host.element("terminal:agent") == nil }
+    try await eventually {
+      model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
+    }
+    let subscription = try XCTUnwrap(
+      http.state.withLock {
+        $0.subscriptions.first { $0.target == "session-tab" && $0.args == ["agent"] }
+      })
+    let hostingView = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
+    hostingView.rootView = AnyView(EmptyView())
+    try await eventually {
+      http.requests("StopStateSubscription").contains {
+        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
+          .subscriptionID) == subscription.subscriptionID
+      }
+    }
+    host.close()
+    await model.stop()
+  }
+
+  @MainActor func test_会話タブ購読_状態別の表示と再開失敗からの復旧を反映する() async throws {
+    for (availability, canResume, message) in [
+      (Releash_Client_V1_AgentSessionAvailability.paused, false, "Sessionは停止しています"),
+      (.paused, true, "Sessionは停止しています"), (.indeterminate, true, "Sessionを開けるか判定できません"),
+      (.archived, true, "SessionはArchiveされています"),
+    ] {
+      // Given
+      let http = TestHTTPClient()
+      var session = Releash_Client_V1_AgentSessionItemDto()
+      session.id = "agent"
+      session.availability = availability
+      var node = Releash_Client_V1_WorkspaceNodeDetailDto()
+      node.id = "node"
+      node.title = "Session"
+      node.capabilities.canResumeSession = canResume
+      node.content.session.sessionID = "agent"
+      http.state.withLock {
+        var snapshot = Releash_Client_V1_SessionTabSnapshot()
+        snapshot.session = session
+        snapshot.session.workspaceWorktreePath = "/repo"
+        snapshot.node = node
+        $0.sessionTabs["agent"] = snapshot
+        $0.terminalReplay = "resumed-output"
+      }
+      let model = try await testModel(http)
+      model.selectWorktree("/repo")
+      try await eventually { model.layoutLoaded }
+      // When
+      model.openNode(.session, id: "agent", title: "Session")
+      let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
+      let host = await ViewHarness(
+        SessionTabPane(model: model, tabID: tab, sessionID: "agent", focused: true))
+      // Then
+      try await eventuallyView(host) { host.texts().contains(message) }
+      XCTAssertNil(host.element("terminal:agent"))
+      XCTAssertEqual(host.element("Resume") != nil, availability == .paused && canResume)
+      try await eventually { !http.requests("OpenAgentSession").isEmpty }
+      if availability == .paused && canResume {
+        http.state.withLock { $0.failedMethod = "ResumeWorkspaceSessionNode" }
+        // When
+        try await host.press("Resume")
+        // Then
+        try await eventually { model.failure == "ResumeWorkspaceSessionNode failed" }
+        XCTAssertNil(host.element("terminal:agent"))
+        XCTAssertTrue(host.texts().contains(message))
+        http.state.withLock { $0.failedMethod = nil }
+        // When
+        try await host.press("Resume")
+        try await eventually { http.requests("ResumeWorkspaceSessionNode").count == 2 }
+        let request = try Releash_Client_V1_ResumeWorkspaceSessionNodeRequest(
+          serializedBytes: XCTUnwrap(http.requests("ResumeWorkspaceSessionNode").last?.message))
+        XCTAssertEqual(request.nodeID, "node")
+        XCTAssertEqual(request.worktreePath, "/repo")
+        XCTAssertNil(host.element("terminal:agent"))
+        var payload = Releash_Client_V1_StatePayload()
+        session.availability = .open
+        payload.sessionTab.session = session
+        payload.sessionTab.session.workspaceWorktreePath = "/repo"
+        payload.sessionTab.node = node
+        // When
+        try http.publish(payload, target: "session-tab")
+        // Then
+        try await eventuallyView(host) { host.element("terminal:agent") != nil }
+        try await eventually {
+          http.state.withLock {
+            $0.subscriptions.contains { $0.target == "terminal" && $0.args == ["/repo", "agent"] }
+          }
+        }
+        // Then
+        try await eventuallyView(host) { host.texts().contains { $0.contains("resumed-output") } }
+        XCTAssertEqual(http.requests("OpenAgentSession").count, 1)
+        payload.sessionTab = .init()
+        // When
+        try http.publish(payload, target: "session-tab")
+        // Then
+        try await eventuallyView(host) { host.element("terminal:agent") == nil }
+        try await eventually {
+          model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
+        }
+      }
+      host.close()
+      await model.stop()
+    }
+  }
+
   @MainActor func test_会話タブ購読_idだけで名前と利用可否を更新し端末を解放する() async throws {
     // Given
     let http = TestHTTPClient()
@@ -58,18 +198,6 @@ final class SessionTabPaneTests: XCTestCase {
         model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
       }
     }
-    // Given
-    snapshot.node.capabilities.canResumeSession = true
-    var payload = Releash_Client_V1_StatePayload()
-    payload.sessionTab = snapshot
-    // When
-    try http.publish(payload, target: "session-tab")
-    // Then
-    try await eventuallyView(host) { host.element("Resume") != nil }
-    // When
-    try await host.press("Resume")
-    // Then
-    try await eventually { http.requests("ResumeWorkspaceSessionNode").count == 1 }
     await model.stop()
   }
   @MainActor func test_会話タブメニュー_改名と整理確認と取消と操作制限を反映する()
@@ -316,6 +444,29 @@ final class SessionTabPaneTests: XCTestCase {
     let saved = try Releash_Client_V1_SaveWorkspaceStateRequest(
       serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
     XCTAssertEqual(try PaneLayout(saved.state.paneLayout).tabs.first?.agentSessionID, "agent")
+    let subscriptions = http.state.withLock { $0.subscriptions }
+    let preparing = try XCTUnwrap(
+      subscriptions.first { $0.target == "node-detail" && $0.args == ["/repo", "node"] })
+    let session = try XCTUnwrap(
+      subscriptions.first { $0.target == "session-tab" && $0.args == ["agent"] })
+    let terminal = try XCTUnwrap(
+      subscriptions.first { $0.target == "terminal" && $0.args == ["/repo", "agent"] })
+    func stopped(_ id: String) -> Bool {
+      http.requests("StopStateSubscription").contains {
+        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
+          .subscriptionID) == id
+      }
+    }
+    // Then
+    try await eventually { stopped(preparing.subscriptionID) }
+    XCTAssertNotNil(model.terminalAttachment(path: "/repo", id: "agent", agent: true))
+    // When
+    model.panes.controller.closeTab(tab)
+    // Then
+    try await eventually {
+      stopped(session.subscriptionID) && stopped(terminal.subscriptionID)
+        && model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
+    }
     await model.stop()
   }
 

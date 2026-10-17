@@ -396,8 +396,9 @@ impl std::error::Error for WorkspaceTreeError {}
 
 impl WorkspaceTreeNode {
     pub(super) fn observe_background_failure(&mut self, message: &str) {
-        self.error_reason = Some(message.into());
-        self.background_failure = true;
+        let mut classification = self.classification_input();
+        classification.observe_background_failure(&self.id, message, &mut self.error_reason);
+        self.background_failure = classification.background_failure;
         self.status_classification = self.classify_status([]);
     }
 }
@@ -424,6 +425,18 @@ pub(crate) struct WorkspaceNodeClassification {
 }
 
 impl WorkspaceNodeClassification {
+    pub(crate) fn observe_background_failure(
+        &mut self,
+        target: &str,
+        message: &str,
+        error_reason: &mut Option<String>,
+    ) {
+        if self.observes(target) {
+            self.background_failure = true;
+            *error_reason = Some(message.into());
+        }
+    }
+
     pub(crate) fn classify(
         &self,
         children: impl IntoIterator<Item = WorkspaceNodeStatusClassification>,

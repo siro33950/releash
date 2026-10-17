@@ -56,12 +56,14 @@ fn started(id: &str, name: &str, parent: Option<&str>) -> NodeFactRecord {
 
 #[test]
 fn test_再試行の対応_直後の開始が同名かつ同親の場合だけ消費する() {
+    // Given
     for (name, parent) in [("other", Some("parent")), ("main", Some("other-parent"))] {
         let records = [
             fact("old", "main", Some("parent"), NodeFact::RetryRequested),
             started("unrelated", name, parent),
             started("later", "main", Some("parent")),
         ];
+        // When / Then
         assert!(retry_predecessors(&records).is_empty());
         assert_eq!(
             read_lineage_roots("later", &retry_predecessors(&records)),
@@ -72,21 +74,25 @@ fn test_再試行の対応_直後の開始が同名かつ同親の場合だけ�
 
 #[test]
 fn test_再試行の系譜_複数試行をたどり循環で打ち切る() {
+    // Given
     let records = [
         fact("first", "main", None, NodeFact::RetryRequested),
         started("second", "main", None),
         fact("second", "main", None, NodeFact::RetryRequested),
         started("third", "main", None),
     ];
+    // When / Then
     assert_eq!(
         read_lineage_roots("third", &retry_predecessors(&records)),
         ["third", "second", "first"]
     );
+    // Given
     let mut cycle = records.to_vec();
     cycle.extend([
         fact("third", "main", None, NodeFact::RetryRequested),
         started("first", "main", None),
     ]);
+    // When / Then
     assert_eq!(
         read_lineage_roots("third", &retry_predecessors(&cycle)),
         ["third", "second", "first"]

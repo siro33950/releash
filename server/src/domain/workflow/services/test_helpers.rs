@@ -461,6 +461,75 @@ pub fn composite_dynamic_fanout_facts() -> Vec<crate::domain::workflow::NodeFact
     expanded
 }
 
+pub fn composite_routing_facts(
+    fanout: bool,
+    switch: bool,
+) -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let mut records = composite_dynamic_fanout_facts();
+    let NodeFact::Started(started) = &mut records[0].fact else {
+        unreachable!()
+    };
+    let definition = started.root.as_mut().unwrap().definition.as_mut().unwrap();
+    let NodeKind::Sequence(group) = &mut definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "group")
+        .unwrap()
+        .kind
+    else {
+        unreachable!()
+    };
+    group.children[0].rules = Some(vec![if switch {
+        Rule::Switch {
+            on: "maker.verdict".into(),
+            cases: [
+                ("READY".into(), "inner".into()),
+                ("HOLD".into(), "finished".into()),
+            ]
+            .into(),
+            next: None,
+        }
+    } else {
+        Rule::When {
+            on: Predicate::Ref("maker.passed".into()),
+            then: "inner".into(),
+            next: "finished".into(),
+        }
+    }]);
+    if fanout {
+        definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.name == "producer")
+            .unwrap()
+            .kind = NodeKind::Fanout(FanoutSpec {
+            items: None,
+            children: vec![ChildEntry::reference("maker")],
+        });
+    }
+    for record in &mut records {
+        if record.meta.node_name == "maker" {
+            if fanout {
+                if let NodeFact::Started(started) = &mut record.fact {
+                    started.parent = Some(ExecutionParentRef::fanout_child(
+                        record.meta.parent_id.as_ref().unwrap(),
+                        None,
+                        0,
+                    ));
+                }
+            }
+            if let NodeFact::ArtifactProduced(artifact) = &mut record.fact {
+                artifact.value["verdict"] = serde_json::json!("READY");
+                artifact.value["passed"] = serde_json::json!(true);
+            }
+        } else if fanout && record.meta.node_name == "producer" {
+            record.meta.kind = NodeKindName::Fanout;
+        }
+    }
+    records
+}
+
 pub fn stop_first_delegate_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
     let mut records = retried_delegate_parent_facts();
     let end = records.len();
@@ -594,12 +663,12 @@ pub fn session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFactRecord>
         (
             "side",
             Some(side.clone()),
-            artifact(serde_json::json!({"body":"private-first"})),
+            artifact(serde_json::from_str(r#"{"body":"private-first","a":1,"b":2}"#).unwrap()),
         ),
         (
             "side",
             Some(side.clone()),
-            artifact(serde_json::json!({"body":"private-first"})),
+            artifact(serde_json::from_str(r#"{"b":2,"a":1,"body":"private-first"}"#).unwrap()),
         ),
         (
             "side",
@@ -646,4 +715,157 @@ pub fn session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFactRecord>
             }
         })
         .collect()
+}
+
+pub fn sibling_sequence_timestamp_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let mut records = session_timestamp_facts();
+    records.truncate(14);
+    let NodeFact::Started(started) = &mut records[0].fact else {
+        unreachable!()
+    };
+    let definition = started.root.as_mut().unwrap().definition.as_mut().unwrap();
+    let mut leaf = definition
+        .nodes
+        .iter()
+        .find(|node| node.name == "side")
+        .unwrap()
+        .clone();
+    leaf.name = "side-leaf".into();
+    definition.nodes.push(leaf);
+    let side = definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "side")
+        .unwrap();
+    side.kind = NodeKind::Sequence(SequenceSpec {
+        entry: None,
+        children: vec![ChildEntry::reference("side-leaf")],
+    });
+    side.completion = NodeCompletion::require_approval();
+    let mut expanded = Vec::new();
+    let mut side_meta = None;
+    let parent = ExecutionParentRef::sequence_child("node-side");
+    for mut record in records {
+        if record.meta.node_name == "side" {
+            if matches!(record.fact, NodeFact::Started(_)) {
+                record.meta.kind = NodeKindName::Sequence;
+                side_meta = Some(record.meta.clone());
+                expanded.push(record.clone());
+                record.fact = NodeFact::Started(StartedFact {
+                    root: None,
+                    parent: Some(parent.clone()),
+                    worktree: None,
+                });
+            }
+            record.meta.kind = NodeKindName::Command;
+            record.meta.node_name = "side-leaf".into();
+            record.meta.node_execution_id = "node-side-leaf".into();
+            record.meta.parent_id = Some("node-side".into());
+        }
+        expanded.push(record);
+    }
+    let side = side_meta.unwrap();
+    let mut leaf = side.clone();
+    leaf.node_execution_id = "node-side-leaf".into();
+    leaf.node_name = "side-leaf".into();
+    leaf.parent_id = Some("node-side".into());
+    leaf.kind = NodeKindName::Command;
+    expanded.extend([
+        NodeFactRecord {
+            meta: leaf,
+            seq: 0,
+            timestamp_ms: 0,
+            fact: NodeFact::ProcessExited(ProcessExitedFact {
+                exit_code: Some(0),
+                result_summary: None,
+                failure_reason: None,
+                failure_kind: None,
+            }),
+        },
+        NodeFactRecord {
+            meta: side,
+            seq: 0,
+            timestamp_ms: 0,
+            fact: NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None }),
+        },
+    ]);
+    for (index, record) in expanded.iter_mut().enumerate() {
+        record.seq = index as i64 + 1;
+        record.timestamp_ms = record.seq * 1000;
+    }
+    expanded
+}
+
+pub fn isolated_session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let tree = "00000000-0000-4000-8000-000000206600";
+    let node = "00000000-0000-4000-8000-000000206601";
+    let worktree = IsolatedWorktree::for_attempt("/repo", node, 1);
+    let first = serde_json::json!({"body": "private-first", "verdict": "READY"});
+    let changed = serde_json::json!({"body": "private-next", "verdict": "READY"});
+    let accepted = worktree.with_artifact(Some(changed.clone()));
+    let artifact = |value| {
+        NodeFact::ArtifactProduced(ArtifactProducedFact {
+            value,
+            contract: None,
+            request_id: None,
+        })
+    };
+    let root = TreeRootFact {
+        repository_root: Some("/repo".into()),
+        workspace_identity: "/repo".into(),
+        worktree_path: "/repo".into(),
+        created_from: ExecutionOrigin::Cli,
+        request: String::new(),
+        workflow_name: "isolated-time".into(),
+        launched_as: ExecutionTreeLaunch::Workflow,
+        definition: Some(WorkflowDefinition {
+            entry: "session".into(),
+            nodes: vec![NodeDefinition {
+                name: "session".into(),
+                worktree: Some(WorktreeMode::Isolated),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+    };
+    [
+        NodeFact::Started(StartedFact {
+            root: Some(Box::new(root)),
+            parent: None,
+            worktree: Some(worktree),
+        }),
+        session_attached("isolated-agent"),
+        NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+        artifact(first.clone()),
+        NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+        artifact(first),
+        artifact(changed),
+        artifact(accepted.clone()),
+        artifact(accepted),
+        NodeFact::StopReceived(StopReceivedFact {
+            result_summary: None,
+            token_usage: None,
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, fact)| {
+        let seq = index as i64 + 1;
+        NodeFactRecord {
+            seq,
+            timestamp_ms: seq * 1000,
+            fact,
+            meta: NodeFactMeta {
+                tree_id: tree.into(),
+                node_execution_id: node.into(),
+                node_name: "session".into(),
+                kind: NodeKindName::Session,
+                parent_id: None,
+                attempt: 1,
+            },
+        }
+    })
+    .collect()
 }

@@ -1293,6 +1293,16 @@ impl NodeIdentityIndex {
     }
 }
 
+pub(crate) fn is_standalone_reference(reference: &str) -> bool {
+    reference.strip_prefix("node-s-").is_some_and(|digest| {
+        digest.len() == 32 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+pub(crate) fn standalone_reference_matches(tree: &str, name: &str, reference: &str) -> bool {
+    opaque_standalone_session_node_id(tree, &workflow_node_occurrence_key(name, 0)) == reference
+}
+
 pub(crate) fn node_identities(
     records: &[crate::domain::workflow::NodeFactRecord],
 ) -> Result<std::collections::HashMap<String, String>, WorkspaceTreeError> {

@@ -67,7 +67,7 @@ pub(crate) mod tests {
                                 execution.is_active(),
                                 NodeKindName::Command,
                                 presence,
-                                latest
+                                || latest
                             ),
                             execution.is_active() && latest && absent && retry_command
                         );
@@ -78,6 +78,54 @@ pub(crate) mod tests {
                     assert!(!status.can_retry(kind, presence));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_再試行可否_再試行できるcommandだけ最新判定を評価する() {
+        // Given
+        use NodeExecutionStatus as S;
+        use NodeProcessPresence as P;
+        for (active, kind, status, presence, called) in [
+            (
+                true,
+                NodeKindName::Session,
+                S::Running,
+                P::ConfirmedAbsent,
+                false,
+            ),
+            (
+                false,
+                NodeKindName::Command,
+                S::Running,
+                P::ConfirmedAbsent,
+                false,
+            ),
+            (true, NodeKindName::Command, S::Running, P::Live, false),
+            (
+                true,
+                NodeKindName::Command,
+                S::Succeeded,
+                P::ConfirmedAbsent,
+                false,
+            ),
+            (
+                true,
+                NodeKindName::Command,
+                S::Running,
+                P::ConfirmedAbsent,
+                true,
+            ),
+        ] {
+            let mut evaluated = false;
+            // When
+            let allowed = status.can_retry_in_execution(active, kind, presence, || {
+                evaluated = true;
+                false
+            });
+            // Then
+            assert!(!allowed);
+            assert_eq!(evaluated, called);
         }
     }
 

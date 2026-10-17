@@ -162,48 +162,32 @@ pub(crate) fn reference_heads(
     Ok(heads)
 }
 
-pub(crate) fn unread_clock_node(
+pub(crate) fn artifact_value(
     connection: &Connection,
     tree: &str,
-    excluded: &std::collections::HashSet<String>,
-    after: i64,
-    through: Option<i64>,
-    fact_types: &[&str],
-) -> Result<Option<String>, rusqlite::Error> {
-    let excluded = serde_json::to_string(excluded).expect("node ids");
-    let fact_types = serde_json::to_string(fact_types).expect("fact types");
-    let mut statement = connection.prepare(
-        "SELECT node_execution_id FROM node_events WHERE tree_id = ?1 AND seq > ?2
-         AND (?3 IS NULL OR seq <= ?3)
-         AND node_execution_id NOT IN (SELECT value FROM json_each(?4))
-         AND event_type IN (SELECT value FROM json_each(?5)) ORDER BY seq DESC LIMIT 1",
-    )?;
-    let mut rows = statement.query_map(
-        rusqlite::params![tree, after, through, excluded, fact_types],
-        |row| row.get(0),
-    )?;
-    rows.next().transpose()
+    seq: i64,
+) -> Result<String, rusqlite::Error> {
+    connection.query_row(
+        "SELECT detail -> '$.value' FROM node_events WHERE tree_id = ?1 AND seq = ?2 AND event_type = 'artifact_produced'",
+        rusqlite::params![tree, seq], |row| row.get(0),
+    )
 }
 
-pub(crate) fn artifact_changes(
+pub(crate) fn projected_tree_after<T>(
     connection: &Connection,
     tree: &str,
-    nodes: &std::collections::HashSet<&str>,
-    through: Option<i64>,
-) -> Result<std::collections::HashMap<i64, bool>, rusqlite::Error> {
-    let nodes = serde_json::to_string(nodes).expect("node ids");
-    let mut statement = connection.prepare(
-        "SELECT e.seq, (e.detail -> '$.value') IS NOT (
-            SELECT previous.detail -> '$.value' FROM node_events previous
-            WHERE previous.tree_id = e.tree_id AND previous.node_execution_id = e.node_execution_id
-            AND previous.event_type = 'artifact_produced' AND previous.seq < e.seq
-            ORDER BY previous.seq DESC LIMIT 1)
-         FROM node_events e WHERE e.tree_id = ?1 AND e.event_type = 'artifact_produced'
-         AND e.node_execution_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR e.seq <= ?3)",
-    )?;
-    let rows = statement.query_map(rusqlite::params![tree, nodes, through], |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?;
+    after: i64,
+    projection: &str,
+    parameters: &[String],
+    mut project: impl FnMut(NodeEventRow) -> T,
+) -> Result<Vec<T>, rusqlite::Error> {
+    let columns = ROW_COLUMNS.replace(", detail,", &format!(", {projection} AS detail,"));
+    let mut values: Vec<&dyn rusqlite::ToSql> = vec![&tree, &after];
+    values.extend(parameters.iter().map(|value| value as &dyn rusqlite::ToSql));
+    let mut statement = connection.prepare(&format!(
+        "SELECT {columns} FROM node_events WHERE tree_id = ?1 AND seq > ?2 ORDER BY seq"
+    ))?;
+    let rows = statement.query_map(values.as_slice(), |row| row_from_sql(row).map(&mut project))?;
     rows.collect()
 }
 
@@ -215,12 +199,25 @@ pub(crate) fn workspace_reference_trees(
         "SELECT DISTINCT tree_id FROM node_events
          WHERE event_type = 'started' AND parent_id IS NULL
          AND CASE WHEN json_valid(detail) THEN json_extract(detail, '$.root.worktreePath') END = ?1
-         UNION
-         SELECT DISTINCT e.tree_id FROM session_projection s
-         JOIN node_events e ON e.session_id = s.session_id
-         WHERE s.workspace_identity = ?1",
+",
     )?;
     let rows = statement.query_map([workspace], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub(crate) fn corrupt_standalone_roots(
+    connection: &Connection,
+) -> Result<Vec<(String, String)>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT tree_id, node_name FROM node_events WHERE event_type = 'started'
+         AND parent_id IS NULL AND kind = 'session' AND node_execution_id = tree_id
+         AND CASE WHEN json_valid(detail)
+             THEN COALESCE(json_type(detail, '$.root.worktreePath'), '') != 'text'
+                 OR trim(json_extract(detail, '$.root.worktreePath')) = ''
+             ELSE 1 END
+         ORDER BY tree_id, seq",
+    )?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     rows.collect()
 }
 

@@ -9,24 +9,22 @@ fn read_projection(
     records: &[NodeFactRecord],
     terminal: Option<&NodeFactRecord>,
 ) -> Result<NodeReadProjectionResult, String> {
-    let mut previous = HashMap::new();
-    let changes = records
-        .iter()
-        .filter_map(|record| {
-            let NodeFact::ArtifactProduced(artifact) = &record.fact else {
-                return None;
-            };
-            let changed = previous.insert(&record.meta.node_execution_id, &artifact.value)
-                != Some(&artifact.value);
-            Some((record.seq, changed))
-        })
-        .collect();
     super::subtree_read_projection(
         root,
         records,
         terminal,
         &super::super::history::retry_predecessors(records),
-        &changes,
+        Some(&mut |seq| {
+            records
+                .iter()
+                .find_map(|record| match &record.fact {
+                    NodeFact::ArtifactProduced(artifact) if record.seq == seq => {
+                        Some(artifact.value.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| format!("artifact value is missing for fact {seq}"))
+        }),
     )
 }
 
@@ -35,7 +33,7 @@ fn subtree_read_rules(
     records: &[NodeFactRecord],
     terminal: Option<&NodeFactRecord>,
 ) -> Result<HashMap<String, NodeReadRules>, String> {
-    read_projection(root, records, terminal).map(|projection| projection.nodes)
+    read_projection(root, records, terminal).map(|projection| projection.0)
 }
 
 fn root(node: NodeDefinition) -> TreeRootFact {
@@ -338,12 +336,12 @@ fn assert_replay(
     expected: NodeExecutionStatus,
 ) {
     let projection = read_projection(root, records, None).unwrap();
-    let read = projection.nodes;
+    let read = projection.0;
     let folded = super::super::fact_replay::fold_execution_tree("tree", records)
         .unwrap()
         .unwrap();
     assert_eq!(
-        projection.applied.timestamp_ms as f64 / 1000.0,
+        projection.1.timestamp_ms as f64 / 1000.0,
         folded.aggregate.updated_at
     );
     let node = folded
@@ -839,8 +837,13 @@ fn test_会話詳細の動的並列_別スコープの後発成果を予定件�
 
 #[test]
 fn test_会話詳細の合成参照とstop先着_実行側と同じ承認待ちを導出する() {
+    // Given
     for records in [
         super::super::test_helpers::composite_dynamic_fanout_facts(),
+        super::super::test_helpers::composite_routing_facts(false, true),
+        super::super::test_helpers::composite_routing_facts(true, true),
+        super::super::test_helpers::composite_routing_facts(false, false),
+        super::super::test_helpers::composite_routing_facts(true, false),
         super::super::test_helpers::stop_first_delegate_facts(),
     ] {
         let NodeFact::Started(started) = &records[0].fact else {
@@ -864,11 +867,13 @@ fn test_会話詳細の合成参照とstop先着_実行側と同じ承認待ち�
         for end in [records.len() - 3, records.len()] {
             let records = &records[..end];
             let selected = selected_artifact_records(root, records);
+            // When
             let read = subtree_read_rules(root, &selected, None).unwrap();
             let execution =
                 super::super::fact_replay::fold_execution_tree(&records[0].meta.tree_id, records)
                     .unwrap()
                     .unwrap();
+            // Then
             assert_eq!(
                 read[target].status,
                 execution
@@ -880,66 +885,75 @@ fn test_会話詳細の合成参照とstop先着_実行側と同じ承認待ち�
                     .status
             );
         }
+        // When
         let read =
             subtree_read_rules(root, &selected_artifact_records(root, &records), None).unwrap();
+        // Then
         assert_eq!(read[target].status, NodeExecutionStatus::WaitingApproval);
     }
 }
 
 #[test]
 fn test_会話詳細の承認_承認待ちだけを完了し稼働中と終端では変えない() {
-    let root = root(NodeDefinition {
-        name: "session".into(),
-        completion: NodeCompletion::require_approval(),
-        ..Default::default()
-    });
-    let mut records = vec![record(
-        1,
-        NodeFact::Started(StartedFact {
-            root: Some(Box::new(root.clone())),
-            parent: None,
-            worktree: None,
-        }),
-    )];
-    for (fact, expected) in [
-        (
-            NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
-                comment: None,
+    // Given
+    for launched_as in [ExecutionTreeLaunch::Workflow, ExecutionTreeLaunch::Session] {
+        let mut root = root(NodeDefinition {
+            name: "session".into(),
+            completion: NodeCompletion::require_approval(),
+            ..Default::default()
+        });
+        root.launched_as = launched_as;
+        let mut records = vec![record(
+            1,
+            NodeFact::Started(StartedFact {
+                root: Some(Box::new(root.clone())),
+                parent: None,
+                worktree: None,
             }),
-            NodeExecutionStatus::Running,
-        ),
-        (
-            NodeFact::StopReceived(StopReceivedFact {
-                result_summary: None,
-                token_usage: None,
-            }),
-            NodeExecutionStatus::Running,
-        ),
-        (
-            NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
-            NodeExecutionStatus::WaitingApproval,
-        ),
-        (
-            NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
-                comment: None,
-            }),
-            NodeExecutionStatus::Succeeded,
-        ),
-        (
-            NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
-                comment: None,
-            }),
-            NodeExecutionStatus::Succeeded,
-        ),
-        (NodeFact::RetryRequested, NodeExecutionStatus::Succeeded),
-    ] {
-        records.push(record(records.len() as i64 + 1, fact));
-        assert_replay(&root, &records, "node", expected);
+        )];
+        for (fact, expected) in [
+            (
+                NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
+                    comment: None,
+                }),
+                NodeExecutionStatus::Running,
+            ),
+            (
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: None,
+                    token_usage: None,
+                }),
+                NodeExecutionStatus::Running,
+            ),
+            (
+                NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+                NodeExecutionStatus::WaitingApproval,
+            ),
+            (
+                NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
+                    comment: None,
+                }),
+                NodeExecutionStatus::Succeeded,
+            ),
+            (
+                NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
+                    comment: None,
+                }),
+                NodeExecutionStatus::Succeeded,
+            ),
+            (NodeFact::RetryRequested, NodeExecutionStatus::Succeeded),
+        ] {
+            // When
+            records.push(record(records.len() as i64 + 1, fact));
+            // Then
+            assert_replay(&root, &records, "node", expected);
+        }
     }
 }
 
 #[test]
 fn test_会話詳細の順序合成_children外への遷移後も実行側と同じ完了を返す() {
+    // Given
     use crate::domain::workflow::{
         ArtifactProducedFact, ChildEntry, ExecutionParentRef, SequenceSpec,
     };
@@ -1004,10 +1018,13 @@ fn test_会話詳細の順序合成_children外への遷移後も実行側と同
             ));
         }
     }
+    // When / Then
     assert_replay(&root, &records, "scope", NodeExecutionStatus::Succeeded);
+    // When
     let folded = super::super::fact_replay::fold_execution_tree("tree", &records)
         .unwrap()
         .unwrap();
+    // Then
     assert_eq!(
         folded.aggregate.node_executions[0].artifact,
         Some(serde_json::json!({"first": {"done": true}}))
@@ -1016,6 +1033,7 @@ fn test_会話詳細の順序合成_children外への遷移後も実行側と同
 
 #[test]
 fn test_会話の更新時刻_未受理の終了と承認と同じ成果で進まず受理した操作で進む() {
+    // Given
     let records = super::super::test_helpers::session_timestamp_facts();
     let NodeFact::Started(started) = &records[0].fact else {
         panic!("root")
@@ -1023,13 +1041,15 @@ fn test_会話の更新時刻_未受理の終了と承認と同じ成果で進�
     let root = started.root.as_deref().unwrap();
     for end in 1..=records.len() {
         let records = &records[..end];
+        // When
         let projection = read_projection(root, records, None).unwrap();
         let folded =
             super::super::fact_replay::fold_execution_tree(&records[0].meta.tree_id, records)
                 .unwrap()
                 .unwrap();
+        // Then
         assert_eq!(
-            projection.applied.timestamp_ms as f64 / 1000.0,
+            projection.1.timestamp_ms as f64 / 1000.0,
             folded.aggregate.updated_at,
             "prefix {end}"
         );
@@ -1038,18 +1058,234 @@ fn test_会話の更新時刻_未受理の終了と承認と同じ成果で進�
 
 #[test]
 fn test_会話の更新時刻_成果の変更情報が欠けた場合は推測しない() {
+    // Given
     let records = super::super::test_helpers::session_timestamp_facts();
     let NodeFact::Started(started) = &records[0].fact else {
         panic!("root")
     };
+    // When
     let error = super::subtree_read_projection(
         started.root.as_deref().unwrap(),
         &records,
         None,
         &HashMap::new(),
-        &HashMap::new(),
+        Some(&mut |seq| Err(format!("artifact value is missing for fact {seq}"))),
     )
     .err()
     .unwrap();
-    assert_eq!(error, "artifact change is missing for fact 5");
+    // Then
+    assert_eq!(error, "artifact value is missing for fact 5");
+}
+
+#[test]
+fn test_定義なし会話の承認_再試行前の受理済み承認事実も実行側と同じ状態へ反映する() {
+    // Given
+    let mut root = root(NodeDefinition::default());
+    root.definition = None;
+    root.launched_as = ExecutionTreeLaunch::Session;
+    let mut records = vec![
+        record(
+            1,
+            NodeFact::Started(StartedFact {
+                root: Some(Box::new(root.clone())),
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        record(2, NodeFact::RetryRequested),
+    ];
+    let mut next = record(
+        3,
+        NodeFact::Started(StartedFact {
+            root: None,
+            parent: None,
+            worktree: None,
+        }),
+    );
+    next.meta.node_execution_id = "next".into();
+    next.meta.attempt = 2;
+    records.push(next);
+    // When
+    records.push(record(
+        4,
+        NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact { comment: None }),
+    ));
+    let mut execution = crate::domain::workflow::entities::workflow_execution::ExecutionTree::restore_without_definition("tree", &root, 1.0);
+    for record in &records {
+        super::super::fact_replay::apply_record(&mut execution, record, false).unwrap();
+    }
+    let read = read_projection(&root, &records, None).unwrap();
+    // Then
+    for (id, expected) in [
+        ("node", NodeExecutionStatus::Succeeded),
+        ("next", NodeExecutionStatus::Running),
+    ] {
+        let actual = execution.node_execution(id).unwrap();
+        assert_eq!(read.0[id].status, expected);
+        assert_eq!(read.0[id].status, actual.status);
+        assert_eq!(read.0[id].completed_at, actual.completed_at);
+    }
+    assert_eq!(read.1.timestamp_ms as f64 / 1000.0, execution.updated_at);
+}
+
+#[test]
+fn test_会話時刻の差分投影_同じ成果と変更と委任の受理を実行側と一致させ本文を保持しない() {
+    // Given
+    for records in [
+        super::super::test_helpers::session_timestamp_facts(),
+        super::super::test_helpers::stop_first_delegate_facts(),
+        super::super::test_helpers::isolated_session_timestamp_facts(),
+        super::super::test_helpers::sibling_sequence_timestamp_facts(),
+    ] {
+        let NodeFact::Started(started) = &records[0].fact else {
+            panic!("root")
+        };
+        let root = started.root.as_deref().unwrap();
+        let mut state = NodeReadState::default();
+        for end in 1..=records.len() {
+            if records.get(end).is_some_and(|next| {
+                super::super::fact_replay::is_submitted_artifact_pair(&records[end - 1], next)
+            }) {
+                continue;
+            }
+            let selected = selected_artifact_records(root, &records[state.seq as usize..end]);
+            // When
+            let applied = update_read_state(
+                &mut state,
+                root,
+                &selected,
+                &super::super::history::retry_predecessors(&records[..end]),
+                &mut |seq| {
+                    records
+                        .iter()
+                        .find_map(|record| match &record.fact {
+                            NodeFact::ArtifactProduced(artifact) if record.seq == seq => {
+                                Some(artifact.value.clone())
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(|| "missing artifact".into())
+                },
+            )
+            .unwrap();
+            let folded = super::super::fact_replay::fold_execution_tree(
+                &records[0].meta.tree_id,
+                &records[..end],
+            )
+            .unwrap()
+            .unwrap();
+            // Then
+            assert_eq!(
+                applied.timestamp_ms as f64 / 1000.0,
+                folded.aggregate.updated_at,
+                "prefix {end}"
+            );
+            assert!(state
+                .artifacts
+                .values()
+                .all(|value| !value.to_string().contains("private")));
+            assert_eq!(state.seq, records[end - 1].seq);
+        }
+    }
+}
+
+#[test]
+fn test_時刻プレビュー_伝播が触るnodeだけを退避し成功時も失敗時も元の判定状態を保つ() {
+    // Given
+    let records = super::super::test_helpers::sibling_sequence_timestamp_facts();
+    let NodeFact::Started(started) = &records[0].fact else {
+        panic!("root")
+    };
+    let root = started.root.as_deref().unwrap();
+    let records = &records[..records.len() - 1];
+    let retries = super::super::history::retry_predecessors(records);
+    let selected = selected_artifact_records(root, records);
+    let mut state = NodeReadState::default();
+    update_read_state(&mut state, root, &selected, &retries, &mut |seq| {
+        records
+            .iter()
+            .find_map(|record| match &record.fact {
+                NodeFact::ArtifactProduced(artifact) if record.seq == seq => {
+                    Some(artifact.value.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| "missing artifact".into())
+    })
+    .unwrap();
+    let last = state.pending.clone().unwrap();
+    let mut projection = NodeReadProjection::new(root, root.definition.as_ref(), &retries, None);
+    projection.state = state;
+    let sequence = projection.state.sequences["node-side"].clone();
+    let previous = projection.state.applied.timestamp_ms;
+    let mut journal = CompletionJournal::new(projection.state.applied);
+    // When
+    projection
+        .propagate_completion(&last, None, Some(&mut journal))
+        .unwrap();
+    // Then
+    assert_eq!(
+        journal
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        ["node-side-leaf", "node-side"]
+    );
+    assert!(projection.state.nodes.len() > journal.entries.len());
+    assert_eq!(
+        projection.state.nodes["node-side"].status,
+        NodeExecutionStatus::WaitingApproval
+    );
+    // When
+    journal.restore(&mut projection.state);
+    // Then
+    assert_eq!(
+        projection.state.nodes["node-side"].status,
+        NodeExecutionStatus::Running
+    );
+    assert_eq!(projection.state.sequences["node-side"], sequence);
+    assert!(!projection.state.propagated.contains("node-side-leaf"));
+    assert_eq!(projection.state.applied.timestamp_ms, previous);
+    // Given
+    let mut invalid = root.clone();
+    let NodeKind::Sequence(side) = &mut invalid
+        .definition
+        .as_mut()
+        .unwrap()
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "side")
+        .unwrap()
+        .kind
+    else {
+        panic!("sequence")
+    };
+    side.children[0].rules = Some(vec![Rule::Switch {
+        on: "missing".into(),
+        cases: Default::default(),
+        next: None,
+    }]);
+    projection.saved_definition = invalid.definition.as_ref();
+    // When
+    let failed = projection.preview_completion(&last);
+    // Then
+    assert!(failed.is_err());
+    assert_eq!(
+        projection.state.nodes["node-side"].status,
+        NodeExecutionStatus::Running
+    );
+    assert_eq!(projection.state.sequences["node-side"], sequence);
+    assert!(!projection.state.propagated.contains("node-side-leaf"));
+    assert_eq!(projection.state.applied.timestamp_ms, previous);
+    // Given
+    let mut missing = last.clone();
+    missing.meta.node_execution_id = "missing".into();
+    let mut journal = CompletionJournal::new(projection.state.applied);
+    // When
+    projection
+        .propagate_completion(&missing, None, Some(&mut journal))
+        .unwrap();
+    // Then
+    assert!(journal.entries.is_empty());
 }
