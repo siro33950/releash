@@ -70,6 +70,9 @@ impl TerminalSubscriptionOutput for TerminalSubscriptionPresenter {
             state.set_delta_snapshot(&target, version, snapshot)
         })
     }
+    fn require_snapshot(&self, target: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+        self.update(|state| state.require_delta_snapshot(&target.to_string()))
+    }
     fn set_snapshot(
         &self,
         target: &SubscriptionTarget,

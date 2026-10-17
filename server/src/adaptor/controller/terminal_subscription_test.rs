@@ -33,6 +33,9 @@ impl TerminalSubscriptionOutput for Output {
         self.completed.notify_one();
         Ok(())
     }
+    fn require_snapshot(&self, _: &SubscriptionTarget) -> Result<(), SubscriptionError> {
+        Ok(())
+    }
     fn publish_failure(
         &self,
         _: &SubscriptionTarget,

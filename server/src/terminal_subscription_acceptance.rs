@@ -85,6 +85,18 @@ impl TerminalSubscriptionHarness {
         self.terminal_subscriptions.clone()
     }
 
+    pub fn resize(
+        &self,
+        owner: TerminalSurfaceOwnerV1,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(), String> {
+        self.terminal_subscriptions
+            .prepare_resize(owner.try_into()?, rows, cols)
+            .map_err(|error| error.to_string())?()
+        .map_err(|error| error.to_string())
+    }
+
     pub async fn subscribe(
         &self,
         input_id: String,

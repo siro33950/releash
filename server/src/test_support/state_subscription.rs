@@ -342,6 +342,12 @@ impl TerminalSubscriptions {
     pub(crate) fn test_worker_count(&self) -> usize {
         self.terminal.test_worker_count() + self.usecase.test_worker_count()
     }
+    pub fn wire_client_dependencies(
+        &self,
+        dependencies: &mut crate::adaptor::controller::client::ClientDependencies,
+    ) {
+        dependencies.terminal_subscriptions = Some(self.terminal.clone());
+    }
     pub fn deps(&self) -> crate::adaptor::controller::api::StateSubscriptionDeps {
         crate::adaptor::controller::api::StateSubscriptionDeps::new(
             self.usecase.clone(),

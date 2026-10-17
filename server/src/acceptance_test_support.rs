@@ -21,6 +21,7 @@ pub fn build_client_dependencies(
         ))),
         workspace_node_command_usecase: None,
         app_state: None,
+        terminal_subscriptions: None,
         workspace_state_store: None,
         agent_session_lifecycle_usecase: None,
         agent_session_launch_usecase: None,

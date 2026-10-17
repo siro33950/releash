@@ -36,7 +36,7 @@ pub(crate) fn write_paths_to_terminal_surface_shared(
 }
 
 pub(crate) fn resize_terminal_surface_shared(
-    state: &AppState,
+    subscriptions: &crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase,
     owner: TerminalSurfaceOwnerV1,
     rows: u16,
     cols: u16,
@@ -44,7 +44,11 @@ pub(crate) fn resize_terminal_surface_shared(
     let resize = owner
         .try_into()
         .map_err(invalid_terminal_resize_owner_error)
-        .map(|owner| state.terminal_surface.prepare_resize(owner, rows, cols));
+        .and_then(|owner| {
+            subscriptions
+                .prepare_resize(owner, rows, cols)
+                .map_err(terminal_resize_error)
+        });
     async move {
         super::client::worktree_mutation::spawn_blocking(resize?)
             .await
