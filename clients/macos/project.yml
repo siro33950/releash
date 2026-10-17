@@ -8,7 +8,7 @@ packages:
     revision: 088c284ecdd51721da83e2ae121a97d25881cc38
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
-    exactVersion: 1.20.0
+    exactVersion: 1.99.0
   Connect:
     url: https://github.com/connectrpc/connect-swift
     exactVersion: 1.0.0

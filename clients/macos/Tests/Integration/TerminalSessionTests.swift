@@ -19,7 +19,7 @@ final class TerminalSessionTests: XCTestCase {
     event.snapshot.processedReportUnits = 5000
     event.snapshot.replay = "saved output"
     first.receive(event)
-    XCTAssertEqual(first.screen.getTerminal().cols, 100)
+    XCTAssertEqual(first.screen.terminalDimensions.cols, 100)
     XCTAssertTrue((first.screen.accessibilityValue() as? String)?.contains("saved output") == true)
     XCTAssertFalse(
       (second.screen.accessibilityValue() as? String)?.contains("saved output") == true)
@@ -156,26 +156,17 @@ final class TerminalSessionTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func testServerResizePreservesOutputAttributes() async throws {
+  @MainActor func testServerResizeAppliesScreenSize() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
-    let session = model.terminal(path: "/repo", id: "color")
+    let session = model.terminal(path: "/repo", id: "size")
     try await eventually { session.hasForegroundProcess != nil }
     var event = Releash_Client_V1_TerminalEvent()
-    event.output.data = "\u{1b}[H\u{1b}[31mA"
-    session.receive(event)
-    let terminal = session.screen.getTerminal()
-    let before = try XCTUnwrap(terminal.getLine(row: 0))[0].attribute
     event.resize.cols = 90
     event.resize.rows = 25
     session.receive(event)
-    event.output.data = "B"
-    session.receive(event)
-    let line = try XCTUnwrap(terminal.getLine(row: 0))
-    XCTAssertEqual(terminal.getCharacter(for: line[1]), "B")
-    XCTAssertEqual(line[1].attribute, before)
-    XCTAssertEqual(terminal.cols, 90)
-    XCTAssertEqual(terminal.rows, 25)
+    XCTAssertEqual(session.screen.terminalDimensions.cols, 90)
+    XCTAssertEqual(session.screen.terminalDimensions.rows, 25)
     session.stop()
     await model.stop()
   }

@@ -90,7 +90,7 @@ import SwiftTerm
       attachment = current
       processed = 0
       reportUnits = Int(snapshot.processedReportUnits)
-      screen.getTerminal().resetToInitialState()
+      screen.resetToInitialState()
       if !snapshot.replay.isEmpty {
         resizeScreen(cols: Int(snapshot.cols), rows: Int(snapshot.rows))
         replaying = true
@@ -139,8 +139,9 @@ import SwiftTerm
   }
 
   private func resizeScreen(cols: Int, rows: Int) {
-    screen.getTerminal().resize(cols: cols, rows: rows)
-    screen.sizeChanged(source: screen.getTerminal())
+    let current = screen.terminalDimensions
+    guard current.cols != cols || current.rows != rows else { return }
+    screen.resize(cols: cols, rows: rows)
     screen.needsDisplay = true
   }
 
@@ -260,11 +261,6 @@ final class TerminalScreen: TerminalView {
   override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
   override func accessibilityLabel() -> String? { "Terminal" }
   override func accessibilityValue() -> Any? {
-    let terminal = getTerminal()
-    return (0..<terminal.rows).compactMap {
-      terminal.getLine(row: $0)?.translateToString(
-        trimRight: true, skipNullCellsFollowingWide: true,
-        characterProvider: { terminal.getCharacter(for: $0) })
-    }.joined(separator: "\n")
+    visibleRowsText(0..<terminalDimensions.rows).joined(separator: "\n")
   }
 }
