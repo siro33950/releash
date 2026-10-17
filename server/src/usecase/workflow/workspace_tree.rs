@@ -155,23 +155,52 @@ impl WorkflowUsecase {
     }
 
     fn observe_failures(&self, tree: &mut WorkspaceTree) {
-        let targets = tree
-            .nodes()
-            .iter()
-            .flat_map(|node| {
-                [
-                    Some(node.id.clone()),
-                    node.node_execution_id.clone(),
-                    node.execution_id.clone(),
-                ]
-            })
+        for (target, message) in
+            self.failure_observations(tree.nodes().iter().map(|node| node.classification_input()))
+        {
+            tree.observe_background_failure(&target, &message);
+        }
+    }
+
+    fn failure_observations(
+        &self,
+        nodes: impl IntoIterator<Item = crate::domain::workspace_tree::WorkspaceNodeClassification>,
+    ) -> Vec<(String, String)> {
+        let targets = nodes
+            .into_iter()
+            .flat_map(|node| [Some(node.id), node.node_execution_id, node.execution_id])
             .flatten()
             .collect::<std::collections::HashSet<_>>();
-        for target in targets {
-            for message in self.failures.attention_messages(&target) {
-                tree.observe_background_failure(&target, &message);
-            }
-        }
+        targets
+            .into_iter()
+            .flat_map(|target| {
+                self.failures
+                    .attention_messages(&target)
+                    .into_iter()
+                    .map(move |message| (target.clone(), message))
+            })
+            .collect()
+    }
+
+    pub(crate) async fn load_workspace_state(
+        &self,
+        repository: &dyn crate::domain::workspace_state::WorkspaceStateRepository,
+        name: &str,
+        path: &str,
+    ) -> Result<
+        (
+            Option<crate::domain::workspace_state::WorkspaceState>,
+            Vec<crate::domain::failure::WorkFailure>,
+        ),
+        crate::domain::workspace_state::WorkspaceStateError,
+    > {
+        crate::usecase::workspace_state::usecase::load_workspace_state(
+            repository,
+            self.workspace_query.as_ref(),
+            name,
+            path,
+        )
+        .await
     }
 
     pub(crate) async fn get_workspace_node_detail(
@@ -185,18 +214,39 @@ impl WorkflowUsecase {
         self.workspace_query.node_detail(&workspace, node_id).await
     }
 
-    pub(crate) async fn get_session_node_detail(
+    pub async fn get_session_node_detail(
         &self,
         session: &crate::usecase::agent_session::AgentSessionItemDto,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        self.workspace_query
+        let Some(mut read) = self
+            .workspace_query
             .session_node_detail(
                 &WorkspaceIdentity::new(session.workspace_worktree_path.clone()),
                 &session.tree_location.tree_id,
                 &session.tree_location.node_execution_id,
-                self.failures.as_ref(),
             )
-            .await
+            .await?
+        else {
+            return Ok(None);
+        };
+        for (target, message) in self.failure_observations(read.classification.iter().cloned()) {
+            for node in &mut read.classification {
+                if node.observes(&target) {
+                    node.background_failure = true;
+                    if node.id == read.detail.id {
+                        read.detail.error_reason = Some(message.clone());
+                    }
+                }
+            }
+        }
+        read.detail.classification =
+            crate::domain::workspace_tree::WorkspaceNodeClassification::aggregate(
+                &read.classification,
+                &read.detail.id,
+            )
+            .as_public_str()
+            .into();
+        Ok(Some(read.detail))
     }
 
     pub(crate) async fn get_workspace_node_artifact(

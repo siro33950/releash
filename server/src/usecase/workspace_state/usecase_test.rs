@@ -119,7 +119,7 @@ impl WorkspaceStateRepository for Store {
                 } else {
                     self.retry_previous
                         .clone()
-                        .or_else(|| self.previous.clone())
+                        .or_else(|| self.saved.lock().last().cloned())
                 },
             ))
         } else {
@@ -132,7 +132,12 @@ impl WorkspaceStateRepository for Store {
         }
     }
     async fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
-        unreachable!()
+        Ok(self
+            .saved
+            .lock()
+            .last()
+            .cloned()
+            .or_else(|| self.previous.clone()))
     }
     async fn save(
         &self,
@@ -635,4 +640,139 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
         assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(store.calls.lock().is_empty());
     }
+}
+
+fn legacy_state() -> WorkspaceState {
+    use crate::domain::workspace_state::value_objects::pane_layout::{
+        PaneLayout, PaneTab, PaneTabKind,
+    };
+    let mut state = state_with_panes();
+    state.panes = Some(
+        PaneLayout::pane(
+            "pane".into(),
+            ["resolved", "missing", "failed", "resolved"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, node)| PaneTab {
+                    id: index.to_string(),
+                    kind: PaneTabKind::Session,
+                    node_id: Some(node.into()),
+                    agent_session_id: None,
+                    file_path: None,
+                    file_mode: None,
+                    file_base: None,
+                })
+                .collect(),
+            Some("0".into()),
+        )
+        .unwrap(),
+    );
+    state
+}
+
+#[tokio::test]
+async fn test_旧会話参照の復元_解決を保存して再照会せず未解決と失敗した参照を保持する() {
+    // Given
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    query
+        .session_nodes
+        .lock()
+        .sessions
+        .insert("resolved".into(), "agent".into());
+    let failure = crate::domain::failure::WorkFailure::from_error(
+        &crate::domain::workflow::WorkflowError::external("lookup failed"),
+    );
+    query.session_nodes.lock().failures.push(failure.clone());
+    let original = legacy_state();
+    let store = Store {
+        readable: true,
+        previous: Some(original.clone()),
+        ..Default::default()
+    };
+    // When
+    let (actual, failures) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+        .await
+        .unwrap();
+    // Then
+    let mut expected = original;
+    expected
+        .panes
+        .as_mut()
+        .unwrap()
+        .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+    assert_eq!(actual, Some(expected.clone()));
+    assert_eq!(failures, vec![failure]);
+    assert_eq!(store.saved.lock().as_slice(), &[expected]);
+    let ids = query.resolved_nodes.lock()[0].clone();
+    assert_eq!(ids.len(), 3);
+    // When
+    load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+        .await
+        .unwrap();
+    // Then
+    let calls = query.resolved_nodes.lock();
+    assert_eq!(calls.len(), 2);
+    assert!(!calls[1].iter().any(|id| id == "resolved"));
+    assert_eq!(store.saved.lock().len(), 1);
+}
+
+#[tokio::test]
+async fn test_旧会話参照の移行_競合後は最新配置へ参照置換だけを適用する() {
+    // Given
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    query
+        .session_nodes
+        .lock()
+        .sessions
+        .insert("resolved".into(), "agent".into());
+    let original = legacy_state();
+    let mut latest = original.clone();
+    latest.layout.left_nav_collapsed = true;
+    latest.layout.right_collapsed = true;
+    use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
+    latest.panes = Some(
+        PaneLayout::split(
+            "latest-split".into(),
+            SplitAxis::Vertical,
+            0.7,
+            latest.panes.take().unwrap(),
+            PaneLayout::pane("new-pane".into(), Vec::new(), None).unwrap(),
+        )
+        .unwrap(),
+    );
+    let store = Store {
+        readable: true,
+        previous: Some(original),
+        retry_previous: Some(latest.clone()),
+        conflicts_remaining: Mutex::new(1),
+        ..Default::default()
+    };
+    // When
+    let (actual, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+        .await
+        .unwrap();
+    // Then
+    latest
+        .panes
+        .as_mut()
+        .unwrap()
+        .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+    assert_eq!(actual, Some(latest.clone()));
+    assert_eq!(store.saved.lock().last(), Some(&latest));
+    assert_eq!(store.saved.lock().len(), 2);
+}
+
+#[tokio::test]
+async fn test_配置復元_配置自体の取得失敗は成功として扱わない() {
+    // Given
+    let store = Store::default();
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    // When
+    let result = load_workspace_state(&store, query.as_ref(), "/repo", "/repo").await;
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::Technical(_))));
+    assert!(query.resolved_nodes.lock().is_empty());
 }

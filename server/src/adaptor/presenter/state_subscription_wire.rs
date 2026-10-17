@@ -87,10 +87,14 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(wire::NullableStartupWorktree {
                 value: value.as_ref().map(|value| wire::StartupWorktree { path: Some(value.path.clone()), branch: Some(value.branch.clone()), repository_name: Some(value.repository_name.clone()) })
             }),
-            StateValue::WorkspaceState(value) => wire::state_payload::Value::WorkspaceState(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
+            StateValue::WorkspaceState(value, failures) => {
+                let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?;
+                if let Some(state) = &mut value.value {
+                    state.read_errors = failures.iter().map(|failure| failure.message.clone()).collect();
+                }
+                wire::state_payload::Value::WorkspaceState(value)
+            },
             StateValue::Directory(entries) => wire::state_payload::Value::Directory(wire::DirectorySnapshot {
                 entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: match entry.status {
                     crate::domain::code::services::directory::GitStatus::None => "none",

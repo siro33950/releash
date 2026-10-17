@@ -10,6 +10,16 @@ pub enum NodeCompletionSignalState {
 }
 
 impl NodeCompletionSignalState {
+    pub(crate) fn receive(self, signal: NodeCompletionSignal) -> Self {
+        match (self, signal) {
+            (Self::Pending, NodeCompletionSignal::Submit) => Self::SubmitReceived,
+            (Self::Pending, NodeCompletionSignal::Stop) => Self::StopReceived,
+            (Self::SubmitReceived, NodeCompletionSignal::Stop)
+            | (Self::StopReceived, NodeCompletionSignal::Submit) => Self::Ready,
+            _ => self,
+        }
+    }
+
     pub fn is_ready(self) -> bool {
         self == Self::Ready
     }

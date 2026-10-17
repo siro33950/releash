@@ -63,6 +63,35 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.layout, input)
     XCTAssertFalse(model.layoutLoaded)
   }
+  @MainActor func test_配置復元_取得失敗を表示し未解決参照と他のタブを保持する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo"
+    let layout = PaneLayout.pane(
+      id: "pane",
+      tabs: [
+        PaneTab(id: "legacy", kind: .session, nodeID: "unresolved"),
+        PaneTab(id: "ready", kind: .session, agentSessionID: "agent"),
+      ], active: "ready")
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.paneLayout = layout.message
+    state.value.readErrors = ["Session reference could not be read"]
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertTrue(model.layoutLoaded)
+    XCTAssertEqual(try model.panes.layout(), layout)
+    XCTAssertEqual(model.failure, "Session reference could not be read")
+    // When
+    model.editLayout { $0 = .empty() }
+    try await eventually { !http.requests("SaveWorkspaceState").isEmpty }
+    // Then
+    let saved = try Releash_Client_V1_SaveWorkspaceStateRequest(
+      serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
+    XCTAssertTrue(saved.state.readErrors.isEmpty)
+    await model.stop()
+  }
 }
 
 extension AppModelTests {

@@ -162,6 +162,46 @@ pub(crate) fn read_node(
     rows.collect()
 }
 
+pub(crate) fn tree_rows_with_event_types(
+    connection: &Connection,
+    tree_id: &str,
+    event_types: &[&str],
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let types = vec!["?"; event_types.len()].join(",");
+    let mut statement = connection.prepare(&format!("SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ? AND event_type IN ({types}) ORDER BY seq"))?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(std::iter::once(tree_id).chain(event_types.iter().copied())),
+        row_from_sql,
+    )?;
+    rows.collect()
+}
+
+pub(crate) fn read_subtree<T>(
+    connection: &Connection,
+    tree_id: &str,
+    node_id: &str,
+    detail_projection: &str,
+    projection_parameters: &[String],
+    mut project: impl FnMut(NodeEventRow) -> T,
+) -> Result<Vec<T>, rusqlite::Error> {
+    let columns = ROW_COLUMNS.replace(", detail,", &format!(", {detail_projection} AS detail,"));
+    let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&tree_id, &node_id];
+    parameters.extend(
+        projection_parameters
+            .iter()
+            .map(|value| value as &dyn rusqlite::ToSql),
+    );
+    let mut statement = connection.prepare(&format!(
+        "WITH RECURSIVE selected(id) AS (
+            SELECT ?2 UNION SELECT e.node_execution_id FROM node_events e JOIN selected s ON e.parent_id = s.id WHERE e.tree_id = ?1
+         ) SELECT {columns} FROM node_events WHERE tree_id = ?1 AND node_execution_id IN (SELECT id FROM selected) ORDER BY seq"
+    ))?;
+    let rows = statement.query_map(parameters.as_slice(), |row| {
+        row_from_sql(row).map(&mut project)
+    })?;
+    rows.collect()
+}
+
 /// Latest fact row of one node execution (used to resolve a node's identity
 /// columns for facts that only carry the node execution id).
 pub(crate) fn latest_row_for_node(

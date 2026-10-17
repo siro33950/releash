@@ -573,25 +573,34 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::WorkspaceState(Some(WorkspaceState {
-                panes: None,
-                version: 1,
-                tabs: WorkspaceTabsState {
-                    editors: vec![],
-                    active_editor_path: Some("/file".into()),
-                },
-                layout: WorkspaceLayoutState {
-                    center_tab: "agent".into(),
-                    active_view: "git".into(),
-                    left_nav_collapsed: true,
-                    right_collapsed: false,
-                    right_bottom_collapsed: true,
-                    right_bottom_active_tab: None,
-                    selected_diff_file: None,
-                },
-            })),
+            StateValue::WorkspaceState(
+                Some(WorkspaceState {
+                    panes: None,
+                    version: 1,
+                    tabs: WorkspaceTabsState {
+                        editors: vec![],
+                        active_editor_path: Some("/file".into()),
+                    },
+                    layout: WorkspaceLayoutState {
+                        center_tab: "agent".into(),
+                        active_view: "git".into(),
+                        left_nav_collapsed: true,
+                        right_collapsed: false,
+                        right_bottom_collapsed: true,
+                        right_bottom_active_tab: None,
+                        selected_diff_file: None,
+                    },
+                }),
+                vec![crate::domain::failure::WorkFailure {
+                    kind: crate::domain::failure::Failure::Technical(
+                        crate::domain::failure::TechnicalFailureNature::Other,
+                    ),
+                    message: "Session lookup failed".into(),
+                }],
+            ),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
+                    read_errors: vec!["Session lookup failed".into()],
                     pane_layout: None,
                     version: Some(1),
                     tabs: Some(wire::WorkspaceTabsStateDto {

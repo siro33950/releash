@@ -2007,6 +2007,7 @@ impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::Workspace
     type Error = String;
     fn try_from(value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
         Ok(Self {
+            read_errors: Vec::new(),
             pane_layout: value.panes.map(cv).transpose()?,
             version: Some(cv(value.version)?),
             tabs: Some(cv(value.tabs)?),

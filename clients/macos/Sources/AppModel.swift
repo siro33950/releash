@@ -428,6 +428,10 @@ import SwiftProtobuf
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
     if value.hasValue {
       workspaceState = value.value
+      if !value.value.readErrors.isEmpty {
+        failure = value.value.readErrors.joined(separator: "\n")
+      }
+      workspaceState.readErrors = []
       if value.value.hasPaneLayout {
         do {
           layout = try PaneLayout(value.value.paneLayout)
@@ -641,8 +645,14 @@ extension AppModel {
   func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
     guard let kind = root.rootKind else { return }
     if kind == .session {
-      guard case .node(let node) = root.variant, node.hasSessionID else { return }
-      openNode(.session, id: node.sessionID, title: node.title)
+      guard case .node(let node) = root.variant else { return }
+      if node.hasSessionID {
+        panes.openSession(id: node.sessionID, nodeID: root.rootID, title: node.title)
+        savePaneLayout()
+      } else {
+        panes.openPendingSession(id: root.rootID, title: node.title)
+        savePaneLayout()
+      }
     } else {
       openNode(kind, id: root.rootID, title: root.rootTabTitle)
     }

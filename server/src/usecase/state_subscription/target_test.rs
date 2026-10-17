@@ -304,7 +304,11 @@ fn test_ファイルthread購読_該当worktreeのcomment変更だけを受け�
 
 #[test]
 fn test_sessionタブ購読_idだけを受け取りworktree変化で更新する() {
-    let target = SubscriptionTarget::from_parts("session-tab", &["agent-session"]).unwrap();
+    // Given
+    let args = ["agent-session"];
+    // When
+    let target = SubscriptionTarget::from_parts("session-tab", &args).unwrap();
+    // Then
     assert_eq!(
         SubscriptionTarget::parse(&target.to_string()).unwrap(),
         target

@@ -128,6 +128,8 @@ export type WorkspaceTreeItem =
 	| ({ kind: "fanout" } & WorkspaceFanout);
 
 export type WorkspaceNode = {
+	sessionId?: string;
+	provider?: AgentSessionProviderDto;
 	processPresence: NodeProcessPresence;
 	id: string;
 	title: string;
@@ -141,6 +143,12 @@ export type WorkspaceNode = {
 	pastAttempts: ListWorkspaceNode;
 	pastAttemptsCollapsed: boolean;
 	updatedAt: number;
+	executionId?: string;
+	nodeExecutionId?: string;
+	nodeName?: string;
+	attempt?: number;
+	hasArtifact: boolean;
+	model?: string;
 };
 
 export type NodeProcessPresence = "unknown" | "live" | "confirmed_absent";
@@ -179,6 +187,7 @@ export type WorkspaceSequence = {
 	workflowCapabilities?: WorkspaceWorkflowCapabilities;
 	children: ListWorkspaceTreeItem;
 	updatedAt: number;
+	canApprove: boolean;
 };
 
 export type NodeWorktreeDto = {
@@ -194,6 +203,7 @@ export type WorkspaceFanout = {
 	workflowCapabilities?: WorkspaceWorkflowCapabilities;
 	children: ListWorkspaceTreeItem;
 	updatedAt: number;
+	canApprove: boolean;
 };
 
 export type ListAgentSessionItemDto = Array<AgentSessionItemDto>;
@@ -211,6 +221,7 @@ export type AgentSessionItemDto = {
 	operations: AgentSessionOperationsDto;
 	lastExitAbnormal: boolean;
 	terminalPresence?: string;
+	availability?: "open" | "paused" | "indeterminate" | "archived";
 };
 
 export type AgentSessionTreeLocationDto = {
@@ -257,6 +268,8 @@ export type WorkspaceSelectionReconciliation = {
 export type NullableWorkspaceNodeDetailDto = WorkspaceNodeDetailDto | null;
 
 export type WorkspaceNodeDetailDto = {
+	executionId?: string;
+	canAbort?: boolean;
 	processPresence: NodeProcessPresence;
 	worktree?: NodeWorktreeDto;
 	id: string;
@@ -270,6 +283,11 @@ export type WorkspaceNodeDetailDto = {
 	capabilities: WorkspaceNodeCapabilitiesDto;
 	updatedAt: number;
 	content: WorkspaceNodeContentDto;
+	nodeExecutionId?: string;
+	nodeName?: string;
+	model?: string;
+	pastAttempts?: Array<WorkspaceNodeAttemptDto>;
+	classification: WorkspaceStatusClassification;
 };
 
 export type WorkspaceNodeStatus =
@@ -289,6 +307,8 @@ export type WorkspaceSessionNodeContentDto = {
 };
 
 export type WorkspaceCommandNodeContentDto = {
+	shell?: string;
+	cwd?: string;
 	displayCommand?: string;
 	result?: WorkspaceCommandResultDto;
 };
@@ -300,7 +320,19 @@ export type WorkspaceCommandResultDto = {
 	stderr: string;
 };
 
+export type WorkspaceNodeAttemptDto = {
+	id: string;
+	title: string;
+	errorReason?: string;
+	updatedAt: number;
+};
+
 export type NullableAgentSessionItemDto = AgentSessionItemDto | null;
+
+export type SessionTabSnapshot = {
+	session?: AgentSessionItemDto;
+	node?: WorkspaceNodeDetailDto;
+};
 
 export type AgentSessionHistoryPageDto = {
 	items: ListAgentSessionHistoryCandidateDto;
@@ -443,6 +475,7 @@ export type StartupWorktree = {
 export type NullableWorkspaceStateDto = WorkspaceStateDto | null;
 
 export type WorkspaceStateDto = {
+	readErrors?: Array<string>;
 	paneLayout?: PaneLayout;
 	version: 1;
 	tabs: WorkspaceTabsStateDto;
@@ -462,10 +495,12 @@ export type Pane = {
 
 export type PaneTab = {
 	id?: string;
-	kind?: "terminal" | "workflow" | "file" | "session";
+	kind?: "terminal" | "file" | "session" | "command";
 	filePath?: string;
 	fileMode?: string;
 	fileBase?: string;
+	nodeId?: string;
+	agentSessionId?: string;
 };
 
 export type PaneSplit = {
@@ -1258,6 +1293,23 @@ export type FileThreadsSnapshot = {
 	unresolvedCount?: number;
 };
 
+export type ProviderUsageSnapshot = {
+	items?: Array<ProviderUsageEntry>;
+};
+
+export type ProviderUsageEntry = {
+	provider?: string;
+	windows?: Array<ProviderUsageWindow>;
+	plan?: string;
+};
+
+export type ProviderUsageWindow = {
+	usedPercent?: number;
+	windowMinutes?: number;
+	resetsAt?: number;
+	warning?: boolean;
+};
+
 export type InputResolveSessionReviewThreadRequest = {
 	sessionId: string;
 	threadId: string;
@@ -1691,6 +1743,7 @@ export type InputSaveWorkspaceStateRequest = {
 };
 
 export type InputWorkspaceStateDto = {
+	readErrors?: Array<string>;
 	paneLayout?: InputPaneLayout;
 	version: 1;
 	tabs: InputWorkspaceTabsStateDto;
@@ -1710,10 +1763,12 @@ export type InputPane = {
 
 export type InputPaneTab = {
 	id?: string;
-	kind?: "terminal" | "workflow" | "file" | "session";
+	kind?: "terminal" | "file" | "session" | "command";
 	filePath?: string;
 	fileMode?: string;
 	fileBase?: string;
+	nodeId?: string;
+	agentSessionId?: string;
 };
 
 export type InputPaneSplit = {

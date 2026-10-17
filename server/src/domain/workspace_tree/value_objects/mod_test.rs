@@ -426,3 +426,51 @@ fn test_command失敗理由_非ゼロ終了を示し記録された理由を優�
     command.error_reason = Some("process failed".into());
     assert_eq!(command.failure_reason().as_deref(), Some("process failed"));
 }
+
+#[test]
+fn test_部分木の状態分類_子の状態と失敗を反映し過去の試行を含めない() {
+    // Given
+    let mut parent = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    )
+    .classification_input();
+    parent.id = "parent".into();
+    parent.activity = Some(AgentSessionActivity::AwaitingInstruction);
+    parent.has_session = true;
+    let mut child = parent.clone();
+    child.id = "child".into();
+    child.parent_id = Some("parent".into());
+    // When / Then
+    for (activity, expected) in [
+        (
+            AgentSessionActivity::Working,
+            WorkspaceNodeStatusClassification::Active,
+        ),
+        (
+            AgentSessionActivity::AwaitingAnswer,
+            WorkspaceNodeStatusClassification::Attention,
+        ),
+    ] {
+        child.activity = Some(activity);
+        assert_eq!(
+            WorkspaceNodeClassification::aggregate(&[parent.clone(), child.clone()], "parent"),
+            expected
+        );
+    }
+    // When
+    child.activity = Some(AgentSessionActivity::AwaitingInstruction);
+    child.background_failure = true;
+    // Then
+    assert_eq!(
+        WorkspaceNodeClassification::aggregate(&[parent.clone(), child.clone()], "parent"),
+        WorkspaceNodeStatusClassification::Attention
+    );
+    // When
+    child.hidden = true;
+    // Then
+    assert_eq!(
+        WorkspaceNodeClassification::aggregate(&[parent, child], "parent"),
+        WorkspaceNodeStatusClassification::Idle
+    );
+}

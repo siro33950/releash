@@ -127,6 +127,37 @@ import SwiftUI
       agentSessionID: kind == .session ? nodeID : nil)
   }
 
+  func openSession(id sessionID: String, nodeID: String, title: String) {
+    if let pending = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
+    }) {
+      bindSession(pending, sessionID: sessionID)
+      controller.selectTab(pending)
+    } else {
+      openNode(.session, id: sessionID, title: title)
+    }
+  }
+
+  func openPendingSession(id nodeID: String, title: String) {
+    if let existing = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
+    }) {
+      controller.selectTab(existing)
+      return
+    }
+    guard let id = controller.createTab(title: title, icon: PaneTab.Kind.session.icon) else {
+      return
+    }
+    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: .session, nodeID: nodeID)
+  }
+
+  func bindSession(_ id: TabID, sessionID: String) {
+    guard var tab = tabs[id.id.uuidString], tab.kind == .session else { return }
+    tab.agentSessionID = sessionID
+    tab.nodeID = nil
+    tabs[id.id.uuidString] = tab
+  }
+
   func renameNode(_ nodeID: String, title: String) {
     for id in controller.allTabIds
     where tabs[id.id.uuidString]?.kind == .command && tabs[id.id.uuidString]?.nodeID == nodeID {
@@ -250,7 +281,9 @@ struct WorkspacePaneView: View {
         let path = model.selectedWorktree, value.kind == .session || value.kind == .command
       {
         NodePane(
-          model: model, path: path, nodeID: nodeID, focused: model.panes.isFocused(tab.id, in: pane)
+          model: model, path: path, nodeID: nodeID,
+          focused: model.panes.isFocused(tab.id, in: pane),
+          tabID: tab.id
         ).id(path + nodeID)
       } else if let file = model.panes.tab(tab.id), let path = file.filePath,
         let worktree = model.selectedWorktree
@@ -301,7 +334,7 @@ struct WorkspacePaneView: View {
         model.confirmArchiveSessionTab()
       }
     }
-    .onChange(of: model.panes.controller.treeSnapshot()) { _, _ in
+    .onChange(of: try? model.panes.layout()) { _, _ in
       guard model.layoutLoaded else { return }
       do {
         let layout = try model.panes.layout()
@@ -309,5 +342,6 @@ struct WorkspacePaneView: View {
         model.syncTerminalTabs(layout)
       } catch { model.failure = error.localizedDescription }
     }
+
   }
 }

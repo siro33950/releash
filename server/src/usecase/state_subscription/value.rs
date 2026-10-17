@@ -51,7 +51,10 @@ pub enum StateValue {
     ),
     Worktrees(Vec<WorktreeEntryDto>),
     StartupRepository(Option<crate::usecase::repository_dto::StartupWorktree>),
-    WorkspaceState(Option<crate::domain::workspace_state::WorkspaceState>),
+    WorkspaceState(
+        Option<crate::domain::workspace_state::WorkspaceState>,
+        Vec<crate::domain::failure::WorkFailure>,
+    ),
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
     ReviewSnapshot(ReviewSnapshotDto),

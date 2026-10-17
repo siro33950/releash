@@ -5,6 +5,7 @@ pub mod contract_schema;
 pub mod event_replay;
 pub mod fact_replay;
 pub mod history;
+pub(crate) mod node_read;
 pub mod projection;
 pub mod prompt_composition;
 pub mod reference;

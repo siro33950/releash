@@ -17,3 +17,25 @@ pub fn decide_completion_disposition(node: &NodeDefinition) -> CompletionDisposi
         CompletionDisposition::Complete
     }
 }
+
+pub(crate) fn decide_session_completion(
+    signals: crate::domain::workflow::NodeCompletionSignalState,
+    standalone: bool,
+    node: Option<&NodeDefinition>,
+) -> crate::domain::workflow::entities::workflow_execution::NodeCompletionHandshakeDecision {
+    use crate::domain::workflow::entities::workflow_execution::NodeCompletionHandshakeDecision as D;
+    if !signals.is_ready() {
+        return D::AwaitingSignal;
+    }
+    if standalone {
+        return D::CompleteAuto;
+    }
+    match node
+        .filter(|node| node.is_session())
+        .map(decide_completion_disposition)
+    {
+        Some(CompletionDisposition::Complete) => D::CompleteAuto,
+        Some(CompletionDisposition::RequestApproval) => D::RequestApproval,
+        None => D::NotApplicable,
+    }
+}

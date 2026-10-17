@@ -9,16 +9,31 @@ use super::WorkspaceQueryService;
 /// Explicit unit-test fake. Production composition never branches to this type.
 pub struct TestWorkspaceQueryService {
     executions: Vec<WorkflowExecutionSummary>,
+    pub session_nodes: parking_lot::Mutex<super::query_service::SessionNodeResolutionDto>,
+    pub resolved_nodes: parking_lot::Mutex<Vec<Vec<String>>>,
 }
 
 impl TestWorkspaceQueryService {
     pub fn new(executions: Vec<WorkflowExecutionSummary>) -> Arc<Self> {
-        Arc::new(Self { executions })
+        Arc::new(Self {
+            executions,
+            session_nodes: Default::default(),
+            resolved_nodes: Default::default(),
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
+    async fn resolve_session_nodes(
+        &self,
+        _: &WorkspaceIdentity,
+        ids: &[String],
+    ) -> super::query_service::SessionNodeResolutionDto {
+        self.resolved_nodes.lock().push(ids.to_vec());
+        self.session_nodes.lock().clone()
+    }
+
     async fn node_detail(
         &self,
         _workspace_identity: &WorkspaceIdentity,
@@ -32,10 +47,15 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         workspace_identity: &WorkspaceIdentity,
         _tree_id: &str,
         node_execution_id: &str,
-        _failures: &dyn crate::domain::failure::FailureRecordRepository,
-    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
+    ) -> Result<Option<super::query_service::SessionNodeDetailDto>, WorkflowError> {
         self.node_detail(workspace_identity, node_execution_id)
             .await
+            .map(|detail| {
+                detail.map(|detail| super::query_service::SessionNodeDetailDto {
+                    detail,
+                    classification: Vec::new(),
+                })
+            })
     }
 
     async fn node_artifact(

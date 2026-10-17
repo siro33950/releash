@@ -253,23 +253,10 @@ impl RuntimeNodeExecution {
         if self.kind != NodeKindName::Session || !self.status.is_active() {
             return TransitionOutcome::NotApplicable;
         }
-        let next = match (self.completion_signals, signal) {
-            (NodeCompletionSignalState::Pending, NodeCompletionSignal::Submit) => {
-                NodeCompletionSignalState::SubmitReceived
-            }
-            (NodeCompletionSignalState::Pending, NodeCompletionSignal::Stop) => {
-                NodeCompletionSignalState::StopReceived
-            }
-            (NodeCompletionSignalState::SubmitReceived, NodeCompletionSignal::Stop)
-            | (NodeCompletionSignalState::StopReceived, NodeCompletionSignal::Submit) => {
-                NodeCompletionSignalState::Ready
-            }
-            (NodeCompletionSignalState::SubmitReceived, NodeCompletionSignal::Submit)
-            | (NodeCompletionSignalState::StopReceived, NodeCompletionSignal::Stop)
-            | (NodeCompletionSignalState::Ready, _) => {
-                return TransitionOutcome::AlreadyApplied;
-            }
-        };
+        let next = self.completion_signals.receive(signal);
+        if next == self.completion_signals {
+            return TransitionOutcome::AlreadyApplied;
+        }
         self.completion_signals = next;
         TransitionOutcome::Applied
     }
@@ -2814,29 +2801,13 @@ impl ExecutionTree {
         {
             return NodeCompletionHandshakeDecision::AwaitingSignal;
         }
-        if !execution.completion_signals.is_ready() {
-            return NodeCompletionHandshakeDecision::AwaitingSignal;
-        }
-        if self.runtime.workflow.is_none()
-            && self.runtime.launched_as == ExecutionTreeLaunch::Session
-            && execution.kind == NodeKindName::Session
-        {
-            return NodeCompletionHandshakeDecision::CompleteAuto;
-        }
-        let Some(node) = self
-            .node_definition(&execution.node_name)
-            .filter(|node| node.is_session())
-        else {
-            return NodeCompletionHandshakeDecision::NotApplicable;
-        };
-        match workflow_transition::decide_completion_disposition(node) {
-            workflow_transition::CompletionDisposition::Complete => {
-                NodeCompletionHandshakeDecision::CompleteAuto
-            }
-            workflow_transition::CompletionDisposition::RequestApproval => {
-                NodeCompletionHandshakeDecision::RequestApproval
-            }
-        }
+        workflow_transition::decide_session_completion(
+            execution.completion_signals,
+            self.runtime.workflow.is_none()
+                && self.runtime.launched_as == ExecutionTreeLaunch::Session
+                && execution.kind == NodeKindName::Session,
+            self.node_definition(&execution.node_name),
+        )
     }
 
     pub fn apply_node_completion_handshake(

@@ -25,3 +25,39 @@ pub fn aborted_node_history_entry(
 #[cfg(test)]
 #[path = "history_test.rs"]
 mod history_tests;
+
+pub(crate) fn retry_history_chains<'a>(
+    nodes: impl IntoIterator<Item = (&'a str, Option<&'a str>, bool)>,
+) -> Vec<(String, Vec<String>)> {
+    use std::collections::{HashMap, HashSet};
+    let nodes: HashMap<_, _> = nodes
+        .into_iter()
+        .map(|(id, predecessor, terminal)| (id, (predecessor, terminal)))
+        .collect();
+    let predecessors: HashSet<_> = nodes
+        .values()
+        .filter_map(|(predecessor, _)| *predecessor)
+        .collect();
+    let mut chains = Vec::new();
+    for (&head, &(predecessor, _)) in &nodes {
+        if predecessor.is_none() || predecessors.contains(head) {
+            continue;
+        }
+        let mut chain = Vec::new();
+        let mut cursor = predecessor;
+        let mut visited = HashSet::new();
+        while let Some(id) = cursor {
+            if !visited.insert(id) {
+                break;
+            }
+            let Some(&(previous, true)) = nodes.get(id) else {
+                break;
+            };
+            chain.push(id.to_string());
+            cursor = previous;
+        }
+        chain.reverse();
+        chains.push((head.to_string(), chain));
+    }
+    chains
+}

@@ -35,10 +35,60 @@ pub async fn save_workspace_state(
 
 pub async fn load_workspace_state(
     repository: &dyn WorkspaceStateRepository,
+    query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
     worktree_name: &str,
     worktree_root: &str,
-) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
-    super::query_service::load_workspace_state(repository, worktree_name, worktree_root).await
+) -> Result<
+    (
+        Option<WorkspaceState>,
+        Vec<crate::domain::failure::WorkFailure>,
+    ),
+    WorkspaceStateError,
+> {
+    retry::attempts(
+        RetryBackoff::CONFLICT,
+        &RetryLimiter::new(),
+        |error| match error {
+            WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
+            _ => None,
+        },
+        |_| async {
+            let (version, mut state) = repository.read(worktree_name).await?;
+            let mut failures = Vec::new();
+            if let Some(layout) = state.as_mut().and_then(|state| state.panes.as_mut()) {
+                let ids = layout
+                    .legacy_session_nodes()
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                if !ids.is_empty() {
+                    let resolution = query
+                        .resolve_session_nodes(
+                            &crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_root),
+                            &ids,
+                        )
+                        .await;
+                    failures = resolution.failures;
+                    let previous = layout.clone();
+                    layout.resolve_legacy_sessions(&resolution.sessions);
+                    if *layout != previous {
+                        repository
+                            .save(worktree_name, state.clone().expect("loaded state"), version)
+                            .await?;
+                    }
+                }
+            }
+            let state = super::query_service::load_workspace_state(
+                repository,
+                worktree_name,
+                worktree_root,
+            )
+            .await?;
+            Ok((state, failures))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

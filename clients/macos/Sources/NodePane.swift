@@ -1,3 +1,4 @@
+import Bonsplit
 import SwiftUI
 
 struct NodePane: View {
@@ -5,6 +6,7 @@ struct NodePane: View {
   let path: String
   let nodeID: String
   let focused: Bool
+  var tabID: TabID?
   @State private var detail: Releash_Client_V1_WorkspaceNodeDetailDto?
   @State private var subscription: UUID?
 
@@ -18,6 +20,12 @@ struct NodePane: View {
           ).id(session.sessionID)
         } else if case .command(let command) = detail.content.variant {
           CommandPane(model: model, path: path, detail: detail, command: command)
+        } else if case .session = detail.content.variant {
+          if detail.hasErrorReason {
+            Text(detail.errorReason).foregroundStyle(.red).textSelection(.enabled)
+          } else {
+            Text("Sessionを準備しています").foregroundStyle(.secondary)
+          }
         } else {
           Text("Nodeの内容がありません").foregroundStyle(.secondary)
         }
@@ -30,6 +38,11 @@ struct NodePane: View {
         subscription = model.subscribe("node-detail", [path, nodeID]) { payload in
           if case .nodeDetail(let value) = payload.value {
             detail = value.hasValue ? value.value : nil
+            if let tabID, value.hasValue,
+              case .session(let session) = value.value.content.variant, session.hasSessionID
+            {
+              model.panes.bindSession(tabID, sessionID: session.sessionID)
+            }
           }
         }
       }

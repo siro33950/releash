@@ -295,35 +295,12 @@ impl WorkspaceStateReads {
                 ))
             }
             T::WorkspaceState(name, path) => {
-                let mut state = crate::usecase::workspace_state::usecase::load_workspace_state(
-                    self.workspace_state.as_ref(),
-                    name,
-                    path,
-                )
-                .await
-                .map_err(error)?;
-                if let Some(layout) = state.as_mut().and_then(|state| state.panes.as_mut()) {
-                    let mut sessions = std::collections::HashMap::new();
-                    for id in layout.legacy_session_nodes() {
-                        if let Some(detail) = self
-                            .workflow
-                            .get_workspace_node_detail(path, &id)
-                            .await
-                            .map_err(error)?
-                        {
-                            if let crate::usecase::workflow::WorkspaceNodeContentDto::Session(
-                                content,
-                            ) = detail.content
-                            {
-                                if let Some(session) = content.session_id {
-                                    sessions.insert(id, session);
-                                }
-                            }
-                        }
-                    }
-                    layout.resolve_legacy_sessions(&sessions);
-                }
-                return Ok(StateValue::WorkspaceState(state));
+                let (state, failures) = self
+                    .workflow
+                    .load_workspace_state(self.workspace_state.as_ref(), name, path)
+                    .await
+                    .map_err(error)?;
+                return Ok(StateValue::WorkspaceState(state, failures));
             }
             T::RepositoryGroupState(path) => {
                 return Ok(StateValue::RepositoryGroupState(

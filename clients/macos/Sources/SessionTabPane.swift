@@ -38,6 +38,7 @@ struct SessionTabPane: View {
               model.releaseAgentTerminal(
                 path: snapshot.session.workspaceWorktreePath, id: sessionID)
             }
+            if value.hasSession && value.session.availability == .open { failure = nil }
             snapshot = value
             model.panes.updateSession(tabID, snapshot: value)
           }
@@ -51,6 +52,7 @@ struct SessionTabPane: View {
         do {
           _ = try await client.openAgentSession(request: request, headers: model.headers).result
             .get()
+          failure = nil
         } catch { failure = model.failureMessage(error) }
       }
       .onDisappear {
