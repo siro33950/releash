@@ -132,7 +132,10 @@ import SwiftUI
     if kind == .terminal { nextTerminalNumber += 1 }
   }
 
-  func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil) {
+  @discardableResult
+  func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil)
+    -> TabID?
+  {
     let live = Set(controller.allTabIds.map { $0.id.uuidString })
     tabs = tabs.filter { live.contains($0.key) }
     if let existing = controller.allTabIds.first(where: {
@@ -142,15 +145,16 @@ import SwiftUI
     }
     ) {
       controller.selectTab(existing)
-      return
+      return existing
     }
     guard
       let id = controller.createTab(
         title: title, icon: kind.icon, inPane: pane ?? controller.focusedPaneId)
-    else { return }
+    else { return nil }
     tabs[id.id.uuidString] = PaneTab(
       id: id.id.uuidString, kind: kind, nodeID: kind == .session ? nil : nodeID,
       agentSessionID: kind == .session ? nodeID : nil)
+    return id
   }
 
   func openSession(id sessionID: String, nodeID: String, title: String) {
@@ -161,10 +165,7 @@ import SwiftUI
         controller.selectTab(selected)
       }
     } else {
-      openNode(.session, id: sessionID, title: title)
-      if let selected = controller.allTabIds.first(where: {
-        tabs[$0.id.uuidString]?.agentSessionID == sessionID
-      }) {
+      if let selected = openNode(.session, id: sessionID, title: title) {
         pendingSessionTabs[nodeID] = selected
       }
     }

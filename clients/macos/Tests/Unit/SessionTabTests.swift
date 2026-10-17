@@ -82,6 +82,34 @@ final class SessionTabTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_会話タブ_準備中タブなしで会話を開いた後も古い一覧から同じタブを選ぶ() throws {
+    for alreadyOpen in [false, true] {
+      // Given
+      let workspace = PaneWorkspace()
+      try workspace.restore(.empty())
+      let pane = try XCTUnwrap(workspace.controller.allPaneIds.first)
+      let existing = alreadyOpen ? workspace.openNode(.session, id: "agent", title: "Ready") : nil
+      let command = try XCTUnwrap(workspace.openNode(.command, id: "agent", title: "Command"))
+      // When
+      workspace.openSession(id: "agent", nodeID: "node", title: "Ready")
+      // Then
+      let session = try XCTUnwrap(workspace.controller.selectedTab(inPane: pane)?.id)
+      XCTAssertNotEqual(session, command)
+      if alreadyOpen { XCTAssertEqual(session, existing) }
+      // Given
+      workspace.controller.selectTab(command)
+      // When
+      workspace.openPendingSession(id: "node", title: "Preparing")
+      // Then
+      XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+      XCTAssertEqual(workspace.controller.selectedTab(inPane: pane)?.id, session)
+      let saved = try PaneLayout(workspace.layout().message).tabs.filter { $0.kind == .session }
+      XCTAssertEqual(saved.map(\.id), [session.id.uuidString])
+      XCTAssertEqual(saved.map(\.agentSessionID), ["agent"])
+      XCTAssertNil(saved.first?.nodeID)
+    }
+  }
+
   @MainActor func test_会話タブ_詳細の紐付け後に古い一覧を繰り返し開いても同じタブを選ぶ() throws {
     // Given
     let workspace = PaneWorkspace()
