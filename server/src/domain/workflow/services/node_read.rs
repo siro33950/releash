@@ -5,9 +5,9 @@ use crate::domain::workflow::entities::workflow_execution::delegate::{
     DelegateContinuations, DelegateRuntime,
 };
 use crate::domain::workflow::{
-    ExecutionTreeLaunch, ItemsSource, NodeCompletionSignal, NodeCompletionSignalState,
-    NodeDefinition, NodeExecutionStatus, NodeFact, NodeFactRecord, NodeKind, NodeKindName,
-    Predicate, Rule, TreeRootFact,
+    ExecutionTreeLaunch, IsolatedWorktree, ItemsSource, NodeCompletionSignal,
+    NodeCompletionSignalState, NodeDefinition, NodeExecutionStatus, NodeFact, NodeFactRecord,
+    NodeKind, NodeKindName, Predicate, Rule, TreeRootFact,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -525,20 +525,9 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
                 .copied()
                 .map(&mut **artifact_value)
                 .transpose()?;
-            let previous = previous.map(|value| {
-                match self
-                    .state
-                    .starts
-                    .get(id)
-                    .and_then(|start| match &start.fact {
-                        NodeFact::Started(started) if !start.meta.kind.is_composite_kind() => {
-                            started.worktree.as_ref()
-                        }
-                        _ => None,
-                    }) {
-                    Some(worktree) => worktree.with_artifact(Some(value)),
-                    None => value,
-                }
+            let previous = previous.map(|value| match leaf_worktree(&self.state.starts, id) {
+                Some(worktree) => worktree.with_artifact(Some(value)),
+                None => value,
             });
             let current = artifact_value(record.seq)?;
             if transition::artifact_changes_execution(delegated, previous.as_ref(), &current) {
@@ -895,14 +884,10 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
             {
                 continue;
             }
-            if !start.meta.kind.is_composite_kind() {
-                if let NodeFact::Started(started) = &start.fact {
-                    if let Some(worktree) = &started.worktree {
-                        let artifact = worktree.with_artifact(self.state.artifacts.remove(id));
-                        self.state.artifacts.insert(id.to_string(), artifact);
-                        self.state.nodes.get_mut(id).unwrap().has_artifact = true;
-                    }
-                }
+            if let Some(worktree) = leaf_worktree(&self.state.starts, id) {
+                let artifact = worktree.with_artifact(self.state.artifacts.remove(id));
+                self.state.artifacts.insert(id.to_string(), artifact);
+                self.state.nodes.get_mut(id).unwrap().has_artifact = true;
             }
             self.state
                 .nodes
@@ -1048,6 +1033,19 @@ impl<'a, 'v> NodeReadProjection<'a, 'v> {
             }
         }
         Ok((self.state.nodes, self.state.applied))
+    }
+}
+
+fn leaf_worktree<'a>(
+    starts: &'a HashMap<String, NodeFactRecord>,
+    id: &str,
+) -> Option<&'a IsolatedWorktree> {
+    let start = starts.get(id)?;
+    match &start.fact {
+        NodeFact::Started(started) if !start.meta.kind.is_composite_kind() => {
+            started.worktree.as_ref()
+        }
+        _ => None,
     }
 }
 
