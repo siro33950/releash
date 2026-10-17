@@ -1,4 +1,5 @@
 import AppKit
+import Bonsplit
 import SwiftProtobuf
 import SwiftUI
 import XCTest
@@ -15,26 +16,33 @@ final class NodePaneTests: XCTestCase {
     node.id = "node"
     node.content.session.sessionID = "agent"
     http.state.withLock {
-      $0.sessions["agent"] = session
-      $0.nodeDetails["node"] = node
+      var snapshot = Releash_Client_V1_SessionTabSnapshot()
+      snapshot.session = session
+      snapshot.session.workspaceWorktreePath = "/repo"
+      snapshot.node = node
+      $0.sessionTabs["agent"] = snapshot
     }
     let model = try await testModel(http)
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
+    model.openNode(.session, id: "agent", title: "Session")
+    let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
     let host = await ViewHarness(
-      AnyView(NodePane(model: model, path: "/repo", nodeID: "node", focused: true)))
+      AnyView(SessionTabPane(model: model, tabID: tab, sessionID: "agent", focused: true)))
     try await eventuallyView(host) { host.element("terminal:agent") != nil }
     session.clearAvailability()
     var payload = Releash_Client_V1_StatePayload()
-    payload.agentSession.value = session
-    try http.publish(payload, target: "agent-session")
+    payload.sessionTab.session = session
+    payload.sessionTab.session.workspaceWorktreePath = "/repo"
+    payload.sessionTab.node = node
+    try http.publish(payload, target: "session-tab")
     try await eventuallyView(host) { host.element("terminal:agent") == nil }
     try await eventually {
       model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
     }
     let subscription = try XCTUnwrap(
       http.state.withLock {
-        $0.subscriptions.first { $0.target == "node-detail" && $0.args == ["/repo", "node"] }
+        $0.subscriptions.first { $0.target == "session-tab" && $0.args == ["agent"] }
       })
     let hostingView = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
     hostingView.rootView = AnyView(EmptyView())
@@ -65,15 +73,20 @@ final class NodePaneTests: XCTestCase {
       node.capabilities.canResumeSession = canResume
       node.content.session.sessionID = "agent"
       http.state.withLock {
-        $0.sessions["agent"] = session
-        $0.nodeDetails["node"] = node
+        var snapshot = Releash_Client_V1_SessionTabSnapshot()
+        snapshot.session = session
+        snapshot.session.workspaceWorktreePath = "/repo"
+        snapshot.node = node
+        $0.sessionTabs["agent"] = snapshot
         $0.terminalReplay = "resumed-output"
       }
       let model = try await testModel(http)
       model.selectWorktree("/repo")
       try await eventually { model.layoutLoaded }
+      model.openNode(.session, id: "agent", title: "Session")
+      let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
       let host = await ViewHarness(
-        NodePane(model: model, path: "/repo", nodeID: "node", focused: true))
+        SessionTabPane(model: model, tabID: tab, sessionID: "agent", focused: true))
       try await eventuallyView(host) { host.texts().contains(message) }
       XCTAssertNil(host.element("terminal:agent"))
       XCTAssertEqual(host.element("Resume") != nil, availability == .paused && canResume)
@@ -94,8 +107,10 @@ final class NodePaneTests: XCTestCase {
         XCTAssertNil(host.element("terminal:agent"))
         var payload = Releash_Client_V1_StatePayload()
         session.availability = .open
-        payload.agentSession.value = session
-        try http.publish(payload, target: "agent-session")
+        payload.sessionTab.session = session
+        payload.sessionTab.session.workspaceWorktreePath = "/repo"
+        payload.sessionTab.node = node
+        try http.publish(payload, target: "session-tab")
         try await eventuallyView(host) { host.element("terminal:agent") != nil }
         try await eventually {
           http.state.withLock {
@@ -104,8 +119,8 @@ final class NodePaneTests: XCTestCase {
         }
         try await eventuallyView(host) { host.texts().contains { $0.contains("resumed-output") } }
         XCTAssertEqual(http.requests("OpenAgentSession").count, 1)
-        payload.agentSession = .init()
-        try http.publish(payload, target: "agent-session")
+        payload.sessionTab = .init()
+        try http.publish(payload, target: "session-tab")
         try await eventuallyView(host) { host.element("terminal:agent") == nil }
         try await eventually {
           model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil

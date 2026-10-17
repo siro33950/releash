@@ -1,3 +1,6 @@
+mod node_timestamp;
+pub(crate) use node_timestamp::NodeTimestampObservation;
+
 use crate::domain::workflow::{
     AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
     NodeExecutionFailureKind, NodeKindName, NodeProcessPresence,
@@ -161,14 +164,48 @@ pub struct WorkspaceTreeNode {
     pub dynamic_fanout: bool,
 }
 
+pub(crate) fn node_updated_at(
+    started_at: f64,
+    completed_at: Option<f64>,
+    status: crate::domain::workflow::NodeExecutionStatus,
+    has_artifact: bool,
+    execution_updated_at: f64,
+) -> f64 {
+    f64::from_bits(
+        NodeTimestampObservation::snapshot(
+            started_at,
+            completed_at,
+            status,
+            has_artifact,
+            execution_updated_at,
+        )
+        .fold(started_at.to_bits(), |current, observation| {
+            observation.apply(current)
+        }),
+    )
+}
+
+pub(crate) fn node_failure_reason(
+    reason: Option<&str>,
+    command_result: Option<&WorkspaceCommandResult>,
+) -> Option<String> {
+    reason.map(str::to_string).or_else(|| {
+        command_result
+            .filter(|result| result.exit_code != 0)
+            .map(|result| format!("Command exited with code {}", result.exit_code))
+    })
+}
+
+pub(crate) fn aborted_node_reason(
+    status: crate::domain::workflow::NodeExecutionStatus,
+) -> Option<&'static str> {
+    (status == crate::domain::workflow::NodeExecutionStatus::Aborted)
+        .then_some("Workflow node aborted")
+}
+
 impl WorkspaceTreeNode {
     pub fn failure_reason(&self) -> Option<String> {
-        self.error_reason.clone().or_else(|| {
-            self.command_result
-                .as_ref()
-                .filter(|result| result.exit_code != 0)
-                .map(|result| format!("Command exited with code {}", result.exit_code))
-        })
+        node_failure_reason(self.error_reason.as_deref(), self.command_result.as_ref())
     }
 
     pub fn updated_at(&self) -> f64 {

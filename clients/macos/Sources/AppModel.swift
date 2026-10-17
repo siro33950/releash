@@ -12,10 +12,23 @@ import SwiftProtobuf
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
-  private var workspaceReadErrors: Set<String> = []
-  private var dismissedWorkspaceReadErrors: Set<String> = []
-  private var displayedWorkspaceReadErrors: Set<String> = []
-  var failure: String?
+  private enum Failure {
+    case operation(String)
+    case workspace(Set<String>)
+
+    var message: String {
+      switch self {
+      case .operation(let message): return message
+      case .workspace(let errors): return errors.sorted().joined(separator: "\n")
+      }
+    }
+  }
+  private var workspaceReadErrors: [String: Bool] = [:]
+  private var displayedFailure: Failure?
+  var failure: String? {
+    get { displayedFailure?.message }
+    set { displayedFailure = newValue.map(Failure.operation) }
+  }
   var connectionFailure: String?
   var connected = false
   var reconnecting = false
@@ -404,19 +417,17 @@ import SwiftProtobuf
     Task { do { try await operation() } catch { failure = failureMessage(error) } }
   }
   func dismissFailure() {
-    if failure == displayedWorkspaceReadErrors.sorted().joined(separator: "\n") {
-      dismissedWorkspaceReadErrors.formUnion(
-        displayedWorkspaceReadErrors.intersection(workspaceReadErrors))
-      displayedWorkspaceReadErrors = []
+    if case .workspace(let errors) = displayedFailure {
+      for error in errors where workspaceReadErrors[error] != nil {
+        workspaceReadErrors[error] = true
+      }
     }
-    failure = nil
+    displayedFailure = nil
   }
 
   private func resetWorkspaceReadErrors() {
-    if failure == displayedWorkspaceReadErrors.sorted().joined(separator: "\n") { failure = nil }
-    workspaceReadErrors = []
-    dismissedWorkspaceReadErrors = []
-    displayedWorkspaceReadErrors = []
+    if case .workspace = displayedFailure { displayedFailure = nil }
+    workspaceReadErrors = [:]
   }
 
   func selectWorktree(_ path: String) {
@@ -448,14 +459,15 @@ import SwiftProtobuf
   func receiveWorkspaceState(_ value: Releash_Client_V1_NullableWorkspaceStateDto, path: String) {
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
     let errors = Set(value.hasValue ? value.value.readErrors : [])
-    dismissedWorkspaceReadErrors.formIntersection(errors)
-    if !errors.subtracting(workspaceReadErrors).isEmpty {
-      displayedWorkspaceReadErrors = errors.subtracting(dismissedWorkspaceReadErrors)
-      failure =
-        displayedWorkspaceReadErrors.isEmpty
-        ? nil : displayedWorkspaceReadErrors.sorted().joined(separator: "\n")
+    let hasNewError = errors.contains { workspaceReadErrors[$0] == nil }
+    workspaceReadErrors = Dictionary(
+      uniqueKeysWithValues: errors.map {
+        ($0, workspaceReadErrors[$0] ?? false)
+      })
+    if hasNewError {
+      let visible = Set(workspaceReadErrors.filter { !$0.value }.keys)
+      if !visible.isEmpty { displayedFailure = .workspace(visible) }
     }
-    workspaceReadErrors = errors
     if value.hasValue {
       workspaceState = value.value
       workspaceState.readErrors = []

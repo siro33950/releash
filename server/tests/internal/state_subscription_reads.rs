@@ -1709,6 +1709,18 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
         WorkflowDefinition,
     };
+    let child_tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
+        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+        .await
+        .remove(0)
+        .unwrap();
+    let broken_child_alias = child_tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("workflow-session"))
+        .unwrap()
+        .id
+        .clone();
     let public = "00000000-0000-4000-8000-000000002090";
     let first = NodeFactMeta {
         tree_id: public.into(),
@@ -1779,9 +1791,11 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root' AND event_type = 'started'", []).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'unrelated' AND event_type = 'started'", []).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'workflow-session' AND event_type = 'started'", []).unwrap();
     let panes = PaneLayout::pane(
         "pane".into(),
         [
+            broken_child_alias.as_str(),
             public,
             first.node_execution_id.as_str(),
             ready_node.as_str(),
@@ -1865,6 +1879,6 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .into(),
     );
     assert_eq!(actual, expected);
-    assert_eq!(failures.len(), 3);
+    assert_eq!(failures.len(), 4);
     assert!(!failures[0].message.is_empty());
 }

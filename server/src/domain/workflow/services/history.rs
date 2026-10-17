@@ -79,20 +79,20 @@ pub(crate) fn retry_predecessors(
     let mut predecessors = std::collections::HashMap::new();
     for record in records {
         match record.fact {
-            NodeFact::RetryRequested => pending = Some(&record.meta),
+            NodeFact::RetryRequested => {
+                pending = Some(PendingRestart {
+                    node_execution_id: record.meta.node_execution_id.clone(),
+                    node_name: record.meta.node_name.clone(),
+                    parent_scope_id: record.meta.parent_id.clone(),
+                })
+            }
             NodeFact::Started(_) => {
-                if let Some(previous) = pending.take().filter(|previous| {
-                    same_retry_target(
-                        &previous.node_name,
-                        previous.parent_id.as_deref(),
-                        &record.meta.node_name,
-                        record.meta.parent_id.as_deref(),
-                    )
-                }) {
-                    predecessors.insert(
-                        record.meta.node_execution_id.clone(),
-                        previous.node_execution_id.clone(),
-                    );
+                if let Some(previous) = consume_restart(
+                    &mut pending,
+                    &record.meta.node_name,
+                    record.meta.parent_id.as_deref(),
+                ) {
+                    predecessors.insert(record.meta.node_execution_id.clone(), previous);
                 }
             }
             _ => {}
@@ -103,15 +103,40 @@ pub(crate) fn retry_predecessors(
 
 pub(crate) fn read_lineage_roots(
     target: &str,
-    records: &[crate::domain::workflow::NodeFactRecord],
+    predecessors: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
-    let predecessors = retry_predecessors(records);
     let mut roots = vec![target.to_string()];
+    let mut visited = std::collections::HashSet::from([target]);
     while let Some(previous) = predecessors.get(roots.last().expect("target")) {
-        if roots.contains(previous) {
+        if !visited.insert(previous) {
             break;
         }
         roots.push(previous.clone());
     }
     roots
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PendingRestart {
+    pub node_execution_id: String,
+    pub node_name: String,
+    pub parent_scope_id: Option<String>,
+}
+
+pub(crate) fn consume_restart(
+    pending: &mut Option<PendingRestart>,
+    name: &str,
+    parent: Option<&str>,
+) -> Option<String> {
+    pending
+        .take()
+        .filter(|previous| {
+            same_retry_target(
+                &previous.node_name,
+                previous.parent_scope_id.as_deref(),
+                name,
+                parent,
+            )
+        })
+        .map(|previous| previous.node_execution_id)
 }

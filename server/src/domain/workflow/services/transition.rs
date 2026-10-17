@@ -40,6 +40,10 @@ pub(crate) fn decide_session_completion(
     }
 }
 
+pub(crate) fn artifact_changes_execution(delegated: bool, changed: bool) -> bool {
+    delegated || changed
+}
+
 pub(crate) fn fanout_complete(expected: usize, children: impl IntoIterator<Item = bool>) -> bool {
     let mut count = 0;
     for complete in children {
@@ -104,11 +108,13 @@ pub(crate) struct ScopeChild<'a> {
 fn current_children<'a>(
     children: &'a [ScopeChild<'a>],
 ) -> impl Iterator<Item = &'a ScopeChild<'a>> {
-    children.iter().filter(|child| {
-        !children
-            .iter()
-            .any(|other| other.predecessor == Some(child.id))
-    })
+    let replaced: std::collections::HashSet<_> = children
+        .iter()
+        .filter_map(|child| child.predecessor)
+        .collect();
+    children
+        .iter()
+        .filter(move |child| !replaced.contains(child.id))
 }
 
 pub(crate) fn advance_composite(
@@ -173,14 +179,17 @@ pub(crate) fn finish_composite(
     }
     let mut artifacts = serde_json::Map::new();
     for child in current_children(children) {
-        let key = composite_artifact_key(node, child.name, child.parent).ok_or_else(|| {
-            WorkflowError::invalid_state(match node.kind {
+        let Some(key) = composite_artifact_key(node, child.name, child.parent) else {
+            if matches!(node.kind, NodeKind::Sequence(_)) {
+                continue;
+            }
+            return Err(WorkflowError::invalid_state(match node.kind {
                 NodeKind::Fanout(_) => {
                     format!("fanout child '{}' has no valid slot coordinates", child.id)
                 }
                 _ => format!("sequence child '{}' is undefined", child.id),
-            })
-        })?;
+            }));
+        };
         match &node.kind {
             NodeKind::Sequence(_) => {
                 artifacts.remove(&key);
@@ -223,3 +232,7 @@ pub(crate) fn completion_parent<'a>(
         Some(id) => CompletionParent::Scope(id),
     }
 }
+
+#[cfg(test)]
+#[path = "transition_test.rs"]
+mod transition_tests;

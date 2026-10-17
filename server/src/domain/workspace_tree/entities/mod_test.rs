@@ -2347,3 +2347,17 @@ mod workspace_tree_tests {
         assert!(sibling.error_reason.is_none());
     }
 }
+
+#[test]
+fn test_公開会話id_所有する実行木だけを取り出し不正な形式を拒否する() {
+    let tree = "00000000-0000-4000-8000-000000002063";
+    let id = super::opaque_workflow_node_id(tree, "child").unwrap();
+    assert_eq!(super::public_node_tree(&id).as_deref(), Some(tree));
+    for invalid in [
+        "node-s-123",
+        "node-w-invalid-00000000000000000000000000000000",
+        "node-w-00000000000040008000000000002063-bad",
+    ] {
+        assert!(super::public_node_tree(invalid).is_none());
+    }
+}

@@ -15,14 +15,291 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
-    references: Arc<parking_lot::Mutex<std::collections::HashMap<String, ReferenceTree>>>,
+    references: Arc<parking_lot::Mutex<ReferenceIndex>>,
+}
+
+#[derive(Default)]
+struct ReferenceIndex {
+    trees: std::collections::HashMap<String, ReferenceTree>,
+    aliases: std::collections::HashMap<String, (String, String)>,
+}
+
+impl ReferenceIndex {
+    fn update(
+        &mut self,
+        connection: &rusqlite::Connection,
+        heads: &[(String, i64)],
+        workspace: &str,
+    ) -> Result<(), rusqlite::Error> {
+        use crate::adaptor::gateway::{local_event_store::node_events, workflow::fact_log};
+        let live: std::collections::HashSet<_> = heads.iter().map(|(id, _)| id.as_str()).collect();
+        self.trees.retain(|id, _| live.contains(id.as_str()));
+        self.aliases
+            .retain(|_, (tree, _)| live.contains(tree.as_str()));
+        for (tree, head) in heads {
+            let held = self.trees.entry(tree.clone()).or_default();
+            if *head < held.seq {
+                *held = ReferenceTree::default();
+                self.aliases.retain(|_, (owner, _)| owner != tree);
+            }
+            if *head == held.seq {
+                continue;
+            }
+            for row in node_events::reference_starts_after(connection, tree, held.seq)? {
+                let result = fact_log::record_from_row(&row).and_then(|record| {
+                    if let Some(record) = record {
+                        if let crate::domain::workflow::NodeFact::Started(started) = &record.fact {
+                            if let Some(root) = &started.root {
+                                held.workspace = Some(root.worktree_path.clone());
+                            }
+                        }
+                        if held
+                            .workspace
+                            .as_deref()
+                            .is_some_and(|owner| owner != workspace)
+                        {
+                            return Ok(());
+                        }
+                        if held.errors.is_empty() {
+                            held.ids
+                                .record(&record)
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
+                    Ok(())
+                });
+                if held
+                    .workspace
+                    .as_deref()
+                    .is_some_and(|owner| owner != workspace)
+                {
+                    break;
+                }
+                if let Err(error) = result {
+                    held.errors
+                        .insert(row.node_execution_id.clone(), error.clone());
+                    if row.parent_id.is_none() {
+                        if let Ok(Some(header)) =
+                            crate::adaptor::gateway::workflow::stored_definition::read_tree_header(
+                                &row.detail,
+                            )
+                        {
+                            held.workspace = Some(header.worktree_path);
+                        }
+                        if held
+                            .workspace
+                            .as_deref()
+                            .is_some_and(|owner| owner != workspace)
+                        {
+                            break;
+                        }
+                        if let Err(reason) = fact_log::node_meta_from_row(&row).and_then(|meta| {
+                            held.ids
+                                .record_start_identity(&meta, None)
+                                .map_err(|error| error.to_string())
+                        }) {
+                            held.errors.insert(
+                                row.node_execution_id.clone(),
+                                format!("{error}: {reason}"),
+                            );
+                        }
+                    }
+                }
+                if let Some(alias) = held.ids.identities.get(&row.node_execution_id) {
+                    self.aliases
+                        .insert(alias.clone(), (tree.clone(), row.node_execution_id));
+                }
+            }
+            held.seq = *head;
+        }
+        self.trees.retain(|_, held| {
+            held.workspace
+                .as_deref()
+                .is_none_or(|owner| owner == workspace)
+        });
+        self.aliases
+            .retain(|_, (tree, _)| self.trees.contains_key(tree));
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        connection: &rusqlite::Connection,
+        workspace: &str,
+        id: &str,
+        owner: Option<&str>,
+    ) -> Result<Option<crate::domain::workflow::NodeFactRecord>, WorkflowError> {
+        use crate::adaptor::gateway::{local_event_store::node_events, workflow::fact_log};
+        let storage = |error| {
+            WorkflowError::from(fact_log::FactReadError::Query(
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error),
+            ))
+        };
+        let direct =
+            node_events::latest_row_for_node_with_event_types(connection, id, &["started"])
+                .map_err(storage)?;
+        let direct = match direct {
+            Some(row) => Some(row),
+            None => node_events::first_row_of_tree(connection, id).map_err(storage)?,
+        };
+        let matched = direct
+            .map(|row| (row.tree_id, row.node_execution_id))
+            .or_else(|| self.aliases.get(id).cloned());
+        let tree = matched.as_ref().map(|(tree, _)| tree.as_str()).or(owner);
+        let Some(tree) = tree else { return Ok(None) };
+        let Some(held) = self.trees.get(tree) else {
+            return Ok(None);
+        };
+        if let Some(owner) = held.workspace.as_deref() {
+            if owner != workspace {
+                return Ok(None);
+            }
+        } else if let Some(error) = held.errors.values().next() {
+            return Err(WorkflowError::CorruptStoredState(error.clone()));
+        } else {
+            return Ok(None);
+        }
+        let node = if tree == id {
+            if let Some(error) = held.errors.values().next() {
+                return Err(WorkflowError::CorruptStoredState(error.clone()));
+            }
+            held.ids.public_root().map(str::to_string)
+        } else {
+            matched.map(|(_, node)| node)
+        };
+        let Some(node) = node else {
+            if let Some(error) = held.errors.values().next() {
+                return Err(WorkflowError::CorruptStoredState(error.clone()));
+            }
+            return Ok(None);
+        };
+        if let Some(error) = held.errors.get(&node) {
+            return Err(WorkflowError::CorruptStoredState(error.clone()));
+        }
+        let Some(start) =
+            node_events::latest_row_for_node_with_event_types(connection, &node, &["started"])
+                .map_err(storage)?
+        else {
+            return Ok(None);
+        };
+        let meta =
+            fact_log::node_meta_from_row(&start).map_err(WorkflowError::CorruptStoredState)?;
+        if meta.kind != crate::domain::workflow::NodeKindName::Session {
+            return Ok(None);
+        }
+        node_events::latest_row_for_node_with_event_types(connection, &node, &["session_attached"])
+            .map_err(storage)?
+            .map(|row| fact_log::record_from_row(&row).map_err(WorkflowError::CorruptStoredState))
+            .transpose()
+            .map(Option::flatten)
+    }
 }
 
 #[derive(Default)]
 struct ReferenceTree {
     seq: i64,
+    workspace: Option<String>,
     ids: crate::domain::workspace_tree::entities::NodeIdentityIndex,
     errors: std::collections::HashMap<String, String>,
+}
+
+struct SessionFactSource<'a> {
+    connection: &'a rusqlite::Connection,
+    tree: &'a str,
+    root: &'a crate::domain::workflow::TreeRootFact,
+    selection: &'a (String, Vec<String>),
+    terminal: Option<&'a crate::domain::workflow::NodeFactRecord>,
+    retries: &'a std::collections::HashMap<String, String>,
+    starts: std::collections::HashMap<&'a str, &'a crate::domain::workflow::NodeFactRecord>,
+}
+
+impl SessionFactSource<'_> {
+    fn read_scope(
+        &self,
+        roots: &[String],
+    ) -> Result<
+        (
+            Vec<crate::domain::workflow::NodeFactRecord>,
+            crate::domain::workflow::services::node_read::NodeReadProjectionResult,
+        ),
+        crate::domain::local_event::LocalEventQueryError,
+    > {
+        use crate::adaptor::gateway::{
+            local_event_store::{node_events, reader},
+            workflow::fact_log,
+        };
+        let records = node_events::read_subtrees(
+            self.connection,
+            self.tree,
+            roots,
+            &self.selection.0,
+            &self.selection.1,
+            |row| fact_log::record_from_row(&row),
+        )
+        .map_err(|error| reader::storage_unavailable(&error))?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| reader::corrupt(&error))?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let ids = records
+            .iter()
+            .map(|record| record.meta.node_execution_id.as_str())
+            .collect();
+        let changes = node_events::artifact_changes(
+            self.connection,
+            self.tree,
+            &ids,
+            self.terminal.map(|record| record.seq),
+        )
+        .map_err(|error| reader::storage_unavailable(&error))?;
+        let projection = crate::domain::workflow::services::node_read::subtree_read_projection(
+            self.root,
+            &records,
+            self.terminal,
+            self.retries,
+            &changes,
+        )
+        .map_err(|error| reader::corrupt(&error))?;
+        Ok((records, projection))
+    }
+
+    fn execution_updated_at(
+        &self,
+        initial: &crate::domain::workflow::services::node_read::NodeReadProjectionResult,
+    ) -> Result<i64, crate::domain::local_event::LocalEventQueryError> {
+        use crate::adaptor::gateway::local_event_store::{node_events, reader};
+        use crate::domain::workflow::services::{
+            history::read_lineage_roots,
+            node_read::{clock_scope, CLOCK_FACT_TYPES},
+        };
+        let mut applied = initial.applied;
+        let mut processed = initial
+            .nodes
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        while let Some(id) = node_events::unread_clock_node(
+            self.connection,
+            self.tree,
+            &processed,
+            applied.seq,
+            self.terminal.map(|record| record.seq),
+            CLOCK_FACT_TYPES,
+        )
+        .map_err(|error| reader::storage_unavailable(&error))?
+        {
+            let scope = clock_scope(&id, &self.starts);
+            let (_, projection) = self.read_scope(&read_lineage_roots(scope, self.retries))?;
+            processed.insert(id);
+            processed.extend(projection.nodes.into_keys());
+            if projection.applied.seq > applied.seq {
+                applied = projection.applied;
+            }
+        }
+        Ok(applied.timestamp_ms)
+    }
 }
 
 impl SqliteWorkspaceQueryService {
@@ -92,7 +369,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         node_ids: &[String],
     ) -> crate::usecase::workspace_tree::query_service::SessionNodeResolutionDto {
         use crate::adaptor::gateway::local_event_store::node_events;
-        use crate::adaptor::gateway::workflow::fact_log;
         let mut result =
             crate::usecase::workspace_tree::query_service::SessionNodeResolutionDto::default();
         let workspace = workspace_identity.as_str().to_string();
@@ -106,145 +382,56 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                     crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
                 };
                 let transaction = connection.unchecked_transaction().map_err(unavailable)?;
-                let heads = node_events::tree_heads(&transaction).map_err(unavailable)?;
-                let mut index = index.lock();
-                index.retain(|id, _| heads.iter().any(|(tree, _)| tree == id));
-                for (tree, head) in &heads {
-                    let held = index.entry(tree.clone()).or_default();
-                    if *head < held.seq {
-                        *held = ReferenceTree::default();
-                    }
-                    if *head == held.seq {
-                        continue;
-                    }
-                    for row in node_events::reference_starts_after(&transaction, tree, held.seq)
-                        .map_err(unavailable)?
-                    {
-                        let result = fact_log::record_from_row(&row).and_then(|record| {
-                            record
-                                .map(|record| {
-                                    held.ids.record(&record).map_err(|error| error.to_string())
-                                })
-                                .transpose()
-                        });
-                        if let Err(error) = result {
-                            held.errors
-                                .insert(row.node_execution_id.clone(), error.clone());
-                            if row.parent_id.is_none() {
-                                // Keep the root alias addressable so its corruption reaches the affected reference.
-                                let identity =
-                                    fact_log::node_meta_from_row(&row).and_then(|meta| {
-                                        held.ids
-                                            .record_start_identity(&meta, None)
-                                            .map_err(|reason| reason.to_string())
-                                    });
-                                if let Err(reason) = identity {
-                                    held.errors.insert(
-                                        row.node_execution_id.clone(),
-                                        format!("{error}: {reason}"),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    held.seq = *head;
-                }
-                let mut rows = Vec::new();
-                for id in ids {
+                let mut selected = std::collections::HashSet::new();
+                let mut owners = std::collections::HashMap::new();
+                let mut needs_workspace = false;
+                for id in &ids {
                     let direct = node_events::latest_row_for_node_with_event_types(
                         &transaction,
-                        &id,
+                        id,
                         &["started"],
                     )
                     .map_err(unavailable)?;
-                    let direct = match direct {
-                        Some(row) => Some(row),
-                        None => node_events::first_row_of_tree(&transaction, &id)
-                            .map_err(unavailable)?,
-                    };
-                    let matched = direct
-                        .as_ref()
-                        .map(|row| (row.tree_id.clone(), row.node_execution_id.clone()))
-                        .or_else(|| {
-                            index.iter().find_map(|(tree, held)| {
-                                let node = if tree == &id {
-                                    held.ids.public_root()
-                                } else {
-                                    held.ids
-                                        .identities
-                                        .iter()
-                                        .find(|(_, alias)| *alias == &id)
-                                        .map(|(node, _)| node.as_str())
-                                }?;
-                                Some((tree.clone(), node.to_string()))
-                            })
-                        });
-                    let Some((tree, mut node)) = matched else {
-                        continue;
-                    };
-                    if tree == id {
-                        if let Some(root) = index.get(&tree).and_then(|held| held.ids.public_root())
-                        {
-                            node = root.to_string();
-                        }
-                    }
-                    let Some(root) =
-                        node_events::first_root_row_of_tree(&transaction, &tree, "started")
+                    let owner = direct.map(|row| row.tree_id).or(
+                        crate::domain::workspace_tree::entities::public_node_tree(id),
+                    );
+                    let owner = match owner {
+                        Some(owner) => Some(owner),
+                        None => node_events::first_row_of_tree(&transaction, id)
                             .map_err(unavailable)?
-                    else {
-                        continue;
+                            .map(|row| row.tree_id),
                     };
-                    let resolved = (|| {
-                        let header =
-                            crate::adaptor::gateway::workflow::stored_definition::read_tree_header(
-                                &root.detail,
-                            )
-                            .map_err(WorkflowError::CorruptStoredState)?;
-                        if header.is_none_or(|header| header.worktree_path != workspace) {
-                            return Ok(None);
-                        }
-                        if let Some(error) =
-                            index.get(&tree).and_then(|held| held.errors.get(&node))
-                        {
-                            return Err(WorkflowError::CorruptStoredState(error.clone()));
-                        }
-                        let start = node_events::latest_row_for_node_with_event_types(
-                            &transaction,
-                            &node,
-                            &["started"],
-                        )
-                        .map_err(|error| {
-                            WorkflowError::from(fact_log::FactReadError::Query(unavailable(error)))
-                        })?;
-                        let Some(start) = start else {
-                            return Ok(None);
-                        };
-                        let Some(start) = fact_log::record_from_row(&start)
-                            .map_err(WorkflowError::CorruptStoredState)?
-                        else {
-                            return Ok(None);
-                        };
-                        if start.meta.kind != crate::domain::workflow::NodeKindName::Session {
-                            return Ok(None);
-                        }
-                        let attachment = node_events::latest_row_for_node_with_event_types(
-                            &transaction,
-                            &node,
-                            &["session_attached"],
-                        )
-                        .map_err(|error| {
-                            WorkflowError::from(fact_log::FactReadError::Query(unavailable(error)))
-                        })?;
-                        attachment
-                            .map(|row| {
-                                fact_log::record_from_row(&row)
-                                    .map_err(WorkflowError::CorruptStoredState)
-                            })
-                            .transpose()
-                            .map(Option::flatten)
-                    })();
-                    rows.push((Some(id), resolved));
+                    if let Some(owner) = owner {
+                        selected.insert(owner.clone());
+                        owners.insert(id.clone(), owner);
+                    } else {
+                        needs_workspace = true;
+                    }
                 }
+                if needs_workspace {
+                    selected.extend(
+                        node_events::workspace_reference_trees(&transaction, &workspace)
+                            .map_err(unavailable)?,
+                    );
+                }
+                let heads =
+                    node_events::reference_heads(&transaction, &selected).map_err(unavailable)?;
+                let mut index = index.lock();
+                index
+                    .update(&transaction, &heads, &workspace)
+                    .map_err(unavailable)?;
+                let rows = ids
+                    .into_iter()
+                    .map(|id| {
+                        let resolved = index.resolve(
+                            &transaction,
+                            &workspace,
+                            &id,
+                            owners.get(&id).map(String::as_str),
+                        );
+                        (id, resolved)
+                    })
+                    .collect::<Vec<_>>();
                 transaction.commit().map_err(unavailable)?;
                 Ok(rows)
             })
@@ -257,9 +444,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                             fact: crate::domain::workflow::NodeFact::SessionAttached(attached),
                             ..
                         })) => {
-                            result
-                                .sessions
-                                .insert(id.expect("resolved reference"), attached.session_id);
+                            result.sessions.insert(id, attached.session_id);
                         }
                         Ok(_) => {}
                         Err(error) => result
@@ -351,6 +536,8 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .run_indexed(move |connection| {
                 use crate::adaptor::gateway::local_event_store::{node_events, reader};
                 let unavailable = |error: rusqlite::Error| reader::storage_unavailable(&error);
+                let transaction = connection.unchecked_transaction().map_err(unavailable)?;
+                let connection = &*transaction;
                 let Some(root_row) =
                     node_events::first_root_row_of_tree(connection, &tree, "started")
                         .map_err(unavailable)?
@@ -372,7 +559,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 else {
                     return Ok(None);
                 };
-                let (detail_projection, parameters) = session_artifact_projection(
+                let selection = session_artifact_projection(
                     crate::domain::workflow::services::node_read::artifact_fields(root),
                 );
                 let lineage = node_events::tree_rows_with_event_types(
@@ -385,25 +572,11 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 .filter_map(|row| fact_log::record_from_row(row).transpose())
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| reader::corrupt(&error))?;
+                let retries =
+                    crate::domain::workflow::services::history::retry_predecessors(&lineage);
                 let roots = crate::domain::workflow::services::history::read_lineage_roots(
-                    &target, &lineage,
+                    &target, &retries,
                 );
-                let records = node_events::read_subtrees(
-                    connection,
-                    &tree,
-                    &roots,
-                    &detail_projection,
-                    &parameters,
-                    |row| fact_log::record_from_row(&row),
-                )
-                .map_err(unavailable)?
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| reader::corrupt(&error))?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-                let starts = lineage;
                 let terminal = node_events::tree_rows_with_event_types(
                     connection,
                     &tree,
@@ -411,12 +584,41 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 )
                 .map_err(unavailable)?
                 .into_iter()
-                .next();
-                Ok(Some((root_record, records, starts, terminal)))
+                .next()
+                .map(|row| fact_log::record_from_row(&row))
+                .transpose()
+                .map_err(|error| reader::corrupt(&error))?
+                .flatten();
+                let source = SessionFactSource {
+                    connection,
+                    tree: &tree,
+                    root,
+                    selection: &selection,
+                    terminal: terminal.as_ref(),
+                    retries: &retries,
+                    starts: lineage
+                        .iter()
+                        .filter(|record| matches!(record.fact, NodeFact::Started(_)))
+                        .map(|record| (record.meta.node_execution_id.as_str(), record))
+                        .collect(),
+                };
+                let (records, projection) = source.read_scope(&roots)?;
+                let updated_at = source.execution_updated_at(&projection)?;
+                let rules = projection.nodes;
+                let starts = lineage;
+                Ok(Some((
+                    root_record,
+                    records,
+                    starts,
+                    terminal,
+                    updated_at,
+                    rules,
+                )))
             })
             .await
             .map_err(query_error)?;
-        let Some((root_record, records, starts, terminal)) = read else {
+        let Some((root_record, records, starts, terminal, execution_updated_at, rules)) = read
+        else {
             return Ok(None);
         };
         let NodeFact::Started(started) = &root_record.fact else {
@@ -427,12 +629,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         };
         let identities = crate::domain::workspace_tree::entities::node_identities(&starts)
             .map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
-        let terminal = terminal
-            .as_ref()
-            .map(fact_log::record_from_row)
-            .transpose()
-            .map_err(WorkflowError::CorruptStoredState)?
-            .flatten();
         let Some(first) = records.iter().find(|record| {
             record.meta.node_execution_id == node_execution_id
                 && matches!(record.fact, NodeFact::Started(_))
@@ -442,12 +638,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         if first.meta.kind != NodeKindName::Session {
             return Ok(None);
         }
-        let rules = crate::domain::workflow::services::node_read::subtree_read_rules(
-            root,
-            &records,
-            terminal.as_ref(),
-        )
-        .map_err(WorkflowError::CorruptStoredState)?;
         let execution_status =
             crate::domain::workflow::ExecutionStatus::from_terminal_fact(terminal.as_ref());
         let mut target_session = None;
@@ -527,34 +717,18 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         });
         let (submit_received, stop_received, waiting_for) =
             signal_display(state.completion_signals);
-        let updated_at = records
-            .iter()
-            .filter(|record| record.meta.node_execution_id == node_execution_id)
-            .filter(|record| {
-                matches!(
-                    record.fact,
-                    NodeFact::Started(_)
-                        | NodeFact::SessionAttached(_)
-                        | NodeFact::ArtifactProduced(_)
-                        | NodeFact::ApprovalGranted(_)
-                        | NodeFact::StandaloneSessionNodeCompleted
-                        | NodeFact::ExecutionCompleted
-                        | NodeFact::AbortRequested(_)
-                )
-            })
-            .map(|record| record.timestamp_ms)
-            .max()
-            .unwrap_or(first.timestamp_ms) as f64
-            / 1000.0;
-        let error_reason = records.iter().rev().find_map(|record| match &record.fact {
-            NodeFact::RuntimeFailureObserved(failure)
-                if record.meta.node_execution_id == node_execution_id =>
-            {
-                Some(failure.reason.clone())
-            }
-            _ => None,
-        });
         let rules = &rules[node_execution_id];
+        let updated_at = crate::domain::workspace_tree::value_objects::node_updated_at(
+            first.timestamp_ms as f64 / 1000.0,
+            rules.completed_at,
+            rules.status,
+            rules.has_artifact,
+            execution_updated_at as f64 / 1000.0,
+        );
+        let error_reason = crate::domain::workspace_tree::value_objects::node_failure_reason(
+            crate::domain::workspace_tree::value_objects::aborted_node_reason(rules.status),
+            None,
+        );
         let detail = WorkspaceNodeDetailDto {
             classification: WorkspaceNodeClassification::aggregate(&classification, &state.id)
                 .as_public_str()
@@ -596,10 +770,12 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                     node_execution_id == tree_id,
                 ),
                 can_approve: state.status.can_approve(),
-                can_retry: execution_status.is_active()
-                    && rules
-                        .status
-                        .can_retry(NodeKindName::Session, state.process_presence),
+                can_retry: rules.status.can_retry_in_execution(
+                    execution_status.is_active(),
+                    NodeKindName::Session,
+                    state.process_presence,
+                    true,
+                ),
                 can_resume_session: state
                     .process_presence
                     .can_resume_session(NodeKindName::Session),

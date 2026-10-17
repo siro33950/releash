@@ -474,3 +474,21 @@ fn test_部分木の状態分類_子の状態と失敗を反映し過去の試�
         WorkspaceNodeStatusClassification::Idle
     );
 }
+
+#[test]
+fn test_node更新時刻_開始と成果と承認待ちと終端に共通の時刻規則を使う() {
+    use crate::domain::workflow::NodeExecutionStatus as S;
+    for (status, completed, artifact, expected) in [
+        (S::Running, None, false, 1.0),
+        (S::Running, None, true, 5.0),
+        (S::WaitingApproval, None, false, 5.0),
+        (S::Succeeded, Some(3.0), true, 3.0),
+        (S::Succeeded, None, false, 5.0),
+        (S::Aborted, Some(4.0), false, 4.0),
+    ] {
+        assert_eq!(
+            super::node_updated_at(1.0, completed, status, artifact, 5.0),
+            expected
+        );
+    }
+}

@@ -37,7 +37,6 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
 pub fn runtime_snapshot_nodes(
     input: RuntimeSnapshotNodeProjection<'_>,
 ) -> Result<Vec<crate::domain::workspace_tree::WorkspaceTreeNode>, String> {
-    use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus as S;
     use crate::domain::workflow::NodeExecutionFailureKind;
     use crate::domain::workspace_tree::{
         WorkspaceStructureFact as F, WorkspaceTree, WorkspaceTreeProjector,
@@ -127,33 +126,51 @@ pub fn runtime_snapshot_nodes(
                 timestamp: node.started_at,
             });
         }
-        if let Some(value) = &node.artifact {
-            facts.push(F::NodeArtifactProduced {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node.id.clone(),
-                command_result_candidate: command_result_from_value(value),
-                timestamp: node.completed_at.unwrap_or(updated_at),
-            });
-        }
-        match node.status {
-            S::Running => {}
-            S::WaitingApproval => facts.push(F::NodeApprovalRequested {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node.id.clone(),
-                timestamp: updated_at,
-            }),
-            S::Succeeded => facts.push(F::NodeCompleted {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node.id.clone(),
-                timestamp: node.completed_at.unwrap_or(updated_at),
-            }),
-            S::Aborted => facts.push(F::NodeFailed {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node.id.clone(),
-                reason: "Workflow node aborted".to_string(),
-                failure_kind: NodeExecutionFailureKind::UserAbort,
-                timestamp: node.completed_at.unwrap_or(updated_at),
-            }),
+        use super::value_objects::NodeTimestampObservation as T;
+        for observation in T::snapshot(
+            node.started_at,
+            node.completed_at,
+            node.status,
+            node.artifact.is_some(),
+            updated_at,
+        )
+        .skip(1)
+        {
+            let timestamp = observation.timestamp();
+            let fact = match observation {
+                T::Artifact(_) => F::NodeArtifactProduced {
+                    execution_id: execution_id.into(),
+                    node_execution_id: node.id.clone(),
+                    command_result_candidate: node
+                        .artifact
+                        .as_ref()
+                        .and_then(command_result_from_value),
+                    timestamp,
+                },
+                T::Approval(_) => F::NodeApprovalRequested {
+                    execution_id: execution_id.into(),
+                    node_execution_id: node.id.clone(),
+                    timestamp,
+                },
+                T::Completed(_) => F::NodeCompleted {
+                    execution_id: execution_id.into(),
+                    node_execution_id: node.id.clone(),
+                    timestamp,
+                },
+                T::Failed(_) => F::NodeFailed {
+                    execution_id: execution_id.into(),
+                    node_execution_id: node.id.clone(),
+                    reason: super::value_objects::aborted_node_reason(node.status)
+                        .unwrap()
+                        .into(),
+                    failure_kind: NodeExecutionFailureKind::UserAbort,
+                    timestamp,
+                },
+                T::Started(_) | T::Bound(_) | T::Prepared(_) => {
+                    unreachable!("snapshot emits only artifact and state after start")
+                }
+            };
+            facts.push(fact);
         }
     }
     facts.push(F::WorkflowSummaryProjected {
@@ -178,11 +195,14 @@ pub fn runtime_snapshot_nodes(
             .get(&runtime.id)
             .copied()
             .unwrap_or_default();
-        node.can_retry = execution_active
-            && runtime.can_retry(node.process_presence)
-            && node_executions.iter().all(|candidate| {
+        node.can_retry = runtime.status.can_retry_in_execution(
+            execution_active,
+            runtime.kind,
+            node.process_presence,
+            node_executions.iter().all(|candidate| {
                 !same_retry_target(runtime, candidate) || candidate.attempt <= runtime.attempt
-            });
+            }),
+        );
         node.provider = workflow_definition
             .and_then(|definition| definition.node_by_name(&runtime.node_name))
             .and_then(|definition| match &definition.kind {

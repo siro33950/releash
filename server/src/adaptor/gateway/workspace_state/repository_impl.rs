@@ -93,17 +93,6 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         .await
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    async fn load(
-        &self,
-        key: &str,
-        root: &str,
-    ) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
-        let Some(state) = self.read(key).await?.1 else {
-            return Ok(None);
-        };
-        self.filter_missing_files(state, root).await.map(Some)
-    }
     async fn filter_missing_files(
         &self,
         state: WorkspaceState,

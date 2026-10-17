@@ -4,6 +4,40 @@ use crate::domain::workflow::{
     SubmitReceivedFact, WorkflowDefinition,
 };
 
+fn read_projection(
+    root: &TreeRootFact,
+    records: &[NodeFactRecord],
+    terminal: Option<&NodeFactRecord>,
+) -> Result<NodeReadProjectionResult, String> {
+    let mut previous = HashMap::new();
+    let changes = records
+        .iter()
+        .filter_map(|record| {
+            let NodeFact::ArtifactProduced(artifact) = &record.fact else {
+                return None;
+            };
+            let changed = previous.insert(&record.meta.node_execution_id, &artifact.value)
+                != Some(&artifact.value);
+            Some((record.seq, changed))
+        })
+        .collect();
+    super::subtree_read_projection(
+        root,
+        records,
+        terminal,
+        &super::super::history::retry_predecessors(records),
+        &changes,
+    )
+}
+
+fn subtree_read_rules(
+    root: &TreeRootFact,
+    records: &[NodeFactRecord],
+    terminal: Option<&NodeFactRecord>,
+) -> Result<HashMap<String, NodeReadRules>, String> {
+    read_projection(root, records, terminal).map(|projection| projection.nodes)
+}
+
 fn root(node: NodeDefinition) -> TreeRootFact {
     TreeRootFact {
         repository_root: None,
@@ -303,10 +337,15 @@ fn assert_replay(
     id: &str,
     expected: NodeExecutionStatus,
 ) {
-    let read = subtree_read_rules(root, records, None).unwrap();
+    let projection = read_projection(root, records, None).unwrap();
+    let read = projection.nodes;
     let folded = super::super::fact_replay::fold_execution_tree("tree", records)
         .unwrap()
         .unwrap();
+    assert_eq!(
+        projection.applied.timestamp_ms as f64 / 1000.0,
+        folded.aggregate.updated_at
+    );
     let node = folded
         .aggregate
         .node_executions
@@ -417,7 +456,7 @@ fn test_委任先の合成成果_選択項目を統合して親を承認待ち�
         ArtifactProducedFact, ChildEntry, ExecutionParentRef, FanoutSpec, SequenceSpec,
     };
     // Given
-    for fanout in [false, true] {
+    for (fanout, stop_first) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut root = root(NodeDefinition {
             name: "session".into(),
             completion: NodeCompletion {
@@ -510,7 +549,7 @@ fn test_委任先の合成成果_選択項目を統合して親を承認待ち�
             }),
         ));
         // When
-        for fact in [
+        let mut facts = vec![
             NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
             NodeFact::ArtifactProduced(ArtifactProducedFact {
                 contract: None,
@@ -521,7 +560,11 @@ fn test_委任先の合成成果_選択項目を統合して親を承認待ち�
                 result_summary: None,
                 token_usage: None,
             }),
-        ] {
+        ];
+        if stop_first {
+            facts.rotate_right(1);
+        }
+        for fact in facts {
             records.push(child_record(
                 records.len() as i64 + 1,
                 "judge",
@@ -792,4 +835,221 @@ fn test_会話詳細の動的並列_別スコープの後発成果を予定件�
         );
         assert!(!format!("{selected:?}").contains("private"));
     }
+}
+
+#[test]
+fn test_会話詳細の合成参照とstop先着_実行側と同じ承認待ちを導出する() {
+    for records in [
+        super::super::test_helpers::composite_dynamic_fanout_facts(),
+        super::super::test_helpers::stop_first_delegate_facts(),
+    ] {
+        let NodeFact::Started(started) = &records[0].fact else {
+            panic!("root")
+        };
+        let root = started.root.as_deref().unwrap();
+        let retry = records.iter().any(|record| record.meta.attempt == 2);
+        let target = records
+            .iter()
+            .find(|record| {
+                if retry {
+                    record.meta.attempt == 2
+                } else {
+                    record.meta.node_name == "inner"
+                }
+            })
+            .unwrap()
+            .meta
+            .node_execution_id
+            .as_str();
+        for end in [records.len() - 3, records.len()] {
+            let records = &records[..end];
+            let selected = selected_artifact_records(root, records);
+            let read = subtree_read_rules(root, &selected, None).unwrap();
+            let execution =
+                super::super::fact_replay::fold_execution_tree(&records[0].meta.tree_id, records)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                read[target].status,
+                execution
+                    .aggregate
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == target)
+                    .unwrap()
+                    .status
+            );
+        }
+        let read =
+            subtree_read_rules(root, &selected_artifact_records(root, &records), None).unwrap();
+        assert_eq!(read[target].status, NodeExecutionStatus::WaitingApproval);
+    }
+}
+
+#[test]
+fn test_会話詳細の承認_承認待ちだけを完了し稼働中と終端では変えない() {
+    let root = root(NodeDefinition {
+        name: "session".into(),
+        completion: NodeCompletion::require_approval(),
+        ..Default::default()
+    });
+    let mut records = vec![record(
+        1,
+        NodeFact::Started(StartedFact {
+            root: Some(Box::new(root.clone())),
+            parent: None,
+            worktree: None,
+        }),
+    )];
+    for (fact, expected) in [
+        (
+            NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
+                comment: None,
+            }),
+            NodeExecutionStatus::Running,
+        ),
+        (
+            NodeFact::StopReceived(StopReceivedFact {
+                result_summary: None,
+                token_usage: None,
+            }),
+            NodeExecutionStatus::Running,
+        ),
+        (
+            NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+            NodeExecutionStatus::WaitingApproval,
+        ),
+        (
+            NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
+                comment: None,
+            }),
+            NodeExecutionStatus::Succeeded,
+        ),
+        (
+            NodeFact::ApprovalGranted(crate::domain::workflow::ApprovalGrantedFact {
+                comment: None,
+            }),
+            NodeExecutionStatus::Succeeded,
+        ),
+        (NodeFact::RetryRequested, NodeExecutionStatus::Succeeded),
+    ] {
+        records.push(record(records.len() as i64 + 1, fact));
+        assert_replay(&root, &records, "node", expected);
+    }
+}
+
+#[test]
+fn test_会話詳細の順序合成_children外への遷移後も実行側と同じ完了を返す() {
+    use crate::domain::workflow::{
+        ArtifactProducedFact, ChildEntry, ExecutionParentRef, SequenceSpec,
+    };
+    let mut first = ChildEntry::reference("first");
+    first.rules = Some(vec![Rule::Next("target_only".into())]);
+    let mut root = root(NodeDefinition {
+        name: "scope".into(),
+        kind: NodeKind::Sequence(SequenceSpec {
+            entry: None,
+            children: vec![first],
+        }),
+        ..Default::default()
+    });
+    root.definition.as_mut().unwrap().nodes.extend([
+        NodeDefinition {
+            name: "first".into(),
+            ..Default::default()
+        },
+        NodeDefinition {
+            name: "target_only".into(),
+            ..Default::default()
+        },
+    ]);
+    let mut records = vec![child_record(
+        1,
+        "scope",
+        "scope",
+        NodeKindName::Sequence,
+        None,
+        NodeFact::Started(StartedFact {
+            root: Some(Box::new(root.clone())),
+            parent: None,
+            worktree: None,
+        }),
+    )];
+    for name in ["first", "target_only"] {
+        let parent = ExecutionParentRef::sequence_child("scope");
+        for fact in [
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: Some(parent.clone()),
+                worktree: None,
+            }),
+            NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+            NodeFact::ArtifactProduced(ArtifactProducedFact {
+                value: serde_json::json!({"done": true}),
+                contract: None,
+                request_id: None,
+            }),
+            NodeFact::StopReceived(StopReceivedFact {
+                result_summary: None,
+                token_usage: None,
+            }),
+        ] {
+            records.push(child_record(
+                records.len() as i64 + 1,
+                name,
+                name,
+                NodeKindName::Session,
+                Some(parent.clone()),
+                fact,
+            ));
+        }
+    }
+    assert_replay(&root, &records, "scope", NodeExecutionStatus::Succeeded);
+    let folded = super::super::fact_replay::fold_execution_tree("tree", &records)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        folded.aggregate.node_executions[0].artifact,
+        Some(serde_json::json!({"first": {"done": true}}))
+    );
+}
+
+#[test]
+fn test_会話の更新時刻_未受理の終了と承認と同じ成果で進まず受理した操作で進む() {
+    let records = super::super::test_helpers::session_timestamp_facts();
+    let NodeFact::Started(started) = &records[0].fact else {
+        panic!("root")
+    };
+    let root = started.root.as_deref().unwrap();
+    for end in 1..=records.len() {
+        let records = &records[..end];
+        let projection = read_projection(root, records, None).unwrap();
+        let folded =
+            super::super::fact_replay::fold_execution_tree(&records[0].meta.tree_id, records)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            projection.applied.timestamp_ms as f64 / 1000.0,
+            folded.aggregate.updated_at,
+            "prefix {end}"
+        );
+    }
+}
+
+#[test]
+fn test_会話の更新時刻_成果の変更情報が欠けた場合は推測しない() {
+    let records = super::super::test_helpers::session_timestamp_facts();
+    let NodeFact::Started(started) = &records[0].fact else {
+        panic!("root")
+    };
+    let error = super::subtree_read_projection(
+        started.root.as_deref().unwrap(),
+        &records,
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error, "artifact change is missing for fact 5");
 }

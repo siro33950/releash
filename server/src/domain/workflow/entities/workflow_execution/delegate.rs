@@ -177,13 +177,38 @@ pub(crate) fn delegate_continuation<'a>(
     parent: &'a str,
     nodes: impl Iterator<Item = (&'a str, Option<&'a str>)>,
 ) -> &'a str {
-    let mut current = parent;
+    let mut continuations = DelegateContinuations::default();
     for (id, predecessor) in nodes {
-        if predecessor == Some(current) {
-            current = id;
-        }
+        continuations.record(id, predecessor);
     }
-    current
+    continuations.resolve(parent)
+}
+
+#[derive(Default)]
+pub(crate) struct DelegateContinuations<'a> {
+    roots: HashMap<&'a str, &'a str>,
+    heads: HashMap<&'a str, &'a str>,
+}
+
+impl<'a> DelegateContinuations<'a> {
+    pub(crate) fn record(&mut self, id: &'a str, predecessor: Option<&'a str>) {
+        let root = predecessor
+            .and_then(|previous| {
+                let root = self.roots.get(previous).copied().unwrap_or(previous);
+                (self.heads.get(root).is_none_or(|head| *head == previous)).then_some(root)
+            })
+            .unwrap_or(id);
+        self.roots.insert(id, root);
+        self.heads.insert(root, id);
+    }
+
+    pub(crate) fn resolve(&self, parent: &'a str) -> &'a str {
+        self.roots
+            .get(parent)
+            .and_then(|root| self.heads.get(root))
+            .copied()
+            .unwrap_or(parent)
+    }
 }
 
 pub(crate) fn delegate_predicate(

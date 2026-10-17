@@ -22,12 +22,6 @@ pub trait WorkspaceStateRepository: Send + Sync {
         collapsed: bool,
         expected: StreamVersion,
     ) -> Result<(), WorkspaceStateError>;
-    #[cfg(any(test, feature = "test-support"))]
-    async fn load(
-        &self,
-        worktree_name: &str,
-        worktree_root: &str,
-    ) -> Result<Option<WorkspaceState>, WorkspaceStateError>;
     async fn filter_missing_files(
         &self,
         state: WorkspaceState,

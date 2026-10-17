@@ -827,12 +827,14 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         .as_object_mut()
         .unwrap()
         .remove("diffOnlyMode");
-    use releashd::test_support::integration::repository::WorkspaceStateRepository;
-    let restored = restarted
-        .load("workspace", worktree.to_str().unwrap())
-        .await
-        .unwrap()
-        .unwrap();
+    let restored = crate::adaptor_gateway_workspace_state_repository_impl::load(
+        &restarted,
+        "workspace",
+        worktree.to_str().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     use releashd::test_support::integration::persistence::EventCodecRegistry;
     use releashd::test_support::integration::platform::LocalDomainEvent;
     let encoded = EventCodecRegistry::new()

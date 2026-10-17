@@ -633,6 +633,12 @@ impl WorkspaceTreeProjector {
         let mut applied_fact = false;
         for fact in facts {
             applied_fact = true;
+            let timestamp_update =
+                super::value_objects::NodeTimestampObservation::from_structure_fact(&fact).map(
+                    |(execution, node, observation)| {
+                        (execution.to_string(), node.to_string(), observation)
+                    },
+                );
             match fact {
                 WorkspaceStructureFact::WorkflowStarted {
                     execution_id,
@@ -694,7 +700,7 @@ impl WorkspaceTreeProjector {
                     execution_id,
                     node_execution_id,
                     session_id,
-                    timestamp,
+                    timestamp: _,
                 } => {
                     if tree
                         .nodes
@@ -709,7 +715,6 @@ impl WorkspaceTreeProjector {
                             WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
                         })?;
                     node.session_id = Some(session_id);
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeActivityProjected {
                     execution_id,
@@ -755,7 +760,7 @@ impl WorkspaceTreeProjector {
                     display_command,
                     shell,
                     cwd,
-                    timestamp,
+                    timestamp: _,
                 } => {
                     let node = tree
                         .execution_node_mut(&execution_id, &node_execution_id)
@@ -765,13 +770,12 @@ impl WorkspaceTreeProjector {
                     node.display_command = Some(display_command);
                     node.shell = shell;
                     node.cwd = cwd;
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeArtifactProduced {
                     execution_id,
                     node_execution_id,
                     command_result_candidate,
-                    timestamp,
+                    timestamp: _,
                 } => {
                     let node = tree
                         .execution_node_mut(&execution_id, &node_execution_id)
@@ -782,26 +786,24 @@ impl WorkspaceTreeProjector {
                     if node.kind == WorkspaceNodeKind::WorkflowCommand {
                         node.command_result = command_result_candidate;
                     }
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
                 WorkspaceStructureFact::NodeCompleted {
                     execution_id,
                     node_execution_id,
-                    timestamp,
+                    timestamp: _,
                 } => update_node_state(
                     tree,
                     &execution_id,
                     &node_execution_id,
                     WorkspaceNodeStatus::Completed,
                     None,
-                    timestamp,
                 )?,
                 WorkspaceStructureFact::NodeFailed {
                     execution_id,
                     node_execution_id,
                     reason: _,
                     failure_kind,
-                    timestamp,
+                    timestamp: _,
                 } => {
                     if failure_kind == NodeExecutionFailureKind::UserAbort {
                         update_node_state(
@@ -809,23 +811,17 @@ impl WorkspaceTreeProjector {
                             &execution_id,
                             &node_execution_id,
                             WorkspaceNodeStatus::Aborted,
-                            Some("Workflow node aborted".into()),
-                            timestamp,
+                            super::value_objects::aborted_node_reason(
+                                crate::domain::workflow::NodeExecutionStatus::Aborted,
+                            )
+                            .map(str::to_string),
                         )?;
-                    } else {
-                        let node = tree
-                            .execution_node_mut(&execution_id, &node_execution_id)
-                            .ok_or_else(|| {
-                                WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
-                            })?;
-                        node.updated_at_bits =
-                            max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                     }
                 }
                 WorkspaceStructureFact::NodeApprovalRequested {
                     execution_id,
                     node_execution_id,
-                    timestamp,
+                    timestamp: _,
                 } => {
                     let node = tree
                         .execution_node_mut(&execution_id, &node_execution_id)
@@ -835,8 +831,13 @@ impl WorkspaceTreeProjector {
                     node.status = WorkspaceNodeStatus::Waiting;
                     node.can_approve = node.status.can_approve();
                     node.can_retry = false;
-                    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
+            }
+            if let Some((execution, id, observation)) = timestamp_update {
+                let node = tree
+                    .execution_node_mut(&execution, &id)
+                    .ok_or_else(|| WorkspaceTreeError::MissingNodeExecution(id.clone()))?;
+                node.updated_at_bits = observation.apply(node.updated_at_bits);
             }
         }
         tree.recompute_root_order();
@@ -856,7 +857,6 @@ fn update_node_state(
     node_execution_id: &str,
     status: WorkspaceNodeStatus,
     error_reason: Option<String>,
-    timestamp: f64,
 ) -> Result<(), WorkspaceTreeError> {
     let node = tree
         .execution_node_mut(execution_id, node_execution_id)
@@ -865,7 +865,6 @@ fn update_node_state(
     node.error_reason = error_reason;
     node.can_approve = status.can_approve();
     node.can_retry = false;
-    node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
     Ok(())
 }
 
@@ -976,24 +975,34 @@ pub(crate) fn observe_background_failures<'a>(
 }
 
 fn aggregate_status_classifications(nodes: &mut [WorkspaceTreeNode]) {
+    let by_id: std::collections::HashMap<_, _> =
+        nodes.iter().map(|node| (node.id.as_str(), node)).collect();
+    let by_execution: std::collections::HashMap<_, _> = nodes
+        .iter()
+        .filter_map(|node| Some((node.node_execution_id.as_deref()?, node.id.as_str())))
+        .collect();
+    let mut retry_continuations = crate::domain::workflow::entities::workflow_execution::delegate::DelegateContinuations::default();
+    for node in nodes.iter() {
+        if let Some(id) = node.node_execution_id.as_deref() {
+            retry_continuations.record(id, node.retry_predecessor_id.as_deref());
+        }
+    }
+    let continuations: std::collections::HashMap<_, _> = nodes
+        .iter()
+        .filter(|node| node.kind == WorkspaceNodeKind::WorkflowSession)
+        .filter_map(|node| {
+            let execution = node.node_execution_id.as_deref()?;
+            let continuation = retry_continuations.resolve(execution);
+            Some((node.id.as_str(), by_execution.get(continuation).copied()))
+        })
+        .collect();
     let inputs = nodes
         .iter()
         .map(|node| {
             let mut input = node.classification_input();
-            if let Some(parent) = nodes.iter().find(|parent| {
-                Some(&parent.id) == node.parent_id.as_ref()
-                    && parent.kind == WorkspaceNodeKind::WorkflowSession
-            }) {
-                if let Some(parent_id) = parent.node_execution_id.as_deref() {
-                    let continuation = crate::domain::workflow::entities::workflow_execution::delegate::delegate_continuation(
-                        parent_id,
-                        nodes.iter().filter_map(|node| {
-                            Some((node.node_execution_id.as_deref()?, node.retry_predecessor_id.as_deref()))
-                        }),
-                    );
-                    input.parent_id = nodes.iter()
-                        .find(|node| node.node_execution_id.as_deref() == Some(continuation))
-                        .map(|node| node.id.clone());
+            if let Some(parent) = node.parent_id.as_deref().and_then(|id| by_id.get(id)) {
+                if let Some(continuation) = continuations.get(parent.id.as_str()) {
+                    input.parent_id = continuation.map(str::to_string);
                 }
             }
             input
@@ -1090,6 +1099,25 @@ fn fanout_dynamic_child_occurrence_key(
         child_name,
         occurrence,
     )
+}
+
+pub(crate) fn public_node_tree(id: &str) -> Option<String> {
+    let (tree, digest) = id.strip_prefix("node-w-")?.split_once('-')?;
+    if tree.len() != 32
+        || digest.len() != 32
+        || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let tree = normalized_uuid_simple(tree)?;
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &tree[..8],
+        &tree[8..12],
+        &tree[12..16],
+        &tree[16..20],
+        &tree[20..]
+    ))
 }
 
 fn opaque_workflow_node_id(

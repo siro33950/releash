@@ -247,14 +247,6 @@ mod workspace_state_gc_tests {
         ) -> Result<(), WorkspaceStateError> {
             unreachable!()
         }
-        async fn load(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Option<crate::domain::workspace_state::WorkspaceState>, WorkspaceStateError>
-        {
-            unreachable!()
-        }
         async fn filter_missing_files(
             &self,
             _: crate::domain::workspace_state::WorkspaceState,

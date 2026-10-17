@@ -56,6 +56,23 @@ pub(crate) mod tests {
                     status.can_retry(NodeKindName::Command, presence),
                     absent && retry_command
                 );
+                for execution in [
+                    crate::domain::workflow::ExecutionStatus::Running,
+                    crate::domain::workflow::ExecutionStatus::Completed,
+                    crate::domain::workflow::ExecutionStatus::Aborted,
+                ] {
+                    for latest in [false, true] {
+                        assert_eq!(
+                            status.can_retry_in_execution(
+                                execution.is_active(),
+                                NodeKindName::Command,
+                                presence,
+                                latest
+                            ),
+                            execution.is_active() && latest && absent && retry_command
+                        );
+                    }
+                }
                 assert!(!status.can_retry(NodeKindName::Session, presence));
                 for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
                     assert!(!status.can_retry(kind, presence));

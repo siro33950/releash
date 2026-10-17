@@ -131,6 +131,30 @@ final class AppModelTests: XCTestCase {
     }
   }
 
+  @MainActor func test_復元エラーと同文言の操作失敗_閉じる解消と切替で由来を取り違えない() {
+    for switchWorkspace in [false, true] {
+      let model = AppModel()
+      model.selectWorktree("/repo")
+      var state = Releash_Client_V1_NullableWorkspaceStateDto()
+      state.value.readErrors = ["same failure"]
+      model.receiveWorkspaceState(state, path: "/repo")
+      model.failure = "same failure"
+      if switchWorkspace {
+        model.selectWorktree("/other")
+        XCTAssertEqual(model.failure, "same failure")
+      } else {
+        model.dismissFailure()
+        state.value.readErrors = ["same failure", "new failure"]
+        model.receiveWorkspaceState(state, path: "/repo")
+        XCTAssertEqual(model.failure, "new failure\nsame failure")
+        model.failure = "same failure"
+        state.value.readErrors = []
+        model.receiveWorkspaceState(state, path: "/repo")
+        XCTAssertEqual(model.failure, "same failure")
+      }
+    }
+  }
+
   @MainActor func test_配置復元_取得失敗を表示し未解決参照と他のタブを保持する() async throws {
     // Given
     let http = TestHTTPClient()

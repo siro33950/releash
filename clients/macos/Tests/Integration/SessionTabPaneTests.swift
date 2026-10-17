@@ -1,4 +1,6 @@
+import AppKit
 import Bonsplit
+import Connect
 import SwiftUI
 import XCTest
 
@@ -214,6 +216,50 @@ final class SessionTabPaneTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_会話タブ_同じ状態の再表示で起動が成功すると以前の失敗を消す() async throws {
+    let http = TestHTTPClient()
+    var snapshot = Releash_Client_V1_SessionTabSnapshot()
+    snapshot.session.id = "agent"
+    snapshot.session.workspaceWorktreePath = "/repo"
+    snapshot.session.availability = .paused
+    http.state.withLock {
+      $0.sessionTabs["agent"] = snapshot
+      $0.failedMethod = "OpenAgentSession"
+    }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    model.openNode(.session, id: "agent", title: "Session")
+    let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
+    let host = await ViewHarness(
+      AnyView(SessionTabPane(model: model, tabID: tab, sessionID: "agent", focused: true)))
+    defer { host.close() }
+    try await eventuallyView(host) { host.texts().contains("OpenAgentSession failed") }
+    let content = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
+    host.window.contentView = NSView()
+    try await eventually { model.panes.sessionSnapshots[tab] == nil }
+    http.state.withLock {
+      $0.failedMethod = nil
+      $0.deferOpenSession = true
+    }
+    host.window.contentView = content
+    try await eventuallyView(host) {
+      http.state.withLock { $0.pendingOpenSession != nil }
+        && host.texts().contains("OpenAgentSession failed")
+    }
+    let respond = try XCTUnwrap(http.state.withLock { $0.pendingOpenSession })
+    respond(
+      HTTPResponse(
+        code: .ok, headers: ["content-type": ["application/proto"]], message: Data(),
+        trailers: [:], error: nil, tracingInfo: .init(httpStatus: 200)))
+    try await eventuallyView(host) {
+      host.texts().contains("Sessionは停止しています")
+        && !host.texts().contains("OpenAgentSession failed")
+    }
+    XCTAssertEqual(http.requests("OpenAgentSession").count, 2)
+    await model.stop()
+  }
+
   @MainActor func test_準備中の会話タブ_失敗理由を表示し紐付け後も同じタブで会話を表示する() async throws {
     // Given
     let http = TestHTTPClient()
@@ -259,6 +305,9 @@ final class SessionTabPaneTests: XCTestCase {
     try http.publish(payload, target: "node-detail")
     // Then
     try await eventuallyView(host) { host.element("terminal:agent") != nil }
+    XCTAssertEqual(http.requests("OpenAgentSession").count, 1)
+    XCTAssertFalse(
+      http.state.withLock { $0.subscriptions.contains { $0.target == "agent-session" } })
     XCTAssertEqual(model.panes.controller.allTabIds, [tab])
     XCTAssertEqual(model.panes.controller.tab(tab)?.title, "Ready")
     XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent")

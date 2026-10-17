@@ -196,10 +196,7 @@ impl RuntimeNodeExecution {
     }
 
     pub fn can_restart(&self) -> bool {
-        !self.kind.is_composite_kind()
-            && (self.status == RuntimeNodeExecutionStatus::Running
-                || (self.kind == NodeKindName::Session
-                    && self.status == RuntimeNodeExecutionStatus::WaitingApproval))
+        self.status.can_restart(self.kind)
     }
 
     pub fn can_retry(&self, presence: crate::domain::workflow::NodeProcessPresence) -> bool {
@@ -213,20 +210,51 @@ impl RuntimeNodeExecution {
         presence.can_resume_session(self.kind)
     }
 
+    pub(crate) fn session_attachment_transition(
+        status: RuntimeNodeExecutionStatus,
+        previous: Option<&str>,
+        current: Option<&str>,
+        next: &str,
+        fanout_child: bool,
+    ) -> TransitionOutcome {
+        if previous == Some(next) && (fanout_child || current == Some(next)) {
+            TransitionOutcome::AlreadyApplied
+        } else if status.is_active() {
+            TransitionOutcome::Applied
+        } else {
+            TransitionOutcome::NotApplicable
+        }
+    }
+
+    pub(crate) fn command_preparation_transition(
+        status: RuntimeNodeExecutionStatus,
+        previous: Option<(&str, Option<&str>, Option<&str>)>,
+        next: (&str, Option<&str>, Option<&str>),
+    ) -> TransitionOutcome {
+        if previous == Some(next) {
+            TransitionOutcome::AlreadyApplied
+        } else if status.is_active() {
+            TransitionOutcome::Applied
+        } else {
+            TransitionOutcome::NotApplicable
+        }
+    }
+
     pub fn prepare_command(
         &mut self,
         display_command: String,
         shell: Option<String>,
         cwd: Option<String>,
     ) -> TransitionOutcome {
-        if self.display_command.as_deref() == Some(display_command.as_str())
-            && self.shell == shell
-            && self.cwd == cwd
-        {
-            return TransitionOutcome::AlreadyApplied;
-        }
-        if !self.status.is_active() {
-            return TransitionOutcome::NotApplicable;
+        let outcome = Self::command_preparation_transition(
+            self.status,
+            self.display_command
+                .as_deref()
+                .map(|command| (command, self.shell.as_deref(), self.cwd.as_deref())),
+            (&display_command, shell.as_deref(), cwd.as_deref()),
+        );
+        if outcome != TransitionOutcome::Applied {
+            return outcome;
         }
         self.display_command = Some(display_command);
         self.shell = shell;
@@ -568,14 +596,7 @@ pub enum PendingAdvance {
     },
 }
 
-/// replay 中の NodeRetryRequested → 直後の NodeStarted の対応付け。
-/// retry の前後の attempt と delegate の対応を復元する。
-#[derive(Debug, Clone, PartialEq)]
-struct PendingRestart {
-    node_execution_id: String,
-    node_name: String,
-    parent_scope_id: Option<String>,
-}
+use crate::domain::workflow::services::history::PendingRestart;
 
 /// Aggregate that owns the workflow execution lifecycle state.
 #[derive(Debug, Clone, PartialEq)]
@@ -2045,7 +2066,7 @@ impl ExecutionTree {
                 }
             }
         };
-        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+        if !target.status.accepts_approval(true) {
             return Err(
                 crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(format!(
                     "NodeExecution '{}' is not waiting for approval",
@@ -2092,7 +2113,7 @@ impl ExecutionTree {
                     "node execution '{target_node_execution_id}' disappeared"
                 ))
             })?;
-        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+        if !target.status.accepts_approval(true) {
             return Err(crate::domain::workflow::WorkflowError::invalid_state(
                 format!("NodeExecution '{target_node_execution_id}' is not waiting for approval"),
             ));
@@ -2204,14 +2225,15 @@ impl ExecutionTree {
             .parent
             .as_ref()
             .map(|parent| parent.parent_id.clone());
-        if execution.session_id.as_deref() == Some(session_id.as_str())
-            && (fanout_child
-                || self.runtime.current_session_id.as_deref() == Some(session_id.as_str()))
-        {
-            return TransitionOutcome::AlreadyApplied;
-        }
-        if !execution.status.is_active() {
-            return TransitionOutcome::NotApplicable;
+        let outcome = RuntimeNodeExecution::session_attachment_transition(
+            execution.status,
+            execution.session_id.as_deref(),
+            self.runtime.current_session_id.as_deref(),
+            &session_id,
+            fanout_child,
+        );
+        if outcome != TransitionOutcome::Applied {
+            return outcome;
         }
         execution.session_id = Some(session_id.clone());
         if fanout_child {
@@ -2378,9 +2400,10 @@ impl ExecutionTree {
         if execution.node_name != node_name {
             return TransitionOutcome::Rejected(TransitionRejection::ArtifactNotAccepted);
         }
-        if !self.is_delegate_parent(node_execution_id)
-            && execution.artifact.as_ref() == Some(&value)
-        {
+        if !workflow_transition::artifact_changes_execution(
+            self.is_delegate_parent(node_execution_id),
+            execution.artifact.as_ref() != Some(&value),
+        ) {
             return TransitionOutcome::AlreadyApplied;
         }
         if execution.kind.is_composite_kind() {
@@ -2638,7 +2661,11 @@ impl ExecutionTree {
         if node.status == RuntimeNodeExecutionStatus::Succeeded {
             return TransitionOutcome::AlreadyApplied;
         }
-        if !node.status.is_active() {
+        if !node.status.can_complete_standalone(
+            self.runtime.launched_as,
+            node.kind,
+            node.parent.is_none(),
+        ) {
             return TransitionOutcome::NotApplicable;
         }
         node.status = RuntimeNodeExecutionStatus::Succeeded;
@@ -2966,7 +2993,7 @@ impl ExecutionTree {
             self.runtime.updated_at = timestamp;
             return Ok(());
         }
-        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+        if !target.status.accepts_approval(true) {
             return Ok(());
         }
         match target.kind {
@@ -3238,15 +3265,11 @@ impl ExecutionTree {
             ));
         }
         // 直前の NodeRetryRequested に対応する restart の start か。
-        let retry_predecessor = self.pending_restart.take().and_then(|pending| {
-            crate::domain::workflow::services::history::same_retry_target(
-                &pending.node_name,
-                pending.parent_scope_id.as_deref(),
-                node_name,
-                parent.as_ref().map(|parent| parent.parent_id.as_str()),
-            )
-            .then_some(pending.node_execution_id)
-        });
+        let retry_predecessor = crate::domain::workflow::services::history::consume_restart(
+            &mut self.pending_restart,
+            node_name,
+            parent.as_ref().map(|parent| parent.parent_id.as_str()),
+        );
         let is_restart = retry_predecessor.is_some();
         // 親スコープの進行を再現する。
         if let Some(parent_ref) = parent.as_ref().filter(|_| node.is_some()) {

@@ -111,6 +111,38 @@ pub enum NodeExecutionStatus {
 }
 
 impl NodeExecutionStatus {
+    pub(crate) fn can_complete_standalone(
+        self,
+        launch: super::ExecutionTreeLaunch,
+        kind: NodeKindName,
+        root: bool,
+    ) -> bool {
+        launch == super::ExecutionTreeLaunch::Session
+            && kind == NodeKindName::Session
+            && root
+            && self.is_active()
+    }
+
+    pub(crate) fn accepts_approval(self, workflow: bool) -> bool {
+        !workflow || self == Self::WaitingApproval
+    }
+
+    pub(crate) fn can_restart(self, kind: NodeKindName) -> bool {
+        !kind.is_composite_kind()
+            && (self == Self::Running
+                || (kind == NodeKindName::Session && self == Self::WaitingApproval))
+    }
+
+    pub(crate) fn can_retry_in_execution(
+        self,
+        execution_active: bool,
+        kind: NodeKindName,
+        presence: NodeProcessPresence,
+        latest: bool,
+    ) -> bool {
+        execution_active && latest && self.can_retry(kind, presence)
+    }
+
     pub fn can_retry(self, kind: NodeKindName, presence: NodeProcessPresence) -> bool {
         self == Self::Running
             && kind == NodeKindName::Command

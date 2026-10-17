@@ -13,12 +13,7 @@ struct NodePane: View {
   var body: some View {
     Group {
       if let detail {
-        if case .session(let session) = detail.content.variant, session.hasSessionID {
-          AgentSessionPane(
-            model: model, path: path, nodeID: nodeID, sessionID: session.sessionID,
-            canResume: detail.capabilities.canResumeSession, focused: focused
-          ).id(session.sessionID)
-        } else if case .command(let command) = detail.content.variant {
+        if case .command(let command) = detail.content.variant {
           CommandPane(model: model, path: path, detail: detail, command: command)
         } else if case .session = detail.content.variant {
           if detail.hasErrorReason {
@@ -50,58 +45,6 @@ struct NodePane: View {
         if let subscription { model.unsubscribe(subscription) }
         subscription = nil
       }
-  }
-}
-
-struct AgentSessionPane: View {
-  @Bindable var model: AppModel
-  let path: String
-  let nodeID: String
-  let sessionID: String
-  let canResume: Bool
-  let focused: Bool
-  @State private var session: Releash_Client_V1_AgentSessionItemDto?
-  @State private var subscription: UUID?
-  @State private var failure: String?
-  var body: some View {
-    VStack {
-      if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
-      switch session?.availability {
-      case .open:
-        TerminalPane(
-          session: model.terminal(path: path, id: sessionID, agent: true), focused: focused)
-      case .paused:
-        Text("Sessionは停止しています")
-        if canResume { Button("Resume") { model.resumeNode(path: path, id: nodeID) } }
-      case .archived: Text("SessionはArchiveされています")
-      case .indeterminate: Text("Sessionを開けるか判定できません")
-      default: ProgressView()
-      }
-    }
-    .task {
-      subscription = model.subscribe("agent-session", [sessionID]) { payload in
-        if case .agentSession(let value) = payload.value {
-          session = value.hasValue ? value.value : nil
-          if !value.hasValue || value.value.availability != .open {
-            model.releaseAgentTerminal(path: path, id: sessionID)
-          }
-        }
-      }
-      guard let client = model.client else { return }
-      var request = Releash_Client_V1_OpenAgentSessionRequest()
-      request.agentSessionID = sessionID
-      request.rows = UIStyle.terminalRows
-      request.cols = UIStyle.terminalColumns
-      request.callerRequestID = UUID().uuidString
-      do {
-        _ = try await client.openAgentSession(request: request, headers: model.headers).result.get()
-      } catch { failure = model.failureMessage(error) }
-    }
-    .onDisappear {
-      if let subscription { model.unsubscribe(subscription) }
-      subscription = nil
-      model.releaseAgentTerminal(path: path, id: sessionID)
-    }
   }
 }
 

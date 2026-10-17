@@ -279,7 +279,10 @@ pub(crate) fn resolve_node_field_path(
     })
 }
 
-fn composite_artifact_child<'a>(node: &'a NodeDefinition, key: &str) -> Option<&'a ChildEntry> {
+pub(crate) fn composite_artifact_child<'a>(
+    node: &'a NodeDefinition,
+    key: &str,
+) -> Option<&'a ChildEntry> {
     match &node.kind {
         NodeKind::Sequence(sequence) => sequence.child_entry(key),
         NodeKind::Fanout(fanout) => fanout.child_entry_for_artifact_key(key),

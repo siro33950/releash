@@ -392,7 +392,6 @@ pub(crate) mod tests {
             .expect("recorded operations")
             .clear();
 
-        use releashd::test_support::integration::repository::WorkspaceStateRepository;
         let states = Arc::new(
             releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
                 app_data.path().into(),
@@ -420,10 +419,13 @@ pub(crate) mod tests {
         assert!(report.stopped.is_none());
         assert_eq!(report.report.errors, 0);
         assert_eq!(
-            states
-                .load(protected_worktree, protected_worktree)
-                .await
-                .unwrap(),
+            crate::adaptor_gateway_workspace_state_repository_impl::load(
+                states.as_ref(),
+                protected_worktree,
+                protected_worktree
+            )
+            .await
+            .unwrap(),
             Some(ui_state())
         );
         assert!(
@@ -680,7 +682,6 @@ pub(crate) mod tests {
     #[tokio::test]
     pub async fn test_ui状態のgc_未解決時は保護し削除後は無効化して同じpathに復元しない() {
         use releashd::test_support::integration::platform::WorkspaceStateStore;
-        use releashd::test_support::integration::repository::WorkspaceStateRepository;
         // Given
         let data = tempfile::tempdir().unwrap();
         let composition = ProductionAppDataComposition::with_observer(
@@ -749,7 +750,16 @@ pub(crate) mod tests {
         // Then
         assert!(report.stopped.is_none());
         assert_eq!(report.report.errors, 0);
-        assert!(states.load(&key, &key).await.unwrap().is_some());
+        assert!(
+            crate::adaptor_gateway_workspace_state_repository_impl::load(
+                states.as_ref(),
+                &key,
+                &key
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
         assert!(imported.exists());
         // When
         let report = composition
@@ -763,15 +773,42 @@ pub(crate) mod tests {
         // Then
         assert!(report.stopped.is_none());
         assert_eq!(report.report.errors, 0);
-        assert!(states.load(&key, &key).await.unwrap().is_none());
-        assert_eq!(states.load(&main, &main).await.unwrap(), Some(state));
+        assert!(
+            crate::adaptor_gateway_workspace_state_repository_impl::load(
+                states.as_ref(),
+                &key,
+                &key
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            crate::adaptor_gateway_workspace_state_repository_impl::load(
+                states.as_ref(),
+                &main,
+                &main
+            )
+            .await
+            .unwrap(),
+            Some(state)
+        );
         assert!(!imported.exists());
         assert_eq!(std::fs::read_to_string(&unimported).unwrap(), "broken");
         let reference = repo.find_reference("refs/heads/removed").unwrap();
         let mut options = git2::WorktreeAddOptions::new();
         options.reference(Some(&reference));
         repo.worktree("removed", &removed, Some(&options)).unwrap();
-        assert!(states.load(&key, &key).await.unwrap().is_none());
+        assert!(
+            crate::adaptor_gateway_workspace_state_repository_impl::load(
+                states.as_ref(),
+                &key,
+                &key
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
         let connection =
             rusqlite::Connection::open(data.path().join("local-event-store.sqlite3")).unwrap();
         assert_eq!(
@@ -799,7 +836,12 @@ pub(crate) mod tests {
         let restarted = releashd::test_support::integration::platform::workspace_state_store(
             data.path().into(),
         );
-        assert!(restarted.load(&key, &key).await.unwrap().is_none());
+        assert!(
+            crate::adaptor_gateway_workspace_state_repository_impl::load(&restarted, &key, &key)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
 

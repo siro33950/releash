@@ -1016,7 +1016,8 @@ pub mod workflow {
     pub use crate::domain::workflow::services::routing::RouteDecision;
     pub use crate::domain::workflow::services::secret_masker::mask_sensitive_text;
     pub use crate::domain::workflow::services::test_helpers::{
-        retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
+        composite_dynamic_fanout_facts, retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
+        session_timestamp_facts, stop_first_delegate_facts,
     };
     pub use crate::domain::workflow::services::validation::validate;
     pub use crate::domain::workflow::services::validation::ValidationError;
@@ -1235,6 +1236,9 @@ pub mod wire {
 pub mod fixtures {
     pub use crate::adaptor::gateway::agent_session::test_helpers::FailingSearchPathSource as availability_FailingSearchPathSource;
     pub use crate::domain::workflow::services::test_helpers::session_attached;
+    pub use crate::domain::workflow::services::test_helpers::{
+        composite_dynamic_fanout_facts, stop_first_delegate_facts,
+    };
     pub use crate::usecase::repository_state::test_helpers::EmptyScanner as repository_state_EmptyScanner;
     pub use crate::usecase::test_helpers::Files as watcher_Files;
 

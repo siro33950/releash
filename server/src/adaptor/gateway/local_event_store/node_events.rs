@@ -146,6 +146,84 @@ pub fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlit
     rows.collect()
 }
 
+pub(crate) fn reference_heads(
+    connection: &Connection,
+    trees: &std::collections::HashSet<String>,
+) -> Result<Vec<(String, i64)>, rusqlite::Error> {
+    let mut statement =
+        connection.prepare("SELECT MAX(seq) FROM node_events WHERE tree_id = ?1")?;
+    let mut heads = Vec::new();
+    for tree in trees {
+        let head: Option<i64> = statement.query_row([tree], |row| row.get(0))?;
+        if let Some(head) = head {
+            heads.push((tree.clone(), head));
+        }
+    }
+    Ok(heads)
+}
+
+pub(crate) fn unread_clock_node(
+    connection: &Connection,
+    tree: &str,
+    excluded: &std::collections::HashSet<String>,
+    after: i64,
+    through: Option<i64>,
+    fact_types: &[&str],
+) -> Result<Option<String>, rusqlite::Error> {
+    let excluded = serde_json::to_string(excluded).expect("node ids");
+    let fact_types = serde_json::to_string(fact_types).expect("fact types");
+    let mut statement = connection.prepare(
+        "SELECT node_execution_id FROM node_events WHERE tree_id = ?1 AND seq > ?2
+         AND (?3 IS NULL OR seq <= ?3)
+         AND node_execution_id NOT IN (SELECT value FROM json_each(?4))
+         AND event_type IN (SELECT value FROM json_each(?5)) ORDER BY seq DESC LIMIT 1",
+    )?;
+    let mut rows = statement.query_map(
+        rusqlite::params![tree, after, through, excluded, fact_types],
+        |row| row.get(0),
+    )?;
+    rows.next().transpose()
+}
+
+pub(crate) fn artifact_changes(
+    connection: &Connection,
+    tree: &str,
+    nodes: &std::collections::HashSet<&str>,
+    through: Option<i64>,
+) -> Result<std::collections::HashMap<i64, bool>, rusqlite::Error> {
+    let nodes = serde_json::to_string(nodes).expect("node ids");
+    let mut statement = connection.prepare(
+        "SELECT e.seq, (e.detail -> '$.value') IS NOT (
+            SELECT previous.detail -> '$.value' FROM node_events previous
+            WHERE previous.tree_id = e.tree_id AND previous.node_execution_id = e.node_execution_id
+            AND previous.event_type = 'artifact_produced' AND previous.seq < e.seq
+            ORDER BY previous.seq DESC LIMIT 1)
+         FROM node_events e WHERE e.tree_id = ?1 AND e.event_type = 'artifact_produced'
+         AND e.node_execution_id IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR e.seq <= ?3)",
+    )?;
+    let rows = statement.query_map(rusqlite::params![tree, nodes, through], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
+}
+
+pub(crate) fn workspace_reference_trees(
+    connection: &Connection,
+    workspace: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT tree_id FROM node_events
+         WHERE event_type = 'started' AND parent_id IS NULL
+         AND CASE WHEN json_valid(detail) THEN json_extract(detail, '$.root.worktreePath') END = ?1
+         UNION
+         SELECT DISTINCT e.tree_id FROM session_projection s
+         JOIN node_events e ON e.session_id = s.session_id
+         WHERE s.workspace_identity = ?1",
+    )?;
+    let rows = statement.query_map([workspace], |row| row.get(0))?;
+    rows.collect()
+}
+
 /// First root fact (`parent_id IS NULL`) of the given event type in one tree,
 /// in the same order [`list_tree_roots`] uses.
 pub fn first_root_row_of_tree(

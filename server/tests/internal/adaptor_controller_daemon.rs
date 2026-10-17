@@ -421,7 +421,12 @@ pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損
     // Then
     assert!(repository.list_worktrees(&healthy).is_ok());
     assert!(repository.list_worktrees(&unresolved).is_err());
-    assert!(store.load(&healthy, &healthy).await.unwrap().is_none());
+    assert!(
+        crate::adaptor_gateway_workspace_state_repository_impl::load(&store, &healthy, &healthy)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(store.load_repository_group(&healthy).await.unwrap());
     assert!(legacy.join("healthy.json").exists());
     assert_eq!(
@@ -432,8 +437,7 @@ pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損
     migrate_legacy_workspace_states(&store, &[healthy.clone(), broken.clone()], &repository).await;
     // Then
     assert!(
-        store
-            .load(&healthy, &healthy)
+        crate::adaptor_gateway_workspace_state_repository_impl::load(&store, &healthy, &healthy)
             .await
             .unwrap()
             .unwrap()
@@ -441,7 +445,12 @@ pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損
             .left_nav_collapsed
     );
     assert!(repository.list_worktrees(&healthy).is_ok());
-    assert!(store.load(&broken, &broken).await.unwrap().is_none());
+    assert!(
+        crate::adaptor_gateway_workspace_state_repository_impl::load(&store, &broken, &broken)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         std::fs::read_to_string(legacy.join("broken.json")).unwrap(),
         "broken"

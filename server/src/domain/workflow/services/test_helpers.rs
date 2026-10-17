@@ -397,3 +397,253 @@ pub fn scoped_dynamic_fanout_facts() -> Vec<crate::domain::workflow::NodeFactRec
     }
     records
 }
+
+pub fn composite_dynamic_fanout_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let mut records = scoped_dynamic_fanout_facts();
+    let NodeFact::Started(started) = &mut records[0].fact else {
+        unreachable!()
+    };
+    let definition = started.root.as_mut().unwrap().definition.as_mut().unwrap();
+    definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "producer")
+        .unwrap()
+        .kind = NodeKind::Sequence(SequenceSpec {
+        entry: None,
+        children: vec![ChildEntry::reference("maker")],
+    });
+    definition.nodes.push(NodeDefinition {
+        name: "maker".into(),
+        ..Default::default()
+    });
+    let NodeKind::Fanout(fanout) = &mut definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.name == "inner")
+        .unwrap()
+        .kind
+    else {
+        unreachable!()
+    };
+    fanout.items = Some(ItemsSource::ArtifactField {
+        node: "producer".into(),
+        field_path: FieldPath::from_dotted("maker.items").unwrap(),
+    });
+    let mut expanded = Vec::new();
+    for mut record in records {
+        if record.meta.node_name == "producer" {
+            let parent = ExecutionParentRef::sequence_child(&record.meta.node_execution_id);
+            let mut maker = record.meta.clone();
+            maker.node_name = "maker".into();
+            maker.node_execution_id = format!("{}-maker", maker.node_execution_id);
+            maker.parent_id = Some(parent.parent_id.clone());
+            if matches!(record.fact, NodeFact::Started(_)) {
+                record.meta.kind = NodeKindName::Sequence;
+                expanded.push(record.clone());
+                record.meta = maker;
+                record.fact = NodeFact::Started(StartedFact {
+                    root: None,
+                    parent: Some(parent),
+                    worktree: None,
+                });
+            } else {
+                record.meta = maker;
+            }
+        }
+        expanded.push(record);
+    }
+    for (index, record) in expanded.iter_mut().enumerate() {
+        record.seq = index as i64 + 1;
+        record.timestamp_ms = record.seq * 1000;
+    }
+    expanded
+}
+
+pub fn stop_first_delegate_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
+    let mut records = retried_delegate_parent_facts();
+    let end = records.len();
+    records[end - 3..].rotate_right(1);
+    for (index, record) in records.iter_mut().enumerate() {
+        record.seq = index as i64 + 1;
+        record.timestamp_ms = record.seq * 1000;
+    }
+    records
+}
+
+pub fn session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
+    use crate::domain::workflow::*;
+    let command = || {
+        NodeKind::Command(CommandSpec {
+            command: "true".into(),
+            env: Default::default(),
+        })
+    };
+    let definition = WorkflowDefinition {
+        entry: "outer".into(),
+        nodes: vec![
+            NodeDefinition {
+                name: "outer".into(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    items: None,
+                    children: vec![ChildEntry::reference("main"), ChildEntry::reference("side")],
+                }),
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "main".into(),
+                completion: NodeCompletion {
+                    delegate: Some(SessionDelegate {
+                        child: "verify".into(),
+                        inputs: vec![],
+                        max_iterations: 2,
+                        when: Predicate::Ref("child.done".into()),
+                    }),
+                    ..NodeCompletion::require_approval()
+                },
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "verify".into(),
+                kind: command(),
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "side".into(),
+                kind: command(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let tree = "00000000-0000-4000-8000-000000206500";
+    let id = |name: &str| format!("node-{name}");
+    let outer = ExecutionParentRef::fanout_child(id("outer"), None, 0);
+    let side = ExecutionParentRef::fanout_child(id("outer"), None, 1);
+    let delegate = ExecutionParentRef::delegate_child(id("main"));
+    let root = TreeRootFact {
+        repository_root: None,
+        workspace_identity: "/repo".into(),
+        worktree_path: "/repo".into(),
+        created_from: ExecutionOrigin::Cli,
+        request: String::new(),
+        workflow_name: "timestamp".into(),
+        launched_as: ExecutionTreeLaunch::Workflow,
+        definition: Some(definition.clone()),
+    };
+    let start = |parent| {
+        NodeFact::Started(StartedFact {
+            parent,
+            root: None,
+            worktree: None,
+        })
+    };
+    let artifact = |value| {
+        NodeFact::ArtifactProduced(ArtifactProducedFact {
+            value,
+            contract: None,
+            request_id: None,
+        })
+    };
+    let exit = |code| {
+        NodeFact::ProcessExited(ProcessExitedFact {
+            exit_code: Some(code),
+            result_summary: None,
+            failure_reason: None,
+            failure_kind: None,
+        })
+    };
+    let approval = || NodeFact::ApprovalGranted(ApprovalGrantedFact { comment: None });
+    let facts = vec![
+        (
+            "outer",
+            None,
+            NodeFact::Started(StartedFact {
+                root: Some(Box::new(root)),
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        ("main", Some(outer.clone()), start(Some(outer.clone()))),
+        ("main", Some(outer.clone()), session_attached("main-agent")),
+        (
+            "main",
+            Some(outer.clone()),
+            NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+        ),
+        (
+            "main",
+            Some(outer.clone()),
+            artifact(serde_json::json!({"body":"private-main"})),
+        ),
+        (
+            "main",
+            Some(outer.clone()),
+            NodeFact::StopReceived(StopReceivedFact {
+                result_summary: None,
+                token_usage: None,
+            }),
+        ),
+        (
+            "verify",
+            Some(delegate.clone()),
+            start(Some(delegate.clone())),
+        ),
+        ("side", Some(side.clone()), start(Some(side.clone()))),
+        (
+            "side",
+            Some(side.clone()),
+            artifact(serde_json::json!({"body":"private-first"})),
+        ),
+        (
+            "side",
+            Some(side.clone()),
+            artifact(serde_json::json!({"body":"private-first"})),
+        ),
+        (
+            "side",
+            Some(side.clone()),
+            artifact(serde_json::json!({"body":"private-next"})),
+        ),
+        (
+            "side",
+            Some(side.clone()),
+            artifact(serde_json::json!(true)),
+        ),
+        ("side", Some(side.clone()), artifact(serde_json::json!(1))),
+        ("side", Some(side.clone()), artifact(serde_json::json!(1.0))),
+        ("verify", Some(delegate.clone()), exit(1)),
+        ("main", Some(outer.clone()), approval()),
+        ("side", Some(side.clone()), exit(1)),
+        ("main", Some(outer.clone()), exit(0)),
+        (
+            "verify",
+            Some(delegate.clone()),
+            artifact(serde_json::json!({"done":true,"body":"private-child"})),
+        ),
+        ("verify", Some(delegate.clone()), exit(0)),
+        ("main", Some(outer.clone()), approval()),
+        ("main", Some(outer), approval()),
+    ];
+    facts
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, parent, fact))| {
+            let seq = index as i64 + 1;
+            NodeFactRecord {
+                seq,
+                timestamp_ms: seq * 1000,
+                fact,
+                meta: NodeFactMeta {
+                    tree_id: tree.into(),
+                    node_execution_id: id(name),
+                    node_name: name.into(),
+                    parent_id: parent.map(|parent| parent.parent_id),
+                    kind: definition.node_by_name(name).unwrap().kind_name(),
+                    attempt: 1,
+                },
+            }
+        })
+        .collect()
+}

@@ -132,14 +132,6 @@ impl WorkspaceStateRepository for Store {
             ))
         }
     }
-    async fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
-        Ok(self
-            .saved
-            .lock()
-            .last()
-            .cloned()
-            .or_else(|| self.previous.clone()))
-    }
     async fn filter_missing_files(
         &self,
         state: WorkspaceState,

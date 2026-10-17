@@ -1817,6 +1817,8 @@ pub async fn test_sessionタブ詳細_実行木と異なるrootの終端を子�
             assert!(!detail.can_abort);
             assert_eq!(detail.can_abort, listed_detail.can_abort);
             assert_eq!(detail.status, listed_detail.status);
+            assert_eq!(detail.updated_at, listed_detail.updated_at);
+            assert_eq!(detail.error_reason, listed_detail.error_reason);
             assert_eq!(detail.capabilities, listed_detail.capabilities);
             assert_eq!(
                 detail.classification,
@@ -2024,12 +2026,15 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
 #[tokio::test]
 pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的並列のスコープを保つ() {
     use releashd::test_support::integration::workflow::{
-        append_single_fact, retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
+        append_single_fact, composite_dynamic_fanout_facts, retried_delegate_parent_facts,
+        scoped_dynamic_fanout_facts, stop_first_delegate_facts,
     };
     // Given
     for records in [
         retried_delegate_parent_facts(),
         scoped_dynamic_fanout_facts(),
+        composite_dynamic_fanout_facts(),
+        stop_first_delegate_facts(),
     ] {
         let retry = records.iter().any(|record| record.meta.attempt == 2);
         let target = records
@@ -2085,6 +2090,8 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
                 .unwrap();
             // Then
             assert_eq!(read.detail.status, listed_detail.status);
+            assert_eq!(read.detail.updated_at, listed_detail.updated_at);
+            assert_eq!(read.detail.error_reason, listed_detail.error_reason);
             assert_eq!(read.detail.capabilities, listed_detail.capabilities);
             assert_eq!(read.detail.submit_received, listed_detail.submit_received);
             assert_eq!(read.detail.stop_received, listed_detail.stop_received);
@@ -2101,5 +2108,142 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
                 }
             );
         }
+    }
+}
+
+#[tokio::test]
+pub async fn test_旧会話参照照会_保持した動的並列の親と出現順から追記した子を解決する() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, scoped_dynamic_fanout_facts, NodeKindName, SessionAttachedFact,
+    };
+    let records = scoped_dynamic_fanout_facts();
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    let boundary = records
+        .iter()
+        .position(|record| record.meta.node_name == "inner")
+        .unwrap();
+    for record in &records[..boundary] {
+        append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
+            .await
+            .unwrap();
+    }
+    let workspace = WorkspaceIdentity::new("/repo");
+    let unresolved = vec!["missing".into()];
+    let initial = query.resolve_session_nodes(&workspace, &unresolved).await;
+    assert!(initial.failures.is_empty());
+    let mut expected = std::collections::HashMap::new();
+    for record in &records[boundary..] {
+        append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
+            .await
+            .unwrap();
+        if matches!(record.fact, NodeFact::Started(_)) && record.meta.kind == NodeKindName::Session
+        {
+            let session = format!("agent-{}", record.meta.node_execution_id);
+            append_single_fact(
+                &store,
+                &record.meta,
+                &NodeFact::SessionAttached(SessionAttachedFact {
+                    session_id: session.clone(),
+                    provider_session_id: None,
+                    transcript_ref: None,
+                    initial_instruction_admitted: false,
+                }),
+                record.timestamp_ms,
+            )
+            .await
+            .unwrap();
+            expected.insert(record.meta.node_execution_id.clone(), session);
+        }
+    }
+    let list = load_tree(&repository, &workspace).await;
+    let ids: Vec<_> = list
+        .nodes()
+        .iter()
+        .filter(|node| {
+            node.node_execution_id
+                .as_ref()
+                .is_some_and(|id| expected.contains_key(id))
+        })
+        .map(|node| node.id.clone())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let resolved = query.resolve_session_nodes(&workspace, &ids).await;
+    assert!(resolved.failures.is_empty());
+    for node in list.nodes().iter().filter(|node| ids.contains(&node.id)) {
+        assert_eq!(
+            resolved.sessions[&node.id],
+            expected[node.node_execution_id.as_ref().unwrap()]
+        );
+    }
+    // When: an earlier occurrence is corrupt, later children must not inherit its alias.
+    let first = expected.keys().min().unwrap();
+    rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap()
+        .execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = ?1 AND event_type = 'started'", [first]).unwrap();
+    let query = service(&repository);
+    let root = &records[0].meta.node_execution_id;
+    let mut damaged_ids = ids;
+    damaged_ids.push(root.clone());
+    let damaged = query.resolve_session_nodes(&workspace, &damaged_ids).await;
+    assert_eq!(damaged.sessions.len(), 1);
+    assert_eq!(damaged.sessions[root], "dynamic-parent-agent");
+    assert_eq!(damaged.failures.len(), 2);
+}
+
+#[tokio::test]
+pub async fn test_session更新時刻_兄弟の受理済み操作を含め未受理の終了と承認では進まない() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, session_timestamp_facts,
+    };
+    let records = session_timestamp_facts();
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    let workspace = WorkspaceIdentity::new("/repo");
+    for record in &records {
+        append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
+            .await
+            .unwrap();
+        if record.seq < 8 {
+            continue;
+        }
+        let detail = query
+            .session_node_detail(&workspace, &record.meta.tree_id, "node-main")
+            .await
+            .unwrap()
+            .unwrap()
+            .detail;
+        let list = releashd::test_support::integration::workspace::node_for_execution(
+            &*repository,
+            &workspace,
+            "node-main",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(detail.updated_at, list.updated_at(), "seq {}", record.seq);
+        assert_eq!(detail.error_reason, list.failure_reason());
+        let expected = match record.seq {
+            8 => 8.0,
+            9 | 10 => 9.0,
+            11..=14 => record.seq as f64,
+            15..=18 => 14.0,
+            19 => 19.0,
+            20 => 20.0,
+            21.. => 21.0,
+            _ => unreachable!(),
+        };
+        assert_eq!(detail.updated_at, expected, "seq {}", record.seq);
     }
 }

@@ -31,6 +31,8 @@ final class TestHTTPClient: HTTPClientInterface {
     var failedSubscriptionTargets: [String: Int] = [:]
     var subscriptionFailureCode: Code = .internalError
     var pendingCreation: (@Sendable (HTTPResponse) -> Void)?
+    var deferOpenSession = false
+    var pendingOpenSession: (@Sendable (HTTPResponse) -> Void)?
     var deferCreation = false
     var deferSave = false
     var pendingSave: (@Sendable (HTTPResponse) -> Void)?
@@ -67,6 +69,10 @@ final class TestHTTPClient: HTTPClientInterface {
             error: ConnectError(
               code: failureCode, message: "\(method) failed", details: detail.map { [$0] } ?? []),
             tracingInfo: nil))
+        return Cancelable(cancel: {})
+      }
+      if method == "OpenAgentSession", state.withLock({ $0.deferOpenSession }) {
+        state.withLock { $0.pendingOpenSession = onResponse }
         return Cancelable(cancel: {})
       }
       if method == "CreateWorktrees", state.withLock({ $0.deferCreation }) {
