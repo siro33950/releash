@@ -63,6 +63,74 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.layout, input)
     XCTAssertFalse(model.layoutLoaded)
   }
+  @MainActor func test_配置復元エラー_閉じた継続失敗を抑え新規と解消後の再発を表示する() {
+    // Given
+    let model = AppModel()
+    model.selectWorktree("/repo")
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.readErrors = ["first", "second"]
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, "first\nsecond")
+    // When
+    model.dismissFailure()
+    state.value.readErrors.reverse()
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    state.value.readErrors = ["second", "third"]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, "third")
+    // When
+    model.dismissFailure()
+    state.value.readErrors = ["second"]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    state.value.readErrors = ["first", "second"]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, "first")
+    // When
+    model.dismissFailure()
+    model.deselectWorktree("/repo")
+    model.selectWorktree("/other")
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    model.receiveWorkspaceState(state, path: "/other")
+    // Then
+    XCTAssertEqual(model.failure, "first\nsecond")
+  }
+
+  @MainActor func test_配置復元エラー_表示中に解消してから閉じても再発を表示する() {
+    for remaining in [[], ["second"]] {
+      // Given
+      let model = AppModel()
+      model.selectWorktree("/repo")
+      var state = Releash_Client_V1_NullableWorkspaceStateDto()
+      state.value.readErrors = ["first", "second"]
+      model.receiveWorkspaceState(state, path: "/repo")
+      // When
+      state.value.readErrors = remaining
+      model.receiveWorkspaceState(state, path: "/repo")
+      model.dismissFailure()
+      model.receiveWorkspaceState(state, path: "/repo")
+      // Then
+      XCTAssertNil(model.failure)
+      // When
+      state.value.readErrors = ["first", "second"]
+      model.receiveWorkspaceState(state, path: "/repo")
+      // Then
+      XCTAssertEqual(model.failure, remaining.isEmpty ? "first\nsecond" : "first")
+    }
+  }
+
   @MainActor func test_配置復元_取得失敗を表示し未解決参照と他のタブを保持する() async throws {
     // Given
     let http = TestHTTPClient()

@@ -79,15 +79,28 @@ impl<'a> WorkspacePublicRoot<'a> {
         owner: &'a WorkspaceTreeNode,
     ) -> Option<Self> {
         owner.execution_id.as_ref()?;
-        let node = nodes
-            .filter(|node| {
+        let nodes: Vec<_> = nodes.collect();
+        let id = select_public_root(nodes.iter().map(|node| {
+            (
+                node.id.as_str(),
+                node.sibling_order,
                 node.parent_id.as_deref() == Some(owner.id.as_str())
                     && !node.is_internal_rule_record()
-                    && !node.is_retry_history
-            })
-            .min_by_key(|node| (node.sibling_order, node.id.as_str()))?;
+                    && !node.is_retry_history,
+            )
+        }))?;
+        let node = *nodes.iter().find(|node| node.id == id)?;
         Some(Self { owner, node })
     }
+}
+
+pub(crate) fn select_public_root<'a>(
+    nodes: impl Iterator<Item = (&'a str, u64, bool)>,
+) -> Option<&'a str> {
+    nodes
+        .filter(|(_, _, eligible)| *eligible)
+        .min_by_key(|(id, order, _)| (*order, *id))
+        .map(|(id, _, _)| id)
 }
 
 pub struct WorkspaceTreeVisibilityPolicy;

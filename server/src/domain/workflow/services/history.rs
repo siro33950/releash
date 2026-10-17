@@ -61,3 +61,57 @@ pub(crate) fn retry_history_chains<'a>(
     }
     chains
 }
+
+pub(crate) fn same_retry_target(
+    previous_name: &str,
+    previous_parent: Option<&str>,
+    name: &str,
+    parent: Option<&str>,
+) -> bool {
+    previous_name == name && previous_parent == parent
+}
+
+pub(crate) fn retry_predecessors(
+    records: &[crate::domain::workflow::NodeFactRecord],
+) -> std::collections::HashMap<String, String> {
+    use crate::domain::workflow::NodeFact;
+    let mut pending = None;
+    let mut predecessors = std::collections::HashMap::new();
+    for record in records {
+        match record.fact {
+            NodeFact::RetryRequested => pending = Some(&record.meta),
+            NodeFact::Started(_) => {
+                if let Some(previous) = pending.take().filter(|previous| {
+                    same_retry_target(
+                        &previous.node_name,
+                        previous.parent_id.as_deref(),
+                        &record.meta.node_name,
+                        record.meta.parent_id.as_deref(),
+                    )
+                }) {
+                    predecessors.insert(
+                        record.meta.node_execution_id.clone(),
+                        previous.node_execution_id.clone(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    predecessors
+}
+
+pub(crate) fn read_lineage_roots(
+    target: &str,
+    records: &[crate::domain::workflow::NodeFactRecord],
+) -> Vec<String> {
+    let predecessors = retry_predecessors(records);
+    let mut roots = vec![target.to_string()];
+    while let Some(previous) = predecessors.get(roots.last().expect("target")) {
+        if roots.contains(previous) {
+            break;
+        }
+        roots.push(previous.clone());
+    }
+    roots
+}

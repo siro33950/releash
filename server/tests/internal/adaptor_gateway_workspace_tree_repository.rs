@@ -2014,3 +2014,238 @@ pub async fn test_sessionタブ分類_delegateの次周回は前の子を保持�
         );
     }
 }
+
+#[tokio::test]
+pub async fn test_会話詳細の合成子_保存事実から部分完了と承認待ちの一覧分類に一致する() {
+    use releashd::test_support::integration::workflow::{
+        ArtifactProducedFact, ExecutionTreeLaunch, IsolatedWorktree, NodeFactMeta, Predicate,
+        SessionAttachedFact, SessionDelegate, StartedFact, StopReceivedFact, SubmitReceivedFact,
+        TreeRootFact,
+    };
+    use releashd::test_support::integration::workspace::{
+        SqliteWorkspaceQueryService, WorkspaceQueryService,
+    };
+    // Given
+    for (fanout, count) in [(false, 1), (true, 0), (true, 1), (true, 2)] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        ))
+        .unwrap();
+        let tree = "00000000-0000-4000-8000-000000002063";
+        let parent = "00000000-0000-4000-8000-000000002064";
+        let scope = "00000000-0000-4000-8000-000000002065";
+        let definition = WorkflowDefinition {
+            name: "composite".into(),
+            entry: "main".into(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "main".into(),
+                    completion: NodeCompletion {
+                        delegate: Some(SessionDelegate {
+                            child: "scope".into(),
+                            inputs: Vec::new(),
+                            when: Predicate::Ref(
+                                if count == 2 {
+                                    "child.1.passed"
+                                } else {
+                                    "child.judge.passed"
+                                }
+                                .into(),
+                            ),
+                            max_iterations: 2,
+                        }),
+                        ..NodeCompletion::require_approval()
+                    },
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "scope".into(),
+                    kind: if fanout {
+                        NodeKind::Fanout(FanoutSpec {
+                            children: vec![ChildEntry::reference("judge")],
+                            items: if count == 1 {
+                                None
+                            } else {
+                                Some(ItemsSource::Literal(
+                                    (0..count).map(|index| serde_json::json!(index)).collect(),
+                                ))
+                            },
+                        })
+                    } else {
+                        NodeKind::Sequence(SequenceSpec {
+                            entry: None,
+                            children: vec![ChildEntry::reference("judge")],
+                        })
+                    },
+                    worktree: (count == 0).then_some(
+                        releashd::test_support::integration::workflow::WorktreeMode::Isolated,
+                    ),
+                    completion: if count == 0 {
+                        NodeCompletion::require_approval()
+                    } else {
+                        NodeCompletion::default()
+                    },
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "judge".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let meta = NodeFactMeta {
+            tree_id: tree.into(),
+            node_execution_id: parent.into(),
+            node_name: "main".into(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+            parent_id: None,
+        };
+        let mut facts = vec![
+            (
+                meta.clone(),
+                NodeFact::Started(StartedFact {
+                    root: Some(Box::new(TreeRootFact {
+                        repository_root: Some("/repo".into()),
+                        workspace_identity: "/repo".into(),
+                        worktree_path: "/repo".into(),
+                        created_from: ExecutionOrigin::Cli,
+                        request: String::new(),
+                        workflow_name: "composite".into(),
+                        definition: Some(definition),
+                        launched_as: ExecutionTreeLaunch::Workflow,
+                    })),
+                    parent: None,
+                    worktree: None,
+                }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::SessionAttached(SessionAttachedFact {
+                    session_id: "parent-session".into(),
+                    provider_session_id: None,
+                    transcript_ref: None,
+                    initial_instruction_admitted: false,
+                }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::ArtifactProduced(ArtifactProducedFact {
+                    contract: None,
+                    value: serde_json::json!({"body":"private"}),
+                    request_id: None,
+                }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: None,
+                    token_usage: None,
+                }),
+            ),
+        ];
+        let scope_parent = ExecutionParentRef::delegate_child(parent);
+        facts.push((
+            NodeFactMeta {
+                node_execution_id: scope.into(),
+                node_name: "scope".into(),
+                kind: if fanout {
+                    NodeKindName::Fanout
+                } else {
+                    NodeKindName::Sequence
+                },
+                parent_id: Some(parent.into()),
+                ..meta.clone()
+            },
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: Some(scope_parent),
+                worktree: (count == 0).then(|| IsolatedWorktree {
+                    branch: "isolated".into(),
+                    path: "/isolated".into(),
+                }),
+            }),
+        ));
+        for (seq, (meta, fact)) in facts.iter().enumerate() {
+            append_single_fact(&store, meta, fact, seq as i64 * 1000)
+                .await
+                .unwrap();
+        }
+        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let query = SqliteWorkspaceQueryService::with_repository(repository.clone());
+        for index in 0..count.max(1) {
+            if count > 0 {
+                let child_parent = if fanout {
+                    ExecutionParentRef::fanout_child(scope, (count == 2).then_some(index), 0)
+                } else {
+                    ExecutionParentRef::sequence_child(scope)
+                };
+                let child = NodeFactMeta {
+                    node_execution_id: format!("00000000-0000-4000-8000-{:012}", 2070 + index),
+                    node_name: "judge".into(),
+                    parent_id: Some(scope.into()),
+                    ..meta.clone()
+                };
+                // When
+                for fact in [
+                    NodeFact::Started(StartedFact {
+                        root: None,
+                        parent: Some(child_parent),
+                        worktree: None,
+                    }),
+                    NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+                    NodeFact::ArtifactProduced(ArtifactProducedFact {
+                        contract: None,
+                        value: serde_json::json!({"passed":true,"body":"private"}),
+                        request_id: None,
+                    }),
+                    NodeFact::StopReceived(StopReceivedFact {
+                        result_summary: None,
+                        token_usage: None,
+                    }),
+                ] {
+                    append_single_fact(&store, &child, &fact, 10000 + index as i64 * 1000)
+                        .await
+                        .unwrap();
+                }
+            }
+            // When
+            let detail = query
+                .session_node_detail(&WorkspaceIdentity::new("/repo"), tree, parent)
+                .await
+                .unwrap()
+                .unwrap()
+                .detail;
+            let list = releashd::test_support::integration::workspace::node_for_execution(
+                &*repository,
+                &WorkspaceIdentity::new("/repo"),
+                parent,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            // Then
+            assert_eq!(
+                detail.classification,
+                list.status_classification.as_public_str(),
+                "fanout={fanout}, count={count}, index={index}"
+            );
+            assert_eq!(
+                detail.classification,
+                if count == 2 && index == 0 {
+                    "active"
+                } else {
+                    "attention"
+                }
+            );
+            assert_eq!(detail.capabilities.can_approve, list.can_approve);
+        }
+    }
+}

@@ -15,11 +15,22 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 pub struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
+    references: Arc<parking_lot::Mutex<std::collections::HashMap<String, ReferenceTree>>>,
+}
+
+#[derive(Default)]
+struct ReferenceTree {
+    seq: i64,
+    ids: crate::domain::workspace_tree::entities::NodeIdentityIndex,
+    errors: std::collections::HashMap<String, String>,
 }
 
 impl SqliteWorkspaceQueryService {
     pub fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
-        Arc::new(Self { repository })
+        Arc::new(Self {
+            repository,
+            references: Default::default(),
+        })
     }
 
     pub async fn execution_records(
@@ -85,45 +96,159 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         let mut result =
             crate::usecase::workspace_tree::query_service::SessionNodeResolutionDto::default();
         let workspace = workspace_identity.as_str().to_string();
-        let ids = node_ids
-            .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
-        let rows = self.repository.fact_backend().run_indexed(move |connection| {
-            let unavailable = |error: rusqlite::Error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error);
-            let transaction = connection.unchecked_transaction().map_err(unavailable)?;
-            let mut rows = Vec::new();
-            for root in node_events::list_tree_roots(&transaction, "started").map_err(unavailable)? {
-                match crate::adaptor::gateway::workflow::stored_definition::read_tree_header(&root.detail) {
-                    Ok(Some(header)) if header.worktree_path == workspace => {}
-                    Ok(_) => continue,
-                    Err(error) => { rows.push((None, Err(WorkflowError::CorruptStoredState(error)))); continue; }
+        let ids = node_ids.to_vec();
+        let index = Arc::clone(&self.references);
+        let rows = self
+            .repository
+            .fact_backend()
+            .run_indexed(move |connection| {
+                let unavailable = |error: rusqlite::Error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                };
+                let transaction = connection.unchecked_transaction().map_err(unavailable)?;
+                let heads = node_events::tree_heads(&transaction).map_err(unavailable)?;
+                let mut index = index.lock();
+                index.retain(|id, _| heads.iter().any(|(tree, _)| tree == id));
+                for (tree, head) in &heads {
+                    let held = index.entry(tree.clone()).or_default();
+                    if *head < held.seq {
+                        *held = ReferenceTree::default();
+                    }
+                    if *head == held.seq {
+                        continue;
+                    }
+                    for row in node_events::reference_starts_after(&transaction, tree, held.seq)
+                        .map_err(unavailable)?
+                    {
+                        let result = fact_log::record_from_row(&row).and_then(|record| {
+                            record
+                                .map(|record| {
+                                    held.ids.record(&record).map_err(|error| error.to_string())
+                                })
+                                .transpose()
+                        });
+                        if let Err(error) = result {
+                            held.errors
+                                .insert(row.node_execution_id.clone(), error.clone());
+                            if row.parent_id.is_none() {
+                                // Keep the root alias addressable so its corruption reaches the affected reference.
+                                let identity =
+                                    fact_log::node_meta_from_row(&row).and_then(|meta| {
+                                        held.ids
+                                            .record_start_identity(&meta, None)
+                                            .map_err(|reason| reason.to_string())
+                                    });
+                                if let Err(reason) = identity {
+                                    held.errors.insert(
+                                        row.node_execution_id.clone(),
+                                        format!("{error}: {reason}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    held.seq = *head;
                 }
-                let tree = root.tree_id;
-                let starts = node_events::tree_rows_with_event_types(&transaction, &tree, &["started"]).map_err(unavailable)?;
-                let resolved = (|| {
-                    let records = starts.iter().filter_map(|row| fact_log::record_from_row(row).transpose()).collect::<Result<Vec<_>, _>>().map_err(WorkflowError::CorruptStoredState)?;
-                    let identities = crate::domain::workspace_tree::entities::node_identities(&records).map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
-                    let public = records.iter().find(|record| matches!(&record.fact, crate::domain::workflow::NodeFact::Started(started) if started.parent.is_none()));
-                    Ok::<_, WorkflowError>(records.iter().filter(|record| record.meta.kind == crate::domain::workflow::NodeKindName::Session).flat_map(|record| {
-                        let meta = &record.meta;
-                        let node_id = &identities[&meta.node_execution_id];
-                        let public_id = public.filter(|first| first.meta.node_execution_id == meta.node_execution_id).map(|_| tree.as_str());
-                        ids.iter().filter(move |id| *id == node_id || id.as_str() == meta.node_execution_id || Some(id.as_str()) == public_id)
-                            .map(move |id| (id.clone(), meta.node_execution_id.clone()))
-                    }).collect::<Vec<_>>())
-                })();
-                match resolved {
-                    Ok(nodes) => for (id, node) in nodes {
-                        let attachment = node_events::latest_row_for_node_with_event_types(&transaction, &node, &["session_attached"]).map_err(unavailable)?;
-                        rows.push((Some(id), attachment.map(|row| fact_log::record_from_row(&row).map_err(WorkflowError::CorruptStoredState)).transpose().map(|record| record.flatten())));
-                    },
-                    Err(error) => rows.push((None, Err(error))),
+                let mut rows = Vec::new();
+                for id in ids {
+                    let direct = node_events::latest_row_for_node_with_event_types(
+                        &transaction,
+                        &id,
+                        &["started"],
+                    )
+                    .map_err(unavailable)?;
+                    let direct = match direct {
+                        Some(row) => Some(row),
+                        None => node_events::first_row_of_tree(&transaction, &id)
+                            .map_err(unavailable)?,
+                    };
+                    let matched = direct
+                        .as_ref()
+                        .map(|row| (row.tree_id.clone(), row.node_execution_id.clone()))
+                        .or_else(|| {
+                            index.iter().find_map(|(tree, held)| {
+                                let node = if tree == &id {
+                                    held.ids.public_root()
+                                } else {
+                                    held.ids
+                                        .identities
+                                        .iter()
+                                        .find(|(_, alias)| *alias == &id)
+                                        .map(|(node, _)| node.as_str())
+                                }?;
+                                Some((tree.clone(), node.to_string()))
+                            })
+                        });
+                    let Some((tree, mut node)) = matched else {
+                        continue;
+                    };
+                    if tree == id {
+                        if let Some(root) = index.get(&tree).and_then(|held| held.ids.public_root())
+                        {
+                            node = root.to_string();
+                        }
+                    }
+                    let Some(root) =
+                        node_events::first_root_row_of_tree(&transaction, &tree, "started")
+                            .map_err(unavailable)?
+                    else {
+                        continue;
+                    };
+                    let resolved = (|| {
+                        let header =
+                            crate::adaptor::gateway::workflow::stored_definition::read_tree_header(
+                                &root.detail,
+                            )
+                            .map_err(WorkflowError::CorruptStoredState)?;
+                        if header.is_none_or(|header| header.worktree_path != workspace) {
+                            return Ok(None);
+                        }
+                        if let Some(error) =
+                            index.get(&tree).and_then(|held| held.errors.get(&node))
+                        {
+                            return Err(WorkflowError::CorruptStoredState(error.clone()));
+                        }
+                        let start = node_events::latest_row_for_node_with_event_types(
+                            &transaction,
+                            &node,
+                            &["started"],
+                        )
+                        .map_err(|error| {
+                            WorkflowError::from(fact_log::FactReadError::Query(unavailable(error)))
+                        })?;
+                        let Some(start) = start else {
+                            return Ok(None);
+                        };
+                        let Some(start) = fact_log::record_from_row(&start)
+                            .map_err(WorkflowError::CorruptStoredState)?
+                        else {
+                            return Ok(None);
+                        };
+                        if start.meta.kind != crate::domain::workflow::NodeKindName::Session {
+                            return Ok(None);
+                        }
+                        let attachment = node_events::latest_row_for_node_with_event_types(
+                            &transaction,
+                            &node,
+                            &["session_attached"],
+                        )
+                        .map_err(|error| {
+                            WorkflowError::from(fact_log::FactReadError::Query(unavailable(error)))
+                        })?;
+                        attachment
+                            .map(|row| {
+                                fact_log::record_from_row(&row)
+                                    .map_err(WorkflowError::CorruptStoredState)
+                            })
+                            .transpose()
+                            .map(Option::flatten)
+                    })();
+                    rows.push((Some(id), resolved));
                 }
-            }
-            transaction.commit().map_err(unavailable)?;
-            Ok(rows)
-        }).await;
+                transaction.commit().map_err(unavailable)?;
+                Ok(rows)
+            })
+            .await;
         match rows {
             Ok(rows) => {
                 for (id, record) in rows {
@@ -217,8 +342,8 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         WorkflowError,
     > {
         use crate::adaptor::gateway::workflow::fact_log;
-        use crate::domain::workflow::{NodeExecutionStatus, NodeFact, NodeKind, NodeKindName};
-        use crate::domain::workspace_tree::{WorkspaceNodeClassification, WorkspaceNodeStatus};
+        use crate::domain::workflow::{NodeFact, NodeKind, NodeKindName};
+        use crate::domain::workspace_tree::WorkspaceNodeClassification;
         let backend = self.repository.fact_backend();
         let (tree, target) = (tree_id.to_string(), node_execution_id.to_string());
         let workspace = workspace_identity.as_str().to_string();
@@ -250,10 +375,23 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 let (detail_projection, parameters) = session_artifact_projection(
                     crate::domain::workflow::services::node_read::artifact_fields(root),
                 );
-                let records = node_events::read_subtree(
+                let lineage = node_events::tree_rows_with_event_types(
                     connection,
                     &tree,
-                    &target,
+                    &["started", "retry_requested"],
+                )
+                .map_err(unavailable)?
+                .iter()
+                .filter_map(|row| fact_log::record_from_row(row).transpose())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| reader::corrupt(&error))?;
+                let roots = crate::domain::workflow::services::history::read_lineage_roots(
+                    &target, &lineage,
+                );
+                let records = node_events::read_subtrees(
+                    connection,
+                    &tree,
+                    &roots,
                     &detail_projection,
                     &parameters,
                     |row| fact_log::record_from_row(&row),
@@ -265,9 +403,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
-                let starts =
-                    node_events::tree_rows_with_event_types(connection, &tree, &["started"])
-                        .map_err(unavailable)?;
+                let starts = lineage;
                 let terminal = node_events::tree_rows_with_event_types(
                     connection,
                     &tree,
@@ -289,11 +425,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         let Some(root) = started.root.as_deref() else {
             return Ok(None);
         };
-        let starts = starts
-            .iter()
-            .filter_map(|row| fact_log::record_from_row(row).transpose())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(WorkflowError::CorruptStoredState)?;
         let identities = crate::domain::workspace_tree::entities::node_identities(&starts)
             .map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
         let terminal = terminal
@@ -317,6 +448,9 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             terminal.as_ref(),
         )
         .map_err(WorkflowError::CorruptStoredState)?;
+        let execution_status =
+            crate::domain::workflow::ExecutionStatus::from_terminal_fact(terminal.as_ref());
+        let mut target_session = None;
         let mut classification = Vec::new();
         for (id, rules) in &rules {
             let Some(start) = records
@@ -345,32 +479,25 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 })
                 .transpose()?
                 .unwrap_or_default();
+            let activity = session.activity;
+            if id == node_execution_id {
+                target_session = Some((session_id.map(str::to_owned), session));
+            }
             classification.push(WorkspaceNodeClassification {
                 id: identities[id].clone(),
-                parent_id: start
-                    .meta
+                parent_id: rules
                     .parent_id
                     .as_ref()
                     .and_then(|parent| identities.get(parent))
                     .cloned(),
                 execution_id: Some(tree_id.into()),
                 node_execution_id: Some(id.clone()),
-                kind: match start.meta.kind {
-                    NodeKindName::Session => WorkspaceNodeKind::WorkflowSession,
-                    NodeKindName::Command => WorkspaceNodeKind::WorkflowCommand,
-                    NodeKindName::Fanout => WorkspaceNodeKind::Fanout,
-                    NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
-                },
-                status: match rules.status {
-                    NodeExecutionStatus::Running => WorkspaceNodeStatus::Running,
-                    NodeExecutionStatus::WaitingApproval => WorkspaceNodeStatus::Waiting,
-                    NodeExecutionStatus::Succeeded => WorkspaceNodeStatus::Completed,
-                    NodeExecutionStatus::Aborted => WorkspaceNodeStatus::Aborted,
-                },
+                kind: start.meta.kind.into(),
+                status: rules.status.into(),
                 process_presence: presence,
                 delegate_waits_for_child: rules.delegate_waits_for_child,
                 background_failure: false,
-                activity: (start.meta.kind == NodeKindName::Session).then_some(session.activity),
+                activity: (start.meta.kind == NodeKindName::Session).then_some(activity),
                 has_session: session_id.is_some(),
                 completion_signals: rules.completion_signals,
                 hidden: rules.hidden,
@@ -382,19 +509,8 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         else {
             return Ok(None);
         };
-        let session_id = records.iter().find_map(|record| match &record.fact {
-            NodeFact::SessionAttached(attached)
-                if record.meta.node_execution_id == node_execution_id =>
-            {
-                Some(attached.session_id.clone())
-            }
-            _ => None,
-        });
-        let session = crate::domain::workflow::services::fact_replay::derive_session_facts(
-            &records,
-            node_execution_id,
-            session_id.as_deref().unwrap_or_default(),
-        );
+        let (session_id, session) =
+            target_session.expect("target classification has session facts");
         let title = crate::domain::workspace_tree::value_objects::session_node_title(
             session.manual_name,
             session.provider_session_title,
@@ -409,7 +525,8 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             NodeKind::Session(spec) => spec.model.clone(),
             _ => None,
         });
-        let signals = state.completion_signals;
+        let (submit_received, stop_received, waiting_for) =
+            signal_display(state.completion_signals);
         let updated_at = records
             .iter()
             .filter(|record| record.meta.node_execution_id == node_execution_id)
@@ -447,7 +564,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             model,
             past_attempts: Vec::new(),
             execution_id: Some(tree_id.into()),
-            can_abort: terminal.is_none(),
+            can_abort: execution_status.can_abort(),
             process_presence: state.process_presence.as_str(),
             worktree: records.iter().find_map(|record| match &record.fact {
                 NodeFact::Started(started)
@@ -465,21 +582,9 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             id: identities[node_execution_id].clone(),
             title,
             status: state.status.as_public_str().into(),
-            submit_received: matches!(
-                signals,
-                crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
-                    | crate::domain::workflow::NodeCompletionSignalState::Ready
-            ),
-            stop_received: matches!(
-                signals,
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived
-                    | crate::domain::workflow::NodeCompletionSignalState::Ready
-            ),
-            waiting_for: match signals {
-                crate::domain::workflow::NodeCompletionSignalState::SubmitReceived => Some("stop"),
-                crate::domain::workflow::NodeCompletionSignalState::StopReceived => Some("submit"),
-                _ => None,
-            },
+            submit_received,
+            stop_received,
+            waiting_for,
             has_artifact: rules.has_artifact,
             error_reason,
             capabilities: WorkspaceNodeCapabilitiesDto {
@@ -490,8 +595,8 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                         == Some(node_execution_id),
                     node_execution_id == tree_id,
                 ),
-                can_approve: state.status == WorkspaceNodeStatus::Waiting,
-                can_retry: terminal.is_none()
+                can_approve: state.status.can_approve(),
+                can_retry: execution_status.is_active()
                     && rules
                         .status
                         .can_retry(NodeKindName::Session, state.process_presence),
@@ -563,22 +668,7 @@ fn node_detail_with_workflow(
 pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
     let error_reason = node.failure_reason();
-    let submit_received = matches!(
-        node.completion_signals,
-        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
-            | crate::domain::workflow::NodeCompletionSignalState::Ready
-    );
-    let stop_received = matches!(
-        node.completion_signals,
-        crate::domain::workflow::NodeCompletionSignalState::StopReceived
-            | crate::domain::workflow::NodeCompletionSignalState::Ready
-    );
-    let waiting_for = match node.completion_signals {
-        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived => Some("stop"),
-        crate::domain::workflow::NodeCompletionSignalState::StopReceived => Some("submit"),
-        crate::domain::workflow::NodeCompletionSignalState::Pending
-        | crate::domain::workflow::NodeCompletionSignalState::Ready => None,
-    };
+    let (submit_received, stop_received, waiting_for) = signal_display(node.completion_signals);
     let content = match node.kind {
         WorkspaceNodeKind::WorkflowCommand => {
             WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
@@ -629,6 +719,28 @@ pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDet
         updated_at,
         content,
     }
+}
+
+fn signal_display(
+    signals: crate::domain::workflow::NodeCompletionSignalState,
+) -> (bool, bool, Option<&'static str>) {
+    let submit_received = matches!(
+        signals,
+        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+            | crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    let stop_received = matches!(
+        signals,
+        crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            | crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    let waiting_for = match signals {
+        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived => Some("stop"),
+        crate::domain::workflow::NodeCompletionSignalState::StopReceived => Some("submit"),
+        crate::domain::workflow::NodeCompletionSignalState::Pending
+        | crate::domain::workflow::NodeCompletionSignalState::Ready => None,
+    };
+    (submit_received, stop_received, waiting_for)
 }
 
 pub fn execution_summary(

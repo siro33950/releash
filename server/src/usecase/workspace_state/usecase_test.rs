@@ -9,6 +9,7 @@ struct Store {
     save_failure: Option<crate::domain::failure::TechnicalFailure>,
     fail: bool,
     readable: bool,
+    missing_files: Vec<String>,
     conflict: bool,
     conflicts_remaining: Mutex<usize>,
     reads: std::sync::atomic::AtomicUsize,
@@ -139,6 +140,17 @@ impl WorkspaceStateRepository for Store {
             .cloned()
             .or_else(|| self.previous.clone()))
     }
+    async fn filter_missing_files(
+        &self,
+        state: WorkspaceState,
+        _: &str,
+    ) -> Result<WorkspaceState, WorkspaceStateError> {
+        Ok(
+            crate::domain::workspace_state::services::filter_missing_files(state, |path| {
+                !self.missing_files.iter().any(|missing| missing == path)
+            }),
+        )
+    }
     async fn save(
         &self,
         name: &str,
@@ -192,6 +204,7 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
         let store = Store {
             fail,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
@@ -245,6 +258,7 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
     let store = Store {
         fail: false,
         readable: false,
+        missing_files: Vec::new(),
         conflict: false,
         conflicts_remaining: Default::default(),
         reads: Default::default(),
@@ -286,6 +300,7 @@ async fn test_repository折りたたみ保存_成功したgroupだけ通知す�
         let store = Store {
             fail,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
@@ -322,6 +337,7 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
     let store = Store {
         fail: false,
         readable: true,
+        missing_files: Vec::new(),
         conflict: false,
         conflicts_remaining: Default::default(),
         reads: Default::default(),
@@ -375,6 +391,7 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
             let store = Store {
                 fail,
                 readable: true,
+                missing_files: Vec::new(),
                 conflict: false,
                 conflicts_remaining: Default::default(),
                 reads: Default::default(),
@@ -458,6 +475,7 @@ async fn test_表示状態保存_最新の配置を保持し競合待ちの取�
     let previous = state_with_panes();
     let store = Store {
         readable: true,
+        missing_files: Vec::new(),
         conflict: true,
         previous: Some(previous.clone()),
         ..Default::default()
@@ -494,6 +512,7 @@ async fn test_repositoryグループ保存_競合待ちの取消で版競合を�
     // Given
     let store = Store {
         readable: true,
+        missing_files: Vec::new(),
         conflict: true,
         ..Default::default()
     };
@@ -564,6 +583,7 @@ async fn test_ui状態保存_両方の保存が版競合後に読み直し成功
         let store = Store {
             fail: false,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Mutex::new(1),
             reads: Default::default(),
@@ -611,6 +631,7 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
         let store = Store {
             fail: false,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
@@ -701,6 +722,7 @@ async fn test_旧会話参照の復元_解決を保存して再照会せず未�
         .as_mut()
         .unwrap()
         .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(actual, Some(expected.clone()));
     assert_eq!(failures, vec![failure]);
     assert_eq!(store.saved.lock().as_slice(), &[expected]);
@@ -775,4 +797,64 @@ async fn test_配置復元_配置自体の取得失敗は成功として扱わ�
     // Then
     assert!(matches!(result, Err(WorkspaceStateError::Technical(_))));
     assert!(query.resolved_nodes.lock().is_empty());
+}
+
+#[tokio::test]
+async fn test_配置復元_参照置換を保存してから返却値だけの欠損ファイルを除く() {
+    // Given
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    query
+        .session_nodes
+        .lock()
+        .sessions
+        .insert("resolved".into(), "agent".into());
+    let mut original = legacy_state();
+    original.layout.selected_diff_file = Some("missing".into());
+    let store = Store {
+        readable: true,
+        previous: Some(original),
+        missing_files: vec!["missing".into()],
+        ..Default::default()
+    };
+    // When
+    let (actual, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let saved = store.saved.lock();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0].layout.selected_diff_file.as_deref(),
+        Some("missing")
+    );
+    let actual = actual.unwrap();
+    assert!(actual.layout.selected_diff_file.is_none());
+    assert_eq!(actual.panes, saved[0].panes);
+}
+
+#[tokio::test]
+async fn test_配置復元_保存値なしと移行不要の配置は一度だけ読み保存しない() {
+    // Given
+    for previous in [None, Some(state_with_panes())] {
+        let query = crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(
+            Vec::new(),
+        );
+        let store = Store {
+            readable: true,
+            previous: previous.clone(),
+            ..Default::default()
+        };
+        // When
+        let (actual, failures) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(actual, previous);
+        assert!(failures.is_empty());
+        assert!(store.saved.lock().is_empty());
+        assert!(query.resolved_nodes.lock().is_empty());
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 }

@@ -144,7 +144,7 @@ final class TestHTTPClient: HTTPClientInterface {
       {
         var selection = Releash_Client_V1_SessionSelection()
         selection.agentSessionID = "agent-session"
-        selection.nodeID = "session-node"
+        selection.nodeID = "session-tree"
         response = try selection.serializedData()
       } else if method == "StartWorkflow" {
         var result = Releash_Client_V1_ResultString()

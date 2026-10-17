@@ -117,6 +117,18 @@ pub fn read_tree_after(
     rows.collect()
 }
 
+pub(crate) fn reference_starts_after(
+    connection: &Connection,
+    tree_id: &str,
+    seq: i64,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 AND seq > ?2 AND event_type = 'started' ORDER BY seq"
+    ))?;
+    let rows = statement.query_map(rusqlite::params![tree_id, seq], row_from_sql)?;
+    rows.collect()
+}
+
 /// Every tree with its latest `seq`. Each tree is reached through the primary
 /// key, so the cost follows the number of trees, not the number of facts.
 pub fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlite::Error> {
@@ -176,16 +188,17 @@ pub(crate) fn tree_rows_with_event_types(
     rows.collect()
 }
 
-pub(crate) fn read_subtree<T>(
+pub(crate) fn read_subtrees<T>(
     connection: &Connection,
     tree_id: &str,
-    node_id: &str,
+    node_ids: &[String],
     detail_projection: &str,
     projection_parameters: &[String],
     mut project: impl FnMut(NodeEventRow) -> T,
 ) -> Result<Vec<T>, rusqlite::Error> {
     let columns = ROW_COLUMNS.replace(", detail,", &format!(", {detail_projection} AS detail,"));
-    let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&tree_id, &node_id];
+    let node_ids = serde_json::to_string(node_ids).expect("node ids");
+    let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&tree_id, &node_ids];
     parameters.extend(
         projection_parameters
             .iter()
@@ -193,7 +206,7 @@ pub(crate) fn read_subtree<T>(
     );
     let mut statement = connection.prepare(&format!(
         "WITH RECURSIVE selected(id) AS (
-            SELECT ?2 UNION SELECT e.node_execution_id FROM node_events e JOIN selected s ON e.parent_id = s.id WHERE e.tree_id = ?1
+            SELECT value FROM json_each(?2) UNION SELECT e.node_execution_id FROM node_events e JOIN selected s ON e.parent_id = s.id WHERE e.tree_id = ?1
          ) SELECT {columns} FROM node_events WHERE tree_id = ?1 AND node_execution_id IN (SELECT id FROM selected) ORDER BY seq"
     ))?;
     let rows = statement.query_map(parameters.as_slice(), |row| {

@@ -53,9 +53,12 @@ pub async fn load_workspace_state(
             _ => None,
         },
         |_| async {
-            let (version, mut state) = repository.read(worktree_name).await?;
+            let (version, state) = repository.read(worktree_name).await?;
+            let Some(mut state) = state else {
+                return Ok((None, Vec::new()));
+            };
             let mut failures = Vec::new();
-            if let Some(layout) = state.as_mut().and_then(|state| state.panes.as_mut()) {
+            if let Some(layout) = state.panes.as_mut() {
                 let ids = layout
                     .legacy_session_nodes()
                     .into_iter()
@@ -74,18 +77,15 @@ pub async fn load_workspace_state(
                     layout.resolve_legacy_sessions(&resolution.sessions);
                     if *layout != previous {
                         repository
-                            .save(worktree_name, state.clone().expect("loaded state"), version)
+                            .save(worktree_name, state.clone(), version)
                             .await?;
                     }
                 }
             }
-            let state = super::query_service::load_workspace_state(
-                repository,
-                worktree_name,
-                worktree_root,
-            )
-            .await?;
-            Ok((state, failures))
+            let state = repository
+                .filter_missing_files(state, worktree_root)
+                .await?;
+            Ok((Some(state), failures))
         },
     )
     .await

@@ -255,6 +255,13 @@ mod workspace_state_gc_tests {
         {
             unreachable!()
         }
+        async fn filter_missing_files(
+            &self,
+            _: crate::domain::workspace_state::WorkspaceState,
+            _: &str,
+        ) -> Result<crate::domain::workspace_state::WorkspaceState, WorkspaceStateError> {
+            unreachable!()
+        }
         async fn read(
             &self,
             _: &str,

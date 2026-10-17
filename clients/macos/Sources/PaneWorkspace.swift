@@ -72,6 +72,30 @@ import SwiftUI
     nextTerminalNumber = terminalNumber
   }
 
+  struct LayoutInput: Equatable {
+    var tree: ExternalTreeNode
+    var tabs: [String: PaneTab]
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+      lhs.tabs == rhs.tabs && samePlacement(lhs.tree, rhs.tree)
+    }
+
+    private static func samePlacement(_ lhs: ExternalTreeNode, _ rhs: ExternalTreeNode) -> Bool {
+      switch (lhs, rhs) {
+      case (.pane(let lhs), .pane(let rhs)):
+        lhs.id == rhs.id && lhs.tabs.map(\.id) == rhs.tabs.map(\.id)
+          && lhs.selectedTabId == rhs.selectedTabId
+      case (.split(let lhs), .split(let rhs)):
+        lhs.id == rhs.id && lhs.orientation == rhs.orientation
+          && lhs.dividerPosition == rhs.dividerPosition
+          && samePlacement(lhs.first, rhs.first) && samePlacement(lhs.second, rhs.second)
+      default: false
+      }
+    }
+  }
+
+  var layoutInput: LayoutInput { LayoutInput(tree: controller.treeSnapshot(), tabs: tabs) }
+
   func layout() throws -> PaneLayout {
     func convert(_ tree: ExternalTreeNode) throws -> PaneLayout {
       switch tree {
@@ -128,6 +152,13 @@ import SwiftUI
   }
 
   func openSession(id sessionID: String, nodeID: String, title: String) {
+    if let existing = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.kind == .session
+        && tabs[$0.id.uuidString]?.agentSessionID == sessionID
+    }) {
+      controller.selectTab(existing)
+      return
+    }
     if let pending = controller.allTabIds.first(where: {
       tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
     }) {
@@ -334,14 +365,18 @@ struct WorkspacePaneView: View {
         model.confirmArchiveSessionTab()
       }
     }
-    .onChange(of: try? model.panes.layout()) { _, _ in
-      guard model.layoutLoaded else { return }
-      do {
-        let layout = try model.panes.layout()
-        model.editLayout { $0 = layout }
-        model.syncTerminalTabs(layout)
-      } catch { model.failure = error.localizedDescription }
+    .onChange(of: model.panes.layoutInput) { _, _ in
+      saveLayout()
     }
 
+  }
+
+  private func saveLayout() {
+    guard model.layoutLoaded else { return }
+    do {
+      let layout = try model.panes.layout()
+      model.editLayout { $0 = layout }
+      model.syncTerminalTabs(layout)
+    } catch { model.failure = error.localizedDescription }
   }
 }

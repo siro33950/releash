@@ -31,6 +31,17 @@ pub enum WorkspaceNodeKind {
     WorkflowCommand,
 }
 
+impl From<NodeKindName> for WorkspaceNodeKind {
+    fn from(kind: NodeKindName) -> Self {
+        match kind {
+            NodeKindName::Session => Self::WorkflowSession,
+            NodeKindName::Command => Self::WorkflowCommand,
+            NodeKindName::Fanout => Self::Fanout,
+            NodeKindName::Sequence => Self::Sequence,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeStatus {
     Running,
@@ -39,7 +50,23 @@ pub enum WorkspaceNodeStatus {
     Completed,
 }
 
+impl From<crate::domain::workflow::NodeExecutionStatus> for WorkspaceNodeStatus {
+    fn from(status: crate::domain::workflow::NodeExecutionStatus) -> Self {
+        use crate::domain::workflow::NodeExecutionStatus as S;
+        match status {
+            S::Running => Self::Running,
+            S::WaitingApproval => Self::Waiting,
+            S::Succeeded => Self::Completed,
+            S::Aborted => Self::Aborted,
+        }
+    }
+}
+
 impl WorkspaceNodeStatus {
+    pub fn can_approve(self) -> bool {
+        self == Self::Waiting
+    }
+
     pub fn as_public_str(self) -> &'static str {
         match self {
             Self::Running => "running",

@@ -26,9 +26,11 @@ final class SessionTabTests: XCTestCase {
     for state in [Releash_Client_V1_WorkspaceStatusClassification.Value.attention, .active, .idle] {
       // Given
       snapshot.node.classification.value = state
+      let placement = workspace.layoutInput
       // When
       workspace.updateSession(tab, snapshot: snapshot)
       // Then
+      XCTAssertEqual(workspace.layoutInput, placement)
       XCTAssertEqual(workspace.controller.tab(tab)?.title, "Renamed Session")
       let color = try XCTUnwrap(workspace.controller.tab(tab)?.iconColor)
       let actual = try XCTUnwrap(NSColor(color).usingColorSpace(.sRGB))
@@ -59,16 +61,60 @@ final class SessionTabTests: XCTestCase {
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
     var root = Releash_Client_V1_WorkspaceTreeItem()
-    root.node.id = "tree"
+    root.node.id = "session-tree"
     root.node.sessionID = "agent-session"
     root.node.contentKind.value = .session
+    // Given
+    model.openRoot(
+      {
+        var pending = root
+        pending.node.clearSessionID()
+        return pending
+      }())
+    let original = try XCTUnwrap(model.panes.controller.allTabIds.first)
     // When
     try await model.startSession(provider: "codex", path: "/repo")
     model.openRoot(root)
     // Then
-    XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
+    XCTAssertEqual(model.panes.controller.allTabIds, [original])
     XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent-session")
+    XCTAssertNil(try model.panes.layout().tabs.first?.nodeID)
     await model.stop()
+  }
+
+  @MainActor func test_配置保存の監視_分割率と選択と参照の変更を検知する() throws {
+    // Given
+    let workspace = PaneWorkspace()
+    let first = UUID().uuidString
+    let second = UUID().uuidString
+    let split = UUID().uuidString
+    let left = PaneLayout.pane(
+      id: UUID().uuidString,
+      tabs: [
+        PaneTab(id: first, kind: .session, agentSessionID: "first"),
+        PaneTab(id: second, kind: .session, agentSessionID: "second"),
+      ], active: first)
+    let right = PaneLayout.empty()
+    try workspace.restore(
+      .split(id: split, axis: .horizontal, ratio: 0.4, first: left, second: right))
+    let original = workspace.layoutInput
+    // Then
+    XCTAssertEqual(workspace.layoutInput, original)
+    // When
+    try workspace.restore(
+      .split(id: split, axis: .horizontal, ratio: 0.6, first: left, second: right))
+    // Then
+    XCTAssertNotEqual(workspace.layoutInput, original)
+    let resized = workspace.layoutInput
+    // When
+    workspace.controller.selectTab(TabID(id: try XCTUnwrap(UUID(uuidString: second))))
+    // Then
+    XCTAssertNotEqual(workspace.layoutInput, resized)
+    let selected = workspace.layoutInput
+    // When
+    workspace.bindSession(TabID(id: try XCTUnwrap(UUID(uuidString: second))), sessionID: "bound")
+    // Then
+    XCTAssertNotEqual(workspace.layoutInput, selected)
   }
 
   @MainActor func test_会話タブ操作_改名と確認付き整理と取消と操作制限を反映する() async throws {

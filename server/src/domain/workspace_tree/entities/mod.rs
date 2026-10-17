@@ -442,12 +442,7 @@ impl WorkspaceTree {
         let status = WorkspaceNodeStatus::Running;
         let completion_signals = NodeCompletionSignalState::default();
 
-        let workspace_kind = match kind {
-            NodeKindName::Fanout => WorkspaceNodeKind::Fanout,
-            NodeKindName::Session => WorkspaceNodeKind::WorkflowSession,
-            NodeKindName::Command => WorkspaceNodeKind::WorkflowCommand,
-            NodeKindName::Sequence => WorkspaceNodeKind::Sequence,
-        };
+        let workspace_kind = WorkspaceNodeKind::from(kind);
         let activity = (kind == NodeKindName::Session).then(AgentSessionActivity::default);
         let mut node = WorkspaceTreeNode {
             worktree: None,
@@ -838,7 +833,7 @@ impl WorkspaceTreeProjector {
                             WorkspaceTreeError::MissingNodeExecution(node_execution_id.clone())
                         })?;
                     node.status = WorkspaceNodeStatus::Waiting;
-                    node.can_approve = true;
+                    node.can_approve = node.status.can_approve();
                     node.can_retry = false;
                     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
                 }
@@ -868,7 +863,7 @@ fn update_node_state(
         .ok_or_else(|| WorkspaceTreeError::MissingNodeExecution(node_execution_id.to_string()))?;
     node.status = status;
     node.error_reason = error_reason;
-    node.can_approve = false;
+    node.can_approve = status.can_approve();
     node.can_retry = false;
     node.updated_at_bits = max_f64_bits(node.updated_at_bits, timestamp.to_bits());
     Ok(())
@@ -983,7 +978,26 @@ pub(crate) fn observe_background_failures<'a>(
 fn aggregate_status_classifications(nodes: &mut [WorkspaceTreeNode]) {
     let inputs = nodes
         .iter()
-        .map(WorkspaceTreeNode::classification_input)
+        .map(|node| {
+            let mut input = node.classification_input();
+            if let Some(parent) = nodes.iter().find(|parent| {
+                Some(&parent.id) == node.parent_id.as_ref()
+                    && parent.kind == WorkspaceNodeKind::WorkflowSession
+            }) {
+                if let Some(parent_id) = parent.node_execution_id.as_deref() {
+                    let continuation = crate::domain::workflow::entities::workflow_execution::delegate::delegate_continuation(
+                        parent_id,
+                        nodes.iter().filter_map(|node| {
+                            Some((node.node_execution_id.as_deref()?, node.retry_predecessor_id.as_deref()))
+                        }),
+                    );
+                    input.parent_id = nodes.iter()
+                        .find(|node| node.node_execution_id.as_deref() == Some(continuation))
+                        .map(|node| node.id.clone());
+                }
+            }
+            input
+        })
         .collect::<Vec<_>>();
     let classifications = super::WorkspaceNodeClassification::aggregate_all(&inputs);
     for node in nodes {
@@ -1158,64 +1172,107 @@ fn node_identity(
     }
 }
 
-pub(crate) fn node_identities(
-    records: &[crate::domain::workflow::NodeFactRecord],
-) -> Result<std::collections::HashMap<String, String>, WorkspaceTreeError> {
-    use crate::domain::workflow::NodeFact;
-    let mut ids = std::collections::HashMap::new();
-    let mut counts = std::collections::HashMap::<(Option<String>, String), usize>::new();
-    let dynamic = records
-        .iter()
-        .find_map(|record| match &record.fact {
-            NodeFact::Started(started) => started
-                .root
-                .as_ref()
-                .and_then(|root| root.definition.as_ref())
-                .map(|definition| definition.dynamic_fanout_names()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let mut dynamic_parents = HashSet::new();
-    for record in records {
+#[derive(Default)]
+pub(crate) struct NodeIdentityIndex {
+    pub identities: std::collections::HashMap<String, String>,
+    counts: std::collections::HashMap<(Option<String>, String), usize>,
+    dynamic: HashSet<String>,
+    dynamic_parents: HashSet<String>,
+    roots: Vec<(String, String, u32)>,
+}
+
+impl NodeIdentityIndex {
+    pub fn record(
+        &mut self,
+        record: &crate::domain::workflow::NodeFactRecord,
+    ) -> Result<(), WorkspaceTreeError> {
+        use crate::domain::workflow::NodeFact;
         let NodeFact::Started(started) = &record.fact else {
-            continue;
+            return Ok(());
         };
-        let meta = &record.meta;
-        if ids.contains_key(&meta.node_execution_id) {
-            continue;
+        if let Some(definition) = started
+            .root
+            .as_ref()
+            .and_then(|root| root.definition.as_ref())
+        {
+            self.dynamic = definition.dynamic_fanout_names().into_iter().collect();
         }
-        let parent = started.parent.as_ref();
-        let count = counts
+        self.record_start_identity(&record.meta, started.parent.as_ref())
+    }
+
+    pub(crate) fn record_start_identity(
+        &mut self,
+        meta: &crate::domain::workflow::NodeFactMeta,
+        parent: Option<&ExecutionParentRef>,
+    ) -> Result<(), WorkspaceTreeError> {
+        if self.identities.contains_key(&meta.node_execution_id) {
+            return Ok(());
+        }
+
+        let count = self
+            .counts
             .entry((
                 parent.map(|parent| parent.parent_id.clone()),
                 meta.node_name.clone(),
             ))
             .or_default();
-        let semantic_key = node_semantic_key(
+        let key = node_semantic_key(
             &meta.tree_id,
             &meta.node_name,
             meta.kind,
             parent,
             *count,
-            parent.is_some_and(|parent| dynamic_parents.contains(&parent.parent_id)),
+            parent.is_some_and(|parent| self.dynamic_parents.contains(&parent.parent_id)),
         );
         *count += 1;
-        if meta.kind == NodeKindName::Fanout && dynamic.contains(&meta.node_name) {
-            dynamic_parents.insert(meta.node_execution_id.clone());
+        if meta.kind == NodeKindName::Fanout && self.dynamic.contains(&meta.node_name) {
+            self.dynamic_parents.insert(meta.node_execution_id.clone());
         }
-        ids.insert(
+        self.identities.insert(
             meta.node_execution_id.clone(),
             node_identity(
                 &meta.tree_id,
                 meta.kind,
-                &semantic_key,
+                &key,
                 meta.kind == NodeKindName::Session
                     && meta.node_execution_id == meta.tree_id
                     && parent.is_none(),
             )?,
         );
+        if parent.is_none() {
+            self.roots.push((
+                meta.node_execution_id.clone(),
+                meta.node_name.clone(),
+                meta.attempt,
+            ));
+        }
+        Ok(())
     }
-    Ok(ids)
+
+    pub fn public_root(&self) -> Option<&str> {
+        super::services::select_public_root(self.roots.iter().enumerate().map(
+            |(order, (id, name, attempt))| {
+                (
+                    id.as_str(),
+                    order as u64,
+                    !self
+                        .roots
+                        .iter()
+                        .any(|(_, other, next)| other == name && next > attempt),
+                )
+            },
+        ))
+    }
+}
+
+pub(crate) fn node_identities(
+    records: &[crate::domain::workflow::NodeFactRecord],
+) -> Result<std::collections::HashMap<String, String>, WorkspaceTreeError> {
+    let mut index = NodeIdentityIndex::default();
+    for record in records {
+        index.record(record)?;
+    }
+    Ok(index.identities)
 }
 
 fn node_semantic_key(
@@ -1256,17 +1313,20 @@ pub(crate) fn public_root_node(
     records: &[crate::domain::workflow::NodeFactRecord],
 ) -> Option<&str> {
     use crate::domain::workflow::NodeFact;
-    records
-        .iter()
-        .filter(
-            |record| matches!(&record.fact, NodeFact::Started(started) if started.parent.is_none()),
-        )
-        .find(|record| {
-            !records.iter().any(|other| {
-                other.meta.node_name == record.meta.node_name
-                    && other.meta.parent_id == record.meta.parent_id
-                    && other.meta.attempt > record.meta.attempt
-            })
-        })
-        .map(|record| record.meta.node_execution_id.as_str())
+    super::services::select_public_root(records.iter().enumerate().filter_map(|(order, record)| {
+        let NodeFact::Started(started) = &record.fact else {
+            return None;
+        };
+        Some((
+            record.meta.node_execution_id.as_str(),
+            order as u64,
+            started.parent.is_none()
+                && !records.iter().any(|other| {
+                    matches!(other.fact, NodeFact::Started(_))
+                        && other.meta.node_name == record.meta.node_name
+                        && other.meta.parent_id == record.meta.parent_id
+                        && other.meta.attempt > record.meta.attempt
+                }),
+        ))
+    }))
 }

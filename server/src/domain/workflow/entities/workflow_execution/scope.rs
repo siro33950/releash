@@ -84,6 +84,29 @@ impl ScopeRuntime {
 }
 
 impl SequenceScopeRuntime {
+    pub(crate) fn replay_child_start(&mut self, name: &str, attempt: u32) {
+        self.raise_child_count_to(name, attempt);
+        self.current_child = Some(name.into());
+        self.artifacts.remove(name);
+    }
+
+    pub(crate) fn record_child_result(&mut self, artifact: RuntimeArtifact) {
+        self.artifacts.insert(artifact.node_name.clone(), artifact);
+    }
+
+    pub(crate) fn artifact_field(
+        &self,
+        name: &str,
+        path: &crate::domain::workflow::FieldPath,
+    ) -> Option<&serde_json::Value> {
+        self.artifacts
+            .get(name)
+            .and_then(|artifact| artifact.artifact.as_ref())
+            .and_then(|artifact| {
+                crate::domain::workflow::services::reference::resolve_value_at_path(artifact, path)
+            })
+    }
+
     /// 子の開始を記録し、その attempt（スコープ内 1 始まり）を返す。
     /// loop_guard のカウント範囲もこの値で決まる。fanout の子の attempt は
     /// slot が所有するため、このカウントは sequence スコープ専用。

@@ -1888,3 +1888,218 @@ pub async fn test_sessionタブ詳細_保存定義と異なる終了履歴を復
         assert!(!detail.can_abort);
     }
 }
+
+#[tokio::test]
+pub async fn test_旧会話参照照会_追記された紐付けと再試行と削除を反映する() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, ExecutionOrigin, NodeDefinition, NodeFactMeta, NodeKindName,
+        SessionAttachedFact, StartedFact, TreeRootFact, WorkflowDefinition,
+    };
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let tree = "00000000-0000-4000-8000-000000002080";
+    let first = NodeFactMeta {
+        tree_id: tree.into(),
+        node_execution_id: "00000000-0000-4000-8000-000000002081".into(),
+        node_name: "main".into(),
+        kind: NodeKindName::Session,
+        parent_id: None,
+        attempt: 1,
+    };
+    let mut next = first.clone();
+    next.node_execution_id = "00000000-0000-4000-8000-000000002082".into();
+    next.attempt = 2;
+    append_single_fact(
+        &store,
+        &first,
+        &NodeFact::Started(StartedFact {
+            root: Some(Box::new(TreeRootFact {
+                repository_root: None,
+                workspace_identity: "/repo".into(),
+                worktree_path: "/repo".into(),
+                created_from: ExecutionOrigin::Cli,
+                request: String::new(),
+                workflow_name: "main".into(),
+                definition: Some(WorkflowDefinition {
+                    entry: "main".into(),
+                    nodes: vec![NodeDefinition {
+                        name: "main".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                launched_as: ExecutionTreeLaunch::Workflow,
+            })),
+            parent: None,
+            worktree: None,
+        }),
+        1000,
+    )
+    .await
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    let ids = vec![
+        tree.into(),
+        first.node_execution_id.clone(),
+        "missing".into(),
+    ];
+    // When / Then
+    for _ in 0..2 {
+        let result = query
+            .resolve_session_nodes(&WorkspaceIdentity::new("/repo"), &ids)
+            .await;
+        assert!(result.sessions.is_empty());
+        assert!(result.failures.is_empty());
+    }
+    let attach = |id: &str| {
+        NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: id.into(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+        })
+    };
+    // When
+    append_single_fact(&store, &first, &attach("first-agent"), 2000)
+        .await
+        .unwrap();
+    let before = load_tree(&repository, &WorkspaceIdentity::new("/repo")).await;
+    let alias = before
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some(&first.node_execution_id))
+        .unwrap()
+        .id
+        .clone();
+    let mut ids = ids;
+    ids.push(alias.clone());
+    let result = query
+        .resolve_session_nodes(&WorkspaceIdentity::new("/repo"), &ids)
+        .await;
+    // Then
+    assert_eq!(result.sessions[tree], "first-agent");
+    assert_eq!(result.sessions[&alias], "first-agent");
+    // When
+    for (meta, fact) in [
+        (&first, NodeFact::RetryRequested),
+        (
+            &next,
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&next, attach("next-agent")),
+    ] {
+        append_single_fact(&store, meta, &fact, 3000).await.unwrap();
+    }
+    let result = query
+        .resolve_session_nodes(&WorkspaceIdentity::new("/repo"), &ids)
+        .await;
+    // Then
+    assert_eq!(result.sessions[tree], "next-agent");
+    assert_eq!(result.sessions[&first.node_execution_id], "first-agent");
+    assert_eq!(result.sessions[&alias], "first-agent");
+    assert!(result.failures.is_empty());
+    // When
+    rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3"))
+        .unwrap()
+        .execute("DELETE FROM node_events WHERE tree_id = ?1", [tree])
+        .unwrap();
+    let result = query
+        .resolve_session_nodes(&WorkspaceIdentity::new("/repo"), &ids)
+        .await;
+    // Then
+    assert!(result.sessions.is_empty());
+    assert!(result.failures.is_empty());
+}
+
+#[tokio::test]
+pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的並列のスコープを保つ() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
+    };
+    // Given
+    for records in [
+        retried_delegate_parent_facts(),
+        scoped_dynamic_fanout_facts(),
+    ] {
+        let retry = records.iter().any(|record| record.meta.attempt == 2);
+        let target = records
+            .iter()
+            .find(|record| {
+                if retry {
+                    record.meta.attempt == 2
+                } else {
+                    record.meta.node_name == "main"
+                }
+            })
+            .unwrap()
+            .meta
+            .clone();
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        ))
+        .unwrap();
+        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let query = service(&repository);
+        let boundary = records.len() - if retry { 3 } else { 4 };
+        for (index, record) in records.iter().enumerate() {
+            append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
+                .await
+                .unwrap();
+            if index + 1 != boundary && index + 1 != records.len() {
+                continue;
+            }
+            // When
+            let read = query
+                .session_node_detail(
+                    &WorkspaceIdentity::new("/repo"),
+                    &target.tree_id,
+                    &target.node_execution_id,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let list = releashd::test_support::integration::workspace::node_for_execution(
+                &*repository,
+                &WorkspaceIdentity::new("/repo"),
+                &target.node_execution_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let listed_detail = query
+                .node_detail(&WorkspaceIdentity::new("/repo"), &list.id)
+                .await
+                .unwrap()
+                .unwrap();
+            // Then
+            assert_eq!(read.detail.status, listed_detail.status);
+            assert_eq!(read.detail.capabilities, listed_detail.capabilities);
+            assert_eq!(read.detail.submit_received, listed_detail.submit_received);
+            assert_eq!(read.detail.stop_received, listed_detail.stop_received);
+            assert_eq!(
+                read.detail.classification,
+                list.status_classification.as_public_str()
+            );
+            assert_eq!(
+                read.detail.classification,
+                if index + 1 == boundary {
+                    "active"
+                } else {
+                    "attention"
+                }
+            );
+        }
+    }
+}

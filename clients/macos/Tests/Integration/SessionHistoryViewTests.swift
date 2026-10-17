@@ -36,8 +36,9 @@ final class SessionHistoryViewTests: XCTestCase {
       model.selectWorktree("/repo")
       try await eventually { model.layoutLoaded }
       if method != "DeleteAgentSession" {
-        model.openNode(.session, id: "agent-session", title: "Session")
+        model.panes.openPendingSession(id: "session-tree", title: "Preparing")
       }
+      let originalTabs = model.panes.controller.allTabIds
       let host = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
       try await eventuallyView(host) { host.element("Codex · History session") != nil }
       try await host.press("さらに読み込む")
@@ -83,7 +84,7 @@ final class SessionHistoryViewTests: XCTestCase {
           (try? model.panes.layout().tabs.last?.agentSessionID) == "agent-session"
         }
         XCTAssertEqual(try model.panes.layout().tabs.last?.kind, .session)
-        XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
+        XCTAssertEqual(model.panes.controller.allTabIds, originalTabs)
         if method == "RestoreAgentSession" {
           let request = try Releash_Client_V1_RestoreAgentSessionRequest(
             serializedBytes: XCTUnwrap(http.requests(method).last?.message))
@@ -100,7 +101,7 @@ final class SessionHistoryViewTests: XCTestCase {
       tree.snapshot.archivedSessions.items = []
       if method != "DeleteAgentSession" {
         var root = Releash_Client_V1_WorkspaceTreeItem()
-        root.node.id = "session-node"
+        root.node.id = "session-tree"
         root.node.sessionID = "agent-session"
         root.node.title = "Restored session"
         root.node.contentKind.value = .session
@@ -123,7 +124,7 @@ final class SessionHistoryViewTests: XCTestCase {
             RootListView(model: model, path: "/repo")
             WorkspacePaneView(model: model)
           })
-        try await eventually { roots.element("root:session-node") != nil }
+        try await eventually { roots.element("root:session-tree") != nil }
         try await eventually {
           model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }
             .last?.title == "Restored session"

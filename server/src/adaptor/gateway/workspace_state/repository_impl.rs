@@ -93,6 +93,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         .await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn load(
         &self,
         key: &str,
@@ -101,6 +102,13 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         let Some(state) = self.read(key).await?.1 else {
             return Ok(None);
         };
+        self.filter_missing_files(state, root).await.map(Some)
+    }
+    async fn filter_missing_files(
+        &self,
+        state: WorkspaceState,
+        root: &str,
+    ) -> Result<WorkspaceState, WorkspaceStateError> {
         let root = root.to_owned();
         crate::common::operation_context::spawn_blocking(move || {
             filter_missing_files(state, |path| {
@@ -113,7 +121,6 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
             })
         })
         .await
-        .map(Some)
         .map_err(WorkspaceStateError::from)
     }
     async fn read(

@@ -12,6 +12,9 @@ import SwiftProtobuf
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
+  private var workspaceReadErrors: Set<String> = []
+  private var dismissedWorkspaceReadErrors: Set<String> = []
+  private var displayedWorkspaceReadErrors: Set<String> = []
   var failure: String?
   var connectionFailure: String?
   var connected = false
@@ -400,10 +403,27 @@ import SwiftProtobuf
   func perform(_ operation: @escaping @MainActor () async throws -> Void) {
     Task { do { try await operation() } catch { failure = failureMessage(error) } }
   }
+  func dismissFailure() {
+    if failure == displayedWorkspaceReadErrors.sorted().joined(separator: "\n") {
+      dismissedWorkspaceReadErrors.formUnion(
+        displayedWorkspaceReadErrors.intersection(workspaceReadErrors))
+      displayedWorkspaceReadErrors = []
+    }
+    failure = nil
+  }
+
+  private func resetWorkspaceReadErrors() {
+    if failure == displayedWorkspaceReadErrors.sorted().joined(separator: "\n") { failure = nil }
+    workspaceReadErrors = []
+    dismissedWorkspaceReadErrors = []
+    displayedWorkspaceReadErrors = []
+  }
+
   func selectWorktree(_ path: String) {
     guard selectedWorktree != path || !layoutLoaded else { return }
     if let id = workspaceSubscription { unsubscribe(id) }
     stopTerminals()
+    resetWorkspaceReadErrors()
     selectedWorktree = path
     layoutLoaded = false
     layout = .empty()
@@ -419,6 +439,7 @@ import SwiftProtobuf
     if let id = workspaceSubscription { unsubscribe(id) }
     workspaceSubscription = nil
     stopTerminals()
+    resetWorkspaceReadErrors()
     selectedWorktree = nil
     layoutLoaded = false
     layout = .empty()
@@ -426,11 +447,17 @@ import SwiftProtobuf
   }
   func receiveWorkspaceState(_ value: Releash_Client_V1_NullableWorkspaceStateDto, path: String) {
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
+    let errors = Set(value.hasValue ? value.value.readErrors : [])
+    dismissedWorkspaceReadErrors.formIntersection(errors)
+    if !errors.subtracting(workspaceReadErrors).isEmpty {
+      displayedWorkspaceReadErrors = errors.subtracting(dismissedWorkspaceReadErrors)
+      failure =
+        displayedWorkspaceReadErrors.isEmpty
+        ? nil : displayedWorkspaceReadErrors.sorted().joined(separator: "\n")
+    }
+    workspaceReadErrors = errors
     if value.hasValue {
       workspaceState = value.value
-      if !value.value.readErrors.isEmpty {
-        failure = value.value.readErrors.joined(separator: "\n")
-      }
       workspaceState.readErrors = []
       if value.value.hasPaneLayout {
         do {
@@ -611,6 +638,11 @@ extension AppModel {
     savePaneLayout()
   }
 
+  func openSession(_ selection: Releash_Client_V1_SessionSelection) {
+    panes.openSession(id: selection.agentSessionID, nodeID: selection.nodeID, title: "Session")
+    savePaneLayout()
+  }
+
   private func syncNodeTabTitles() {
     let roots =
       repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes
@@ -629,7 +661,7 @@ extension AppModel {
     request.callerRequestID = UUID().uuidString
     let selection = try await client.createAgentSession(request: request, headers: headers).result
       .get()
-    openNode(.session, id: selection.agentSessionID, title: "Session")
+    openSession(selection)
   }
 
   func startWorkflow(name: String, path: String) async throws {

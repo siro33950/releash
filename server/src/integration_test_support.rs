@@ -1015,6 +1015,9 @@ pub mod workflow {
     pub use crate::domain::workflow::services::routing::route_in_scope;
     pub use crate::domain::workflow::services::routing::RouteDecision;
     pub use crate::domain::workflow::services::secret_masker::mask_sensitive_text;
+    pub use crate::domain::workflow::services::test_helpers::{
+        retried_delegate_parent_facts, scoped_dynamic_fanout_facts,
+    };
     pub use crate::domain::workflow::services::validation::validate;
     pub use crate::domain::workflow::services::validation::ValidationError;
     pub use crate::domain::workflow::value_objects::definition::ChildEntry;

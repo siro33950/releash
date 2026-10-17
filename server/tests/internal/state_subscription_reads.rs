@@ -1636,7 +1636,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     let sessions = AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(
         archive.store.clone(),
     )));
-    for id in ["ready", "broken", "broken-root"] {
+    for id in ["ready", "broken", "broken-root", "broken-root-alias"] {
         sessions
             .create(
                 id,
@@ -1664,6 +1664,13 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .unwrap()
         .id
         .clone();
+    let broken_root_alias = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("broken-root-alias"))
+        .unwrap()
+        .id
+        .clone();
     let broken_node = tree
         .nodes()
         .iter()
@@ -1686,18 +1693,102 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     )
     .await
     .unwrap();
+    sessions
+        .create(
+            "unrelated",
+            WorkspaceIdentity::new("/other"),
+            "/other",
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root("unrelated").unwrap(),
+            "create-unrelated",
+        )
+        .await
+        .unwrap();
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, ExecutionOrigin, ExecutionTreeLaunch, NodeDefinition, NodeFact,
+        NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
+        WorkflowDefinition,
+    };
+    let public = "00000000-0000-4000-8000-000000002090";
+    let first = NodeFactMeta {
+        tree_id: public.into(),
+        node_execution_id: "00000000-0000-4000-8000-000000002091".into(),
+        node_name: "main".into(),
+        kind: NodeKindName::Session,
+        parent_id: None,
+        attempt: 1,
+    };
+    let next = NodeFactMeta {
+        node_execution_id: "00000000-0000-4000-8000-000000002092".into(),
+        attempt: 2,
+        ..first.clone()
+    };
+    let attach = |id: &str| {
+        NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: id.into(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+        })
+    };
+    for (meta, fact) in [
+        (
+            &first,
+            NodeFact::Started(StartedFact {
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: None,
+                    workspace_identity: fixture.path.clone(),
+                    worktree_path: fixture.path.clone(),
+                    created_from: ExecutionOrigin::Cli,
+                    request: String::new(),
+                    workflow_name: "main".into(),
+                    definition: Some(WorkflowDefinition {
+                        entry: "main".into(),
+                        nodes: vec![NodeDefinition {
+                            name: "main".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    launched_as: ExecutionTreeLaunch::Workflow,
+                })),
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&first, attach("first-agent")),
+        (&first, NodeFact::RetryRequested),
+        (
+            &next,
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&next, attach("next-agent")),
+    ] {
+        append_single_fact(&archive.store, meta, &fact, 1000)
+            .await
+            .unwrap();
+    }
     let connection =
         rusqlite::Connection::open(archive.directory.path().join("local-event-store.sqlite3"))
             .unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken' AND event_type = 'session_attached'", []).unwrap();
     connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'unrelated' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", []).unwrap();
     let panes = PaneLayout::pane(
         "pane".into(),
         [
+            public,
+            first.node_execution_id.as_str(),
             ready_node.as_str(),
             broken_node.as_str(),
             "missing",
             "broken-root",
+            broken_root_alias.as_str(),
             "00000000-0000-4000-8000-000000002063",
         ]
         .into_iter()
@@ -1765,12 +1856,15 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         panic!("Missing workspace state")
     };
     let mut expected = state;
-    expected
-        .panes
-        .as_mut()
-        .unwrap()
-        .resolve_legacy_sessions(&[(ready_node, "ready".into())].into());
+    expected.panes.as_mut().unwrap().resolve_legacy_sessions(
+        &[
+            (ready_node, "ready".into()),
+            (public.into(), "next-agent".into()),
+            (first.node_execution_id.clone(), "first-agent".into()),
+        ]
+        .into(),
+    );
     assert_eq!(actual, expected);
-    assert_eq!(failures.len(), 2);
+    assert_eq!(failures.len(), 3);
     assert!(!failures[0].message.is_empty());
 }

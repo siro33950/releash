@@ -328,4 +328,90 @@ final class SessionTabPaneTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_準備中の会話タブ_操作応答と通知の順序によらず同じ配置を購読し保存する() async throws {
+    for history in [false, true] {
+      for notificationFirst in [false, true] {
+        // Given
+        let http = TestHTTPClient()
+        var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
+        detail.id = "session-tree"
+        detail.nodeExecutionID = "internal-session-node"
+        detail.content.session = Releash_Client_V1_WorkspaceSessionNodeContentDto()
+        var snapshot = Releash_Client_V1_SessionTabSnapshot()
+        snapshot.session.id = "agent-session"
+        snapshot.session.availability = .open
+        snapshot.session.workspaceWorktreePath = "/repo"
+        snapshot.node.title = "Ready"
+        http.state.withLock {
+          $0.nodeDetails["session-tree"] = detail
+          $0.sessionTabs["agent-session"] = snapshot
+        }
+        var archived = Releash_Client_V1_AgentSessionItemDto()
+        archived.id = "agent-session"
+        archived.provider.value = .codex
+        archived.providerSessionID = "history"
+        var worktree = Releash_Client_V1_WorkspaceWorktreeList()
+        worktree.path = "/repo"
+        worktree.snapshot.archivedSessions.items = [archived]
+        var repository = Releash_Client_V1_WorkspaceRepositoryList()
+        repository.path = "/repo"
+        repository.worktrees.items = [worktree]
+        http.state.withLock { $0.repositories = [repository] }
+        let model = try await testModel(http)
+        model.selectWorktree("/repo")
+        try await eventually { model.layoutLoaded }
+        var root = Releash_Client_V1_WorkspaceTreeItem()
+        root.node.id = "session-tree"
+        root.node.contentKind.value = .session
+        model.openRoot(root)
+        let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
+        let observer = TabCreationObserver()
+        model.panes.controller.delegate = observer
+        let host = await ViewHarness(WorkspacePaneView(model: model))
+        try await eventuallyView(host) { host.texts().contains("Sessionを準備しています") }
+        detail.content.session.sessionID = "agent-session"
+        var payload = Releash_Client_V1_StatePayload()
+        payload.nodeDetail.value = detail
+        // When
+        if notificationFirst {
+          try http.publish(payload, target: "node-detail")
+          try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
+        }
+        if history {
+          let historyHost = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
+          try await eventuallyView(historyHost) { historyHost.element("Codex · history") != nil }
+          try await historyHost.press("Codex · history")
+          try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
+          historyHost.close()
+        } else {
+          try await model.startSession(provider: "codex", path: "/repo")
+        }
+        try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
+        if !notificationFirst { try http.publish(payload, target: "node-detail") }
+        // Then
+        XCTAssertEqual(observer.created, 0)
+        XCTAssertEqual(model.panes.controller.allTabIds, [tab])
+        XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent-session")
+        XCTAssertNil(try model.panes.layout().tabs.first?.nodeID)
+        try await eventually {
+          guard let data = http.requests("SaveWorkspaceState").last?.message,
+            let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data)
+          else { return false }
+          return (try? PaneLayout(saved.state.paneLayout).tabs.first?.agentSessionID)
+            == "agent-session"
+        }
+        host.close()
+        await model.stop()
+      }
+    }
+  }
+}
+
+@MainActor private final class TabCreationObserver: @preconcurrency BonsplitDelegate {
+  var created = 0
+  func splitTabBar(
+    _ controller: BonsplitController, didCreateTab tab: Bonsplit.Tab, inPane pane: PaneID
+  ) {
+    created += 1
+  }
 }
