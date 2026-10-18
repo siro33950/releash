@@ -481,11 +481,14 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         );
         let visible = Arc::new(AtomicBool::new(false));
         let observed = visible.clone();
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut deadline = None;
         app.run_return(move |app, event| {
+            if matches!(event, tauri::RunEvent::Ready) {
+                deadline = Some(std::time::Instant::now() + Duration::from_secs(3));
+            }
             if matches!(event, tauri::RunEvent::MainEventsCleared) {
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    std::time::Instant::now() < deadline.expect("Ready が通知されていません"),
                     "通常窓への置き換えが完了しませんでした"
                 );
                 if let Some(main) = app.get_webview_window("main") {

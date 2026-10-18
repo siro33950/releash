@@ -503,14 +503,23 @@ final class SessionTabPaneTests: XCTestCase {
       model.selectWorktree("/repo")
       try await eventually { model.layoutLoaded }
       model.openNode(.session, id: "agent", title: "Session")
+      let host = await ViewHarness(WorkspacePaneView(model: model))
+      try await eventuallyView(host) {
+        host.element("terminal:agent") != nil && model.pendingSaves["/repo"] == nil
+      }
       let existing = try XCTUnwrap(model.panes.controller.allTabIds.first)
       let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
       let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
-      let host = await ViewHarness(WorkspacePaneView(model: model))
-      try await eventuallyView(host) { host.element("terminal:agent") != nil }
+      try await eventuallyView(host) {
+        host.element("terminal:agent") != nil
+          && model.terminalAttachment(path: "/repo", id: "agent", agent: true) != nil
+          && model.layout == (try? model.panes.layout()) && model.pendingSaves["/repo"] == nil
+      }
+      XCTAssertEqual(model.panes.controller.allPaneIds, [first, second])
       let attachment = try XCTUnwrap(
         model.terminalAttachment(path: "/repo", id: "agent", agent: true))
       model.panes.controller.focusPane(second)
+      XCTAssertEqual(model.panes.controller.focusedPaneId, second)
       var root = Releash_Client_V1_WorkspaceTreeItem()
       root.node.id = "node"
       root.node.contentKind.value = .session
@@ -550,6 +559,7 @@ final class SessionTabPaneTests: XCTestCase {
       // Then
       try await eventuallyView(host) { host.element("terminal:agent") != nil }
       XCTAssertEqual(model.panes.controller.allTabIds, [existing])
+      XCTAssertEqual(model.panes.controller.allPaneIds, [first, second])
       XCTAssertEqual(model.panes.controller.focusedPaneId, first)
       XCTAssertEqual(model.panes.controller.selectedTab(inPane: first)?.id, existing)
       XCTAssertEqual(http.requests("OpenAgentSession").count, opens)
