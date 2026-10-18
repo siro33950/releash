@@ -4,7 +4,8 @@ options:
     macOS: '15.0'
 packages:
   Bonsplit:
-    path: Packages/Bonsplit
+    url: https://github.com/siro33950/bonsplit
+    revision: 9a3913b395f0375c677612aab8bbad55a945a70c
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.99.0

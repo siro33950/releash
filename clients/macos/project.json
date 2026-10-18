@@ -174,7 +174,6 @@
         "commands": [
           "pnpm --dir FileViewer install --frozen-lockfile",
           "pnpm --dir FileViewer test",
-          "swift test --package-path Packages/Bonsplit",
           "xcodebuild -project Releash.xcodeproj -scheme ReleashUnitTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-unit -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
         ],
         "cwd": "clients/macos",
