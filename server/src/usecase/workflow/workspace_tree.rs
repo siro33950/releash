@@ -217,35 +217,31 @@ impl WorkflowUsecase {
     pub async fn get_session_node_detail(
         &self,
         session: &crate::usecase::agent_session::AgentSessionItemDto,
-    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
-        let Some(mut read) = self
-            .workspace_query
-            .session_node_detail(
-                &WorkspaceIdentity::new(session.workspace_worktree_path.clone()),
+    ) -> Result<Option<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>, WorkflowError>
+    {
+        let Some(mut tree) = self
+            .workspace_nodes
+            .load_execution_tree(
+                &WorkspaceIdentity::new(session.workspace_identity.clone()),
                 &session.tree_location.tree_id,
-                &session.tree_location.node_execution_id,
             )
             .await?
         else {
             return Ok(None);
         };
-        for (target, message) in self.failure_observations(read.classification.iter().cloned()) {
-            for node in &mut read.classification {
-                if let Some(reason) = node.observe_background_failure(&target, &message) {
-                    if node.id == read.detail.id {
-                        read.detail.error_reason = Some(reason.into());
-                    }
-                }
-            }
-        }
-        read.detail.classification =
-            crate::domain::workspace_tree::WorkspaceNodeClassification::aggregate(
-                &read.classification,
-                &read.detail.id,
-            )
-            .as_public_str()
-            .into();
-        Ok(Some(read.detail))
+        self.observe_failures(&mut tree);
+        Ok(tree
+            .session_node(&session.id)
+            .filter(|node| {
+                node.node_execution_id.as_deref()
+                    == Some(session.tree_location.node_execution_id.as_str())
+            })
+            .map(|node| {
+                let can_abort = tree.nodes().iter().any(|owner| {
+                    Some(owner.id.as_str()) == node.execution_id.as_deref() && owner.can_abort
+                });
+                (node.clone(), can_abort)
+            }))
     }
 
     pub(crate) async fn get_workspace_node_artifact(

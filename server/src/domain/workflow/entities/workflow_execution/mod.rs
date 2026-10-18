@@ -1421,14 +1421,13 @@ impl ExecutionTree {
         let item_count = scope
             .fanout()
             .map(|fanout| fanout.items.as_ref().map_or(1, Vec::len));
-        let children = self.scope_children(scope_id);
-        let route = workflow_transition::advance_composite(
+        let route = self.advance_composite(
+            scope_id,
             workflow,
             node,
             completed_child,
             &counts,
             item_count,
-            &children,
         )?;
         match route {
             Some(workflow_routing::RouteDecision::TransitionTo(next)) => {
@@ -1454,31 +1453,6 @@ impl ExecutionTree {
             None => {}
         }
         Ok(())
-    }
-
-    fn scope_children(&self, scope_id: &str) -> Vec<workflow_transition::ScopeChild<'_>> {
-        self.runtime
-            .node_executions
-            .iter()
-            .filter(|child| {
-                child
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.parent_id == scope_id)
-            })
-            .map(|child| workflow_transition::ScopeChild {
-                id: &child.id,
-                name: &child.node_name,
-                parent: child.parent.as_ref(),
-                predecessor: self
-                    .runtime
-                    .retry_predecessors
-                    .get(&child.id)
-                    .map(String::as_str),
-                status: child.status,
-                artifact: child.artifact.as_ref(),
-            })
-            .collect()
     }
 
     /// 合成子インスタンスの既定完了条件成立後の処遇。
@@ -1517,9 +1491,8 @@ impl ExecutionTree {
                 )
             })?
             .status;
-        let children = self.scope_children(scope_id);
         let Some((status, artifact_value)) =
-            workflow_transition::finish_composite(&node, status, approved, item_count, &children)?
+            self.finish_composite(scope_id, &node, status, approved, item_count)?
         else {
             return Ok(());
         };
@@ -1587,13 +1560,11 @@ impl ExecutionTree {
             .scopes
             .retain(|active| active.node_execution_id != scope_id);
 
-        match workflow_transition::completion_parent(scope.parent_scope_id.as_deref(), |id| {
-            self.is_delegate_parent(id)
-        }) {
-            workflow_transition::CompletionParent::Delegate(parent_id) => {
+        match self.completion_parent(scope.parent_scope_id.as_deref()) {
+            scope::CompletionParent::Delegate(parent_id) => {
                 return self.settle_delegate_child(parent_id, scope_id, effects, timestamp)
             }
-            workflow_transition::CompletionParent::Root => {
+            scope::CompletionParent::Root => {
                 let _ = self.complete();
                 effects.emit(WorkflowEvent::ExecutionCompleted {
                     execution_id: self.runtime.id.clone(),
@@ -1605,7 +1576,7 @@ impl ExecutionTree {
                 });
                 self.runtime.updated_at = timestamp;
             }
-            workflow_transition::CompletionParent::Scope(parent_scope_id) => {
+            scope::CompletionParent::Scope(parent_scope_id) => {
                 self.record_child_result_in_scope(
                     parent_scope_id,
                     scope_id,
@@ -1734,13 +1705,11 @@ impl ExecutionTree {
             fanout_children: None,
             state: crate::domain::workflow::NODE_STATUS_COMPLETED.to_string(),
         });
-        match workflow_transition::completion_parent(parent_scope_id.as_deref(), |id| {
-            self.is_delegate_parent(id)
-        }) {
-            workflow_transition::CompletionParent::Delegate(parent_id) => {
+        match self.completion_parent(parent_scope_id.as_deref()) {
+            scope::CompletionParent::Delegate(parent_id) => {
                 return self.settle_delegate_child(parent_id, node_execution_id, effects, timestamp)
             }
-            workflow_transition::CompletionParent::Root => {
+            scope::CompletionParent::Root => {
                 // 単独実行の root leaf: workflow 完了。
                 let _ = self.complete();
                 effects.emit(WorkflowEvent::ExecutionCompleted {
@@ -1753,7 +1722,7 @@ impl ExecutionTree {
                 });
                 self.runtime.updated_at = timestamp;
             }
-            workflow_transition::CompletionParent::Scope(scope_id) => {
+            scope::CompletionParent::Scope(scope_id) => {
                 self.record_child_result_in_scope(
                     scope_id,
                     node_execution_id,
@@ -2400,11 +2369,9 @@ impl ExecutionTree {
         if execution.node_name != node_name {
             return TransitionOutcome::Rejected(TransitionRejection::ArtifactNotAccepted);
         }
-        if !workflow_transition::artifact_changes_execution(
-            self.is_delegate_parent(node_execution_id),
-            execution.artifact.as_ref(),
-            &value,
-        ) {
+        if !self.is_delegate_parent(node_execution_id)
+            && execution.artifact.as_ref() == Some(&value)
+        {
             return TransitionOutcome::AlreadyApplied;
         }
         if execution.kind.is_composite_kind() {
@@ -2784,13 +2751,28 @@ impl ExecutionTree {
         {
             return NodeCompletionHandshakeDecision::AwaitingSignal;
         }
-        workflow_transition::decide_session_completion(
-            execution.completion_signals,
-            self.runtime.workflow.is_none()
-                && self.runtime.launched_as == ExecutionTreeLaunch::Session
-                && execution.kind == NodeKindName::Session,
-            self.node_definition(&execution.node_name),
-        )
+        if !execution.completion_signals.is_ready() {
+            return NodeCompletionHandshakeDecision::AwaitingSignal;
+        }
+        if self.runtime.workflow.is_none()
+            && self.runtime.launched_as == ExecutionTreeLaunch::Session
+            && execution.kind == NodeKindName::Session
+        {
+            return NodeCompletionHandshakeDecision::CompleteAuto;
+        }
+        match self
+            .node_definition(&execution.node_name)
+            .filter(|node| node.is_session())
+            .map(workflow_transition::decide_completion_disposition)
+        {
+            Some(workflow_transition::CompletionDisposition::Complete) => {
+                NodeCompletionHandshakeDecision::CompleteAuto
+            }
+            Some(workflow_transition::CompletionDisposition::RequestApproval) => {
+                NodeCompletionHandshakeDecision::RequestApproval
+            }
+            None => NodeCompletionHandshakeDecision::NotApplicable,
+        }
     }
 
     pub fn apply_node_completion_handshake(
@@ -3432,11 +3414,11 @@ impl ExecutionTree {
                     }
                 };
                 let items = items.map_err(|error| error.to_string())?;
-                if workflow_transition::is_empty_isolated_fanout(
-                    items.as_ref().map(Vec::len),
-                    self.node_execution(node_execution_id)
-                        .is_some_and(|node| node.worktree.is_some()),
-                ) {
+                if items.as_ref().is_some_and(Vec::is_empty)
+                    && self
+                        .node_execution(node_execution_id)
+                        .is_some_and(|node| node.worktree.is_some())
+                {
                     self.pending_empty_fanout = Some(node_execution_id.to_string());
                 }
                 if let Some(fanout) = self

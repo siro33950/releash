@@ -164,27 +164,6 @@ pub struct WorkspaceTreeNode {
     pub dynamic_fanout: bool,
 }
 
-pub(crate) fn node_updated_at(
-    started_at: f64,
-    completed_at: Option<f64>,
-    status: crate::domain::workflow::NodeExecutionStatus,
-    has_artifact: bool,
-    execution_updated_at: f64,
-) -> f64 {
-    f64::from_bits(
-        NodeTimestampObservation::snapshot(
-            started_at,
-            completed_at,
-            status,
-            has_artifact,
-            execution_updated_at,
-        )
-        .fold(started_at.to_bits(), |current, observation| {
-            observation.apply(current)
-        }),
-    )
-}
-
 pub(crate) fn node_failure_reason(
     reason: Option<&str>,
     command_result: Option<&WorkspaceCommandResult>,
@@ -396,11 +375,8 @@ impl std::error::Error for WorkspaceTreeError {}
 
 impl WorkspaceTreeNode {
     pub(super) fn observe_background_failure(&mut self, message: &str) {
-        let mut classification = self.classification_input();
-        if let Some(reason) = classification.observe_background_failure(&self.id, message) {
-            self.error_reason = Some(reason.into());
-        }
-        self.background_failure = classification.background_failure;
+        self.error_reason = Some(message.into());
+        self.background_failure = true;
         self.status_classification = self.classify_status([]);
     }
 }
@@ -427,18 +403,6 @@ pub(crate) struct WorkspaceNodeClassification {
 }
 
 impl WorkspaceNodeClassification {
-    pub(crate) fn observe_background_failure<'a>(
-        &mut self,
-        target: &str,
-        message: &'a str,
-    ) -> Option<&'a str> {
-        if !self.observes(target) {
-            return None;
-        }
-        self.background_failure = true;
-        Some(message)
-    }
-
     pub(crate) fn classify(
         &self,
         children: impl IntoIterator<Item = WorkspaceNodeStatusClassification>,
@@ -495,22 +459,6 @@ impl WorkspaceNodeClassification {
             .chain(children)
             .fold(C::Idle, C::most_severe)
     }
-    pub(crate) fn observes(&self, target: &str) -> bool {
-        observes_node(
-            &self.id,
-            self.execution_id.as_deref(),
-            self.node_execution_id.as_deref(),
-            target,
-        )
-    }
-
-    pub(crate) fn aggregate(nodes: &[Self], id: &str) -> WorkspaceNodeStatusClassification {
-        Self::aggregate_all(nodes)
-            .get(id)
-            .copied()
-            .unwrap_or(WorkspaceNodeStatusClassification::Idle)
-    }
-
     pub(crate) fn aggregate_all(
         nodes: &[Self],
     ) -> std::collections::HashMap<String, WorkspaceNodeStatusClassification> {

@@ -271,3 +271,80 @@ fn test_node詳細の転送_分類と実行識別とmodelと過去の試行の�
     assert_eq!(attempt.updated_at, Some(123.5));
     assert_eq!(attempt.error_reason.as_deref(), Some("Failed review"));
 }
+
+#[test]
+fn test_session詳細の転送_ドメインの状態と操作可否を既存の形式で配る() {
+    use crate::domain::workflow::{NodeCompletionSignalState as S, NodeProcessPresence};
+    use crate::domain::workspace_tree::{
+        WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
+        WorkspaceTreeNode,
+    };
+    // Given
+    let node = WorkspaceTreeNode {
+        id: "node".into(),
+        title: "Review".into(),
+        parent_id: Some("execution".into()),
+        sibling_order: 0,
+        kind: WorkspaceNodeKind::WorkflowSession,
+        status: WorkspaceNodeStatus::Waiting,
+        process_presence: NodeProcessPresence::ConfirmedAbsent,
+        status_classification: WorkspaceNodeStatusClassification::Attention,
+        delegate_waits_for_child: false,
+        background_failure: false,
+        activity: None,
+        error_reason: Some("needs attention".into()),
+        updated_at_bits: 124.0_f64.to_bits(),
+        execution_id: Some("execution".into()),
+        node_execution_id: Some("visit".into()),
+        node_name: Some("review".into()),
+        attempt: Some(2),
+        execution_parent: None,
+        retry_predecessor_id: None,
+        past_attempt_ids: vec!["previous".into()],
+        is_retry_history: false,
+        completion_signals: S::Pending,
+        has_artifact: true,
+        session_id: Some("session".into()),
+        model: Some("test-model".into()),
+        provider: None,
+        can_rename: true,
+        can_approve: true,
+        can_retry: false,
+        can_resume_session: true,
+        can_abort: false,
+        can_archive: false,
+        display_command: None,
+        shell: None,
+        cwd: None,
+        command_result: None,
+        worktree: None,
+        dynamic_fanout: false,
+    };
+    for (signals, submit, stop, waiting) in [
+        (S::Pending, false, false, None),
+        (S::SubmitReceived, true, false, Some("stop")),
+        (S::StopReceived, false, true, Some("submit")),
+        (S::Ready, true, true, None),
+    ] {
+        let mut node = node.clone();
+        node.completion_signals = signals;
+        // When
+        let message = wire::WorkspaceNodeDetailDto::try_from((node, true)).unwrap();
+        let actual =
+            wire::from_message("releash.client.v1.WorkspaceNodeDetailDto", &message).unwrap();
+        // Then
+        let mut expected = serde_json::json!({
+            "id": "node", "title": "Review", "classification": "attention", "status": "waiting",
+            "processPresence": "confirmed_absent", "nodeExecutionId": "visit", "nodeName": "review",
+            "model": "test-model", "pastAttempts": [], "executionId": "execution", "canAbort": true,
+            "submitReceived": submit, "stopReceived": stop,
+            "hasArtifact": true, "errorReason": "needs attention", "updatedAt": 124.0,
+            "capabilities": {"canRename": true, "canApprove": true, "canRetry": false, "canResumeSession": true},
+            "content": {"kind": "session", "sessionId": "session"}
+        });
+        if let Some(waiting) = waiting {
+            expected["waitingFor"] = waiting.into();
+        }
+        assert_eq!(actual, expected);
+    }
+}

@@ -42,9 +42,6 @@ pub mod daemon {
     pub use crate::usecase::daemon::DaemonUsecase;
 }
 pub mod persistence {
-    pub use crate::adaptor::gateway::local_event_store::node_events::{
-        projected_tree_after, read_subtrees,
-    };
     pub use crate::adaptor::gateway::workflow::fact_log::record_from_row;
 
     pub use crate::adaptor::gateway::app_data_gc::apply_canonical_runtime_owners;
@@ -1143,12 +1140,35 @@ pub mod workflow {
     pub use crate::usecase::workflow::workspace_tree::WorkspaceNodeContentDto;
 }
 pub mod workspace {
-    pub use crate::adaptor::gateway::workspace_tree::query_service::SessionReadPhase;
-    pub use crate::adaptor::gateway::workspace_tree::query_service::{
-        session_artifact_projection, SessionClock, SessionFactSource, StandaloneReferences,
-    };
-    pub use crate::domain::workflow::services::node_read::artifact_fields;
+    pub use crate::adaptor::gateway::workspace_tree::query_service::StandaloneReferences;
     pub use crate::domain::workspace_tree::entities::standalone_reference;
+
+    pub async fn session_detail(
+        repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
+        workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
+        tree_id: &str,
+        node_id: &str,
+    ) -> Result<
+        Option<crate::usecase::workflow::WorkspaceNodeDetailDto>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        let Some(tree) = repository.load_execution_tree(workspace, tree_id).await? else {
+            return Ok(None);
+        };
+        Ok(tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(node_id))
+            .map(|node| {
+                let can_abort = tree.nodes().iter().any(|owner| {
+                    Some(owner.id.as_str()) == node.execution_id.as_deref() && owner.can_abort
+                });
+                crate::adaptor::gateway::workspace_tree::query_service::node_detail(
+                    node.clone(),
+                    can_abort,
+                )
+            }))
+    }
 
     pub async fn node_for_execution(
         repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
@@ -1251,9 +1271,6 @@ pub mod wire {
 pub mod fixtures {
     pub use crate::adaptor::gateway::agent_session::test_helpers::FailingSearchPathSource as availability_FailingSearchPathSource;
     pub use crate::domain::workflow::services::test_helpers::session_attached;
-    pub use crate::domain::workflow::services::test_helpers::{
-        composite_dynamic_fanout_facts, stop_first_delegate_facts,
-    };
     pub use crate::usecase::repository_state::test_helpers::EmptyScanner as repository_state_EmptyScanner;
     pub use crate::usecase::test_helpers::Files as watcher_Files;
 

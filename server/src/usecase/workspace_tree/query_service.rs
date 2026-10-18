@@ -17,13 +17,6 @@ pub trait WorkspaceQueryService: Send + Sync {
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError>;
 
-    async fn session_node_detail(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        tree_id: &str,
-        node_execution_id: &str,
-    ) -> Result<Option<SessionNodeDetailDto>, WorkflowError>;
-
     async fn node_artifact(
         &self,
         node_execution_id: &str,
@@ -46,9 +39,4 @@ pub struct SessionNodeResolutionDto {
 pub struct SessionNodeResolutionFailureDto {
     pub reference_id: String,
     pub failure: crate::domain::failure::WorkFailure,
-}
-
-pub struct SessionNodeDetailDto {
-    pub detail: WorkspaceNodeDetailDto,
-    pub(crate) classification: Vec<crate::domain::workspace_tree::WorkspaceNodeClassification>,
 }

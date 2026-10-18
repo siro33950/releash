@@ -1,4 +1,5 @@
 use releashd::test_support::integration::workflow::AgentActivityObservedFact;
+use releashd::test_support::integration::workspace::session_detail;
 
 use releashd::test_support::integration::workflow::append_single_fact;
 use releashd::test_support::integration::workflow::fold_tree_from;
@@ -1552,9 +1553,15 @@ async fn delegate_parent_status_from_store(
     .unwrap()
     .unwrap();
     // When
-    use releashd::test_support::integration::workspace::WorkspaceQueryService;
-    let detail = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(repository)
-        .session_node_detail(&WorkspaceIdentity::new("/repo"), &parent.tree_id, &parent.node_execution_id).await.unwrap().unwrap().detail;
+    let detail = session_detail(
+        &*repository,
+        &WorkspaceIdentity::new("/repo"),
+        &parent.tree_id,
+        &parent.node_execution_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     // Then
     assert_eq!(
         detail.classification,
@@ -1589,6 +1596,73 @@ async fn standalone_session_store(
         .await
         .unwrap();
     (directory, store)
+}
+
+#[tokio::test]
+pub async fn test_実行木のid読取_一覧の復元を共有し別の木の破損から独立する() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let listed = repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .remove(0)
+        .unwrap();
+    let folds = tree_fold_count();
+    let unrelated = AgentSession::create(
+        "unrelated",
+        WorkspaceIdentity::new("/other"),
+        "/other",
+        ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root("unrelated").unwrap(),
+    )
+    .unwrap();
+    LocalAgentSessionRepository::new(store)
+        .create(unrelated, "create-unrelated")
+        .await
+        .unwrap();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE tree_id = 'unrelated' AND event_type = 'started'", []).unwrap();
+
+    // When
+    let actual = repository
+        .load_execution_tree(&workspace, "session")
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(
+        actual.session_node("session"),
+        listed.session_node("session")
+    );
+    assert_eq!(tree_fold_count(), folds);
+    assert!(repository
+        .load_execution_tree(&WorkspaceIdentity::new("/other"), "session")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repository
+        .load_execution_tree(&workspace, "missing")
+        .await
+        .unwrap()
+        .is_none());
+
+    // When: the same id and sequence now belong to a reconstructed root.
+    connection.execute("UPDATE node_events SET detail = json_set(detail, '$.root.workspaceIdentity', '/relocated') WHERE tree_id = 'session' AND event_type = 'started'", []).unwrap();
+    // Then
+    assert!(repository
+        .load_execution_tree(&workspace, "session")
+        .await
+        .unwrap()
+        .is_none());
+    let relocated = repository
+        .load_execution_tree(&WorkspaceIdentity::new("/relocated"), "session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(relocated.session_node("session").is_some());
 }
 
 fn standalone_session_meta(
@@ -1909,9 +1983,6 @@ pub async fn test_sessionタブ分類_delegateの次周回は前の子を保持�
     use releashd::test_support::integration::workflow::{
         ArtifactProducedFact, StartedFact, StopReceivedFact, SubmitReceivedFact,
     };
-    use releashd::test_support::integration::workspace::{
-        SqliteWorkspaceQueryService, WorkspaceQueryService,
-    };
     // Given
     for retry in [false, true] {
         let (_directory, store, parent, child) = delegate_fixture(
@@ -1993,16 +2064,15 @@ pub async fn test_sessionタブ分類_delegateの次周回は前の子を保持�
         .await
         .unwrap()
         .unwrap();
-        let detail = SqliteWorkspaceQueryService::with_repository(repository)
-            .session_node_detail(
-                &WorkspaceIdentity::new("/repo"),
-                &parent.tree_id,
-                &parent.node_execution_id,
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .detail;
+        let detail = session_detail(
+            &*repository,
+            &WorkspaceIdentity::new("/repo"),
+            &parent.tree_id,
+            &parent.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         // Then
         assert_eq!(
             detail.classification,
@@ -2021,9 +2091,6 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
         ArtifactProducedFact, ExecutionTreeLaunch, IsolatedWorktree, NodeFactMeta, Predicate,
         SessionAttachedFact, SessionDelegate, StartedFact, StopReceivedFact, SubmitReceivedFact,
         TreeRootFact,
-    };
-    use releashd::test_support::integration::workspace::{
-        SqliteWorkspaceQueryService, WorkspaceQueryService,
     };
     // Given
     for (fanout, count) in [(false, 1), (true, 0), (true, 1), (true, 2)] {
@@ -2179,7 +2246,7 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
                 .unwrap();
         }
         let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-        let query = SqliteWorkspaceQueryService::with_repository(repository.clone());
+
         for index in 0..count.max(1) {
             if count > 0 {
                 let child_parent = if fanout {
@@ -2217,12 +2284,11 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
                 }
             }
             // When
-            let detail = query
-                .session_node_detail(&WorkspaceIdentity::new("/repo"), tree, parent)
-                .await
-                .unwrap()
-                .unwrap()
-                .detail;
+            let detail =
+                session_detail(&*repository, &WorkspaceIdentity::new("/repo"), tree, parent)
+                    .await
+                    .unwrap()
+                    .unwrap();
             let list = releashd::test_support::integration::workspace::node_for_execution(
                 &*repository,
                 &WorkspaceIdentity::new("/repo"),

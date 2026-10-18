@@ -25,7 +25,7 @@ pub enum StateValue {
     AgentSession(Option<(AgentSessionItemDto, AgentSessionAvailability)>),
     SessionTab {
         session: Option<(AgentSessionItemDto, AgentSessionAvailability)>,
-        node: Option<Box<crate::usecase::workflow::WorkspaceNodeDetailDto>>,
+        node: Option<Box<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>>,
     },
     SessionHistory(AgentSessionHistoryPageDto),
     Providers(Vec<AgentSessionProviderDto>),

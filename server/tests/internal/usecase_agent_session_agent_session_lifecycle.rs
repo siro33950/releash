@@ -3555,6 +3555,17 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
         ) -> Result<Option<WorkspaceTreeNode>, LocalEventQueryError> {
             panic!("unexpected read")
         }
+        async fn load_execution_tree(
+            &self,
+            _: &releashd::test_support::integration::workspace::WorkspaceIdentity,
+            _: &str,
+        ) -> Result<
+            Option<releashd::test_support::integration::workspace::WorkspaceTree>,
+            releashd::test_support::integration::workflow::WorkflowError,
+        > {
+            Ok(None)
+        }
+
         async fn load_node_by_session_id(
             &self,
             workspace: &WorkspaceIdentity,

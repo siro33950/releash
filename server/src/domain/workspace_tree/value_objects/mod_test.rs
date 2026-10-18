@@ -454,7 +454,7 @@ fn test_部分木の状態分類_子の状態と失敗を反映し過去の試�
     ] {
         child.activity = Some(activity);
         assert_eq!(
-            WorkspaceNodeClassification::aggregate(&[parent.clone(), child.clone()], "parent"),
+            WorkspaceNodeClassification::aggregate_all(&[parent.clone(), child.clone()])["parent"],
             expected
         );
     }
@@ -463,65 +463,33 @@ fn test_部分木の状態分類_子の状態と失敗を反映し過去の試�
     child.background_failure = true;
     // Then
     assert_eq!(
-        WorkspaceNodeClassification::aggregate(&[parent.clone(), child.clone()], "parent"),
+        WorkspaceNodeClassification::aggregate_all(&[parent.clone(), child.clone()])["parent"],
         WorkspaceNodeStatusClassification::Attention
     );
     // When
     child.hidden = true;
     // Then
     assert_eq!(
-        WorkspaceNodeClassification::aggregate(&[parent, child], "parent"),
+        WorkspaceNodeClassification::aggregate_all(&[parent, child])["parent"],
         WorkspaceNodeStatusClassification::Idle
     );
 }
 
 #[test]
-fn test_node更新時刻_開始と成果と承認待ちと終端に共通の時刻規則を使う() {
-    use crate::domain::workflow::NodeExecutionStatus as S;
-    for (status, completed, artifact, expected) in [
-        (S::Running, None, false, 1.0),
-        (S::Running, None, true, 5.0),
-        (S::WaitingApproval, None, false, 5.0),
-        (S::Succeeded, Some(3.0), true, 3.0),
-        (S::Succeeded, None, false, 5.0),
-        (S::Aborted, Some(4.0), false, 4.0),
-    ] {
-        assert_eq!(
-            super::node_updated_at(1.0, completed, status, artifact, 5.0),
-            expected
-        );
-    }
-}
-
-#[test]
-fn test_背景失敗の観測_自身と実行の理由と分類を詳細入力と同じ操作で反映する() {
+fn test_背景失敗の観測_理由と分類を反映する() {
     // Given
-    for target in ["node", "node-execution", "workflow", "unrelated"] {
-        let mut listed = node(
-            WorkspaceNodeKind::WorkflowSession,
-            WorkspaceNodeStatus::Completed,
-        );
-        listed.error_reason = Some("existing".into());
-        let mut input = listed.classification_input();
-        let mut reason = listed.error_reason.clone();
-        // When
-        if let Some(observed) = input.observe_background_failure(target, "background") {
-            reason = Some(observed.into());
-        }
-        if input.observes(target) {
-            listed.observe_background_failure("background");
-        }
-        // Then
-        assert_eq!(input.background_failure, listed.background_failure);
-        assert_eq!(input.classify([]), listed.classify_status([]));
-        assert_eq!(reason, listed.error_reason);
-        assert_eq!(
-            reason.as_deref(),
-            Some(if target == "unrelated" {
-                "existing"
-            } else {
-                "background"
-            })
-        );
-    }
+    let mut target = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    );
+    target.error_reason = Some("existing".into());
+    // When
+    target.observe_background_failure("background");
+    // Then
+    assert!(target.background_failure);
+    assert_eq!(target.error_reason.as_deref(), Some("background"));
+    assert_eq!(
+        target.status_classification,
+        WorkspaceNodeStatusClassification::Attention
+    );
 }

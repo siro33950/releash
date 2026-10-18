@@ -2,39 +2,6 @@ pub(crate) mod tests {
     use super::super::*;
 
     #[test]
-    fn test_実行状態_終端なしと完了と中止を事実から区別する() {
-        use crate::domain::workflow::{
-            AbortRequestedFact, NodeFact, NodeFactMeta, NodeFactRecord, NodeKindName,
-        };
-        assert_eq!(
-            ExecutionStatus::from_terminal_fact(None),
-            ExecutionStatus::Running
-        );
-        for (fact, expected) in [
-            (NodeFact::ExecutionCompleted, ExecutionStatus::Completed),
-            (
-                NodeFact::AbortRequested(AbortRequestedFact::default()),
-                ExecutionStatus::Aborted,
-            ),
-        ] {
-            let record = NodeFactRecord {
-                seq: 1,
-                timestamp_ms: 1000,
-                meta: NodeFactMeta {
-                    tree_id: "tree".into(),
-                    node_execution_id: "node".into(),
-                    node_name: "main".into(),
-                    kind: NodeKindName::Session,
-                    parent_id: None,
-                    attempt: 1,
-                },
-                fact,
-            };
-            assert_eq!(ExecutionStatus::from_terminal_fact(Some(&record)), expected);
-        }
-    }
-
-    #[test]
     fn test_workflow状態_実行中と完了とabortの語彙と操作可否を保つ() {
         // Given / When / Then
         for (status, name, active) in [

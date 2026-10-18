@@ -1,15 +1,15 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct DelegateRuntime {
-    pub(crate) iterations: u32,
-    pub(crate) last_child: Option<String>,
-    pub(crate) previous_child: Option<String>,
-    pub(crate) phase: DelegatePhase,
+pub(super) struct DelegateRuntime {
+    pub(super) iterations: u32,
+    pub(super) last_child: Option<String>,
+    pub(super) previous_child: Option<String>,
+    pub(super) phase: DelegatePhase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) enum DelegatePhase {
+pub(super) enum DelegatePhase {
     #[default]
     AcceptingSubmission,
     StartChild,
@@ -19,25 +19,13 @@ pub(crate) enum DelegatePhase {
 }
 
 impl DelegateRuntime {
-    pub(crate) fn prepare_submission(&mut self, max: u32) -> bool {
-        if self.phase != DelegatePhase::AcceptingSubmission {
-            return false;
-        }
-        self.phase = if self.iterations >= max {
-            DelegatePhase::Complete
-        } else {
-            DelegatePhase::StartChild
-        };
-        true
-    }
-
-    pub(crate) fn submitted(&mut self, predicate: bool) {
+    pub(super) fn submitted(&mut self, predicate: bool) {
         if self.phase == DelegatePhase::StartChild && predicate {
             self.phase = DelegatePhase::Complete;
         }
     }
 
-    pub(crate) fn prepare_artifact(
+    pub(super) fn prepare_artifact(
         &mut self,
         delegate: &crate::domain::workflow::SessionDelegate,
         mut value: serde_json::Value,
@@ -54,11 +42,15 @@ impl DelegateRuntime {
             serde_json::Value::Null
         };
         value.as_object_mut()?.insert("child".into(), child);
-        self.prepare_submission(delegate.max_iterations);
+        self.phase = if self.iterations >= delegate.max_iterations {
+            DelegatePhase::Complete
+        } else {
+            DelegatePhase::StartChild
+        };
         Some(value)
     }
 
-    pub(crate) fn inherit_pending_result(
+    pub(super) fn inherit_pending_result(
         &self,
         artifact: Option<&serde_json::Value>,
         signals: NodeCompletionSignalState,
@@ -67,7 +59,7 @@ impl DelegateRuntime {
             .then(|| (self.clone(), artifact.cloned(), signals))
     }
 
-    pub(crate) fn settle_child(
+    pub(super) fn settle_child(
         &mut self,
         delegate: &crate::domain::workflow::SessionDelegate,
         child_id: &str,
@@ -95,26 +87,26 @@ impl DelegateRuntime {
         Ok(Some(artifact))
     }
 
-    pub(crate) fn child_started(&mut self, child: &str) {
+    pub(super) fn child_started(&mut self, child: &str) {
         self.iterations += 1;
         self.previous_child = self.last_child.take();
         self.last_child = Some(child.to_string());
         self.phase = DelegatePhase::WaitingChild;
     }
 
-    pub(crate) fn child_restarted(&mut self, child: &str) {
+    pub(super) fn child_restarted(&mut self, child: &str) {
         self.last_child = Some(child.to_string());
         self.phase = DelegatePhase::WaitingChild;
     }
 
-    pub(crate) fn has_pending_result(&self) -> bool {
+    pub(super) fn has_pending_result(&self) -> bool {
         matches!(
             self.phase,
             DelegatePhase::StartChild | DelegatePhase::WaitingChild | DelegatePhase::InjectResult
         )
     }
 
-    pub(crate) fn child_completed(&mut self, predicate: bool) {
+    pub(super) fn child_completed(&mut self, predicate: bool) {
         self.phase = if predicate {
             DelegatePhase::Complete
         } else {
@@ -122,7 +114,7 @@ impl DelegateRuntime {
         };
     }
 
-    pub(crate) fn pending_injection(
+    pub(super) fn pending_injection(
         &self,
         status: RuntimeNodeExecutionStatus,
         signals: NodeCompletionSignalState,
@@ -134,7 +126,7 @@ impl DelegateRuntime {
             .flatten()
     }
 
-    pub(crate) fn inject_result(
+    pub(super) fn inject_result(
         &mut self,
         child: &str,
         status: RuntimeNodeExecutionStatus,
@@ -143,16 +135,12 @@ impl DelegateRuntime {
         if self.pending_injection(status, *signals) != Some(child) {
             return false;
         }
-        *signals = self.injected();
+        self.phase = DelegatePhase::AcceptingSubmission;
+        *signals = NodeCompletionSignalState::Pending;
         true
     }
 
-    pub(crate) fn injected(&mut self) -> NodeCompletionSignalState {
-        self.phase = DelegatePhase::AcceptingSubmission;
-        NodeCompletionSignalState::Pending
-    }
-
-    pub(crate) fn handshake(
+    pub(super) fn handshake(
         &self,
         signals: NodeCompletionSignalState,
     ) -> Option<NodeCompletionHandshakeDecision> {
@@ -165,7 +153,7 @@ impl DelegateRuntime {
         }
     }
 
-    pub(crate) fn waits_for_child(&self) -> bool {
+    pub(super) fn waits_for_child(&self) -> bool {
         matches!(
             self.phase,
             DelegatePhase::WaitingChild | DelegatePhase::StartChild
@@ -173,7 +161,7 @@ impl DelegateRuntime {
     }
 }
 
-pub(crate) fn delegate_continuation<'a>(
+fn delegate_continuation<'a>(
     parent: &'a str,
     nodes: impl Iterator<Item = (&'a str, Option<&'a str>)>,
 ) -> &'a str {
@@ -222,7 +210,7 @@ impl<T: Clone + Eq + std::hash::Hash> DelegateContinuations<T> {
     }
 }
 
-pub(crate) fn delegate_predicate(
+fn delegate_predicate(
     delegate: &crate::domain::workflow::SessionDelegate,
     artifact: Option<&serde_json::Value>,
 ) -> bool {

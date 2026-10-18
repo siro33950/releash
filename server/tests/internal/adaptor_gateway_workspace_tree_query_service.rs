@@ -23,9 +23,7 @@ use releashd::test_support::integration::workspace::WorkspaceQueryService;
 use releashd::test_support::integration::workspace::WorkspaceTree;
 use releashd::test_support::integration::workspace::WorkspaceTreeRepository;
 use releashd::test_support::integration::workspace::WorkspaceVisibleNode;
-use releashd::test_support::integration::workspace::{
-    session_artifact_projection, SessionClock, SessionFactSource, StandaloneReferences,
-};
+use releashd::test_support::integration::workspace::{session_detail, StandaloneReferences};
 use std::sync::Arc;
 
 fn service(repository: &Arc<SqliteWorkspaceTreeRepository>) -> Arc<SqliteWorkspaceQueryService> {
@@ -1554,7 +1552,7 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
         .create(
             session_id,
             workspace.clone(),
-            "workspace-session-tab".into(),
+            "/repo/session-tab".into(),
             ProviderKind::Codex,
             AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
             "create-session-tab",
@@ -1562,7 +1560,7 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
         .await
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+
     use releashd::test_support::integration::sessions::{
         AgentSessionQueryService, LocalAgentSessionQueryService,
     };
@@ -1581,16 +1579,15 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
             .observe_activity(session_id, activity, &format!("observe-{expected}"))
             .await
             .unwrap();
-        let read = query
-            .session_node_detail(
-                &workspace,
-                &item.tree_location.tree_id,
-                &item.tree_location.node_execution_id,
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        let detail = read.detail;
+        let detail = session_detail(
+            &*repository,
+            &workspace,
+            &item.tree_location.tree_id,
+            &item.tree_location.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(detail.classification, expected);
         let tree = load_tree(&repository, &workspace).await;
         let visible = tree.visible();
@@ -1638,26 +1635,34 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
         .unwrap()
         .unwrap();
     // Then
-    assert_eq!(detail.classification, "attention");
-    assert!(query
-        .session_node_detail(
-            &WorkspaceIdentity::new("other-workspace"),
-            &item.tree_location.tree_id,
-            &item.tree_location.node_execution_id,
-        )
-        .await
-        .unwrap()
-        .is_none());
-    assert!(query
-        .session_node_detail(&workspace, "missing", &item.tree_location.node_execution_id,)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(query
-        .session_node_detail(&workspace, &item.tree_location.tree_id, "missing",)
-        .await
-        .unwrap()
-        .is_none());
+    assert_eq!(detail.0.status_classification.as_public_str(), "attention");
+    assert!(session_detail(
+        &*repository,
+        &WorkspaceIdentity::new("other-workspace"),
+        &item.tree_location.tree_id,
+        &item.tree_location.node_execution_id,
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert!(session_detail(
+        &*repository,
+        &workspace,
+        "missing",
+        &item.tree_location.node_execution_id,
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert!(session_detail(
+        &*repository,
+        &workspace,
+        &item.tree_location.tree_id,
+        "missing",
+    )
+    .await
+    .unwrap()
+    .is_none());
 }
 
 #[tokio::test]
@@ -1776,17 +1781,16 @@ pub async fn test_sessionタブ詳細_実行木と異なるrootの終端を子�
         let repository = SqliteWorkspaceTreeRepository::new(store.clone());
         let query = service(&repository);
         assert!(
-            query
-                .session_node_detail(
-                    &WorkspaceIdentity::new("/repo"),
-                    &parent.tree_id,
-                    &child.node_execution_id
-                )
-                .await
-                .unwrap()
-                .unwrap()
-                .detail
-                .can_abort
+            session_detail(
+                &*repository,
+                &WorkspaceIdentity::new("/repo"),
+                &parent.tree_id,
+                &child.node_execution_id
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .can_abort
         );
         // When
         append_single_fact(&store, &parent, &terminal, 9000)
@@ -1802,16 +1806,15 @@ pub async fn test_sessionタブ詳細_実行木と異なるrootの終端を子�
             .await
             .unwrap()
             .unwrap();
-            let detail = query
-                .session_node_detail(
-                    &WorkspaceIdentity::new("/repo"),
-                    &parent.tree_id,
-                    &meta.node_execution_id,
-                )
-                .await
-                .unwrap()
-                .unwrap()
-                .detail;
+            let detail = session_detail(
+                &*repository,
+                &WorkspaceIdentity::new("/repo"),
+                &parent.tree_id,
+                &meta.node_execution_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
             let listed_detail = query
                 .node_detail(&WorkspaceIdentity::new("/repo"), &list.id)
                 .await
@@ -1850,32 +1853,31 @@ pub async fn test_sessionタブ詳細_保存定義と異なる終了履歴を復
         )
         .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+
     // When / Then
-    assert!(query
-        .session_node_detail(
-            &WorkspaceIdentity::new("/repo"),
-            &parent.tree_id,
-            &child.node_execution_id
-        )
-        .await
-        .is_err());
+    assert!(session_detail(
+        &*repository,
+        &WorkspaceIdentity::new("/repo"),
+        &parent.tree_id,
+        &child.node_execution_id
+    )
+    .await
+    .is_err());
     // When
     append_single_fact(&store, &parent, &NodeFact::ExecutionCompleted, 9000)
         .await
         .unwrap();
     // Then
     for meta in [&parent, &child] {
-        let detail = query
-            .session_node_detail(
-                &WorkspaceIdentity::new("/repo"),
-                &parent.tree_id,
-                &meta.node_execution_id,
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .detail;
+        let detail = session_detail(
+            &*repository,
+            &WorkspaceIdentity::new("/repo"),
+            &parent.tree_id,
+            &meta.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let listed = releashd::test_support::integration::workspace::node_for_execution(
             &*repository,
             &WorkspaceIdentity::new("/repo"),
@@ -2109,15 +2111,15 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
                 continue;
             }
             // When
-            let read = query
-                .session_node_detail(
-                    &WorkspaceIdentity::new("/repo"),
-                    &target.tree_id,
-                    &target.node_execution_id,
-                )
-                .await
-                .unwrap()
-                .unwrap();
+            let read = session_detail(
+                &*repository,
+                &WorkspaceIdentity::new("/repo"),
+                &target.tree_id,
+                &target.node_execution_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
             let list = releashd::test_support::integration::workspace::node_for_execution(
                 &*repository,
                 &WorkspaceIdentity::new("/repo"),
@@ -2132,21 +2134,21 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
                 .unwrap()
                 .unwrap();
             // Then
-            assert_eq!(read.detail.status, listed_detail.status);
-            assert_eq!(read.detail.updated_at, listed_detail.updated_at);
-            assert_eq!(read.detail.error_reason, listed_detail.error_reason);
-            assert_eq!(read.detail.capabilities, listed_detail.capabilities);
-            assert_eq!(read.detail.submit_received, listed_detail.submit_received);
-            assert_eq!(read.detail.stop_received, listed_detail.stop_received);
+            assert_eq!(read.status, listed_detail.status);
+            assert_eq!(read.updated_at, listed_detail.updated_at);
+            assert_eq!(read.error_reason, listed_detail.error_reason);
+            assert_eq!(read.capabilities, listed_detail.capabilities);
+            assert_eq!(read.submit_received, listed_detail.submit_received);
+            assert_eq!(read.stop_received, listed_detail.stop_received);
             assert_eq!(
-                read.detail.classification,
+                read.classification,
                 list.status_classification.as_public_str()
             );
             if isolated {
-                assert_eq!(read.detail.status, "running");
+                assert_eq!(read.status, "running");
             } else {
                 assert_eq!(
-                    read.detail.classification,
+                    read.classification,
                     if index + 1 == boundary {
                         "active"
                     } else {
@@ -2258,7 +2260,7 @@ pub async fn test_session更新時刻_兄弟の受理済み操作を含め未受
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+
     let workspace = WorkspaceIdentity::new("/repo");
     for record in &records {
         append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
@@ -2267,12 +2269,10 @@ pub async fn test_session更新時刻_兄弟の受理済み操作を含め未受
         if record.seq < 8 {
             continue;
         }
-        let detail = query
-            .session_node_detail(&workspace, &record.meta.tree_id, "node-main")
+        let detail = session_detail(&*repository, &workspace, &record.meta.tree_id, "node-main")
             .await
             .unwrap()
-            .unwrap()
-            .detail;
+            .unwrap();
         let list = releashd::test_support::integration::workspace::node_for_execution(
             &*repository,
             &workspace,
@@ -2311,7 +2311,7 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+
     let workspace = WorkspaceIdentity::new("/repo");
     let tree = &records[0].meta.tree_id;
     let boundary = records.len() - 1;
@@ -2320,8 +2320,7 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
             .await
             .unwrap();
     }
-    let initial = query
-        .session_node_detail(&workspace, tree, "node-main")
+    let initial = session_detail(&*repository, &workspace, tree, "node-main")
         .await
         .unwrap()
         .unwrap();
@@ -2371,31 +2370,28 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
         .unwrap()
         .unwrap();
         connection.execute("UPDATE node_events SET detail = 'already consumed' WHERE tree_id = ?1 AND seq = ?2", rusqlite::params![tree, seq]).unwrap();
-        query
-            .session_node_detail(
-                &WorkspaceIdentity::new("/other"),
-                &other[0].meta.tree_id,
-                &other[0].meta.node_execution_id,
-            )
-            .await
-            .unwrap()
-            .unwrap();
+        session_detail(
+            &*repository,
+            &WorkspaceIdentity::new("/other"),
+            &other[0].meta.tree_id,
+            &other[0].meta.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let (first, second) = tokio::join!(
-            query.session_node_detail(&workspace, tree, "node-main"),
-            query.session_node_detail(&workspace, tree, "node-main"),
+            session_detail(&*repository, &workspace, tree, "node-main"),
+            session_detail(&*repository, &workspace, tree, "node-main"),
         );
-        let detail = first.unwrap().unwrap().detail;
-        assert_eq!(
-            detail.updated_at,
-            second.unwrap().unwrap().detail.updated_at
-        );
+        let detail = first.unwrap().unwrap();
+        assert_eq!(detail.updated_at, second.unwrap().unwrap().updated_at);
         assert_eq!(detail.updated_at, listed.updated_at());
         assert_eq!(
             detail.updated_at,
             if append {
                 records[boundary].timestamp_ms as f64 / 1000.0
             } else {
-                initial.detail.updated_at
+                initial.updated_at
             }
         );
         connection
@@ -2410,8 +2406,7 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
         .execute("DELETE FROM node_events WHERE tree_id = ?1", [tree])
         .unwrap();
     // Then
-    assert!(query
-        .session_node_detail(&workspace, tree, "node-main")
+    assert!(session_detail(&*repository, &workspace, tree, "node-main")
         .await
         .unwrap()
         .is_none());
@@ -2422,12 +2417,10 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
             .unwrap();
     }
     // Then
-    let detail = query
-        .session_node_detail(&workspace, tree, "node-main")
+    let detail = session_detail(&*repository, &workspace, tree, "node-main")
         .await
         .unwrap()
-        .unwrap()
-        .detail;
+        .unwrap();
     let listed = releashd::test_support::integration::workspace::node_for_execution(
         &*SqliteWorkspaceTreeRepository::new(store.clone()),
         &workspace,
@@ -2454,7 +2447,7 @@ pub async fn test_隔離sessionの成果再提出_受理済みworktree情報を�
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+
     let workspace = WorkspaceIdentity::new("/repo");
     for record in &records {
         // When
@@ -2464,16 +2457,15 @@ pub async fn test_隔離sessionの成果再提出_受理済みworktree情報を�
         if record.seq < 4 {
             continue;
         }
-        let detail = query
-            .session_node_detail(
-                &workspace,
-                &record.meta.tree_id,
-                &record.meta.node_execution_id,
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .detail;
+        let detail = session_detail(
+            &*repository,
+            &workspace,
+            &record.meta.tree_id,
+            &record.meta.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let listed = releashd::test_support::integration::workspace::node_for_execution(
             &*repository,
             &workspace,
@@ -2513,214 +2505,6 @@ fn fact_connection(
         node_events::append_node_event(&connection, &pending.row, pending.timestamp_ms).unwrap();
     }
     connection
-}
-
-#[test]
-pub fn test_成果取得境界_技術的失敗を破損へ変換せず復号不能な事実は拒否する() {
-    use releashd::test_support::integration::persistence::ReadFailure;
-    use releashd::test_support::integration::platform::LocalEventQueryError;
-    use releashd::test_support::integration::workflow::NodeFact;
-    // Given
-    let records = releashd::test_support::integration::workflow::session_timestamp_facts();
-    let connection = fact_connection(&records);
-    let NodeFact::Started(started) = &records[0].fact else {
-        panic!("root")
-    };
-    let root = started.root.as_deref().unwrap();
-    let selection = session_artifact_projection(
-        releashd::test_support::integration::workspace::artifact_fields(root),
-    );
-    let retries = Default::default();
-    let mut terminal = records.last().unwrap().clone();
-    terminal.fact = NodeFact::ExecutionCompleted;
-    let source = SessionFactSource {
-        connection: &connection,
-        tree: &records[0].meta.tree_id,
-        root,
-        selection: &selection,
-        terminal: Some(&terminal),
-        retries: &retries,
-    };
-    let seqs = records
-        .iter()
-        .filter(|record| matches!(record.fact, NodeFact::ArtifactProduced(_)))
-        .map(|record| record.seq)
-        .collect();
-    for code in [
-        rusqlite::ffi::SQLITE_BUSY,
-        rusqlite::ffi::SQLITE_LOCKED,
-        rusqlite::ffi::SQLITE_IOERR,
-    ] {
-        // When
-        let error = ReadFailure::Sqlite(code)
-            .run(&connection, |_| source.artifact_values(&seqs))
-            .unwrap_err();
-        // Then
-        if code == rusqlite::ffi::SQLITE_IOERR {
-            assert!(matches!(
-                error,
-                LocalEventQueryError::StorageAccessRequired { .. }
-            ));
-        } else {
-            assert!(matches!(error, LocalEventQueryError::QueryBusy));
-        }
-    }
-    // When
-    connection.execute("UPDATE node_events SET detail = '{\"value\":{},\"contract\":123}' WHERE event_type = 'artifact_produced'", []).unwrap();
-    let mut clock = SessionClock::default();
-    let row = releashd::test_support::integration::persistence::first_row_of_tree(
-        &connection,
-        source.tree,
-    )
-    .unwrap()
-    .unwrap();
-    let error = source.execution_updated_at(&mut clock, &row).unwrap_err();
-    // Then
-    assert!(matches!(error, LocalEventQueryError::Corrupt { .. }));
-    assert_eq!(clock.progress().0, 0);
-}
-
-#[test]
-pub fn test_投影付き読取_部分木と差分の両入口で列順と必要項目を保つ() {
-    use releashd::test_support::integration::persistence as node_events;
-    use releashd::test_support::integration::workflow::NodeFact;
-    // Given
-    let records = releashd::test_support::integration::workflow::delegated_routing_facts(true);
-    let connection = fact_connection(&records);
-    let NodeFact::Started(started) = &records[0].fact else {
-        panic!("root")
-    };
-    let root = started.root.as_deref().unwrap();
-    let selection = session_artifact_projection(
-        releashd::test_support::integration::workspace::artifact_fields(root),
-    );
-    let tree = &records[0].meta.tree_id;
-    // When
-    let subtree = node_events::read_subtrees(
-        &connection,
-        tree,
-        &[records[0].meta.node_execution_id.clone()],
-        &selection.0,
-        &selection.1,
-        |row| row,
-    )
-    .unwrap();
-    let delta = node_events::projected_tree_after(
-        &connection,
-        tree,
-        0,
-        &selection.0,
-        &selection.1,
-        |row| row,
-    )
-    .unwrap();
-    // Then
-    assert_eq!(subtree, delta);
-    assert_eq!(delta.len(), records.len());
-    for (row, original) in delta.iter().zip(&records) {
-        let decoded = node_events::record_from_row(row).unwrap().unwrap();
-        assert_eq!(decoded.meta, original.meta);
-        assert_eq!(decoded.timestamp_ms, original.timestamp_ms);
-        if let NodeFact::ArtifactProduced(artifact) = decoded.fact {
-            assert!(!artifact.value.to_string().contains("private"));
-            if row.node_name == "maker" {
-                assert_eq!(artifact.value["verdict"], "READY");
-            }
-        }
-    }
-}
-
-#[test]
-pub fn test_時刻要約_定義の回復を全件投影と共有し終端後は判定状態を解放する() {
-    use releashd::test_support::integration::workflow::{NodeFact, NodeKind};
-    use releashd::test_support::integration::{persistence as node_events, workflow as fact_log};
-    // Given
-    for broken in [false, true] {
-        for terminal in [false, true] {
-            let mut records =
-                releashd::test_support::integration::workflow::sibling_sequence_timestamp_facts();
-            if broken {
-                let NodeFact::Started(started) = &mut records[0].fact else {
-                    panic!("root")
-                };
-                started
-                    .root
-                    .as_mut()
-                    .unwrap()
-                    .definition
-                    .as_mut()
-                    .unwrap()
-                    .nodes
-                    .iter_mut()
-                    .find(|node| node.name == "side")
-                    .unwrap()
-                    .kind = NodeKind::Session(Default::default());
-            }
-            if terminal {
-                let mut end = records.last().unwrap().clone();
-                end.seq += 1;
-                end.timestamp_ms += 1000;
-                end.fact = NodeFact::ExecutionCompleted;
-                records.push(end);
-            }
-            let connection = fact_connection(&records);
-            let NodeFact::Started(started) = &records[0].fact else {
-                panic!("root")
-            };
-            let root = started.root.as_deref().unwrap();
-            let selection = session_artifact_projection(
-                releashd::test_support::integration::workspace::artifact_fields(root),
-            );
-            let retries = std::collections::HashMap::new();
-            let source = SessionFactSource {
-                connection: &connection,
-                tree: &records[0].meta.tree_id,
-                root,
-                selection: &selection,
-                terminal: terminal.then(|| records.last().unwrap()),
-                retries: &retries,
-            };
-            let root_row = node_events::first_row_of_tree(&connection, source.tree)
-                .unwrap()
-                .unwrap();
-            let mut clock = SessionClock::default();
-            // When
-            let all = source.projected_timestamp(&[records[0].meta.node_execution_id.clone()]);
-            let delta = source.execution_updated_at(&mut clock, &root_row);
-            // Then
-            if broken && !terminal {
-                assert!(all.is_err());
-                assert!(delta.is_err());
-                continue;
-            }
-            let expected = all.unwrap();
-            assert_eq!(delta.unwrap(), expected);
-            assert_eq!(clock.progress().0, records.last().unwrap().seq);
-            assert_eq!(clock.progress().1.is_none(), terminal);
-            if terminal {
-                let last = records.last().unwrap();
-                let pending = fact_log::pending_single_fact(
-                    &last.meta,
-                    &NodeFact::ApprovalGranted(
-                        releashd::test_support::integration::workflow::ApprovalGrantedFact {
-                            comment: None,
-                        },
-                    ),
-                    last.timestamp_ms + 1000,
-                )
-                .unwrap();
-                node_events::append_node_event(&connection, &pending.row, pending.timestamp_ms)
-                    .unwrap();
-                // When / Then
-                assert_eq!(
-                    source.execution_updated_at(&mut clock, &root_row).unwrap(),
-                    expected
-                );
-                assert_eq!(clock.progress().0, last.seq + 1);
-                assert!(clock.progress().1.is_none());
-            }
-        }
-    }
 }
 
 #[test]
@@ -2767,124 +2551,6 @@ pub fn test_単独会話の別名索引_未変更の開始を再解析せず追�
     index.update(&connection).unwrap();
     // Then
     assert_eq!(index.owner(&alias).unwrap(), "session");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-pub async fn test_session時刻の並行照会_スナップショットより前に木を排他し追記後も進行位置を戻さない(
-) {
-    use releashd::test_support::integration::workflow::{
-        append_single_fact, sibling_sequence_timestamp_facts,
-    };
-    use releashd::test_support::integration::workspace::SessionReadPhase;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc,
-    };
-    use std::time::Duration;
-    // Given
-    let records = sibling_sequence_timestamp_facts();
-    let directory = tempfile::tempdir().unwrap();
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(
-        directory.path().into(),
-        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    ))
-    .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
-    let workspace = WorkspaceIdentity::new("/repo");
-    let tree = records[0].meta.tree_id.clone();
-    let boundary = records.len() - 1;
-    for record in &records[..boundary] {
-        append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
-            .await
-            .unwrap();
-    }
-    let expected_old = releashd::test_support::integration::workspace::node_for_execution(
-        &*repository,
-        &workspace,
-        "node-main",
-    )
-    .await
-    .unwrap()
-    .unwrap()
-    .updated_at();
-    let (snapshot_tx, snapshot_rx) = mpsc::channel();
-    let (waiting_tx, waiting_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    let release_rx = parking_lot::Mutex::new(release_rx);
-    let snapshots = Arc::new(AtomicUsize::new(0));
-    let observed = snapshots.clone();
-    query.set_session_read_observer(Some(Arc::new(move |phase| match phase {
-        SessionReadPhase::WorkspaceReferenceSearch => {}
-        SessionReadPhase::WaitingForClock => {
-            waiting_tx.send(()).unwrap();
-        }
-        SessionReadPhase::SnapshotEstablished => {
-            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
-                snapshot_tx.send(()).unwrap();
-                release_rx
-                    .lock()
-                    .recv_timeout(Duration::from_secs(30))
-                    .unwrap();
-            }
-        }
-    })));
-    let first_query = query.clone();
-    let first_tree = tree.clone();
-    let first = tokio::spawn(async move {
-        first_query
-            .session_node_detail(&WorkspaceIdentity::new("/repo"), &first_tree, "node-main")
-            .await
-    });
-    tokio::task::spawn_blocking(move || snapshot_rx.recv_timeout(Duration::from_secs(30)).unwrap())
-        .await
-        .unwrap();
-    waiting_rx.try_recv().unwrap();
-    // When / Then
-    let clock = query.session_clock(&tree).unwrap();
-    assert!(
-        clock.try_lock().is_none(),
-        "the old snapshot must already own the tree clock"
-    );
-    let added = &records[boundary];
-    append_single_fact(&store, &added.meta, &added.fact, added.timestamp_ms)
-        .await
-        .unwrap();
-    let second_query = query.clone();
-    let second_tree = tree.clone();
-    let second = tokio::spawn(async move {
-        second_query
-            .session_node_detail(&WorkspaceIdentity::new("/repo"), &second_tree, "node-main")
-            .await
-    });
-    tokio::task::spawn_blocking(move || waiting_rx.recv_timeout(Duration::from_secs(30)).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(snapshots.load(Ordering::SeqCst), 1);
-    release_tx.send(()).unwrap();
-    let first = first.await.unwrap().unwrap().unwrap().detail;
-    let second = second.await.unwrap().unwrap().unwrap().detail;
-    assert_eq!(first.updated_at, expected_old);
-    assert_eq!(second.updated_at, added.timestamp_ms as f64 / 1000.0);
-    assert_eq!(clock.lock().progress(), (added.seq, Some(added.seq)));
-    query.set_session_read_observer(None);
-    // When
-    let connection =
-        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
-    connection
-        .execute(
-            "UPDATE node_events SET detail = 'already consumed' WHERE tree_id = ?1 AND seq = ?2",
-            rusqlite::params![tree, records[boundary - 1].seq],
-        )
-        .unwrap();
-    let next = query
-        .session_node_detail(&workspace, &tree, "node-main")
-        .await
-        .unwrap()
-        .unwrap();
-    // Then
-    assert_eq!(next.detail.updated_at, second.updated_at);
-    assert_eq!(clock.lock().progress(), (added.seq, Some(added.seq)));
 }
 
 #[tokio::test]
@@ -2935,7 +2601,7 @@ pub async fn test_旧会話参照照会_未発見の単独参照で全workspace�
     use releashd::test_support::integration::workflow::{
         append_single_fact, SessionExecutionTreeRootFacts,
     };
-    use releashd::test_support::integration::workspace::{standalone_reference, SessionReadPhase};
+    use releashd::test_support::integration::workspace::standalone_reference;
     use std::sync::atomic::{AtomicUsize, Ordering};
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -2948,10 +2614,8 @@ pub async fn test_旧会話参照照会_未発見の単独参照で全workspace�
     let query = service(&repository);
     let searches = Arc::new(AtomicUsize::new(0));
     let observed = searches.clone();
-    query.set_session_read_observer(Some(Arc::new(move |phase| {
-        if matches!(phase, SessionReadPhase::WorkspaceReferenceSearch) {
-            observed.fetch_add(1, Ordering::SeqCst);
-        }
+    query.set_reference_search_observer(Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
     })));
     let workspace = WorkspaceIdentity::new("/repo");
     let alias = standalone_reference("later", "session");

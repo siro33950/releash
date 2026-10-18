@@ -267,24 +267,18 @@ pub(crate) fn resolve_node_field_path(
     })
 }
 
-pub(crate) fn artifact_child_name<'a>(node: &'a NodeDefinition, key: &str) -> Option<&'a str> {
+fn artifact_child_name<'a>(node: &'a NodeDefinition, key: &str) -> Option<&'a str> {
     if key == "child" {
         if let Some(delegate) = &node.completion.delegate {
             return Some(&delegate.child);
         }
     }
-    composite_artifact_child(node, key).map(|child| child.name.as_str())
-}
-
-pub(crate) fn composite_artifact_child<'a>(
-    node: &'a NodeDefinition,
-    key: &str,
-) -> Option<&'a ChildEntry> {
     match &node.kind {
         NodeKind::Sequence(sequence) => sequence.child_entry(key),
         NodeKind::Fanout(fanout) => fanout.child_entry_for_artifact_key(key),
         _ => None,
     }
+    .map(|child| child.name.as_str())
 }
 
 fn missing_node_field(position: usize, segment: &str) -> NodeFieldPathError {

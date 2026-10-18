@@ -94,12 +94,6 @@ const ROW_COLUMNS: &str = concat!(
     "kind, attempt, event_type, session_id, detail, timestamp"
 );
 
-fn projected_columns(detail: &str) -> String {
-    let mut columns: Vec<_> = ROW_COLUMNS.split(", ").collect();
-    columns[9] = detail;
-    columns.join(", ")
-}
-
 /// Read one tree's facts in append order.
 pub fn read_tree(
     connection: &Connection,
@@ -170,42 +164,6 @@ pub(crate) fn reference_heads(
     Ok(heads)
 }
 
-pub(crate) fn artifact_values(
-    connection: &Connection,
-    tree: &str,
-    seqs: &std::collections::HashSet<i64>,
-) -> Result<Vec<(i64, String)>, rusqlite::Error> {
-    if seqs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let seqs = serde_json::to_string(seqs).expect("artifact sequences");
-    let mut statement = connection.prepare(
-        "SELECT seq, detail -> '$.value' FROM node_events WHERE tree_id = ?1 AND seq IN (SELECT value FROM json_each(?2)) AND event_type = 'artifact_produced'"
-    )?;
-    let rows = statement.query_map(rusqlite::params![tree, seqs], |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?;
-    rows.collect()
-}
-
-pub fn projected_tree_after<T>(
-    connection: &Connection,
-    tree: &str,
-    after: i64,
-    projection: &str,
-    parameters: &[String],
-    mut project: impl FnMut(NodeEventRow) -> T,
-) -> Result<Vec<T>, rusqlite::Error> {
-    let columns = projected_columns(projection);
-    let mut values: Vec<&dyn rusqlite::ToSql> = vec![&tree, &after];
-    values.extend(parameters.iter().map(|value| value as &dyn rusqlite::ToSql));
-    let mut statement = connection.prepare(&format!(
-        "SELECT {columns} FROM node_events WHERE tree_id = ?1 AND seq > ?2 ORDER BY seq"
-    ))?;
-    let rows = statement.query_map(values.as_slice(), |row| row_from_sql(row).map(&mut project))?;
-    rows.collect()
-}
-
 pub(crate) fn workspace_reference_trees(
     connection: &Connection,
     workspace: &str,
@@ -258,47 +216,6 @@ pub(crate) fn read_node(
         "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 AND node_execution_id = ?2 ORDER BY seq"
     ))?;
     let rows = statement.query_map([tree_id, node_execution_id], row_from_sql)?;
-    rows.collect()
-}
-
-pub(crate) fn tree_rows_with_event_types(
-    connection: &Connection,
-    tree_id: &str,
-    event_types: &[&str],
-) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
-    let types = vec!["?"; event_types.len()].join(",");
-    let mut statement = connection.prepare(&format!("SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ? AND event_type IN ({types}) ORDER BY seq"))?;
-    let rows = statement.query_map(
-        rusqlite::params_from_iter(std::iter::once(tree_id).chain(event_types.iter().copied())),
-        row_from_sql,
-    )?;
-    rows.collect()
-}
-
-pub fn read_subtrees<T>(
-    connection: &Connection,
-    tree_id: &str,
-    node_ids: &[String],
-    detail_projection: &str,
-    projection_parameters: &[String],
-    mut project: impl FnMut(NodeEventRow) -> T,
-) -> Result<Vec<T>, rusqlite::Error> {
-    let columns = projected_columns(detail_projection);
-    let node_ids = serde_json::to_string(node_ids).expect("node ids");
-    let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&tree_id, &node_ids];
-    parameters.extend(
-        projection_parameters
-            .iter()
-            .map(|value| value as &dyn rusqlite::ToSql),
-    );
-    let mut statement = connection.prepare(&format!(
-        "WITH RECURSIVE selected(id) AS (
-            SELECT value FROM json_each(?2) UNION SELECT e.node_execution_id FROM node_events e JOIN selected s ON e.parent_id = s.id WHERE e.tree_id = ?1
-         ) SELECT {columns} FROM node_events WHERE tree_id = ?1 AND node_execution_id IN (SELECT id FROM selected) ORDER BY seq"
-    ))?;
-    let rows = statement.query_map(parameters.as_slice(), |row| {
-        row_from_sql(row).map(&mut project)
-    })?;
     rows.collect()
 }
 

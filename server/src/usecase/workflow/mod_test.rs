@@ -211,6 +211,17 @@ impl crate::domain::workspace_tree::repository::WorkspaceTreeRepository
             .collect()
     }
 
+    async fn load_execution_tree(
+        &self,
+        _: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTree>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        Ok(None)
+    }
+
     async fn load_node_by_session_id(
         &self,
         _: &crate::domain::workspace_tree::value_objects::WorkspaceIdentity,

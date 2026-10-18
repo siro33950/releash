@@ -1126,7 +1126,7 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
         .unwrap();
     let initial = reads.read(&target).await.unwrap();
     assert!(
-        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.classification == "idle")
+        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == "idle")
     );
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
@@ -1152,7 +1152,7 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
         }
         let expected = reads.read(&target).await.unwrap();
         assert!(
-            matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.classification == expected_classification)
+            matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == expected_classification)
         );
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
             .await
@@ -1221,7 +1221,7 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
         .unwrap();
     let initial = reads.read(&target).await.unwrap();
     assert!(
-        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.classification == "idle")
+        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == "idle")
     );
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
@@ -1249,7 +1249,7 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
             }
             let expected = reads.read(&target).await.unwrap();
             assert!(
-                matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.classification == expected_classification)
+                matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == expected_classification)
             );
             let list = reads.workflow.workspace_tree(&fixture.path).await.unwrap();
             let listed = list
@@ -1265,7 +1265,7 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
                 node: Some(detail), ..
             } = &expected
             {
-                assert_eq!(detail.error_reason, listed.failure_reason());
+                assert_eq!(detail.0.error_reason, listed.failure_reason());
             }
             let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
                 .await

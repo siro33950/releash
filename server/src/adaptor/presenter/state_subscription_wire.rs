@@ -32,9 +32,9 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::SessionTab { session, node } => {
                 let session: wire::NullableAgentSessionItemDto = crate::adaptor::presenter::client::value(session.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
-                let node: wire::NullableWorkspaceNodeDetailDto = crate::adaptor::presenter::client::value(node.as_deref().cloned())
+                let node: Option<wire::WorkspaceNodeDetailDto> = node.as_deref().cloned().map(crate::adaptor::presenter::client::value).transpose()
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
-                wire::state_payload::Value::SessionTab(wire::SessionTabSnapshot { session: session.value, node: node.value.map(Box::new) })
+                wire::state_payload::Value::SessionTab(wire::SessionTabSnapshot { session: session.value, node: node.map(Box::new) })
             },
             StateValue::AgentSession(value) => wire::state_payload::Value::AgentSession(
                 crate::adaptor::presenter::client::value(value.clone())

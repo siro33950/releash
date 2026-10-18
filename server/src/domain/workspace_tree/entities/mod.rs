@@ -116,7 +116,6 @@ impl WorkspaceTree {
             .map(|node| node.id.clone())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn session_node(&self, session_id: &str) -> Option<&WorkspaceTreeNode> {
         self.nodes
             .iter()
@@ -1303,16 +1302,6 @@ pub fn standalone_reference(tree: &str, name: &str) -> String {
     opaque_standalone_session_node_id(tree, &workflow_node_occurrence_key(name, 0))
 }
 
-pub(crate) fn node_identities(
-    records: &[crate::domain::workflow::NodeFactRecord],
-) -> Result<std::collections::HashMap<String, String>, WorkspaceTreeError> {
-    let mut index = NodeIdentityIndex::default();
-    for record in records {
-        index.record(record)?;
-    }
-    Ok(index.identities)
-}
-
 fn node_semantic_key(
     execution: &str,
     name: &str,
@@ -1345,26 +1334,4 @@ fn node_semantic_key(
             _ => workflow_node_occurrence_key(name, occurrence),
         }
     }
-}
-
-pub(crate) fn public_root_node(
-    records: &[crate::domain::workflow::NodeFactRecord],
-) -> Option<&str> {
-    use crate::domain::workflow::NodeFact;
-    super::services::select_public_root(records.iter().enumerate().filter_map(|(order, record)| {
-        let NodeFact::Started(started) = &record.fact else {
-            return None;
-        };
-        Some((
-            record.meta.node_execution_id.as_str(),
-            order as u64,
-            started.parent.is_none()
-                && !records.iter().any(|other| {
-                    matches!(other.fact, NodeFact::Started(_))
-                        && other.meta.node_name == record.meta.node_name
-                        && other.meta.parent_id == record.meta.parent_id
-                        && other.meta.attempt > record.meta.attempt
-                }),
-        ))
-    }))
 }

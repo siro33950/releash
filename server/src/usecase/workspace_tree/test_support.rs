@@ -42,22 +42,6 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
         Ok(None)
     }
 
-    async fn session_node_detail(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        _tree_id: &str,
-        node_execution_id: &str,
-    ) -> Result<Option<super::query_service::SessionNodeDetailDto>, WorkflowError> {
-        self.node_detail(workspace_identity, node_execution_id)
-            .await
-            .map(|detail| {
-                detail.map(|detail| super::query_service::SessionNodeDetailDto {
-                    detail,
-                    classification: Vec::new(),
-                })
-            })
-    }
-
     async fn node_artifact(
         &self,
         _: &str,
@@ -97,6 +81,17 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTre
             })
             .collect()
     }
+    async fn load_execution_tree(
+        &self,
+        _: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTree>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        Ok(None)
+    }
+
     async fn load_node_by_session_id(
         &self,
         _: &crate::domain::workspace_tree::WorkspaceIdentity,

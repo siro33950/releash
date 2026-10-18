@@ -10,16 +10,6 @@ pub enum ExecutionStatus {
 }
 
 impl ExecutionStatus {
-    pub(crate) fn from_terminal_fact(
-        terminal: Option<&crate::domain::workflow::NodeFactRecord>,
-    ) -> Self {
-        match terminal.map(|record| &record.fact) {
-            Some(crate::domain::workflow::NodeFact::ExecutionCompleted) => Self::Completed,
-            Some(crate::domain::workflow::NodeFact::AbortRequested(_)) => Self::Aborted,
-            _ => Self::Running,
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",

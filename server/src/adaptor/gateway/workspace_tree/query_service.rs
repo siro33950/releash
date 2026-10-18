@@ -14,26 +14,13 @@ use crate::usecase::workflow::{
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
 #[cfg(feature = "test-support")]
-#[derive(Clone, Copy)]
-pub enum SessionReadPhase {
-    WaitingForClock,
-    SnapshotEstablished,
-    WorkspaceReferenceSearch,
-}
-
-#[cfg(feature = "test-support")]
-type SessionReadObserver = Arc<dyn Fn(SessionReadPhase) + Send + Sync>;
+type ReferenceSearchObserver = Arc<dyn Fn() + Send + Sync>;
 
 pub struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
     #[cfg(feature = "test-support")]
-    session_read_observer: parking_lot::Mutex<Option<SessionReadObserver>>,
+    reference_search_observer: parking_lot::Mutex<Option<ReferenceSearchObserver>>,
     references: Arc<parking_lot::Mutex<ReferenceIndex>>,
-    clocks: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<String, Arc<parking_lot::Mutex<SessionClock>>>,
-        >,
-    >,
 }
 
 #[derive(Default)]
@@ -282,227 +269,19 @@ struct ReferenceTree {
     errors: std::collections::HashMap<String, String>,
 }
 
-#[derive(Default)]
-pub struct SessionClock {
-    root: Option<(String, i64, [u8; 32])>,
-    checked_head: i64,
-    state: Option<crate::domain::workflow::services::node_read::NodeReadState>,
-    timestamp_ms: i64,
-}
-
-#[cfg(feature = "test-support")]
-impl SessionClock {
-    pub fn progress(&self) -> (i64, Option<i64>) {
-        (
-            self.checked_head,
-            self.state.as_ref().map(|state| state.seq),
-        )
-    }
-}
-
-pub struct SessionFactSource<'a> {
-    pub connection: &'a rusqlite::Connection,
-    pub tree: &'a str,
-    pub root: &'a crate::domain::workflow::TreeRootFact,
-    pub selection: &'a (String, Vec<String>),
-    pub terminal: Option<&'a crate::domain::workflow::NodeFactRecord>,
-    pub retries: &'a std::collections::HashMap<String, String>,
-}
-
-impl SessionFactSource<'_> {
-    #[cfg(feature = "test-support")]
-    pub fn projected_timestamp(
-        &self,
-        roots: &[String],
-    ) -> Result<i64, crate::domain::local_event::LocalEventQueryError> {
-        self.read_scope(roots)
-            .map(|(_, projection)| projection.1.timestamp_ms)
-    }
-
-    fn read_scope(
-        &self,
-        roots: &[String],
-    ) -> Result<
-        (
-            Vec<crate::domain::workflow::NodeFactRecord>,
-            crate::domain::workflow::services::node_read::NodeReadProjectionResult,
-        ),
-        crate::domain::local_event::LocalEventQueryError,
-    > {
-        use crate::adaptor::gateway::{
-            local_event_store::{node_events, reader},
-            workflow::fact_log,
-        };
-        let records = node_events::read_subtrees(
-            self.connection,
-            self.tree,
-            roots,
-            &self.selection.0,
-            &self.selection.1,
-            |row| fact_log::record_from_row(&row),
-        )
-        .map_err(|error| reader::storage_unavailable(&error))?
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| reader::corrupt(&error))?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-        let projection = crate::domain::workflow::services::node_read::subtree_read_projection(
-            self.root,
-            &records,
-            self.terminal,
-            self.retries,
-            None,
-        )
-        .map_err(|error| reader::corrupt(&error))?;
-        Ok((records, projection))
-    }
-
-    pub fn artifact_values(
-        &self,
-        seqs: &std::collections::HashSet<i64>,
-    ) -> Result<
-        std::collections::HashMap<i64, serde_json::Value>,
-        crate::domain::local_event::LocalEventQueryError,
-    > {
-        use crate::adaptor::gateway::local_event_store::{node_events, reader};
-        node_events::artifact_values(self.connection, self.tree, seqs)
-            .map_err(|error| reader::storage_unavailable(&error))?
-            .into_iter()
-            .map(|(seq, text)| {
-                serde_json::from_str(&text)
-                    .map(|value| (seq, value))
-                    .map_err(|error| reader::corrupt(&error.to_string()))
-            })
-            .collect()
-    }
-
-    fn records_after(
-        &self,
-        seq: i64,
-    ) -> Result<
-        Vec<crate::domain::workflow::NodeFactRecord>,
-        crate::domain::local_event::LocalEventQueryError,
-    > {
-        use crate::adaptor::gateway::{
-            local_event_store::{node_events, reader},
-            workflow::fact_log,
-        };
-        let through = self.terminal.map(|record| record.seq).unwrap_or(i64::MAX);
-        node_events::projected_tree_after(
-            self.connection,
-            self.tree,
-            seq,
-            &self.selection.0,
-            &self.selection.1,
-            |row| fact_log::record_from_row(&row),
-        )
-        .map_err(|error| reader::storage_unavailable(&error))?
-        .into_iter()
-        .filter_map(Result::transpose)
-        .take_while(|record| {
-            record.as_ref().is_err() || record.as_ref().is_ok_and(|record| record.seq <= through)
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| reader::corrupt(&error))
-    }
-
-    pub fn execution_updated_at(
-        &self,
-        held: &mut SessionClock,
-        root_row: &crate::adaptor::gateway::local_event_store::node_events::NodeEventRow,
-    ) -> Result<i64, crate::domain::local_event::LocalEventQueryError> {
-        use crate::adaptor::gateway::local_event_store::{node_events, reader};
-        let head = node_events::reference_heads(
-            self.connection,
-            &std::collections::HashSet::from([self.tree.to_string()]),
-        )
-        .map_err(|error| reader::storage_unavailable(&error))?
-        .first()
-        .map(|(_, seq)| *seq)
-        .unwrap_or_default();
-        use sha2::Digest;
-        let root = (
-            root_row.node_execution_id.clone(),
-            root_row.timestamp_ms,
-            sha2::Sha256::digest(root_row.detail.as_bytes()).into(),
-        );
-        if held.root.as_ref() != Some(&root) || head < held.checked_head {
-            *held = SessionClock {
-                root: Some(root),
-                ..Default::default()
-            };
-        }
-        if head == held.checked_head {
-            return Ok(held.timestamp_ms);
-        }
-        if held.state.is_none() && held.checked_head != 0 {
-            held.checked_head = head;
-            return Ok(held.timestamp_ms);
-        }
-        let state = held.state.get_or_insert_default();
-        loop {
-            let records = self.records_after(state.seq)?;
-            let mut replay = false;
-            for batch in records.chunks(64) {
-                let values = self.artifact_values(&state.artifact_seqs(batch))?;
-                let result = crate::domain::workflow::services::node_read::update_read_state(
-                    state,
-                    self.root,
-                    batch,
-                    self.retries,
-                    &mut |seq| {
-                        values
-                            .get(&seq)
-                            .cloned()
-                            .ok_or_else(|| format!("Missing artifact {seq}"))
-                    },
-                );
-                match result {
-                    Ok(applied) => held.timestamp_ms = applied.timestamp_ms,
-                    Err(_) if state.request_replay(self.root, self.terminal) => {
-                        replay = true;
-                        break;
-                    }
-                    Err(error) => {
-                        *held = SessionClock::default();
-                        return Err(reader::corrupt(&error));
-                    }
-                }
-            }
-            if !replay {
-                break;
-            }
-        }
-        held.checked_head = head;
-        if self.terminal.is_some() {
-            held.state = None;
-        }
-
-        Ok(held.timestamp_ms)
-    }
-}
-
 impl SqliteWorkspaceQueryService {
     pub fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
         Arc::new(Self {
             repository,
             references: Default::default(),
-            clocks: Default::default(),
             #[cfg(feature = "test-support")]
-            session_read_observer: Default::default(),
+            reference_search_observer: Default::default(),
         })
     }
 
     #[cfg(feature = "test-support")]
-    pub fn set_session_read_observer(&self, observer: Option<SessionReadObserver>) {
-        *self.session_read_observer.lock() = observer;
-    }
-
-    #[cfg(feature = "test-support")]
-    pub fn session_clock(&self, tree: &str) -> Option<Arc<parking_lot::Mutex<SessionClock>>> {
-        self.clocks.lock().get(tree).cloned()
+    pub fn set_reference_search_observer(&self, observer: Option<ReferenceSearchObserver>) {
+        *self.reference_search_observer.lock() = observer;
     }
 
     pub async fn execution_records(
@@ -570,7 +349,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         let ids = node_ids.to_vec();
         let index = Arc::clone(&self.references);
         #[cfg(feature = "test-support")]
-        let observer = self.session_read_observer.lock().clone();
+        let observer = self.reference_search_observer.lock().clone();
         let rows = self
             .repository
             .fact_backend()
@@ -627,7 +406,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 if needs_workspace {
                     #[cfg(feature = "test-support")]
                     if let Some(observer) = &observer {
-                        observer(SessionReadPhase::WorkspaceReferenceSearch);
+                        observer();
                     }
                     selected.extend(
                         node_events::workspace_reference_trees(&transaction, &workspace)
@@ -740,304 +519,6 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             return Ok(Some(detail));
         }
         Ok(None)
-    }
-
-    async fn session_node_detail(
-        &self,
-        workspace_identity: &WorkspaceIdentity,
-        tree_id: &str,
-        node_execution_id: &str,
-    ) -> Result<
-        Option<crate::usecase::workspace_tree::query_service::SessionNodeDetailDto>,
-        WorkflowError,
-    > {
-        use crate::adaptor::gateway::workflow::fact_log;
-        use crate::domain::workflow::{NodeFact, NodeKind, NodeKindName};
-        use crate::domain::workspace_tree::WorkspaceNodeClassification;
-        let backend = self.repository.fact_backend();
-        let (tree, target) = (tree_id.to_string(), node_execution_id.to_string());
-        let workspace = workspace_identity.as_str().to_string();
-        let clocks = Arc::clone(&self.clocks);
-        #[cfg(feature = "test-support")]
-        let observer = self.session_read_observer.lock().clone();
-        let read = backend
-            .run_indexed(move |connection| {
-                use crate::adaptor::gateway::local_event_store::{node_events, reader};
-                let unavailable = |error: rusqlite::Error| reader::storage_unavailable(&error);
-                let tracked = clocks.lock().keys().cloned().collect();
-                let live: std::collections::HashSet<_> =
-                    node_events::reference_heads(connection, &tracked)
-                        .map_err(unavailable)?
-                        .into_iter()
-                        .map(|(id, _)| id)
-                        .collect();
-                let clock = {
-                    let mut clocks = clocks.lock();
-                    clocks.retain(|id, clock| {
-                        !tracked.contains(id) || live.contains(id) || Arc::strong_count(clock) > 1
-                    });
-                    Arc::clone(clocks.entry(tree.clone()).or_default())
-                };
-                #[cfg(feature = "test-support")]
-                if let Some(observer) = &observer {
-                    observer(SessionReadPhase::WaitingForClock);
-                }
-                let mut clock_state = clock.lock();
-                let transaction = connection.unchecked_transaction().map_err(unavailable)?;
-                let connection = &*transaction;
-                let Some(root_row) =
-                    node_events::first_root_row_of_tree(connection, &tree, "started")
-                        .map_err(unavailable)?
-                else {
-                    *clock_state = SessionClock::default();
-                    return Ok(None);
-                };
-                #[cfg(feature = "test-support")]
-                if let Some(observer) = &observer {
-                    observer(SessionReadPhase::SnapshotEstablished);
-                }
-                let Some(root_record) = fact_log::record_from_row(&root_row)
-                    .map_err(|error| reader::corrupt(&error))?
-                else {
-                    return Ok(None);
-                };
-                let NodeFact::Started(started) = &root_record.fact else {
-                    return Ok(None);
-                };
-                let Some(root) = started
-                    .root
-                    .as_deref()
-                    .filter(|root| root.worktree_path == workspace)
-                else {
-                    return Ok(None);
-                };
-                let selection = session_artifact_projection(
-                    crate::domain::workflow::services::node_read::artifact_fields(root),
-                );
-                let lineage = node_events::tree_rows_with_event_types(
-                    connection,
-                    &tree,
-                    &["started", "retry_requested"],
-                )
-                .map_err(unavailable)?
-                .iter()
-                .filter_map(|row| fact_log::record_from_row(row).transpose())
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| reader::corrupt(&error))?;
-                let retries =
-                    crate::domain::workflow::services::history::retry_predecessors(&lineage);
-                let roots = crate::domain::workflow::services::history::read_lineage_roots(
-                    &target, &retries,
-                );
-                let terminal = node_events::tree_rows_with_event_types(
-                    connection,
-                    &tree,
-                    &["execution_completed", "abort_requested"],
-                )
-                .map_err(unavailable)?
-                .into_iter()
-                .next()
-                .map(|row| fact_log::record_from_row(&row))
-                .transpose()
-                .map_err(|error| reader::corrupt(&error))?
-                .flatten();
-                let source = SessionFactSource {
-                    connection,
-                    tree: &tree,
-                    root,
-                    selection: &selection,
-                    terminal: terminal.as_ref(),
-                    retries: &retries,
-                };
-                let (records, projection) = source.read_scope(&roots)?;
-                let updated_at = source.execution_updated_at(&mut clock_state, &root_row)?;
-                let rules = projection.0;
-                let starts = lineage;
-                Ok(Some((
-                    root_record,
-                    records,
-                    starts,
-                    terminal,
-                    updated_at,
-                    rules,
-                )))
-            })
-            .await
-            .map_err(query_error)?;
-        let Some((root_record, records, starts, terminal, execution_updated_at, rules)) = read
-        else {
-            return Ok(None);
-        };
-        let NodeFact::Started(started) = &root_record.fact else {
-            return Ok(None);
-        };
-        let Some(root) = started.root.as_deref() else {
-            return Ok(None);
-        };
-        let identities = crate::domain::workspace_tree::entities::node_identities(&starts)
-            .map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
-        let Some(first) = records.iter().find(|record| {
-            record.meta.node_execution_id == node_execution_id
-                && matches!(record.fact, NodeFact::Started(_))
-        }) else {
-            return Ok(None);
-        };
-        if first.meta.kind != NodeKindName::Session {
-            return Ok(None);
-        }
-        let execution_status =
-            crate::domain::workflow::ExecutionStatus::from_terminal_fact(terminal.as_ref());
-        let mut target_session = None;
-        let mut classification = Vec::new();
-        for (id, rules) in &rules {
-            let Some(start) = records
-                .iter()
-                .find(|record| &record.meta.node_execution_id == id)
-            else {
-                continue;
-            };
-            let session_id = records.iter().find_map(|record| match &record.fact {
-                NodeFact::SessionAttached(attached) if record.meta.node_execution_id == *id => {
-                    Some(attached.session_id.as_str())
-                }
-                _ => None,
-            });
-            let session = crate::domain::workflow::services::fact_replay::derive_session_facts(
-                &records,
-                id,
-                session_id.unwrap_or_default(),
-            );
-            let presence = self
-                .repository
-                .processes
-                .as_ref()
-                .map(|processes| {
-                    processes.presence(workspace_identity.as_str(), id, start.meta.kind, session_id)
-                })
-                .transpose()?
-                .unwrap_or_default();
-            let activity = session.activity;
-            if id == node_execution_id {
-                target_session = Some((session_id.map(str::to_owned), session));
-            }
-            classification.push(WorkspaceNodeClassification {
-                id: identities[id].clone(),
-                parent_id: rules
-                    .parent_id
-                    .as_ref()
-                    .and_then(|parent| identities.get(parent))
-                    .cloned(),
-                execution_id: Some(tree_id.into()),
-                node_execution_id: Some(id.clone()),
-                kind: start.meta.kind.into(),
-                status: rules.status.into(),
-                process_presence: presence,
-                delegate_waits_for_child: rules.delegate_waits_for_child,
-                background_failure: false,
-                activity: (start.meta.kind == NodeKindName::Session).then_some(activity),
-                has_session: session_id.is_some(),
-                completion_signals: rules.completion_signals,
-                hidden: rules.hidden,
-            });
-        }
-        let Some(state) = classification
-            .iter()
-            .find(|node| node.node_execution_id.as_deref() == Some(node_execution_id))
-        else {
-            return Ok(None);
-        };
-        let (session_id, session) =
-            target_session.expect("target classification has session facts");
-        let title = crate::domain::workspace_tree::value_objects::session_node_title(
-            session.manual_name,
-            session.provider_session_title,
-            first.meta.node_name.clone(),
-            node_execution_id == tree_id,
-        );
-        let definition = root
-            .definition
-            .as_ref()
-            .and_then(|definition| definition.node_by_name(&first.meta.node_name));
-        let model = definition.and_then(|definition| match &definition.kind {
-            NodeKind::Session(spec) => spec.model.clone(),
-            _ => None,
-        });
-        let (submit_received, stop_received, waiting_for) =
-            signal_display(state.completion_signals);
-        let rules = &rules[node_execution_id];
-        let updated_at = crate::domain::workspace_tree::value_objects::node_updated_at(
-            first.timestamp_ms as f64 / 1000.0,
-            rules.completed_at,
-            rules.status,
-            rules.has_artifact,
-            execution_updated_at as f64 / 1000.0,
-        );
-        let error_reason = crate::domain::workspace_tree::value_objects::node_failure_reason(
-            crate::domain::workspace_tree::value_objects::aborted_node_reason(rules.status),
-            None,
-        );
-        let detail = WorkspaceNodeDetailDto {
-            classification: WorkspaceNodeClassification::aggregate(&classification, &state.id)
-                .as_public_str()
-                .into(),
-            node_execution_id: Some(node_execution_id.into()),
-            node_name: Some(first.meta.node_name.clone()),
-            model,
-            past_attempts: Vec::new(),
-            execution_id: Some(tree_id.into()),
-            can_abort: execution_status.can_abort(),
-            process_presence: state.process_presence.as_str(),
-            worktree: records.iter().find_map(|record| match &record.fact {
-                NodeFact::Started(started)
-                    if record.meta.node_execution_id == node_execution_id =>
-                {
-                    started.worktree.as_ref().map(|worktree| {
-                        crate::usecase::workflow::NodeWorktreeDto {
-                            branch: worktree.branch.clone(),
-                            path: worktree.path.clone(),
-                        }
-                    })
-                }
-                _ => None,
-            }),
-            id: identities[node_execution_id].clone(),
-            title,
-            status: state.status.as_public_str().into(),
-            submit_received,
-            stop_received,
-            waiting_for,
-            has_artifact: rules.has_artifact,
-            error_reason,
-            capabilities: WorkspaceNodeCapabilitiesDto {
-                can_rename: crate::domain::workspace_tree::value_objects::session_can_rename(
-                    WorkspaceNodeKind::WorkflowSession,
-                    session_id.is_some(),
-                    crate::domain::workspace_tree::entities::public_root_node(&starts)
-                        == Some(node_execution_id),
-                    node_execution_id == tree_id,
-                ),
-                can_approve: state.status.can_approve(),
-                can_retry: rules.status.can_retry_in_execution(
-                    execution_status.is_active(),
-                    NodeKindName::Session,
-                    state.process_presence,
-                    || true,
-                ),
-                can_resume_session: state
-                    .process_presence
-                    .can_resume_session(NodeKindName::Session),
-            },
-            updated_at,
-            content: WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
-                session_id,
-            }),
-        };
-        Ok(Some(
-            crate::usecase::workspace_tree::query_service::SessionNodeDetailDto {
-                detail,
-                classification,
-            },
-        ))
     }
 
     async fn node_artifact(
@@ -1215,26 +696,6 @@ pub(super) fn query_error(
         }
         error => WorkflowError::external(error.to_string()),
     }
-}
-
-pub fn session_artifact_projection(fields: Vec<String>) -> (String, Vec<String>) {
-    let mut parameters = Vec::new();
-    let mut inputs = Vec::new();
-    for field in fields {
-        let path = format!(
-            "$.value.{}",
-            field
-                .split('.')
-                .map(|segment| serde_json::to_string(segment).expect("string"))
-                .collect::<Vec<_>>()
-                .join(".")
-        );
-        let index = parameters.len() + 3;
-        parameters.extend([field, path]);
-        inputs.push(format!("?{index}, json(CASE json_type(detail, ?{}) WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'text' THEN json_quote(json_extract(detail, ?{})) WHEN 'array' THEN CAST(json_array_length(detail, ?{}) AS TEXT) ELSE 'null' END)", index + 1, index + 1, index + 1));
-    }
-    // Project predicate inputs before decoding; artifact bodies stay in the event store.
-    (format!("CASE WHEN event_type = 'artifact_produced' AND json_valid(detail) AND json_type(detail, '$.value') IS NOT NULL THEN json_object('value', json_object({}), 'contract', json_extract(detail, '$.contract'), 'requestId', json_extract(detail, '$.requestId')) ELSE detail END", inputs.join(", ")), parameters)
 }
 
 fn record_projection_error(context: &str) -> WorkflowError {

@@ -96,11 +96,10 @@ impl ExecutionTree {
         let Some(node) = self.node_execution(&id) else {
             return Ok(());
         };
-        if !workflow_transition::empty_isolated_fanout_ready(
-            self.is_active(),
-            node.status,
-            failing_node == Some(id.as_str()),
-        ) {
+        if !self.is_active()
+            || node.status != RuntimeNodeExecutionStatus::Running
+            || failing_node == Some(id.as_str())
+        {
             return Ok(());
         }
         let timestamp = node.started_at;
