@@ -295,12 +295,16 @@ impl WorkspaceStateReads {
                 ))
             }
             T::WorkspaceState(name, path) => {
-                let (state, failures) = self
+                let (state, failures, migration_failure) = self
                     .workflow
                     .load_workspace_state(self.workspace_state.as_ref(), name, path)
                     .await
                     .map_err(error)?;
-                return Ok(StateValue::WorkspaceState(state, failures));
+                return Ok(StateValue::WorkspaceState(
+                    state,
+                    failures,
+                    migration_failure,
+                ));
             }
             T::RepositoryGroupState(path) => {
                 return Ok(StateValue::RepositoryGroupState(

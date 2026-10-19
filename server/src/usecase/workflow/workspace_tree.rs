@@ -191,6 +191,7 @@ impl WorkflowUsecase {
         (
             Option<crate::domain::workspace_state::WorkspaceState>,
             Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
+            Option<crate::domain::workspace_state::WorkspaceStateError>,
         ),
         crate::domain::workspace_state::WorkspaceStateError,
     > {

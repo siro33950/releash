@@ -707,9 +707,10 @@ async fn test_旧会話参照の復元_解決を保存して再照会せず未�
         ..Default::default()
     };
     // When
-    let (actual, failures) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
-        .await
-        .unwrap();
+    let (actual, failures, migration_failure) =
+        load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+            .await
+            .unwrap();
     // Then
     let mut expected = original;
     expected
@@ -720,6 +721,7 @@ async fn test_旧会話参照の復元_解決を保存して再照会せず未�
     assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(actual, Some(expected.clone()));
     assert_eq!(failures, vec![failure]);
+    assert!(migration_failure.is_none());
     assert_eq!(store.saved.lock().as_slice(), &[expected]);
     let ids = query.resolved_nodes.lock()[0].clone();
     assert_eq!(ids.len(), 3);
@@ -767,9 +769,10 @@ async fn test_旧会話参照の移行_競合後は最新配置へ参照置換�
         ..Default::default()
     };
     // When
-    let (actual, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
-        .await
-        .unwrap();
+    let (actual, _, migration_failure) =
+        load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+            .await
+            .unwrap();
     // Then
     latest
         .panes
@@ -777,8 +780,84 @@ async fn test_旧会話参照の移行_競合後は最新配置へ参照置換�
         .unwrap()
         .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
     assert_eq!(actual, Some(latest.clone()));
+    assert!(migration_failure.is_none());
     assert_eq!(store.saved.lock().last(), Some(&latest));
     assert_eq!(store.saved.lock().len(), 2);
+}
+
+#[tokio::test]
+async fn test_旧会話参照の復元_書き戻し失敗でも配置と取得失敗を返し保存失敗を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        // Given
+        let query = crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(
+            Vec::new(),
+        );
+        query
+            .session_nodes
+            .lock()
+            .sessions
+            .insert("resolved".into(), "agent".into());
+        let resolution_failure =
+            crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                reference_id: "failed".into(),
+                failure: crate::domain::failure::WorkFailure::from_error(
+                    &crate::domain::workflow::WorkflowError::external("lookup failed"),
+                ),
+            };
+        query
+            .session_nodes
+            .lock()
+            .failures
+            .push(resolution_failure.clone());
+        let mut original = legacy_state();
+        original.panes = Some(
+            PaneLayout::split(
+                "split".into(),
+                SplitAxis::Vertical,
+                0.7,
+                original.panes.take().unwrap(),
+                state_with_panes().panes.unwrap(),
+            )
+            .unwrap(),
+        );
+        let save_failure = TechnicalFailure {
+            nature,
+            message: "migration write failed".into(),
+        };
+        let store = Store {
+            readable: true,
+            previous: Some(original.clone()),
+            save_failure: Some(save_failure.clone()),
+            ..Default::default()
+        };
+        // When
+        let (actual, failures, migration_failure) =
+            load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+                .await
+                .unwrap();
+        // Then
+        original
+            .panes
+            .as_mut()
+            .unwrap()
+            .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+        assert_eq!(actual, Some(original));
+        assert_eq!(failures, vec![resolution_failure]);
+        assert_eq!(
+            migration_failure,
+            Some(WorkspaceStateError::Technical(save_failure))
+        );
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(store.calls.lock().as_slice(), ["save:/repo"]);
+        assert_eq!(query.resolved_nodes.lock().len(), 1);
+    }
 }
 
 #[tokio::test]
@@ -813,7 +892,7 @@ async fn test_配置復元_参照置換を保存してから返却値だけの�
         ..Default::default()
     };
     // When
-    let (actual, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+    let (actual, _, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
         .await
         .unwrap();
     // Then
@@ -842,12 +921,14 @@ async fn test_配置復元_保存値なしと移行不要の配置は一度だ�
             ..Default::default()
         };
         // When
-        let (actual, failures) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
-            .await
-            .unwrap();
+        let (actual, failures, migration_failure) =
+            load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+                .await
+                .unwrap();
         // Then
         assert_eq!(actual, previous);
         assert!(failures.is_empty());
+        assert!(migration_failure.is_none());
         assert!(store.saved.lock().is_empty());
         assert!(query.resolved_nodes.lock().is_empty());
         assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);

@@ -42,6 +42,7 @@ pub async fn load_workspace_state(
     (
         Option<WorkspaceState>,
         Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
+        Option<WorkspaceStateError>,
     ),
     WorkspaceStateError,
 > {
@@ -55,9 +56,10 @@ pub async fn load_workspace_state(
         |_| async {
             let (version, state) = repository.read(worktree_name).await?;
             let Some(mut state) = state else {
-                return Ok((None, Vec::new()));
+                return Ok((None, Vec::new(), None));
             };
             let mut failures = Vec::new();
+            let mut migration_failure = None;
             if let Some(layout) = state.panes.as_mut() {
                 let ids = layout
                     .legacy_session_nodes()
@@ -76,16 +78,20 @@ pub async fn load_workspace_state(
                     let previous = layout.clone();
                     layout.resolve_legacy_sessions(&resolution.sessions);
                     if *layout != previous {
-                        repository
-                            .save(worktree_name, state.clone(), version)
-                            .await?;
+                        match repository.save(worktree_name, state.clone(), version).await {
+                            Ok(()) => {}
+                            Err(WorkspaceStateError::VersionConflict) => {
+                                return Err(WorkspaceStateError::VersionConflict);
+                            }
+                            Err(error) => migration_failure = Some(error),
+                        }
                     }
                 }
             }
             let state = repository
                 .filter_missing_files(state, worktree_root)
                 .await?;
-            Ok((Some(state), failures))
+            Ok((Some(state), failures, migration_failure))
         },
     )
     .await

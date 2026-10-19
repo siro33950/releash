@@ -599,6 +599,12 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     ),
                     message: "Session lookup failed".into(),
                 }}],
+                Some(crate::domain::workspace_state::WorkspaceStateError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "Session tab migration write failed".into(),
+                    },
+                )),
             ),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {

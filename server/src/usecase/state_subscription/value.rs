@@ -54,6 +54,7 @@ pub enum StateValue {
     WorkspaceState(
         Option<crate::domain::workspace_state::WorkspaceState>,
         Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
+        Option<crate::domain::workspace_state::WorkspaceStateError>,
     ),
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
