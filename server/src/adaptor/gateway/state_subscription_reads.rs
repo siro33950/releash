@@ -27,6 +27,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::Workspaces
                 | T::Workflows
                 | T::AgentSession(_)
+                | T::SessionTab(_)
                 | T::SessionHistory(..)
                 | T::Selection(..)
                 | T::NodeDetail(..)

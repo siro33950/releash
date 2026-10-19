@@ -47,6 +47,7 @@ use releashd::test_support::integration::platform::AgentSessionProviderDto;
 use releashd::test_support::integration::platform::GitHostUsecase;
 use releashd::test_support::integration::platform::RepoPathsUsecase;
 use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::platform::StateSubscriptionReads;
 use releashd::test_support::integration::sessions::AgentSessionAvailability;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionPort;
@@ -1113,10 +1114,12 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
         )
         .0,
     );
-    let subscriptions =
-        fixture
-            .subscriptions
-            .with_reads(Arc::new(reads.clone()), None, vec![], String::new());
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
     let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
     let target = SubscriptionTarget::SessionTab(item.id);
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
@@ -1208,10 +1211,12 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
         )
         .0,
     );
-    let subscriptions =
-        fixture
-            .subscriptions
-            .with_reads(Arc::new(reads.clone()), None, vec![], String::new());
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
     let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
     let target = SubscriptionTarget::SessionTab(item.id);
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
@@ -1563,6 +1568,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
 pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を配り不在も扱う() {
     // Given
     let fixture = Fixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
     let item = AgentSessionItemDto {
         id: "session".into(),
         workspace_identity: fixture.path.clone(),
@@ -1586,11 +1592,7 @@ pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を�
     };
     *fixture.sessions.item.lock() = Some(item.clone());
     // When / Then
-    let value = fixture
-        .reads
-        .read(&T::SessionTab("session".into()))
-        .await
-        .unwrap();
+    let value = reads.read(&T::SessionTab("session".into())).await.unwrap();
     assert_eq!(
         value,
         StateValue::SessionTab {
@@ -1601,11 +1603,7 @@ pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を�
     let mut archived = item;
     archived.lifecycle = AgentSessionLifecycleDto::Archived;
     *fixture.sessions.item.lock() = Some(archived.clone());
-    let value = fixture
-        .reads
-        .read(&T::SessionTab("session".into()))
-        .await
-        .unwrap();
+    let value = reads.read(&T::SessionTab("session".into())).await.unwrap();
     assert_eq!(
         value,
         StateValue::SessionTab {
@@ -1615,11 +1613,7 @@ pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を�
     );
     *fixture.sessions.item.lock() = None;
     assert_eq!(
-        fixture
-            .reads
-            .read(&T::SessionTab("session".into()))
-            .await
-            .unwrap(),
+        reads.read(&T::SessionTab("session".into())).await.unwrap(),
         StateValue::SessionTab {
             session: None,
             node: None
