@@ -56,11 +56,76 @@ pub(crate) mod tests {
                     status.can_retry(NodeKindName::Command, presence),
                     absent && retry_command
                 );
+                for execution in [
+                    crate::domain::workflow::ExecutionStatus::Running,
+                    crate::domain::workflow::ExecutionStatus::Completed,
+                    crate::domain::workflow::ExecutionStatus::Aborted,
+                ] {
+                    for latest in [false, true] {
+                        assert_eq!(
+                            status.can_retry_in_execution(
+                                execution.is_active(),
+                                NodeKindName::Command,
+                                presence,
+                                || latest
+                            ),
+                            execution.is_active() && latest && absent && retry_command
+                        );
+                    }
+                }
                 assert!(!status.can_retry(NodeKindName::Session, presence));
                 for kind in [NodeKindName::Sequence, NodeKindName::Fanout] {
                     assert!(!status.can_retry(kind, presence));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_再試行可否_再試行できるcommandだけ最新判定を評価する() {
+        // Given
+        use NodeExecutionStatus as S;
+        use NodeProcessPresence as P;
+        for (active, kind, status, presence, called) in [
+            (
+                true,
+                NodeKindName::Session,
+                S::Running,
+                P::ConfirmedAbsent,
+                false,
+            ),
+            (
+                false,
+                NodeKindName::Command,
+                S::Running,
+                P::ConfirmedAbsent,
+                false,
+            ),
+            (true, NodeKindName::Command, S::Running, P::Live, false),
+            (
+                true,
+                NodeKindName::Command,
+                S::Succeeded,
+                P::ConfirmedAbsent,
+                false,
+            ),
+            (
+                true,
+                NodeKindName::Command,
+                S::Running,
+                P::ConfirmedAbsent,
+                true,
+            ),
+        ] {
+            let mut evaluated = false;
+            // When
+            let allowed = status.can_retry_in_execution(active, kind, presence, || {
+                evaluated = true;
+                false
+            });
+            // Then
+            assert!(!allowed);
+            assert_eq!(evaluated, called);
         }
     }
 

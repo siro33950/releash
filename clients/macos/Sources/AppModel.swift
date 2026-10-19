@@ -12,7 +12,23 @@ import SwiftProtobuf
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
-  var failure: String?
+  private enum Failure {
+    case operation(String)
+    case workspace([String: String])
+
+    var message: String {
+      switch self {
+      case .operation(let message): return message
+      case .workspace(let errors): return Set(errors.values).sorted().joined(separator: "\n")
+      }
+    }
+  }
+  private var workspaceReadErrors: [String: Bool] = [:]
+  private var displayedFailure: Failure?
+  var failure: String? {
+    get { displayedFailure?.message }
+    set { displayedFailure = newValue.map(Failure.operation) }
+  }
   var connectionFailure: String?
   var connected = false
   var reconnecting = false
@@ -400,10 +416,25 @@ import SwiftProtobuf
   func perform(_ operation: @escaping @MainActor () async throws -> Void) {
     Task { do { try await operation() } catch { failure = failureMessage(error) } }
   }
+  func dismissFailure() {
+    if case .workspace(let errors) = displayedFailure {
+      for error in errors.keys where workspaceReadErrors[error] != nil {
+        workspaceReadErrors[error] = true
+      }
+    }
+    displayedFailure = nil
+  }
+
+  private func resetWorkspaceReadErrors() {
+    if case .workspace = displayedFailure { displayedFailure = nil }
+    workspaceReadErrors = [:]
+  }
+
   func selectWorktree(_ path: String) {
     guard selectedWorktree != path || !layoutLoaded else { return }
     if let id = workspaceSubscription { unsubscribe(id) }
     stopTerminals()
+    resetWorkspaceReadErrors()
     selectedWorktree = path
     layoutLoaded = false
     layout = .empty()
@@ -419,6 +450,7 @@ import SwiftProtobuf
     if let id = workspaceSubscription { unsubscribe(id) }
     workspaceSubscription = nil
     stopTerminals()
+    resetWorkspaceReadErrors()
     selectedWorktree = nil
     layoutLoaded = false
     layout = .empty()
@@ -426,8 +458,21 @@ import SwiftProtobuf
   }
   func receiveWorkspaceState(_ value: Releash_Client_V1_NullableWorkspaceStateDto, path: String) {
     guard selectedWorktree == path, pendingSaves[path, default: 0] == 0 else { return }
+    let errors = Dictionary(
+      (value.hasValue ? value.value.readFailures : []).map { ($0.referenceID, $0.message) },
+      uniquingKeysWith: { _, latest in latest })
+    let hasNewError = errors.keys.contains { workspaceReadErrors[$0] == nil }
+    workspaceReadErrors = Dictionary(
+      uniqueKeysWithValues: errors.keys.map {
+        ($0, workspaceReadErrors[$0] ?? false)
+      })
+    if hasNewError {
+      let visible = errors.filter { workspaceReadErrors[$0.key] == false }
+      if !visible.isEmpty { displayedFailure = .workspace(visible) }
+    }
     if value.hasValue {
       workspaceState = value.value
+      workspaceState.readFailures = []
       if value.value.hasPaneLayout {
         do {
           layout = try PaneLayout(value.value.paneLayout)
@@ -607,6 +652,11 @@ extension AppModel {
     savePaneLayout()
   }
 
+  func openSession(_ selection: Releash_Client_V1_SessionSelection) {
+    panes.openSession(id: selection.agentSessionID, nodeID: selection.nodeID, title: "Session")
+    savePaneLayout()
+  }
+
   private func syncNodeTabTitles() {
     let roots =
       repositories.flatMap(\.worktrees.items).first { $0.path == selectedWorktree }?.snapshot.nodes
@@ -625,7 +675,7 @@ extension AppModel {
     request.callerRequestID = UUID().uuidString
     let selection = try await client.createAgentSession(request: request, headers: headers).result
       .get()
-    openNode(.session, id: selection.nodeID, title: "Session")
+    openSession(selection)
   }
 
   func startWorkflow(name: String, path: String) async throws {
@@ -640,7 +690,18 @@ extension AppModel {
 
   func openRoot(_ root: Releash_Client_V1_WorkspaceTreeItem) {
     guard let kind = root.rootKind else { return }
-    openNode(kind, id: root.rootID, title: root.rootTabTitle)
+    if kind == .session {
+      guard case .node(let node) = root.variant else { return }
+      if node.hasSessionID {
+        panes.openSession(id: node.sessionID, nodeID: root.rootID, title: node.title)
+        savePaneLayout()
+      } else {
+        panes.openPendingSession(id: root.rootID, title: node.title)
+        savePaneLayout()
+      }
+    } else {
+      openNode(kind, id: root.rootID, title: root.rootTabTitle)
+    }
   }
   func resumeNode(path: String, id: String) {
     guard let client else { return }

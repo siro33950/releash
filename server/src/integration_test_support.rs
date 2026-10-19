@@ -42,6 +42,8 @@ pub mod daemon {
     pub use crate::usecase::daemon::DaemonUsecase;
 }
 pub mod persistence {
+    pub use crate::adaptor::gateway::workflow::fact_log::record_from_row;
+
     pub use crate::adaptor::gateway::app_data_gc::apply_canonical_runtime_owners;
     pub use crate::adaptor::gateway::app_data_gc::build_startup_gc_request;
     pub use crate::adaptor::gateway::app_data_gc::StdGcFileSystem;
@@ -356,6 +358,7 @@ pub mod platform {
     pub use crate::infrastructure::platform::path_aliases::PathAlias;
     pub use crate::infrastructure::platform::path_aliases::PathAliases;
     pub use crate::infrastructure::terminal::checkpoint_journal::IncrementalCheckpointJournal;
+    pub use crate::usecase::failure::FailureRecordingUsecase;
     pub use crate::usecase::git_host::git_host_usecase::IssueListing;
 
     pub use crate::infrastructure::terminal::shell_integration::create_shell_integration_files;
@@ -839,6 +842,7 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::EnvironmentVariableName;
     pub use crate::domain::workflow::value_objects::definition::InputParameterRef;
     pub use crate::domain::workflow::value_objects::field_path::FieldPath;
+    pub use crate::domain::workflow::ApprovalGrantedFact;
     pub use crate::usecase::workflow::dto::facet_summary_to_dto;
     pub use crate::usecase::workflow::node_startup::NodeStartupGateway;
     pub use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
@@ -1014,6 +1018,12 @@ pub mod workflow {
     pub use crate::domain::workflow::services::routing::route_in_scope;
     pub use crate::domain::workflow::services::routing::RouteDecision;
     pub use crate::domain::workflow::services::secret_masker::mask_sensitive_text;
+    pub use crate::domain::workflow::services::test_helpers::{
+        composite_dynamic_fanout_facts, composite_routing_facts, delegated_routing_facts,
+        isolated_delegate_facts, isolated_session_timestamp_facts, retried_delegate_parent_facts,
+        scoped_dynamic_fanout_facts, session_timestamp_facts, sibling_sequence_timestamp_facts,
+        stop_first_delegate_facts,
+    };
     pub use crate::domain::workflow::services::validation::validate;
     pub use crate::domain::workflow::services::validation::ValidationError;
     pub use crate::domain::workflow::value_objects::definition::ChildEntry;
@@ -1130,6 +1140,36 @@ pub mod workflow {
     pub use crate::usecase::workflow::workspace_tree::WorkspaceNodeContentDto;
 }
 pub mod workspace {
+    pub use crate::adaptor::gateway::workspace_tree::query_service::StandaloneReferences;
+    pub use crate::domain::workspace_tree::entities::standalone_reference;
+
+    pub async fn session_detail(
+        repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
+        workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
+        tree_id: &str,
+        node_id: &str,
+    ) -> Result<
+        Option<crate::usecase::workflow::WorkspaceNodeDetailDto>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        let Some(tree) = repository.load_execution_tree(workspace, tree_id).await? else {
+            return Ok(None);
+        };
+        Ok(tree
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(node_id))
+            .map(|node| {
+                let can_abort = tree.nodes().iter().any(|owner| {
+                    Some(owner.id.as_str()) == node.execution_id.as_deref() && owner.can_abort
+                });
+                crate::adaptor::gateway::workspace_tree::query_service::node_detail(
+                    node.clone(),
+                    can_abort,
+                )
+            }))
+    }
+
     pub async fn node_for_execution(
         repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,
         workspace: &crate::domain::workspace_tree::WorkspaceIdentity,

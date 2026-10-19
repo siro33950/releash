@@ -978,7 +978,7 @@ pub(crate) fn decode_stored_fact(
     .map_err(|error| format!("node fact decode failed: {error}"))
 }
 
-pub(crate) fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecord>, String> {
+pub fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecord>, String> {
     let kind = kind_from_column(&row.kind)?;
     let attempt = u32::try_from(row.attempt)
         .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?;

@@ -89,8 +89,10 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> Result<NodeEventRow, rusqlite::Error
     })
 }
 
-const ROW_COLUMNS: &str = "tree_id, seq, node_execution_id, parent_id, node_name, \
-     kind, attempt, event_type, session_id, detail, timestamp";
+const ROW_COLUMNS: &str = concat!(
+    "tree_id, seq, node_execution_id, parent_id, node_name, ",
+    "kind, attempt, event_type, session_id, detail, timestamp"
+);
 
 /// Read one tree's facts in append order.
 pub fn read_tree(
@@ -117,6 +119,18 @@ pub fn read_tree_after(
     rows.collect()
 }
 
+pub(crate) fn reference_starts_after(
+    connection: &Connection,
+    tree_id: &str,
+    seq: i64,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events WHERE tree_id = ?1 AND seq > ?2 AND event_type = 'started' ORDER BY seq"
+    ))?;
+    let rows = statement.query_map(rusqlite::params![tree_id, seq], row_from_sql)?;
+    rows.collect()
+}
+
 /// Every tree with its latest `seq`. Each tree is reached through the primary
 /// key, so the cost follows the number of trees, not the number of facts.
 pub fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlite::Error> {
@@ -131,6 +145,49 @@ pub fn tree_heads(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlit
          FROM trees WHERE tree_id IS NOT NULL",
     )?;
     let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
+pub(crate) fn reference_heads(
+    connection: &Connection,
+    trees: &std::collections::HashSet<String>,
+) -> Result<Vec<(String, i64)>, rusqlite::Error> {
+    let mut statement =
+        connection.prepare("SELECT MAX(seq) FROM node_events WHERE tree_id = ?1")?;
+    let mut heads = Vec::new();
+    for tree in trees {
+        let head: Option<i64> = statement.query_row([tree], |row| row.get(0))?;
+        if let Some(head) = head {
+            heads.push((tree.clone(), head));
+        }
+    }
+    Ok(heads)
+}
+
+pub(crate) fn workspace_reference_trees(
+    connection: &Connection,
+    workspace: &str,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT tree_id FROM node_events
+         WHERE event_type = 'started' AND parent_id IS NULL
+         AND CASE WHEN json_valid(detail) THEN json_extract(detail, '$.root.worktreePath') END = ?1
+",
+    )?;
+    let rows = statement.query_map([workspace], |row| row.get(0))?;
+    rows.collect()
+}
+
+pub(crate) fn standalone_roots_after(
+    connection: &Connection,
+    tree: &str,
+    after: i64,
+) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT node_name FROM node_events WHERE tree_id = ?1 AND seq > ?2 AND event_type = 'started'
+         AND parent_id IS NULL AND kind = 'session' AND node_execution_id = tree_id ORDER BY seq"
+    )?;
+    let rows = statement.query_map(rusqlite::params![tree, after], |row| row.get(0))?;
     rows.collect()
 }
 

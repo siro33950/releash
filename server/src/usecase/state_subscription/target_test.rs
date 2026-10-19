@@ -301,3 +301,20 @@ fn test_ファイルthread購読_該当worktreeのcomment変更だけを受け�
     assert!(target.affected_by(&StateChangeSource::ReviewComments(None)));
     assert!(!target.affected_by(&StateChangeSource::ReviewComments(Some("/other".into()))));
 }
+
+#[test]
+fn test_sessionタブ購読_idだけを受け取りworktree変化で更新する() {
+    // Given
+    let args = ["agent-session"];
+    // When
+    let target = SubscriptionTarget::from_parts("session-tab", &args).unwrap();
+    // Then
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()).unwrap(),
+        target
+    );
+    assert!(target.affected_by(&StateChangeSource::Worktree("/repo".into())));
+    assert!(SubscriptionTarget::from_parts("session-tab", &[]).is_err());
+    assert!(SubscriptionTarget::from_parts("session-tab", &["/repo", "agent-session"]).is_err());
+    assert!(SubscriptionTarget::from_parts("session-tab", &[" "]).is_err());
+}

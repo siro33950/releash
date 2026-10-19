@@ -15,11 +15,11 @@ pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, RuntimeSnapshotNodeProjection};
 pub use repository::WorkspaceTreeRepository;
 pub use services::{WorkspacePublicRoot, WorkspaceTreeVisibilityPolicy};
-pub(crate) use value_objects::WorkspaceExecution;
 pub use value_objects::{
     WorkspaceCommandResult, WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus,
     WorkspaceNodeStatusClassification, WorkspaceStructureFact, WorkspaceTreeNode,
 };
+pub(crate) use value_objects::{WorkspaceExecution, WorkspaceNodeClassification};
 pub(crate) use visible::WorkspaceVisibleNode;
 
 pub(crate) mod card;

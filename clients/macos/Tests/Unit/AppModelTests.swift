@@ -6,6 +6,17 @@ import XCTest
 
 @testable import Releash
 
+private func workspaceFailures(_ messages: [String])
+  -> [Releash_Client_V1_WorkspaceStateReadFailure]
+{
+  messages.map { message in
+    var failure = Releash_Client_V1_WorkspaceStateReadFailure()
+    failure.referenceID = message
+    failure.message = message
+    return failure
+  }
+}
+
 final class AppModelTests: XCTestCase {
   @MainActor func testDeletingSelectedWorktreeClearsLayoutWithoutChangingAnotherSelection() {
     let model = AppModel()
@@ -62,6 +73,162 @@ final class AppModelTests: XCTestCase {
     model.receiveWorkspaceState(state, path: "/repo/previous")
     XCTAssertEqual(model.layout, input)
     XCTAssertFalse(model.layoutLoaded)
+  }
+  @MainActor func test_配置復元エラー_閉じた継続失敗を抑え新規と解消後の再発を表示する() {
+    // Given
+    let model = AppModel()
+    model.selectWorktree("/repo")
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.readFailures = workspaceFailures(["first", "second"])
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, "first\nsecond")
+    // When
+    model.dismissFailure()
+    state.value.readFailures.reverse()
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    state.value.readFailures = workspaceFailures(["second", "third"])
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, "third")
+    // When
+    model.dismissFailure()
+    state.value.readFailures = workspaceFailures(["second"])
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    state.value.readFailures = workspaceFailures(["first", "second"])
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, "first")
+    // When
+    model.dismissFailure()
+    model.deselectWorktree("/repo")
+    model.selectWorktree("/other")
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    model.receiveWorkspaceState(state, path: "/other")
+    // Then
+    XCTAssertEqual(model.failure, "first\nsecond")
+  }
+
+  @MainActor func test_配置復元エラー_診断文言が変わっても参照の閉じた状態を維持する() {
+    // Given
+    let model = AppModel()
+    model.selectWorktree("/repo")
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    var first = Releash_Client_V1_WorkspaceStateReadFailure()
+    first.referenceID = "first-reference"
+    first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
+    state.value.readFailures = [first]
+    model.receiveWorkspaceState(state, path: "/repo")
+    model.dismissFailure()
+    // When
+    first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
+    state.value.readFailures = [first]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNil(model.failure)
+    // When
+    var second = first
+    second.referenceID = "second-reference"
+    state.value.readFailures = [first, second]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, second.message)
+    // When
+    model.dismissFailure()
+    state.value.readFailures = [second]
+    model.receiveWorkspaceState(state, path: "/repo")
+    first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
+    state.value.readFailures = [first, second]
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.failure, first.message)
+  }
+
+  @MainActor func test_配置復元エラー_表示中に解消してから閉じても再発を表示する() {
+    for remaining in [[], ["second"]] {
+      // Given
+      let model = AppModel()
+      model.selectWorktree("/repo")
+      var state = Releash_Client_V1_NullableWorkspaceStateDto()
+      state.value.readFailures = workspaceFailures(["first", "second"])
+      model.receiveWorkspaceState(state, path: "/repo")
+      // When
+      state.value.readFailures = workspaceFailures(remaining)
+      model.receiveWorkspaceState(state, path: "/repo")
+      model.dismissFailure()
+      model.receiveWorkspaceState(state, path: "/repo")
+      // Then
+      XCTAssertNil(model.failure)
+      // When
+      state.value.readFailures = workspaceFailures(["first", "second"])
+      model.receiveWorkspaceState(state, path: "/repo")
+      // Then
+      XCTAssertEqual(model.failure, remaining.isEmpty ? "first\nsecond" : "first")
+    }
+  }
+
+  @MainActor func test_復元エラーと同文言の操作失敗_閉じる解消と切替で由来を取り違えない() {
+    for switchWorkspace in [false, true] {
+      let model = AppModel()
+      model.selectWorktree("/repo")
+      var state = Releash_Client_V1_NullableWorkspaceStateDto()
+      state.value.readFailures = workspaceFailures(["same failure"])
+      model.receiveWorkspaceState(state, path: "/repo")
+      model.failure = "same failure"
+      if switchWorkspace {
+        model.selectWorktree("/other")
+        XCTAssertEqual(model.failure, "same failure")
+      } else {
+        model.dismissFailure()
+        state.value.readFailures = workspaceFailures(["same failure", "new failure"])
+        model.receiveWorkspaceState(state, path: "/repo")
+        XCTAssertEqual(model.failure, "new failure\nsame failure")
+        model.failure = "same failure"
+        state.value.readFailures = workspaceFailures([])
+        model.receiveWorkspaceState(state, path: "/repo")
+        XCTAssertEqual(model.failure, "same failure")
+      }
+    }
+  }
+
+  @MainActor func test_配置復元_取得失敗を表示し未解決参照と他のタブを保持する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo"
+    let layout = PaneLayout.pane(
+      id: "pane",
+      tabs: [
+        PaneTab(id: "legacy", kind: .session, nodeID: "unresolved"),
+        PaneTab(id: "ready", kind: .session, agentSessionID: "agent"),
+      ], active: "ready")
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.paneLayout = layout.message
+    state.value.readFailures = workspaceFailures(["Session reference could not be read"])
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertTrue(model.layoutLoaded)
+    XCTAssertEqual(try model.panes.layout(), layout)
+    XCTAssertEqual(model.failure, "Session reference could not be read")
+    // When
+    model.editLayout { $0 = .empty() }
+    try await eventually { !http.requests("SaveWorkspaceState").isEmpty }
+    // Then
+    let saved = try Releash_Client_V1_SaveWorkspaceStateRequest(
+      serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
+    XCTAssertTrue(saved.state.readFailures.isEmpty)
+    await model.stop()
   }
 }
 
@@ -668,7 +835,7 @@ extension AppModelTests {
 }
 
 extension AppModelTests {
-  @MainActor func testRestoredNodeTabTitlesUseAlreadyReceivedRoots() async throws {
+  @MainActor func testRestoredCommandTitlesUseRootsAndSessionTitlesUseOwnSnapshot() async throws {
     let http = TestHTTPClient()
     var roots: [Releash_Client_V1_WorkspaceTreeItem] = []
     for (id, title, kind) in [
@@ -679,6 +846,7 @@ extension AppModelTests {
       root.node.id = id
       root.node.title = title
       root.node.contentKind.value = kind
+      if kind == .session { root.node.sessionID = "agent-session" }
       roots.append(root)
     }
     var worktree = Releash_Client_V1_WorkspaceWorktreeList()
@@ -697,6 +865,21 @@ extension AppModelTests {
     try await eventually { model.layoutLoaded }
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
+    let tab = try XCTUnwrap(
+      model.panes.controller.allTabIds.first {
+        model.panes.tab($0)?.agentSessionID == "agent-session"
+      })
+    var snapshot = Releash_Client_V1_SessionTabSnapshot()
+    snapshot.node.title = "Session name"
+    model.panes.updateSession(tab, snapshot: snapshot)
+    repository.worktrees.items[0].snapshot.nodes.items[0].node.title = "List title"
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaces.repositories.items = [repository]
+    try http.publish(payload, target: "workspaces")
+    try await eventually {
+      model.repositories.first?.worktrees.items.first?.snapshot.nodes.items.first?.node.title
+        == "List title"
+    }
     XCTAssertEqual(
       model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.map(
         \.title), ["Session name", "Command name"])

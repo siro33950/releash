@@ -1,4 +1,5 @@
 use releashd::test_support::integration::workflow::AgentActivityObservedFact;
+use releashd::test_support::integration::workspace::session_detail;
 
 use releashd::test_support::integration::workflow::append_single_fact;
 use releashd::test_support::integration::workflow::fold_tree_from;
@@ -1374,11 +1375,16 @@ pub async fn test_workspace_tree読取_delegate親は回答待ちの子から黄
     );
 }
 
-async fn delegate_parent_status_from_store(
+pub(super) async fn delegate_fixture(
+    workspace: &str,
     activity: releashd::test_support::integration::workflow::AgentSessionActivity,
-) -> releashd::test_support::integration::workspace::WorkspaceNodeStatusClassification {
+) -> (
+    tempfile::TempDir,
+    Arc<LocalEventStore>,
+    releashd::test_support::integration::workflow::NodeFactMeta,
+    releashd::test_support::integration::workflow::NodeFactMeta,
+) {
     use releashd::test_support::integration::workflow::append_single_fact;
-    use releashd::test_support::integration::workflow::fold_tree_from;
 
     use releashd::test_support::integration::workflow::AgentActivityObservedFact;
     use releashd::test_support::integration::workflow::ArtifactProducedFact;
@@ -1393,6 +1399,7 @@ async fn delegate_parent_status_from_store(
     use releashd::test_support::integration::workflow::TreeRootFact;
 
     const TREE: &str = "00000000-0000-4000-8000-000000001958";
+    const ROOT: &str = "00000000-0000-4000-8000-000000001957";
     const CHILD: &str = "00000000-0000-4000-8000-000000001959";
     let definition = WorkflowDefinition {
         name: "delegate".into(),
@@ -1423,7 +1430,7 @@ async fn delegate_parent_status_from_store(
     };
     let parent = NodeFactMeta {
         tree_id: TREE.into(),
-        node_execution_id: TREE.into(),
+        node_execution_id: ROOT.into(),
         parent_id: None,
         node_name: "main".into(),
         kind: NodeKindName::Session,
@@ -1432,7 +1439,7 @@ async fn delegate_parent_status_from_store(
     let child = NodeFactMeta {
         tree_id: TREE.into(),
         node_execution_id: CHILD.into(),
-        parent_id: Some(TREE.into()),
+        parent_id: Some(ROOT.into()),
         node_name: "verify".into(),
         kind: NodeKindName::Session,
         attempt: 1,
@@ -1445,8 +1452,8 @@ async fn delegate_parent_status_from_store(
                 parent: None,
                 root: Some(Box::new(TreeRootFact {
                     repository_root: None,
-                    workspace_identity: WorkspaceIdentity::new("/repo").as_str().into(),
-                    worktree_path: "/repo".into(),
+                    workspace_identity: WorkspaceIdentity::new(workspace).as_str().into(),
+                    worktree_path: workspace.into(),
                     created_from: ExecutionOrigin::DesktopUi,
                     request: "test".into(),
                     workflow_name: "delegate".into(),
@@ -1488,7 +1495,7 @@ async fn delegate_parent_status_from_store(
             child.clone(),
             NodeFact::Started(StartedFact {
                 worktree: None,
-                parent: Some(ExecutionParentRef::delegate_child(TREE)),
+                parent: Some(ExecutionParentRef::delegate_child(ROOT)),
                 root: None,
             }),
         ),
@@ -1502,7 +1509,7 @@ async fn delegate_parent_status_from_store(
             }),
         ),
         (
-            child,
+            child.clone(),
             NodeFact::AgentActivityObserved(AgentActivityObservedFact { activity }),
         ),
     ];
@@ -1518,22 +1525,52 @@ async fn delegate_parent_status_from_store(
             .unwrap();
     }
 
-    let restored = fold_tree_from(&FactLogReadBackend::Live(store.clone()), TREE)
+    (directory, store, parent, child)
+}
+
+async fn delegate_parent_status_from_store(
+    activity: releashd::test_support::integration::workflow::AgentSessionActivity,
+) -> releashd::test_support::integration::workspace::WorkspaceNodeStatusClassification {
+    let (_directory, store, parent, child) = delegate_fixture("/repo", activity).await;
+    let restored = fold_tree_from(&FactLogReadBackend::Live(store.clone()), &parent.tree_id)
         .await
         .unwrap()
         .unwrap();
-    assert!(restored.aggregate.delegate_waits_for_child(TREE));
-    assert_eq!(restored.session_activities[CHILD], activity);
+    assert!(restored
+        .aggregate
+        .delegate_waits_for_child(&parent.node_execution_id));
+    assert_eq!(
+        restored.session_activities[&child.node_execution_id],
+        activity
+    );
     let repository = SqliteWorkspaceTreeRepository::new(store);
-    releashd::test_support::integration::workspace::node_for_execution(
+    let node = releashd::test_support::integration::workspace::node_for_execution(
         &*repository,
         &releashd::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
-        TREE,
+        &parent.node_execution_id,
     )
     .await
     .unwrap()
+    .unwrap();
+    // When
+    let detail = session_detail(
+        &*repository,
+        &WorkspaceIdentity::new("/repo"),
+        &parent.tree_id,
+        &parent.node_execution_id,
+    )
+    .await
     .unwrap()
-    .status_classification
+    .unwrap();
+    // Then
+    assert_eq!(
+        detail.classification,
+        node.status_classification.as_public_str()
+    );
+    assert_eq!(detail.id, node.id);
+    assert_eq!(detail.title, node.title);
+    assert_eq!(detail.capabilities.can_rename, node.can_rename);
+    node.status_classification
 }
 
 async fn standalone_session_store(
@@ -1559,6 +1596,73 @@ async fn standalone_session_store(
         .await
         .unwrap();
     (directory, store)
+}
+
+#[tokio::test]
+pub async fn test_実行木のid読取_一覧の復元を共有し別の木の破損から独立する() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let listed = repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .remove(0)
+        .unwrap();
+    let folds = tree_fold_count();
+    let unrelated = AgentSession::create(
+        "unrelated",
+        WorkspaceIdentity::new("/other"),
+        "/other",
+        ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root("unrelated").unwrap(),
+    )
+    .unwrap();
+    LocalAgentSessionRepository::new(store)
+        .create(unrelated, "create-unrelated")
+        .await
+        .unwrap();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE tree_id = 'unrelated' AND event_type = 'started'", []).unwrap();
+
+    // When
+    let actual = repository
+        .load_execution_tree(&workspace, "session")
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(
+        actual.session_node("session"),
+        listed.session_node("session")
+    );
+    assert_eq!(tree_fold_count(), folds);
+    assert!(repository
+        .load_execution_tree(&WorkspaceIdentity::new("/other"), "session")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repository
+        .load_execution_tree(&workspace, "missing")
+        .await
+        .unwrap()
+        .is_none());
+
+    // When: the same id and sequence now belong to a reconstructed root.
+    connection.execute("UPDATE node_events SET detail = json_set(detail, '$.root.workspaceIdentity', '/relocated') WHERE tree_id = 'session' AND event_type = 'started'", []).unwrap();
+    // Then
+    assert!(repository
+        .load_execution_tree(&workspace, "session")
+        .await
+        .unwrap()
+        .is_none());
+    let relocated = repository
+        .load_execution_tree(&WorkspaceIdentity::new("/relocated"), "session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(relocated.session_node("session").is_some());
 }
 
 fn standalone_session_meta(
@@ -1872,4 +1976,342 @@ pub async fn test_workspace_tree読取_読まれなくなった木の保持を�
     // Then: 保持は捨てられていて、最初から読み直す
     assert_eq!(tree_fold_count(), folds + 1);
     assert_eq!(tree.executions().len(), 1);
+}
+
+#[tokio::test]
+pub async fn test_sessionタブ分類_delegateの次周回は前の子を保持し明示的なretryだけ履歴にする() {
+    use releashd::test_support::integration::workflow::{
+        ArtifactProducedFact, StartedFact, StopReceivedFact, SubmitReceivedFact,
+    };
+    // Given
+    for retry in [false, true] {
+        let (_directory, store, parent, child) = delegate_fixture(
+            "/repo",
+            releashd::test_support::integration::workflow::AgentSessionActivity::AwaitingAnswer,
+        )
+        .await;
+        let mut facts = if retry {
+            vec![(child.clone(), NodeFact::RetryRequested)]
+        } else {
+            vec![
+                (
+                    child.clone(),
+                    NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+                ),
+                (
+                    child.clone(),
+                    NodeFact::ArtifactProduced(ArtifactProducedFact {
+                        contract: None,
+                        value: serde_json::json!({"done": false}),
+                        request_id: None,
+                    }),
+                ),
+                (
+                    child.clone(),
+                    NodeFact::StopReceived(StopReceivedFact {
+                        result_summary: None,
+                        token_usage: None,
+                    }),
+                ),
+                (child.clone(), NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                    activity: releashd::test_support::integration::workflow::AgentSessionActivity::AwaitingAnswer,
+                })),
+                (
+                    parent.clone(),
+                    NodeFact::DelegateResultInjected(child.node_execution_id.clone()),
+                ),
+                (
+                    parent.clone(),
+                    NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+                ),
+                (
+                    parent.clone(),
+                    NodeFact::ArtifactProduced(ArtifactProducedFact {
+                        contract: Some("result".into()),
+                        value: serde_json::json!({"done": false}),
+                        request_id: None,
+                    }),
+                ),
+                (
+                    parent.clone(),
+                    NodeFact::StopReceived(StopReceivedFact {
+                        result_summary: None,
+                        token_usage: None,
+                    }),
+                ),
+            ]
+        };
+        let mut next = child.clone();
+        next.node_execution_id = "00000000-0000-4000-8000-000000001960".into();
+        next.attempt = 2;
+        facts.extend([
+            (next.clone(), NodeFact::Started(StartedFact { worktree: None, parent: Some(ExecutionParentRef::delegate_child(&parent.node_execution_id)), root: None })),
+            (next.clone(), releashd::test_support::integration::fixtures::session_attached("next-session")),
+            (next, NodeFact::AgentActivityObserved(AgentActivityObservedFact { activity: releashd::test_support::integration::workflow::AgentSessionActivity::Working })),
+        ]);
+        // When
+        for (index, (meta, fact)) in facts.iter().enumerate() {
+            append_single_fact(&store, meta, fact, 10000 + index as i64 * 1000)
+                .await
+                .unwrap();
+        }
+        let repository = SqliteWorkspaceTreeRepository::new(store);
+        let listed = releashd::test_support::integration::workspace::node_for_execution(
+            &*repository,
+            &WorkspaceIdentity::new("/repo"),
+            &parent.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let detail = session_detail(
+            &*repository,
+            &WorkspaceIdentity::new("/repo"),
+            &parent.tree_id,
+            &parent.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        // Then
+        assert_eq!(
+            detail.classification,
+            if retry { "active" } else { "attention" }
+        );
+        assert_eq!(
+            detail.classification,
+            listed.status_classification.as_public_str()
+        );
+    }
+}
+
+#[tokio::test]
+pub async fn test_会話詳細の合成子_保存事実から部分完了と承認待ちの一覧分類に一致する() {
+    use releashd::test_support::integration::workflow::{
+        ArtifactProducedFact, ExecutionTreeLaunch, IsolatedWorktree, NodeFactMeta, Predicate,
+        SessionAttachedFact, SessionDelegate, StartedFact, StopReceivedFact, SubmitReceivedFact,
+        TreeRootFact,
+    };
+    // Given
+    for (fanout, count) in [(false, 1), (true, 0), (true, 1), (true, 2)] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        ))
+        .unwrap();
+        let tree = "00000000-0000-4000-8000-000000002063";
+        let parent = "00000000-0000-4000-8000-000000002064";
+        let scope = "00000000-0000-4000-8000-000000002065";
+        let definition = WorkflowDefinition {
+            name: "composite".into(),
+            entry: "main".into(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "main".into(),
+                    completion: NodeCompletion {
+                        delegate: Some(SessionDelegate {
+                            child: "scope".into(),
+                            inputs: Vec::new(),
+                            when: Predicate::Ref(
+                                if count == 2 {
+                                    "child.1.passed"
+                                } else {
+                                    "child.judge.passed"
+                                }
+                                .into(),
+                            ),
+                            max_iterations: 2,
+                        }),
+                        ..NodeCompletion::require_approval()
+                    },
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "scope".into(),
+                    kind: if fanout {
+                        NodeKind::Fanout(FanoutSpec {
+                            children: vec![ChildEntry::reference("judge")],
+                            items: if count == 1 {
+                                None
+                            } else {
+                                Some(ItemsSource::Literal(
+                                    (0..count).map(|index| serde_json::json!(index)).collect(),
+                                ))
+                            },
+                        })
+                    } else {
+                        NodeKind::Sequence(SequenceSpec {
+                            entry: None,
+                            children: vec![ChildEntry::reference("judge")],
+                        })
+                    },
+                    worktree: (count == 0).then_some(
+                        releashd::test_support::integration::workflow::WorktreeMode::Isolated,
+                    ),
+                    completion: if count == 0 {
+                        NodeCompletion::require_approval()
+                    } else {
+                        NodeCompletion::default()
+                    },
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "judge".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let meta = NodeFactMeta {
+            tree_id: tree.into(),
+            node_execution_id: parent.into(),
+            node_name: "main".into(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+            parent_id: None,
+        };
+        let mut facts = vec![
+            (
+                meta.clone(),
+                NodeFact::Started(StartedFact {
+                    root: Some(Box::new(TreeRootFact {
+                        repository_root: Some("/repo".into()),
+                        workspace_identity: "/repo".into(),
+                        worktree_path: "/repo".into(),
+                        created_from: ExecutionOrigin::Cli,
+                        request: String::new(),
+                        workflow_name: "composite".into(),
+                        definition: Some(definition),
+                        launched_as: ExecutionTreeLaunch::Workflow,
+                    })),
+                    parent: None,
+                    worktree: None,
+                }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::SessionAttached(SessionAttachedFact {
+                    session_id: "parent-session".into(),
+                    provider_session_id: None,
+                    transcript_ref: None,
+                    initial_instruction_admitted: false,
+                }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::ArtifactProduced(ArtifactProducedFact {
+                    contract: None,
+                    value: serde_json::json!({"body":"private"}),
+                    request_id: None,
+                }),
+            ),
+            (
+                meta.clone(),
+                NodeFact::StopReceived(StopReceivedFact {
+                    result_summary: None,
+                    token_usage: None,
+                }),
+            ),
+        ];
+        let scope_parent = ExecutionParentRef::delegate_child(parent);
+        facts.push((
+            NodeFactMeta {
+                node_execution_id: scope.into(),
+                node_name: "scope".into(),
+                kind: if fanout {
+                    NodeKindName::Fanout
+                } else {
+                    NodeKindName::Sequence
+                },
+                parent_id: Some(parent.into()),
+                ..meta.clone()
+            },
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: Some(scope_parent),
+                worktree: (count == 0).then(|| IsolatedWorktree {
+                    branch: "isolated".into(),
+                    path: "/isolated".into(),
+                }),
+            }),
+        ));
+        for (seq, (meta, fact)) in facts.iter().enumerate() {
+            append_single_fact(&store, meta, fact, seq as i64 * 1000)
+                .await
+                .unwrap();
+        }
+        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+
+        for index in 0..count.max(1) {
+            if count > 0 {
+                let child_parent = if fanout {
+                    ExecutionParentRef::fanout_child(scope, (count == 2).then_some(index), 0)
+                } else {
+                    ExecutionParentRef::sequence_child(scope)
+                };
+                let child = NodeFactMeta {
+                    node_execution_id: format!("00000000-0000-4000-8000-{:012}", 2070 + index),
+                    node_name: "judge".into(),
+                    parent_id: Some(scope.into()),
+                    ..meta.clone()
+                };
+                // When
+                for fact in [
+                    NodeFact::Started(StartedFact {
+                        root: None,
+                        parent: Some(child_parent),
+                        worktree: None,
+                    }),
+                    NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
+                    NodeFact::ArtifactProduced(ArtifactProducedFact {
+                        contract: None,
+                        value: serde_json::json!({"passed":true,"body":"private"}),
+                        request_id: None,
+                    }),
+                    NodeFact::StopReceived(StopReceivedFact {
+                        result_summary: None,
+                        token_usage: None,
+                    }),
+                ] {
+                    append_single_fact(&store, &child, &fact, 10000 + index as i64 * 1000)
+                        .await
+                        .unwrap();
+                }
+            }
+            // When
+            let detail =
+                session_detail(&*repository, &WorkspaceIdentity::new("/repo"), tree, parent)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let list = releashd::test_support::integration::workspace::node_for_execution(
+                &*repository,
+                &WorkspaceIdentity::new("/repo"),
+                parent,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            // Then
+            assert_eq!(
+                detail.classification,
+                list.status_classification.as_public_str(),
+                "fanout={fanout}, count={count}, index={index}"
+            );
+            assert_eq!(
+                detail.classification,
+                if count == 2 && index == 0 {
+                    "active"
+                } else {
+                    "attention"
+                }
+            );
+            assert_eq!(detail.capabilities.can_approve, list.can_approve);
+        }
+    }
 }

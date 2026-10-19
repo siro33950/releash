@@ -37,11 +37,27 @@ pub(super) struct TreeRoot {
     started_at_ms: i64,
 }
 
+impl TreeRoot {
+    fn from_row(row: &NodeEventRow) -> Result<Option<Self>, LocalEventQueryError> {
+        crate::adaptor::gateway::workflow::stored_definition::read_tree_header(&row.detail)
+            .map_err(|reason| fold_query_error(fact_log::FactReadError::Corrupt(reason)))
+            .map(|header| {
+                header.map(|header| Self {
+                    workspace_identity: header.workspace_identity,
+                    worktree_path: header.worktree_path,
+                    launched_as: header.launched_as,
+                    started_at_ms: row.timestamp_ms,
+                })
+            })
+    }
+}
+
 #[derive(Default)]
 struct HeldTree {
     /// 直近に確かめた store の最新 seq。
     head: i64,
     root: Option<TreeRoot>,
+    root_identity: Option<(i64, [u8; 32])>,
     /// root を探した時点の最新 seq。root が無い木は、事実が足されたら探し直す。
     root_checked_at: i64,
     fold: Option<HeldFold>,
@@ -150,21 +166,8 @@ impl SqliteWorkspaceTreeRepository {
         for (tree_id, row) in roots {
             let tree = held.entry(tree_id).or_default();
             tree.root_checked_at = tree.head;
-            tree.root = match row {
-                Some(row) => {
-                    crate::adaptor::gateway::workflow::stored_definition::read_tree_header(
-                        &row.detail,
-                    )
-                    .map_err(|reason| fold_query_error(fact_log::FactReadError::Corrupt(reason)))?
-                    .map(|header| TreeRoot {
-                        workspace_identity: header.workspace_identity,
-                        worktree_path: header.worktree_path,
-                        launched_as: header.launched_as,
-                        started_at_ms: row.timestamp_ms,
-                    })
-                }
-                None => None,
-            };
+            tree.root_identity = row.as_ref().map(root_identity);
+            tree.root = row.as_ref().map(TreeRoot::from_row).transpose()?.flatten();
         }
         Ok(())
     }
@@ -282,11 +285,45 @@ impl SqliteWorkspaceTreeRepository {
         tree_id: &str,
     ) -> Result<Option<FoldedExecution>, LocalEventQueryError> {
         let mut held = self.held.lock().await;
-        self.sync(&mut held).await?;
-        match held.get_mut(tree_id) {
-            Some(tree) => self.catch_up(tree_id, tree).await,
-            None => Ok(None),
+        let requested = tree_id.to_string();
+        let (head, root) = self
+            .fact_backend()
+            .run_indexed(move |connection| {
+                let unavailable = |error: rusqlite::Error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                };
+                let transaction = connection.unchecked_transaction().map_err(unavailable)?;
+                let head =
+                    node_events::reference_heads(&transaction, &HashSet::from([requested.clone()]))
+                        .map_err(unavailable)?;
+                let root = node_events::first_root_row_of_tree(&transaction, &requested, "started")
+                    .map_err(unavailable)?;
+                Ok((head.first().map(|(_, head)| *head), root))
+            })
+            .await?;
+        let (Some(head), Some(root)) = (head, root) else {
+            held.remove(tree_id);
+            self.session_roots.lock().remove(tree_id);
+            return Ok(None);
+        };
+        let identity = root_identity(&root);
+        let tree = held.entry(tree_id.to_string()).or_default();
+        if tree.root_identity != Some(identity) || head < tree.head {
+            *tree = HeldTree::default();
+            self.session_roots.lock().remove(tree_id);
+            tree.root = TreeRoot::from_row(&root)?;
+            tree.root_identity = Some(identity);
         }
+        tree.head = head;
+        tree.root_checked_at = head;
+        if tree
+            .fold
+            .as_ref()
+            .is_some_and(|fold| fold.used_at.elapsed() > self.fold_idle_limit)
+        {
+            tree.fold = None;
+        }
+        self.catch_up(tree_id, tree).await
     }
 
     pub(super) fn tree_nodes(
@@ -493,6 +530,25 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         trees
     }
 
+    async fn load_execution_tree(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        execution_id: &str,
+    ) -> Result<Option<WorkspaceTree>, crate::domain::workflow::WorkflowError> {
+        let Some(execution) = self
+            .folded_tree(execution_id)
+            .await
+            .map_err(super::query_service::query_error)?
+        else {
+            return Ok(None);
+        };
+        if execution.0.root.workspace_identity != workspace_identity.as_str() {
+            return Ok(None);
+        }
+        self.workspace_tree_from_folded(workspace_identity.as_str(), &[execution])
+            .map_err(super::query_service::query_error)
+    }
+
     async fn load_node_by_session_id(
         &self,
         workspace_identity: &WorkspaceIdentity,
@@ -545,6 +601,19 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         }
         Ok(None)
     }
+}
+
+fn root_identity(row: &NodeEventRow) -> (i64, [u8; 32]) {
+    use sha2::Digest;
+    (
+        row.timestamp_ms,
+        sha2::Sha256::new()
+            .chain_update(row.node_execution_id.len().to_le_bytes())
+            .chain_update(row.node_execution_id.as_bytes())
+            .chain_update(row.detail.as_bytes())
+            .finalize()
+            .into(),
+    )
 }
 
 fn ordered_roots(held: &BTreeMap<String, HeldTree>) -> Vec<(String, TreeRoot)> {

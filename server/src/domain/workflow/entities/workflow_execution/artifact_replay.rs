@@ -93,15 +93,15 @@ impl ExecutionTree {
         let Some(id) = self.pending_empty_fanout.take() else {
             return Ok(());
         };
-        if !self.is_active() || failing_node == Some(id.as_str()) {
-            return Ok(());
-        }
-        let Some(node) = self
-            .node_execution(&id)
-            .filter(|node| node.status == RuntimeNodeExecutionStatus::Running)
-        else {
+        let Some(node) = self.node_execution(&id) else {
             return Ok(());
         };
+        if !self.is_active()
+            || node.status != RuntimeNodeExecutionStatus::Running
+            || failing_node == Some(id.as_str())
+        {
+            return Ok(());
+        }
         let timestamp = node.started_at;
         self.complete_scope(&id, false, &mut AdvanceEffects::Derive, timestamp)
             .map_err(|error| error.to_string())

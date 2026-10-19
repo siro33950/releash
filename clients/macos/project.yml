@@ -5,7 +5,7 @@ options:
 packages:
   Bonsplit:
     url: https://github.com/siro33950/bonsplit
-    revision: 088c284ecdd51721da83e2ae121a97d25881cc38
+    revision: 9a3913b395f0375c677612aab8bbad55a945a70c
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.99.0

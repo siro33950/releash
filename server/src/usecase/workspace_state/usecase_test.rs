@@ -9,6 +9,7 @@ struct Store {
     save_failure: Option<crate::domain::failure::TechnicalFailure>,
     fail: bool,
     readable: bool,
+    missing_files: Vec<String>,
     conflict: bool,
     conflicts_remaining: Mutex<usize>,
     reads: std::sync::atomic::AtomicUsize,
@@ -119,7 +120,7 @@ impl WorkspaceStateRepository for Store {
                 } else {
                     self.retry_previous
                         .clone()
-                        .or_else(|| self.previous.clone())
+                        .or_else(|| self.saved.lock().last().cloned())
                 },
             ))
         } else {
@@ -131,8 +132,16 @@ impl WorkspaceStateRepository for Store {
             ))
         }
     }
-    async fn load(&self, _: &str, _: &str) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
-        unreachable!()
+    async fn filter_missing_files(
+        &self,
+        state: WorkspaceState,
+        _: &str,
+    ) -> Result<WorkspaceState, WorkspaceStateError> {
+        Ok(
+            crate::domain::workspace_state::services::filter_missing_files(state, |path| {
+                !self.missing_files.iter().any(|missing| missing == path)
+            }),
+        )
     }
     async fn save(
         &self,
@@ -187,6 +196,7 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
         let store = Store {
             fail,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
@@ -240,6 +250,7 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
     let store = Store {
         fail: false,
         readable: false,
+        missing_files: Vec::new(),
         conflict: false,
         conflicts_remaining: Default::default(),
         reads: Default::default(),
@@ -281,6 +292,7 @@ async fn test_repository折りたたみ保存_成功したgroupだけ通知す�
         let store = Store {
             fail,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
@@ -317,6 +329,7 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
     let store = Store {
         fail: false,
         readable: true,
+        missing_files: Vec::new(),
         conflict: false,
         conflicts_remaining: Default::default(),
         reads: Default::default(),
@@ -370,6 +383,7 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
             let store = Store {
                 fail,
                 readable: true,
+                missing_files: Vec::new(),
                 conflict: false,
                 conflicts_remaining: Default::default(),
                 reads: Default::default(),
@@ -453,6 +467,7 @@ async fn test_表示状態保存_最新の配置を保持し競合待ちの取�
     let previous = state_with_panes();
     let store = Store {
         readable: true,
+        missing_files: Vec::new(),
         conflict: true,
         previous: Some(previous.clone()),
         ..Default::default()
@@ -489,6 +504,7 @@ async fn test_repositoryグループ保存_競合待ちの取消で版競合を�
     // Given
     let store = Store {
         readable: true,
+        missing_files: Vec::new(),
         conflict: true,
         ..Default::default()
     };
@@ -559,6 +575,7 @@ async fn test_ui状態保存_両方の保存が版競合後に読み直し成功
         let store = Store {
             fail: false,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Mutex::new(1),
             reads: Default::default(),
@@ -606,6 +623,7 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
         let store = Store {
             fail: false,
             readable: true,
+            missing_files: Vec::new(),
             conflict: false,
             conflicts_remaining: Default::default(),
             reads: Default::default(),
@@ -634,5 +652,285 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
         );
         assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(store.calls.lock().is_empty());
+    }
+}
+
+fn legacy_state() -> WorkspaceState {
+    use crate::domain::workspace_state::value_objects::pane_layout::{
+        PaneLayout, PaneTab, PaneTabKind,
+    };
+    let mut state = state_with_panes();
+    state.panes = Some(
+        PaneLayout::pane(
+            "pane".into(),
+            ["resolved", "missing", "failed", "resolved"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, node)| PaneTab {
+                    id: index.to_string(),
+                    kind: PaneTabKind::Session,
+                    node_id: Some(node.into()),
+                    agent_session_id: None,
+                    file_path: None,
+                    file_mode: None,
+                    file_base: None,
+                })
+                .collect(),
+            Some("0".into()),
+        )
+        .unwrap(),
+    );
+    state
+}
+
+#[tokio::test]
+async fn test_旧会話参照の復元_解決を保存して再照会せず未解決と失敗した参照を保持する() {
+    // Given
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    query
+        .session_nodes
+        .lock()
+        .sessions
+        .insert("resolved".into(), "agent".into());
+    let failure = crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+        reference_id: "failed".into(),
+        failure: crate::domain::failure::WorkFailure::from_error(
+            &crate::domain::workflow::WorkflowError::external("lookup failed"),
+        ),
+    };
+    query.session_nodes.lock().failures.push(failure.clone());
+    let original = legacy_state();
+    let store = Store {
+        readable: true,
+        previous: Some(original.clone()),
+        ..Default::default()
+    };
+    // When
+    let (actual, failures, migration_failure) =
+        load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+            .await
+            .unwrap();
+    // Then
+    let mut expected = original;
+    expected
+        .panes
+        .as_mut()
+        .unwrap()
+        .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(actual, Some(expected.clone()));
+    assert_eq!(failures, vec![failure]);
+    assert!(migration_failure.is_none());
+    assert_eq!(store.saved.lock().as_slice(), &[expected]);
+    let ids = query.resolved_nodes.lock()[0].clone();
+    assert_eq!(ids.len(), 3);
+    // When
+    load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+        .await
+        .unwrap();
+    // Then
+    let calls = query.resolved_nodes.lock();
+    assert_eq!(calls.len(), 2);
+    assert!(!calls[1].iter().any(|id| id == "resolved"));
+    assert_eq!(store.saved.lock().len(), 1);
+}
+
+#[tokio::test]
+async fn test_旧会話参照の移行_競合後は最新配置へ参照置換だけを適用する() {
+    // Given
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    query
+        .session_nodes
+        .lock()
+        .sessions
+        .insert("resolved".into(), "agent".into());
+    let original = legacy_state();
+    let mut latest = original.clone();
+    latest.layout.left_nav_collapsed = true;
+    latest.layout.right_collapsed = true;
+    use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
+    latest.panes = Some(
+        PaneLayout::split(
+            "latest-split".into(),
+            SplitAxis::Vertical,
+            0.7,
+            latest.panes.take().unwrap(),
+            PaneLayout::pane("new-pane".into(), Vec::new(), None).unwrap(),
+        )
+        .unwrap(),
+    );
+    let store = Store {
+        readable: true,
+        previous: Some(original),
+        retry_previous: Some(latest.clone()),
+        conflicts_remaining: Mutex::new(1),
+        ..Default::default()
+    };
+    // When
+    let (actual, _, migration_failure) =
+        load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+            .await
+            .unwrap();
+    // Then
+    latest
+        .panes
+        .as_mut()
+        .unwrap()
+        .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+    assert_eq!(actual, Some(latest.clone()));
+    assert!(migration_failure.is_none());
+    assert_eq!(store.saved.lock().last(), Some(&latest));
+    assert_eq!(store.saved.lock().len(), 2);
+}
+
+#[tokio::test]
+async fn test_旧会話参照の復元_書き戻し失敗でも配置と取得失敗を返し保存失敗を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        // Given
+        let query = crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(
+            Vec::new(),
+        );
+        query
+            .session_nodes
+            .lock()
+            .sessions
+            .insert("resolved".into(), "agent".into());
+        let resolution_failure =
+            crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                reference_id: "failed".into(),
+                failure: crate::domain::failure::WorkFailure::from_error(
+                    &crate::domain::workflow::WorkflowError::external("lookup failed"),
+                ),
+            };
+        query
+            .session_nodes
+            .lock()
+            .failures
+            .push(resolution_failure.clone());
+        let mut original = legacy_state();
+        original.panes = Some(
+            PaneLayout::split(
+                "split".into(),
+                SplitAxis::Vertical,
+                0.7,
+                original.panes.take().unwrap(),
+                state_with_panes().panes.unwrap(),
+            )
+            .unwrap(),
+        );
+        let save_failure = TechnicalFailure {
+            nature,
+            message: "migration write failed".into(),
+        };
+        let store = Store {
+            readable: true,
+            previous: Some(original.clone()),
+            save_failure: Some(save_failure.clone()),
+            ..Default::default()
+        };
+        // When
+        let (actual, failures, migration_failure) =
+            load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+                .await
+                .unwrap();
+        // Then
+        original
+            .panes
+            .as_mut()
+            .unwrap()
+            .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
+        assert_eq!(actual, Some(original));
+        assert_eq!(failures, vec![resolution_failure]);
+        assert_eq!(
+            migration_failure,
+            Some(WorkspaceStateError::Technical(save_failure))
+        );
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(store.calls.lock().as_slice(), ["save:/repo"]);
+        assert_eq!(query.resolved_nodes.lock().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn test_配置復元_配置自体の取得失敗は成功として扱わない() {
+    // Given
+    let store = Store::default();
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    // When
+    let result = load_workspace_state(&store, query.as_ref(), "/repo", "/repo").await;
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::Technical(_))));
+    assert!(query.resolved_nodes.lock().is_empty());
+}
+
+#[tokio::test]
+async fn test_配置復元_参照置換を保存してから返却値だけの欠損ファイルを除く() {
+    // Given
+    let query =
+        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
+    query
+        .session_nodes
+        .lock()
+        .sessions
+        .insert("resolved".into(), "agent".into());
+    let mut original = legacy_state();
+    original.layout.selected_diff_file = Some("missing".into());
+    let store = Store {
+        readable: true,
+        previous: Some(original),
+        missing_files: vec!["missing".into()],
+        ..Default::default()
+    };
+    // When
+    let (actual, _, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let saved = store.saved.lock();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0].layout.selected_diff_file.as_deref(),
+        Some("missing")
+    );
+    let actual = actual.unwrap();
+    assert!(actual.layout.selected_diff_file.is_none());
+    assert_eq!(actual.panes, saved[0].panes);
+}
+
+#[tokio::test]
+async fn test_配置復元_保存値なしと移行不要の配置は一度だけ読み保存しない() {
+    // Given
+    for previous in [None, Some(state_with_panes())] {
+        let query = crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(
+            Vec::new(),
+        );
+        let store = Store {
+            readable: true,
+            previous: previous.clone(),
+            ..Default::default()
+        };
+        // When
+        let (actual, failures, migration_failure) =
+            load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+                .await
+                .unwrap();
+        // Then
+        assert_eq!(actual, previous);
+        assert!(failures.is_empty());
+        assert!(migration_failure.is_none());
+        assert!(store.saved.lock().is_empty());
+        assert!(query.resolved_nodes.lock().is_empty());
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

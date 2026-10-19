@@ -29,6 +29,13 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::SessionTab { session, node } => {
+                let session: wire::NullableAgentSessionItemDto = crate::adaptor::presenter::client::value(session.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?;
+                let node: Option<wire::WorkspaceNodeDetailDto> = node.as_deref().cloned().map(crate::adaptor::presenter::client::value).transpose()
+                    .map_err(crate::adaptor::presenter::connect::command_error)?;
+                wire::state_payload::Value::SessionTab(wire::SessionTabSnapshot { session: session.value, node: node.map(Box::new) })
+            },
             StateValue::AgentSession(value) => wire::state_payload::Value::AgentSession(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -80,10 +87,16 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(wire::NullableStartupWorktree {
                 value: value.as_ref().map(|value| wire::StartupWorktree { path: Some(value.path.clone()), branch: Some(value.branch.clone()), repository_name: Some(value.repository_name.clone()) })
             }),
-            StateValue::WorkspaceState(value) => wire::state_payload::Value::WorkspaceState(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
+            StateValue::WorkspaceState(value, failures, _) => {
+                let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
+                    .map_err(crate::adaptor::presenter::connect::command_error)?;
+                if let Some(state) = &mut value.value {
+                    state.read_failures = failures.iter().map(|failure| wire::WorkspaceStateReadFailure {
+                        reference_id: failure.reference_id.clone(), message: failure.failure.message.clone(),
+                    }).collect();
+                }
+                wire::state_payload::Value::WorkspaceState(value)
+            },
             StateValue::Directory(entries) => wire::state_payload::Value::Directory(wire::DirectorySnapshot {
                 entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: match entry.status {
                     crate::domain::code::services::directory::GitStatus::None => "none",

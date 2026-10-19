@@ -859,3 +859,43 @@ fn test_delegate_親の新attemptは未注入結果だけを引き継ぐ() {
         }
     }
 }
+
+#[test]
+fn test_委任継続先の索引_開始順と複数試行の対応を保つ() {
+    // Given
+    let mut index = super::DelegateContinuations::default();
+    let mut starts = Vec::new();
+    for (id, predecessor, expected) in [
+        ("old", None, ["old", "next", "other", "latest", "missing"]),
+        (
+            "next",
+            Some("old"),
+            ["next", "next", "other", "latest", "missing"],
+        ),
+        (
+            "other",
+            Some("old"),
+            ["next", "next", "other", "latest", "missing"],
+        ),
+        (
+            "latest",
+            Some("next"),
+            ["latest", "latest", "other", "latest", "missing"],
+        ),
+    ] {
+        // When
+        index.record(id, predecessor);
+        starts.push((id, predecessor));
+        // Then
+        for (parent, expected) in ["old", "next", "other", "latest", "missing"]
+            .into_iter()
+            .zip(expected)
+        {
+            assert_eq!(index.resolve(parent), expected);
+            assert_eq!(
+                super::delegate_continuation(parent, starts.iter().copied()),
+                expected
+            );
+        }
+    }
+}

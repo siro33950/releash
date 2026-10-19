@@ -93,14 +93,11 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         .await
     }
 
-    async fn load(
+    async fn filter_missing_files(
         &self,
-        key: &str,
+        state: WorkspaceState,
         root: &str,
-    ) -> Result<Option<WorkspaceState>, WorkspaceStateError> {
-        let Some(state) = self.read(key).await?.1 else {
-            return Ok(None);
-        };
+    ) -> Result<WorkspaceState, WorkspaceStateError> {
         let root = root.to_owned();
         crate::common::operation_context::spawn_blocking(move || {
             filter_missing_files(state, |path| {
@@ -113,7 +110,6 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
             })
         })
         .await
-        .map(Some)
         .map_err(WorkspaceStateError::from)
     }
     async fn read(

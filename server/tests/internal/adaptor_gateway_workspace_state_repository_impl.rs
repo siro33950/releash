@@ -90,8 +90,7 @@ pub async fn save_and_load_roundtrip() {
     .unwrap();
 
     // When
-    let loaded = store
-        .load("wt1", worktree_dir.to_str().unwrap())
+    let loaded = load(&store, "wt1", worktree_dir.to_str().unwrap())
         .await
         .unwrap()
         .unwrap();
@@ -109,7 +108,7 @@ pub async fn load_nonexistent_returns_none() {
         dir.path().to_path_buf(),
     );
     // When
-    let loaded = store.load("nonexistent", "/tmp").await.unwrap();
+    let loaded = load(&store, "nonexistent", "/tmp").await.unwrap();
     // Then
     assert!(loaded.is_none());
 }
@@ -347,8 +346,7 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
         state_file(dir.path(), "/repo/a_b")
     );
     assert!(
-        restored
-            .load("/repo/a/b", "/repo/a/b")
+        load(&restored, "/repo/a/b", "/repo/a/b")
             .await
             .unwrap()
             .unwrap()
@@ -356,8 +354,7 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
             .left_nav_collapsed
     );
     assert!(
-        !restored
-            .load("/repo/a_b", "/repo/a_b")
+        !load(&restored, "/repo/a_b", "/repo/a_b")
             .await
             .unwrap()
             .unwrap()
@@ -379,7 +376,10 @@ pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい�
         .await
         .unwrap();
     // When / Then
-    assert!(store.load("/repo/wt", "/repo/wt").await.unwrap().is_some());
+    assert!(load(&store, "/repo/wt", "/repo/wt")
+        .await
+        .unwrap()
+        .is_some());
     let mut next = make_state();
     next.layout.left_nav_collapsed = true;
     let pending_state = next;
@@ -392,8 +392,7 @@ pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい�
     .await
     .unwrap();
     assert!(
-        store
-            .load("/repo/wt", "/repo/wt")
+        load(&store, "/repo/wt", "/repo/wt")
             .await
             .unwrap()
             .unwrap()
@@ -401,7 +400,7 @@ pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい�
             .left_nav_collapsed
     );
     corrupt_latest_event(dir.path());
-    assert!(store.load("/repo/wt", "/repo/wt").await.is_err());
+    assert!(load(&store, "/repo/wt", "/repo/wt").await.is_err());
 }
 
 #[tokio::test]
@@ -430,7 +429,7 @@ async fn test_pane保存_異なるworktreeの分割と全タブを新storeで復
         .await
         .unwrap();
     for name in ["/repo/a", "/repo/b"] {
-        let state = store.load(name, "/repo").await.unwrap().unwrap();
+        let state = load(&store, name, "/repo").await.unwrap().unwrap();
         assert!(state.panes.is_some());
         let pending_state = state.clone();
         releashd::test_support::integration::platform::save_workspace_state(
@@ -449,7 +448,7 @@ async fn test_pane保存_異なるworktreeの分割と全タブを新storeで復
         releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
     // Then
     for (name, state) in expected {
-        assert_eq!(restarted.load(name, "/repo").await.unwrap(), Some(state));
+        assert_eq!(load(&restarted, name, "/repo").await.unwrap(), Some(state));
     }
 }
 
@@ -499,11 +498,11 @@ async fn test_旧表示状態_一意な名前だけ取り込み曖昧と不在�
     // When
     store.migrate_legacy(&[], &paths).await.unwrap();
     // Then
-    assert!(store.load(&paths[0], &paths[0]).await.unwrap().is_some());
+    assert!(load(&store, &paths[0], &paths[0]).await.unwrap().is_some());
     for path in &paths[1..] {
-        assert!(store.load(path, path).await.unwrap().is_none());
+        assert!(load(&store, path, path).await.unwrap().is_none());
     }
-    assert!(store.load("missing", "/repo").await.unwrap().is_none());
+    assert!(load(&store, "missing", "/repo").await.unwrap().is_none());
     assert_eq!(event_count(dir.path()), 1);
     store.migrate_legacy(&[], &paths).await.unwrap();
     assert_eq!(event_count(dir.path()), 1);
@@ -532,8 +531,7 @@ async fn test_旧表示状態_絶対pathを名前より優先し最新の事実�
         .unwrap();
     // Then
     assert!(
-        store
-            .load("/repo/unique", "/repo/unique")
+        load(&store, "/repo/unique", "/repo/unique")
             .await
             .unwrap()
             .unwrap()
@@ -557,8 +555,7 @@ async fn test_旧表示状態_絶対pathを名前より優先し最新の事実�
         .await
         .unwrap();
     assert!(
-        !store
-            .load("/repo/unique", "/repo/unique")
+        !load(&store, "/repo/unique", "/repo/unique")
             .await
             .unwrap()
             .unwrap()
@@ -630,8 +627,7 @@ async fn test_旧表示状態の移行_途中失敗後に再実行しても取�
         .unwrap();
     // Then
     assert!(store.load_repository_group("/repo").await.unwrap());
-    assert!(store
-        .load("/repo/unique", "/repo/unique")
+    assert!(load(&store, "/repo/unique", "/repo/unique")
         .await
         .unwrap()
         .is_some());
@@ -657,8 +653,7 @@ async fn test_旧表示状態_名前がhashキーのprefixと同じでも絶対p
         .unwrap();
     // Then
     assert!(
-        store
-            .load(&path, &path)
+        load(&store, &path, &path)
             .await
             .unwrap()
             .unwrap()
@@ -688,7 +683,7 @@ async fn test_旧表示状態_曖昧な絶対path旧形式と名前を別pathへ
     store.migrate_legacy(&[], &paths).await.unwrap();
     // Then
     for path in &paths {
-        assert!(store.load(path, path).await.unwrap().is_none());
+        assert!(load(&store, path, path).await.unwrap().is_none());
     }
     assert_eq!(event_count(dir.path()), 0);
 }
@@ -711,6 +706,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
         PaneLayout::pane(
             "left".into(),
             vec![PaneTab {
+                agent_session_id: None,
                 node_id: None,
                 id: "terminal".into(),
                 kind: PaneTabKind::Terminal,
@@ -725,6 +721,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
             "right".into(),
             vec![
                 PaneTab {
+                    agent_session_id: None,
                     node_id: None,
                     id: "workflow".into(),
                     kind: PaneTabKind::Command,
@@ -733,6 +730,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                     file_base: None,
                 },
                 PaneTab {
+                    agent_session_id: None,
                     node_id: None,
                     id: "file".into(),
                     kind: PaneTabKind::File,
@@ -741,7 +739,8 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                     file_base: None,
                 },
                 PaneTab {
-                    node_id: Some("session-node".into()),
+                    agent_session_id: Some("agent-session".into()),
+                    node_id: None,
                     id: "session".into(),
                     kind: PaneTabKind::Session,
                     file_path: None,
@@ -749,6 +748,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
                     file_base: None,
                 },
                 PaneTab {
+                    agent_session_id: None,
                     node_id: Some("command-node".into()),
                     id: "command".into(),
                     kind: PaneTabKind::Command,
@@ -776,7 +776,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
         .await
         .unwrap();
     // Then
-    let saved = store.load(key, key).await.unwrap().unwrap();
+    let saved = load(&store, key, key).await.unwrap().unwrap();
     assert_eq!(saved.panes, Some(panes.clone()));
     assert_eq!(saved.tabs, react.tabs);
     assert_eq!(saved.layout, react.layout);
@@ -784,7 +784,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
     let restarted = releashd::test_support::integration::platform::workspace_state_store(
         directory.path().into(),
     );
-    assert_eq!(restarted.load(key, key).await.unwrap().unwrap(), saved);
+    assert_eq!(load(&restarted, key, key).await.unwrap().unwrap(), saved);
     let mut changed = react.clone();
     changed.panes = Some(PaneLayout::pane("all-closed".into(), vec![], None).unwrap());
     save_workspace_state(&restarted, None, key, changed.clone())
@@ -794,7 +794,7 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
         .await
         .unwrap();
     assert_eq!(
-        restarted.load(key, key).await.unwrap().unwrap().panes,
+        load(&restarted, key, key).await.unwrap().unwrap().panes,
         changed.panes
     );
 }
@@ -815,8 +815,7 @@ async fn test_旧状態移行_破損した対象を残して同じディレク�
         .await
         .is_err());
     // Then
-    assert!(store
-        .load("/repo/healthy", "/repo/healthy")
+    assert!(load(&store, "/repo/healthy", "/repo/healthy")
         .await
         .unwrap()
         .is_some());
@@ -830,8 +829,7 @@ async fn test_旧状態移行_破損した対象を残して同じディレク�
         .migrate_legacy(&[], &["/repo/healthy".into(), "/repo/broken".into()])
         .await
         .unwrap();
-    assert!(store
-        .load("/repo/broken", "/repo/broken")
+    assert!(load(&store, "/repo/broken", "/repo/broken")
         .await
         .unwrap()
         .is_some());
@@ -879,8 +877,7 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
     // When / Then
     assert!(!store.invalidate(key, *version).await.unwrap());
     assert!(
-        store
-            .load(path, path)
+        load(&store, path, path)
             .await
             .unwrap()
             .unwrap()
@@ -1158,7 +1155,7 @@ async fn test_ui状態読取_最新の未知の版と種類を未保存でなく
             } else {
                 let error = store.read("/repo/wt").await.unwrap_err();
                 assert!(error.to_string().contains("incompatible stored event"));
-                store.load("/repo/wt", "/repo/wt").await.unwrap_err()
+                load(&store, "/repo/wt", "/repo/wt").await.unwrap_err()
             };
             assert!(error.to_string().contains("incompatible stored event"));
         }
@@ -1288,8 +1285,7 @@ async fn test_表示状態load_相対pathとroot外の絶対pathで消失した�
     std::fs::remove_file(&paths[1]).unwrap();
     std::fs::remove_file(&paths[3]).unwrap();
     // When
-    let loaded = store
-        .load("worktree", root.to_str().unwrap())
+    let loaded = load(&store, "worktree", root.to_str().unwrap())
         .await
         .unwrap()
         .unwrap();
@@ -1349,5 +1345,19 @@ async fn test_ui状態gateway_両方の読取と保存で停止の種別を保�
                 matches!(result, Err(WorkspaceStateError::Technical(error)) if error.nature == if cancelled { TechnicalFailureNature::Cancelled } else { TechnicalFailureNature::TimedOut })
             );
         }
+    }
+}
+
+pub(crate) async fn load(
+    store: &impl WorkspaceStateRepository,
+    key: &str,
+    root: &str,
+) -> Result<
+    Option<WorkspaceState>,
+    releashd::test_support::integration::platform::WorkspaceStateError,
+> {
+    match store.read(key).await?.1 {
+        Some(state) => store.filter_missing_files(state, root).await.map(Some),
+        None => Ok(None),
     }
 }

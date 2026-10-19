@@ -96,6 +96,17 @@ impl releashd::test_support::integration::workspace::WorkspaceTreeRepository for
             .collect()
     }
 
+    async fn load_execution_tree(
+        &self,
+        _: &releashd::test_support::integration::workspace::WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<releashd::test_support::integration::workspace::WorkspaceTree>,
+        releashd::test_support::integration::workflow::WorkflowError,
+    > {
+        Ok(None)
+    }
+
     async fn load_node_by_session_id(
         &self,
         _: &releashd::test_support::integration::workspace::WorkspaceIdentity,

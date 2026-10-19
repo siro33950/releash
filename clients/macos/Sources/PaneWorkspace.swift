@@ -2,6 +2,10 @@ import Bonsplit
 import SwiftUI
 
 @MainActor @Observable final class PaneWorkspace: @preconcurrency BonsplitDelegate {
+  var sessionSnapshots: [TabID: Releash_Client_V1_SessionTabSnapshot] = [:]
+  var renamingSession: Releash_Client_V1_SessionTabSnapshot?
+  var archivingSession: Releash_Client_V1_SessionTabSnapshot?
+  var sessionName = ""
   var requestClose: ((PaneTab) async -> Bool)?
   private var closing: Set<TabID> = []
   private var approved: Set<TabID> = []
@@ -10,6 +14,7 @@ import SwiftUI
   let controller = BonsplitController()
   private var identifiers: [String: String] = [:]
   private var tabs: [String: PaneTab] = [:]
+  private var pendingSessionTabs: [String: TabID] = [:]
   private var nextTerminalNumber = 1
 
   init() {
@@ -65,8 +70,33 @@ import SwiftUI
     try controller.restoreLayout(snapshot, tabs: metadata)
     identifiers = ids
     self.tabs = restoredTabs
+    pendingSessionTabs = [:]
     nextTerminalNumber = terminalNumber
   }
+
+  struct LayoutInput: Equatable {
+    var tree: ExternalTreeNode
+    var tabs: [String: PaneTab]
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+      lhs.tabs == rhs.tabs && samePlacement(lhs.tree, rhs.tree)
+    }
+
+    private static func samePlacement(_ lhs: ExternalTreeNode, _ rhs: ExternalTreeNode) -> Bool {
+      switch (lhs, rhs) {
+      case (.pane(let lhs), .pane(let rhs)):
+        lhs.id == rhs.id && lhs.tabs.map(\.id) == rhs.tabs.map(\.id)
+          && lhs.selectedTabId == rhs.selectedTabId
+      case (.split(let lhs), .split(let rhs)):
+        lhs.id == rhs.id && lhs.orientation == rhs.orientation
+          && lhs.dividerPosition == rhs.dividerPosition
+          && samePlacement(lhs.first, rhs.first) && samePlacement(lhs.second, rhs.second)
+      default: false
+      }
+    }
+  }
+
+  var layoutInput: LayoutInput { LayoutInput(tree: controller.treeSnapshot(), tabs: tabs) }
 
   func layout() throws -> PaneLayout {
     func convert(_ tree: ExternalTreeNode) throws -> PaneLayout {
@@ -102,25 +132,102 @@ import SwiftUI
     if kind == .terminal { nextTerminalNumber += 1 }
   }
 
-  func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil) {
+  @discardableResult
+  func openNode(_ kind: PaneTab.Kind, id nodeID: String, title: String, in pane: PaneID? = nil)
+    -> TabID?
+  {
     let live = Set(controller.allTabIds.map { $0.id.uuidString })
     tabs = tabs.filter { live.contains($0.key) }
-    if let existing = controller.allTabIds.first(where: { tabs[$0.id.uuidString]?.nodeID == nodeID }
+    if let existing = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.kind == kind
+        && (kind == .session
+          ? tabs[$0.id.uuidString]?.agentSessionID : tabs[$0.id.uuidString]?.nodeID) == nodeID
+    }
     ) {
       controller.selectTab(existing)
-      return
+      return existing
     }
     guard
       let id = controller.createTab(
         title: title, icon: kind.icon, inPane: pane ?? controller.focusedPaneId)
-    else { return }
-    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: kind, nodeID: nodeID)
+    else { return nil }
+    tabs[id.id.uuidString] = PaneTab(
+      id: id.id.uuidString, kind: kind, nodeID: kind == .session ? nil : nodeID,
+      agentSessionID: kind == .session ? nodeID : nil)
+    return id
+  }
+
+  func openSession(id sessionID: String, nodeID: String, title: String) {
+    if let pending = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
+    }) {
+      if let selected = bindSession(pending, sessionID: sessionID) {
+        controller.selectTab(selected)
+      }
+    } else {
+      if let selected = openNode(.session, id: sessionID, title: title) {
+        pendingSessionTabs[nodeID] = selected
+      }
+    }
+  }
+
+  func openPendingSession(id nodeID: String, title: String) {
+    pendingSessionTabs = pendingSessionTabs.filter { controller.allTabIds.contains($0.value) }
+    if let existing = pendingSessionTabs[nodeID]
+      ?? controller.allTabIds.first(where: {
+        tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
+      })
+    {
+      controller.selectTab(existing)
+      return
+    }
+    guard let id = controller.createTab(title: title, icon: PaneTab.Kind.session.icon) else {
+      return
+    }
+    tabs[id.id.uuidString] = PaneTab(id: id.id.uuidString, kind: .session, nodeID: nodeID)
+    pendingSessionTabs[nodeID] = id
+  }
+
+  @discardableResult
+  func bindSession(_ id: TabID, sessionID: String) -> TabID? {
+    guard controller.allTabIds.contains(id),
+      var tab = tabs[id.id.uuidString], tab.kind == .session
+    else { return nil }
+    if let nodeID = tab.nodeID { pendingSessionTabs[nodeID] = id }
+    if let existing = controller.allTabIds.first(where: {
+      $0 != id && tabs[$0.id.uuidString]?.kind == .session
+        && tabs[$0.id.uuidString]?.agentSessionID == sessionID
+    }) {
+      pendingSessionTabs = pendingSessionTabs.mapValues { $0 == id ? existing : $0 }
+      controller.closeTab(id, preservingPane: true)
+      controller.selectTab(existing)
+      return existing
+    }
+    tab.agentSessionID = sessionID
+    tab.nodeID = nil
+    tabs[id.id.uuidString] = tab
+    return id
+  }
+
+  func splitTabBar(_ controller: BonsplitController, didCloseTab id: TabID, fromPane pane: PaneID) {
+    tabs.removeValue(forKey: id.id.uuidString)
+    pendingSessionTabs = pendingSessionTabs.filter { $0.value != id }
   }
 
   func renameNode(_ nodeID: String, title: String) {
-    for id in controller.allTabIds where tabs[id.id.uuidString]?.nodeID == nodeID {
+    for id in controller.allTabIds
+    where tabs[id.id.uuidString]?.kind == .command && tabs[id.id.uuidString]?.nodeID == nodeID {
       controller.updateTab(id, title: title)
     }
+  }
+
+  func updateSession(_ id: TabID, snapshot: Releash_Client_V1_SessionTabSnapshot) {
+    sessionSnapshots[id] = snapshot
+    controller.updateTab(
+      id, title: snapshot.hasNode ? snapshot.node.title : "Session",
+      iconColor: .some(
+        snapshot.hasNode
+          ? UIStyle.statusColor(String(describing: snapshot.node.classification.value)) : nil))
   }
 
   func isFocused(_ tab: TabID, in pane: PaneID) -> Bool {
@@ -219,11 +326,20 @@ struct WorkspacePaneView: View {
           session: model.terminal(path: path, id: value.id),
           focused: model.panes.isFocused(tab.id, in: pane)
         ).id(path + value.id)
+      } else if model.layoutLoaded, let value = model.panes.tab(tab.id),
+        let sessionID = value.agentSessionID, value.kind == .session
+      {
+        SessionTabPane(
+          model: model, tabID: tab.id, sessionID: sessionID,
+          focused: model.panes.isFocused(tab.id, in: pane)
+        ).id(sessionID)
       } else if model.layoutLoaded, let value = model.panes.tab(tab.id), let nodeID = value.nodeID,
         let path = model.selectedWorktree, value.kind == .session || value.kind == .command
       {
         NodePane(
-          model: model, path: path, nodeID: nodeID, focused: model.panes.isFocused(tab.id, in: pane)
+          model: model, path: path, nodeID: nodeID,
+          focused: model.panes.isFocused(tab.id, in: pane),
+          tabID: tab.id
         ).id(path + nodeID)
       } else if let file = model.panes.tab(tab.id), let path = file.filePath,
         let worktree = model.selectedWorktree
@@ -239,18 +355,53 @@ struct WorkspacePaneView: View {
     }
     .onAppear {
       model.panes.requestClose = { [weak model] tab in await model?.closeTerminal(tab) ?? false }
+      model.panes.controller.tabContextMenu = { [weak model] id in
+        guard let model else { return AnyView(EmptyView()) }
+        return AnyView(SessionTabMenu(model: model, tabID: id))
+      }
       model.panes.controller.tabBarAccessory = { [weak model] pane in
         guard let model else { return AnyView(EmptyView()) }
         return AnyView(PaneOpenMenu(model: model, pane: pane))
       }
     }
-    .onChange(of: model.panes.controller.treeSnapshot()) { _, _ in
-      guard model.layoutLoaded else { return }
-      do {
-        let layout = try model.panes.layout()
-        model.editLayout { $0 = layout }
-        model.syncTerminalTabs(layout)
-      } catch { model.failure = error.localizedDescription }
+    .alert(
+      "Rename",
+      isPresented: Binding(
+        get: { model.panes.renamingSession != nil },
+        set: { if !$0 { model.panes.renamingSession = nil } })
+    ) {
+      TextField("名前", text: $model.panes.sessionName)
+      Button("キャンセル", role: .cancel) { model.panes.renamingSession = nil }
+      Button("保存") {
+        if let snapshot = model.panes.renamingSession {
+          model.renameSessionTab(snapshot, name: model.panes.sessionName)
+        }
+        model.panes.renamingSession = nil
+      }
     }
+    .alert(
+      "実行をAbortしてArchiveしますか？",
+      isPresented: Binding(
+        get: { model.panes.archivingSession != nil },
+        set: { if !$0 { model.panes.archivingSession = nil } })
+    ) {
+      Button("キャンセル", role: .cancel) { model.panes.archivingSession = nil }
+      Button("Abort and Archive", role: .destructive) {
+        model.confirmArchiveSessionTab()
+      }
+    }
+    .onChange(of: model.panes.layoutInput) { _, _ in
+      saveLayout()
+    }
+
+  }
+
+  private func saveLayout() {
+    guard model.layoutLoaded else { return }
+    do {
+      let layout = try model.panes.layout()
+      model.editLayout { $0 = layout }
+      model.syncTerminalTabs(layout)
+    } catch { model.failure = error.localizedDescription }
   }
 }

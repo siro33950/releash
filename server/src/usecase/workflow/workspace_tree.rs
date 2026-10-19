@@ -155,23 +155,53 @@ impl WorkflowUsecase {
     }
 
     fn observe_failures(&self, tree: &mut WorkspaceTree) {
-        let targets = tree
-            .nodes()
-            .iter()
-            .flat_map(|node| {
-                [
-                    Some(node.id.clone()),
-                    node.node_execution_id.clone(),
-                    node.execution_id.clone(),
-                ]
-            })
+        for (target, message) in
+            self.failure_observations(tree.nodes().iter().map(|node| node.classification_input()))
+        {
+            tree.observe_background_failure(&target, &message);
+        }
+    }
+
+    fn failure_observations(
+        &self,
+        nodes: impl IntoIterator<Item = crate::domain::workspace_tree::WorkspaceNodeClassification>,
+    ) -> Vec<(String, String)> {
+        let targets = nodes
+            .into_iter()
+            .flat_map(|node| [Some(node.id), node.node_execution_id, node.execution_id])
             .flatten()
             .collect::<std::collections::HashSet<_>>();
-        for target in targets {
-            for message in self.failures.attention_messages(&target) {
-                tree.observe_background_failure(&target, &message);
-            }
-        }
+        targets
+            .into_iter()
+            .flat_map(|target| {
+                self.failures
+                    .attention_messages(&target)
+                    .into_iter()
+                    .map(move |message| (target.clone(), message))
+            })
+            .collect()
+    }
+
+    pub(crate) async fn load_workspace_state(
+        &self,
+        repository: &dyn crate::domain::workspace_state::WorkspaceStateRepository,
+        name: &str,
+        path: &str,
+    ) -> Result<
+        (
+            Option<crate::domain::workspace_state::WorkspaceState>,
+            Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
+            Option<crate::domain::workspace_state::WorkspaceStateError>,
+        ),
+        crate::domain::workspace_state::WorkspaceStateError,
+    > {
+        crate::usecase::workspace_state::usecase::load_workspace_state(
+            repository,
+            self.workspace_query.as_ref(),
+            name,
+            path,
+        )
+        .await
     }
 
     pub(crate) async fn get_workspace_node_detail(
@@ -183,6 +213,36 @@ impl WorkflowUsecase {
             self.resolve_worktree_path(worktree_path)?,
         );
         self.workspace_query.node_detail(&workspace, node_id).await
+    }
+
+    pub async fn get_session_node_detail(
+        &self,
+        session: &crate::usecase::agent_session::AgentSessionItemDto,
+    ) -> Result<Option<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>, WorkflowError>
+    {
+        let Some(mut tree) = self
+            .workspace_nodes
+            .load_execution_tree(
+                &WorkspaceIdentity::new(session.workspace_identity.clone()),
+                &session.tree_location.tree_id,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.observe_failures(&mut tree);
+        Ok(tree
+            .session_node(&session.id)
+            .filter(|node| {
+                node.node_execution_id.as_deref()
+                    == Some(session.tree_location.node_execution_id.as_str())
+            })
+            .map(|node| {
+                let can_abort = tree.nodes().iter().any(|owner| {
+                    Some(owner.id.as_str()) == node.execution_id.as_deref() && owner.can_abort
+                });
+                (node.clone(), can_abort)
+            }))
     }
 
     pub(crate) async fn get_workspace_node_artifact(

@@ -5,11 +5,15 @@
 //! 範囲と兄弟参照の解決空間はこのスコープに閉じ、同じ部品 sequence を再訪する
 //! たび新しいスコープが生まれてカウントはフレッシュになる。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::domain::workflow::services::routing::{route_in_scope, RouteDecision};
 use crate::domain::workflow::value_objects::RuntimeArtifact;
+use crate::domain::workflow::{
+    NodeDefinition, NodeExecutionStatus, NodeKind, WorkflowDefinition, WorkflowError,
+};
 
-use super::FanoutChildRuntime;
+use super::{ExecutionTree, FanoutChildRuntime, RuntimeNodeExecution};
 
 /// アクティブな合成子実行インスタンスのスコープ状態。
 ///
@@ -84,6 +88,29 @@ impl ScopeRuntime {
 }
 
 impl SequenceScopeRuntime {
+    pub(crate) fn replay_child_start(&mut self, name: &str, attempt: u32) {
+        self.raise_child_count_to(name, attempt);
+        self.current_child = Some(name.into());
+        self.artifacts.remove(name);
+    }
+
+    pub(crate) fn record_child_result(&mut self, artifact: RuntimeArtifact) {
+        self.artifacts.insert(artifact.node_name.clone(), artifact);
+    }
+
+    pub(crate) fn artifact_field(
+        &self,
+        name: &str,
+        path: &crate::domain::workflow::FieldPath,
+    ) -> Option<&serde_json::Value> {
+        self.artifacts
+            .get(name)
+            .and_then(|artifact| artifact.artifact.as_ref())
+            .and_then(|artifact| {
+                crate::domain::workflow::services::reference::resolve_value_at_path(artifact, path)
+            })
+    }
+
     /// 子の開始を記録し、その attempt（スコープ内 1 始まり）を返す。
     /// loop_guard のカウント範囲もこの値で決まる。fanout の子の attempt は
     /// slot が所有するため、このカウントは sequence スコープ専用。
@@ -99,6 +126,153 @@ impl SequenceScopeRuntime {
             .entry(child_name.to_string())
             .and_modify(|current| *current = (*current).max(attempt))
             .or_insert(attempt);
+    }
+}
+
+pub(super) enum CompletionParent<'a> {
+    Root,
+    Delegate(&'a str),
+    Scope(&'a str),
+}
+
+impl ExecutionTree {
+    fn scope_children(&self, scope_id: &str) -> Vec<&RuntimeNodeExecution> {
+        let mut children: Vec<_> = self
+            .runtime
+            .node_executions
+            .iter()
+            .filter(|child| {
+                child
+                    .parent
+                    .as_ref()
+                    .is_some_and(|parent| parent.parent_id == scope_id)
+            })
+            .collect();
+        let replaced: HashSet<_> = children
+            .iter()
+            .filter_map(|child| self.runtime.retry_predecessors.get(&child.id))
+            .collect();
+        children.retain(|child| !replaced.contains(&child.id));
+        children
+    }
+
+    pub(super) fn completion_parent<'a>(&self, parent: Option<&'a str>) -> CompletionParent<'a> {
+        match parent {
+            None => CompletionParent::Root,
+            Some(id) if self.is_delegate_parent(id) => CompletionParent::Delegate(id),
+            Some(id) => CompletionParent::Scope(id),
+        }
+    }
+
+    pub(super) fn advance_composite(
+        &self,
+        scope_id: &str,
+        workflow: &WorkflowDefinition,
+        node: &NodeDefinition,
+        completed_child: &str,
+        counts: &HashMap<String, u32>,
+        item_count: Option<usize>,
+    ) -> Result<Option<RouteDecision>, WorkflowError> {
+        let children = self.scope_children(scope_id);
+        match &node.kind {
+            NodeKind::Sequence(sequence) => {
+                let artifact = children
+                    .iter()
+                    .rev()
+                    .find(|child| child.node_name == completed_child)
+                    .and_then(|child| child.artifact.as_ref());
+                route_in_scope(workflow, sequence, completed_child, artifact, counts)
+                    .map(Some)
+                    .map_err(Into::into)
+            }
+            NodeKind::Fanout(fanout) => Ok(item_count
+                .filter(|count| {
+                    children.len() >= count * fanout.children.len()
+                        && children
+                            .iter()
+                            .all(|child| child.status == NodeExecutionStatus::Succeeded)
+                })
+                .map(|_| RouteDecision::Completed)),
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn finish_composite(
+        &self,
+        scope_id: &str,
+        node: &NodeDefinition,
+        status: NodeExecutionStatus,
+        approved: bool,
+        item_count: Option<usize>,
+    ) -> Result<Option<(NodeExecutionStatus, Option<serde_json::Value>)>, WorkflowError> {
+        let children = self.scope_children(scope_id);
+        use NodeExecutionStatus as S;
+        if status == S::Aborted || status == S::WaitingApproval && !approved {
+            return Ok(None);
+        }
+        if let NodeKind::Fanout(fanout) = &node.kind {
+            if item_count.is_none_or(|count| children.len() < count * fanout.children.len()) {
+                return Ok(None);
+            }
+        }
+        let status = if !approved && node.requires_approval_completion() {
+            S::WaitingApproval
+        } else {
+            S::Succeeded
+        };
+        if status == S::WaitingApproval {
+            return Ok(Some((status, None)));
+        }
+        let mut artifacts = serde_json::Map::new();
+        for child in children {
+            let key = match &node.kind {
+                NodeKind::Sequence(sequence) => sequence
+                    .children
+                    .iter()
+                    .find(|entry| entry.name == child.node_name)
+                    .map(|entry| entry.name.clone()),
+                NodeKind::Fanout(fanout) => child
+                    .parent
+                    .as_ref()
+                    .and_then(|parent| parent.fanout_slot())
+                    .and_then(|slot| fanout.artifact_key(slot)),
+                _ => None,
+            };
+            let Some(key) = key else {
+                if matches!(node.kind, NodeKind::Sequence(_)) {
+                    continue;
+                }
+                return Err(WorkflowError::invalid_state(match node.kind {
+                    NodeKind::Fanout(_) => {
+                        format!("fanout child '{}' has no valid slot coordinates", child.id)
+                    }
+                    _ => format!("sequence child '{}' is undefined", child.id),
+                }));
+            };
+            match &node.kind {
+                NodeKind::Sequence(_) => {
+                    artifacts.remove(&key);
+                    if child.status == S::Succeeded {
+                        if let Some(value) = &child.artifact {
+                            artifacts.insert(key, value.clone());
+                        }
+                    }
+                }
+                NodeKind::Fanout(_) => {
+                    artifacts.insert(
+                        key,
+                        child.artifact.clone().unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                _ => {
+                    return Err(WorkflowError::invalid_state(format!(
+                        "node '{}' is not composite",
+                        node.name
+                    )))
+                }
+            }
+        }
+        Ok(Some((status, Some(serde_json::Value::Object(artifacts)))))
     }
 }
 

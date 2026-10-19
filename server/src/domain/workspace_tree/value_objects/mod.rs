@@ -1,3 +1,6 @@
+mod node_timestamp;
+pub(crate) use node_timestamp::NodeTimestampObservation;
+
 use crate::domain::workflow::{
     AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
     NodeExecutionFailureKind, NodeKindName, NodeProcessPresence,
@@ -31,6 +34,17 @@ pub enum WorkspaceNodeKind {
     WorkflowCommand,
 }
 
+impl From<NodeKindName> for WorkspaceNodeKind {
+    fn from(kind: NodeKindName) -> Self {
+        match kind {
+            NodeKindName::Session => Self::WorkflowSession,
+            NodeKindName::Command => Self::WorkflowCommand,
+            NodeKindName::Fanout => Self::Fanout,
+            NodeKindName::Sequence => Self::Sequence,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceNodeStatus {
     Running,
@@ -39,7 +53,23 @@ pub enum WorkspaceNodeStatus {
     Completed,
 }
 
+impl From<crate::domain::workflow::NodeExecutionStatus> for WorkspaceNodeStatus {
+    fn from(status: crate::domain::workflow::NodeExecutionStatus) -> Self {
+        use crate::domain::workflow::NodeExecutionStatus as S;
+        match status {
+            S::Running => Self::Running,
+            S::WaitingApproval => Self::Waiting,
+            S::Succeeded => Self::Completed,
+            S::Aborted => Self::Aborted,
+        }
+    }
+}
+
 impl WorkspaceNodeStatus {
+    pub fn can_approve(self) -> bool {
+        self == Self::Waiting
+    }
+
     pub fn as_public_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -134,14 +164,27 @@ pub struct WorkspaceTreeNode {
     pub dynamic_fanout: bool,
 }
 
+pub(crate) fn node_failure_reason(
+    reason: Option<&str>,
+    command_result: Option<&WorkspaceCommandResult>,
+) -> Option<String> {
+    reason.map(str::to_string).or_else(|| {
+        command_result
+            .filter(|result| result.exit_code != 0)
+            .map(|result| format!("Command exited with code {}", result.exit_code))
+    })
+}
+
+pub(crate) fn aborted_node_reason(
+    status: crate::domain::workflow::NodeExecutionStatus,
+) -> Option<&'static str> {
+    (status == crate::domain::workflow::NodeExecutionStatus::Aborted)
+        .then_some("Workflow node aborted")
+}
+
 impl WorkspaceTreeNode {
     pub fn failure_reason(&self) -> Option<String> {
-        self.error_reason.clone().or_else(|| {
-            self.command_result
-                .as_ref()
-                .filter(|result| result.exit_code != 0)
-                .map(|result| format!("Command exited with code {}", result.exit_code))
-        })
+        node_failure_reason(self.error_reason.as_deref(), self.command_result.as_ref())
     }
 
     pub fn updated_at(&self) -> f64 {
@@ -172,57 +215,25 @@ impl WorkspaceTreeNode {
         &self,
         children: impl IntoIterator<Item = WorkspaceNodeStatusClassification>,
     ) -> WorkspaceNodeStatusClassification {
-        use WorkspaceNodeStatusClassification as C;
+        self.classification_input().classify(children)
+    }
 
-        let session = if self.kind == WorkspaceNodeKind::WorkflowSession {
-            Some(if self.session_id.is_none() {
-                C::Active
-            } else if self.process_presence == NodeProcessPresence::ConfirmedAbsent {
-                C::Idle
-            } else {
-                match self.activity.unwrap_or_default() {
-                    AgentSessionActivity::Working => C::Active,
-                    AgentSessionActivity::AwaitingAnswer => C::Attention,
-                    AgentSessionActivity::AwaitingInstruction => C::Idle,
-                }
-            })
-        } else {
-            None
-        };
-        let node = if self.background_failure || self.status == WorkspaceNodeStatus::Waiting {
-            Some(C::Attention)
-        } else if matches!(
-            self.status,
-            WorkspaceNodeStatus::Completed | WorkspaceNodeStatus::Aborted
-        ) {
-            Some(C::Idle)
-        } else if self.delegate_waits_for_child {
-            None
-        } else if self.kind == WorkspaceNodeKind::WorkflowCommand
-            && self.process_presence == NodeProcessPresence::ConfirmedAbsent
-        {
-            Some(C::Attention)
-        } else if self.kind == WorkspaceNodeKind::WorkflowSession && self.session_id.is_some() {
-            match (
-                self.process_presence,
-                self.activity,
-                self.completion_signals,
-            ) {
-                (NodeProcessPresence::ConfirmedAbsent, _, _) => Some(C::Attention),
-                (
-                    _,
-                    Some(AgentSessionActivity::AwaitingInstruction),
-                    NodeCompletionSignalState::Pending | NodeCompletionSignalState::StopReceived,
-                ) => Some(C::Attention),
-                _ => Some(C::Active),
-            }
-        } else {
-            Some(C::Active)
-        };
-        node.into_iter()
-            .chain(session)
-            .chain(children)
-            .fold(C::Idle, C::most_severe)
+    pub(crate) fn classification_input(&self) -> WorkspaceNodeClassification {
+        WorkspaceNodeClassification {
+            id: self.id.clone(),
+            parent_id: self.parent_id.clone(),
+            execution_id: self.execution_id.clone(),
+            node_execution_id: self.node_execution_id.clone(),
+            kind: self.kind,
+            status: self.status,
+            process_presence: self.process_presence,
+            delegate_waits_for_child: self.delegate_waits_for_child,
+            background_failure: self.background_failure,
+            activity: self.activity,
+            has_session: self.session_id.is_some(),
+            completion_signals: self.completion_signals,
+            hidden: self.is_internal_rule_record() || self.is_retry_history,
+        }
     }
 }
 
@@ -373,3 +384,148 @@ impl WorkspaceTreeNode {
 #[cfg(test)]
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceNodeClassification {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub execution_id: Option<String>,
+    pub node_execution_id: Option<String>,
+    pub kind: WorkspaceNodeKind,
+    pub status: WorkspaceNodeStatus,
+    pub process_presence: NodeProcessPresence,
+    pub delegate_waits_for_child: bool,
+    pub background_failure: bool,
+    pub activity: Option<AgentSessionActivity>,
+    pub has_session: bool,
+    pub completion_signals: NodeCompletionSignalState,
+    pub hidden: bool,
+}
+
+impl WorkspaceNodeClassification {
+    pub(crate) fn classify(
+        &self,
+        children: impl IntoIterator<Item = WorkspaceNodeStatusClassification>,
+    ) -> WorkspaceNodeStatusClassification {
+        use WorkspaceNodeStatusClassification as C;
+
+        let session = if self.kind == WorkspaceNodeKind::WorkflowSession {
+            Some(if !self.has_session {
+                C::Active
+            } else if self.process_presence == NodeProcessPresence::ConfirmedAbsent {
+                C::Idle
+            } else {
+                match self.activity.unwrap_or_default() {
+                    AgentSessionActivity::Working => C::Active,
+                    AgentSessionActivity::AwaitingAnswer => C::Attention,
+                    AgentSessionActivity::AwaitingInstruction => C::Idle,
+                }
+            })
+        } else {
+            None
+        };
+        let node = if self.background_failure || self.status == WorkspaceNodeStatus::Waiting {
+            Some(C::Attention)
+        } else if matches!(
+            self.status,
+            WorkspaceNodeStatus::Completed | WorkspaceNodeStatus::Aborted
+        ) {
+            Some(C::Idle)
+        } else if self.delegate_waits_for_child {
+            None
+        } else if self.kind == WorkspaceNodeKind::WorkflowCommand
+            && self.process_presence == NodeProcessPresence::ConfirmedAbsent
+        {
+            Some(C::Attention)
+        } else if self.kind == WorkspaceNodeKind::WorkflowSession && self.has_session {
+            match (
+                self.process_presence,
+                self.activity,
+                self.completion_signals,
+            ) {
+                (NodeProcessPresence::ConfirmedAbsent, _, _) => Some(C::Attention),
+                (
+                    _,
+                    Some(AgentSessionActivity::AwaitingInstruction),
+                    NodeCompletionSignalState::Pending | NodeCompletionSignalState::StopReceived,
+                ) => Some(C::Attention),
+                _ => Some(C::Active),
+            }
+        } else {
+            Some(C::Active)
+        };
+        node.into_iter()
+            .chain(session)
+            .chain(children)
+            .fold(C::Idle, C::most_severe)
+    }
+    pub(crate) fn aggregate_all(
+        nodes: &[Self],
+    ) -> std::collections::HashMap<String, WorkspaceNodeStatusClassification> {
+        let mut by_parent = std::collections::BTreeMap::<&str, Vec<usize>>::new();
+        for (index, node) in nodes.iter().enumerate().filter(|(_, node)| !node.hidden) {
+            if let Some(parent) = node.parent_id.as_deref() {
+                by_parent.entry(parent).or_default().push(index);
+            }
+        }
+        fn visit(
+            index: usize,
+            nodes: &[WorkspaceNodeClassification],
+            by_parent: &std::collections::BTreeMap<&str, Vec<usize>>,
+            values: &mut [Option<WorkspaceNodeStatusClassification>],
+        ) -> WorkspaceNodeStatusClassification {
+            if let Some(value) = values[index] {
+                return value;
+            }
+            let node = &nodes[index];
+            values[index] = Some(node.classify([]));
+            let children = by_parent
+                .get(node.id.as_str())
+                .into_iter()
+                .flatten()
+                .map(|&child| visit(child, nodes, by_parent, values))
+                .collect::<Vec<_>>();
+            let value = node.classify(children);
+            values[index] = Some(value);
+            value
+        }
+        let mut values = vec![None; nodes.len()];
+        (0..nodes.len())
+            .map(|index| {
+                (
+                    nodes[index].id.clone(),
+                    visit(index, nodes, &by_parent, &mut values),
+                )
+            })
+            .collect()
+    }
+}
+
+pub(crate) fn session_node_title(
+    manual: Option<String>,
+    provider: Option<String>,
+    node_name: String,
+    standalone: bool,
+) -> String {
+    manual
+        .or_else(|| standalone.then_some(provider).flatten())
+        .unwrap_or(node_name)
+}
+
+pub(crate) fn session_can_rename(
+    kind: WorkspaceNodeKind,
+    has_session: bool,
+    public_root: bool,
+    standalone: bool,
+) -> bool {
+    kind == WorkspaceNodeKind::WorkflowSession && has_session && (!public_root || standalone)
+}
+
+pub(super) fn observes_node(
+    id: &str,
+    execution: Option<&str>,
+    node_execution: Option<&str>,
+    target: &str,
+) -> bool {
+    id == target || execution == Some(target) || node_execution == Some(target)
+}

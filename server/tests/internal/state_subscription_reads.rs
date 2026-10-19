@@ -47,6 +47,7 @@ use releashd::test_support::integration::platform::AgentSessionProviderDto;
 use releashd::test_support::integration::platform::GitHostUsecase;
 use releashd::test_support::integration::platform::RepoPathsUsecase;
 use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::platform::StateSubscriptionReads;
 use releashd::test_support::integration::sessions::AgentSessionAvailability;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome;
 use releashd::test_support::integration::sessions::AgentSessionGarbageCollectionPort;
@@ -562,7 +563,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace.into())),
+            StateValue::WorkspaceState(Some(workspace.into()), Vec::new(), None),
         ),
         (
             T::Workflows,
@@ -1055,6 +1056,233 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
 }
 
 #[tokio::test]
+pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解消を同じ購読へ配信する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, FailureRecordingUsecase, TechnicalFailureNature,
+        WorkFailure,
+    };
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::{
+        AgentSessionTreeLocation, AgentSessionUsecase, LocalAgentSessionQueryService,
+        LocalAgentSessionRepository,
+    };
+    use releashd::test_support::integration::workflow::AgentSessionActivity;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+
+    // Given
+    let fixture = Fixture::new();
+    let archive = archive_fixture();
+    let sessions = AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(
+        archive.store.clone(),
+    )));
+    sessions
+        .create(
+            "session-tab",
+            WorkspaceIdentity::new(&fixture.path),
+            &fixture.path,
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root("session-tab").unwrap(),
+            "create-session-tab",
+        )
+        .await
+        .unwrap();
+    sessions
+        .observe_activity(
+            "session-tab",
+            AgentSessionActivity::AwaitingInstruction,
+            "idle-session-tab",
+        )
+        .await
+        .unwrap();
+    let item = LocalAgentSessionQueryService::new(archive.store.clone())
+        .get("session-tab")
+        .await
+        .unwrap()
+        .unwrap();
+    *fixture.sessions.item.lock() = Some(item.clone());
+    let failures = Arc::new(FailureRecordStore::default());
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            failures.clone(),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
+    let target = SubscriptionTarget::SessionTab(item.id);
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    start_read(&subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    let initial = reads.read(&target).await.unwrap();
+    assert!(
+        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == "idle")
+    );
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
+    );
+    stream.next().await;
+
+    // When / Then
+    let key = FailureKey::new(
+        "workflow_delegate_injection",
+        &item.tree_location.node_execution_id,
+    );
+    for expected_classification in ["attention", "idle"] {
+        if expected_classification == "attention" {
+            recording.observed(
+                &key,
+                WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Other),
+                    message: "delegate injection failed".into(),
+                },
+            );
+        } else {
+            recording.resolved(&key);
+        }
+        let expected = reads.read(&target).await.unwrap();
+        assert!(
+            matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == expected_classification)
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("background attention change must reach the session tab");
+        assert!(
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
+        );
+    }
+}
+
+#[tokio::test]
+pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親の同じ購読へ配信し一覧と一致する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, FailureRecordingUsecase, TechnicalFailureNature,
+        WorkFailure,
+    };
+    use releashd::test_support::integration::sessions::LocalAgentSessionQueryService;
+    use releashd::test_support::integration::workflow::AgentSessionActivity;
+
+    // Given
+    let fixture = Fixture::new();
+    let (_directory, store, parent, child) =
+        crate::adaptor_gateway_workspace_tree_repository::delegate_fixture(
+            &fixture.path,
+            AgentSessionActivity::AwaitingInstruction,
+        )
+        .await;
+    releashd::test_support::integration::workflow::append_single_fact(
+        &store,
+        &parent,
+        &releashd::test_support::integration::workflow::NodeFact::ExecutionCompleted,
+        9000,
+    )
+    .await
+    .unwrap();
+    let item = LocalAgentSessionQueryService::new(store.clone())
+        .get("parent-session")
+        .await
+        .unwrap()
+        .unwrap();
+    *fixture.sessions.item.lock() = Some(item.clone());
+    let failures = Arc::new(FailureRecordStore::default());
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            failures.clone(),
+            _directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
+    let target = SubscriptionTarget::SessionTab(item.id);
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    start_read(&subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    let initial = reads.read(&target).await.unwrap();
+    assert!(
+        matches!(&initial, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == "idle")
+    );
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
+    );
+    stream.next().await;
+
+    // When / Then
+    for failed_target in [
+        &child.node_execution_id,
+        &parent.node_execution_id,
+        &parent.tree_id,
+    ] {
+        let key = FailureKey::new("workflow_delegate_injection", failed_target);
+        for expected_classification in ["attention", "idle"] {
+            if expected_classification == "attention" {
+                recording.observed(
+                    &key,
+                    WorkFailure {
+                        kind: Failure::Technical(TechnicalFailureNature::Other),
+                        message: "delegate injection failed".into(),
+                    },
+                );
+            } else {
+                recording.resolved(&key);
+            }
+            let expected = reads.read(&target).await.unwrap();
+            assert!(
+                matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == expected_classification)
+            );
+            let list = reads.workflow.workspace_tree(&fixture.path).await.unwrap();
+            let listed = list
+                .nodes()
+                .iter()
+                .find(|node| node.node_execution_id.as_deref() == Some(&parent.node_execution_id))
+                .unwrap();
+            assert_eq!(
+                listed.status_classification.as_public_str(),
+                expected_classification
+            );
+            if let StateValue::SessionTab {
+                node: Some(detail), ..
+            } = &expected
+            {
+                assert_eq!(detail.0.error_reason, listed.failure_reason());
+            }
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .expect("background attention change must reach the session tab");
+            assert!(
+                matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
+            );
+        }
+    }
+}
+
+#[tokio::test]
 pub async fn test_agent_session購読_状態変更通知から再読取して同じ購読へ配信する() {
     // Given
     let fixture = Fixture::new();
@@ -1276,6 +1504,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     let panes = PaneLayout::pane(
         "pane".into(),
         vec![PaneTab {
+            agent_session_id: None,
             node_id: None,
             id: "workflow".into(),
             kind: PaneTabKind::Command,
@@ -1329,5 +1558,382 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
         .unwrap();
     // Then
     react.panes = state.panes;
-    assert_eq!(actual, StateValue::WorkspaceState(Some(react.into())));
+    assert_eq!(
+        actual,
+        StateValue::WorkspaceState(Some(react.into()), Vec::new(), None)
+    );
+}
+
+#[tokio::test]
+pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を配り不在も扱う() {
+    // Given
+    let fixture = Fixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    let item = AgentSessionItemDto {
+        id: "session".into(),
+        workspace_identity: fixture.path.clone(),
+        worktree_path: fixture.path.clone(),
+        workspace_worktree_path: fixture.path.clone(),
+        provider: AgentSessionProviderDto::Codex,
+        tree_location: AgentSessionTreeLocationDto {
+            tree_id: "tree".into(),
+            node_execution_id: "node".into(),
+        },
+        lifecycle: AgentSessionLifecycleDto::Open,
+        provider_session_id: None,
+        transcript_ref: None,
+        operations: AgentSessionOperationsDto {
+            can_archive: false,
+            can_restore: false,
+            can_delete: false,
+        },
+        last_exit_abnormal: false,
+        terminal_presence: Some("live".into()),
+    };
+    *fixture.sessions.item.lock() = Some(item.clone());
+    // When / Then
+    let value = reads.read(&T::SessionTab("session".into())).await.unwrap();
+    assert_eq!(
+        value,
+        StateValue::SessionTab {
+            session: Some((item.clone(), AgentSessionAvailability::Open)),
+            node: None
+        }
+    );
+    let mut archived = item;
+    archived.lifecycle = AgentSessionLifecycleDto::Archived;
+    *fixture.sessions.item.lock() = Some(archived.clone());
+    let value = reads.read(&T::SessionTab("session".into())).await.unwrap();
+    assert_eq!(
+        value,
+        StateValue::SessionTab {
+            session: Some((archived, AgentSessionAvailability::Archived)),
+            node: None
+        }
+    );
+    *fixture.sessions.item.lock() = None;
+    assert_eq!(
+        reads.read(&T::SessionTab("session".into())).await.unwrap(),
+        StateValue::SessionTab {
+            session: None,
+            node: None
+        }
+    );
+    assert_eq!(
+        *fixture.sessions.calls.lock(),
+        vec!["session", "session", "session"]
+    );
+}
+
+#[tokio::test]
+pub async fn test_保存済み会話タブの購読_旧参照を解決し一部の取得失敗でも配置と参照を保持する() {
+    use releashd::test_support::integration::platform::{
+        save_workspace_state, PaneLayout, PaneTab, PaneTabKind, WorkspaceLayoutState,
+        WorkspaceState, WorkspaceTabsState,
+    };
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::{
+        AgentSessionTreeLocation, AgentSessionUsecase, LocalAgentSessionRepository,
+    };
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+    // Given
+    let fixture = Fixture::new();
+    let archive = archive_fixture();
+    let sessions = AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(
+        archive.store.clone(),
+    )));
+    for id in ["ready", "broken", "broken-root", "broken-root-alias"] {
+        sessions
+            .create(
+                id,
+                WorkspaceIdentity::new(&fixture.path),
+                &fixture.path,
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+                &format!("create-{id}"),
+            )
+            .await
+            .unwrap();
+    }
+    use releashd::test_support::integration::workspace::{
+        SqliteWorkspaceTreeRepository, WorkspaceTreeRepository,
+    };
+    let tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
+        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+        .await
+        .remove(0)
+        .unwrap();
+    let ready_node = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("ready"))
+        .unwrap()
+        .id
+        .clone();
+    let broken_root_alias = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("broken-root-alias"))
+        .unwrap()
+        .id
+        .clone();
+    let broken_node = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("broken"))
+        .unwrap()
+        .id
+        .clone();
+    releashd::test_support::integration::workflow::seed_workflow_session_facts(
+        &archive.store,
+        releashd::test_support::integration::workflow::WorkflowSessionFactSeed {
+            workflow_name: "non-session-root",
+            request: "test",
+            worktree_path: &fixture.path,
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "00000000-0000-4000-8000-000000002063",
+            node_execution_id: "workflow-session",
+            session_id: "other-agent",
+            initial_instruction_admitted: false,
+        },
+    )
+    .await
+    .unwrap();
+    sessions
+        .create(
+            "unrelated",
+            WorkspaceIdentity::new("/other"),
+            "/other",
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root("unrelated").unwrap(),
+            "create-unrelated",
+        )
+        .await
+        .unwrap();
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, ExecutionOrigin, ExecutionTreeLaunch, NodeDefinition, NodeFact,
+        NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
+        WorkflowDefinition,
+    };
+    let child_tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
+        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+        .await
+        .remove(0)
+        .unwrap();
+    let broken_child_alias = child_tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("workflow-session"))
+        .unwrap()
+        .id
+        .clone();
+    let public = "00000000-0000-4000-8000-000000002090";
+    let first = NodeFactMeta {
+        tree_id: public.into(),
+        node_execution_id: "00000000-0000-4000-8000-000000002091".into(),
+        node_name: "main".into(),
+        kind: NodeKindName::Session,
+        parent_id: None,
+        attempt: 1,
+    };
+    let next = NodeFactMeta {
+        node_execution_id: "00000000-0000-4000-8000-000000002092".into(),
+        attempt: 2,
+        ..first.clone()
+    };
+    let attach = |id: &str| {
+        NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: id.into(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+        })
+    };
+    for (meta, fact) in [
+        (
+            &first,
+            NodeFact::Started(StartedFact {
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: None,
+                    workspace_identity: fixture.path.clone(),
+                    worktree_path: fixture.path.clone(),
+                    created_from: ExecutionOrigin::Cli,
+                    request: String::new(),
+                    workflow_name: "main".into(),
+                    definition: Some(WorkflowDefinition {
+                        entry: "main".into(),
+                        nodes: vec![NodeDefinition {
+                            name: "main".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    launched_as: ExecutionTreeLaunch::Workflow,
+                })),
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&first, attach("first-agent")),
+        (&first, NodeFact::RetryRequested),
+        (
+            &next,
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&next, attach("next-agent")),
+    ] {
+        append_single_fact(&archive.store, meta, &fact, 1000)
+            .await
+            .unwrap();
+    }
+    let connection =
+        rusqlite::Connection::open(archive.directory.path().join("local-event-store.sqlite3"))
+            .unwrap();
+    let original_root: String = connection.query_row(
+        "SELECT detail FROM node_events WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [], |row| row.get(0),
+    ).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken' AND event_type = 'session_attached'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'unrelated' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = '{}' WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'workflow-session' AND event_type = 'started'", []).unwrap();
+    let panes = PaneLayout::pane(
+        "pane".into(),
+        [
+            broken_child_alias.as_str(),
+            public,
+            first.node_execution_id.as_str(),
+            ready_node.as_str(),
+            broken_node.as_str(),
+            "missing",
+            "broken-root",
+            broken_root_alias.as_str(),
+            "00000000-0000-4000-8000-000000002063",
+        ]
+        .into_iter()
+        .map(|id| PaneTab {
+            id: id.into(),
+            kind: PaneTabKind::Session,
+            node_id: Some(id.into()),
+            agent_session_id: None,
+            file_path: None,
+            file_mode: None,
+            file_base: None,
+        })
+        .collect(),
+        Some(ready_node.clone()),
+    )
+    .unwrap();
+    let state = WorkspaceState {
+        panes: Some(panes),
+        version: 1,
+        tabs: WorkspaceTabsState {
+            editors: Vec::new(),
+            active_editor_path: None,
+        },
+        layout: WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        },
+    };
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(NoopWorkflowExternalEditorGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        None,
+        &fixture.path,
+        state.clone(),
+    )
+    .await
+    .unwrap();
+    // When
+    let actual = reads
+        .read(&T::WorkspaceState(
+            fixture.path.clone(),
+            fixture.path.clone(),
+        ))
+        .await
+        .unwrap();
+    // Then
+    let StateValue::WorkspaceState(Some(actual), failures, None) = actual else {
+        panic!("Missing workspace state")
+    };
+    let mut expected = state;
+    expected.panes.as_mut().unwrap().resolve_legacy_sessions(
+        &[
+            (ready_node.clone(), "ready".into()),
+            (public.into(), "next-agent".into()),
+            (first.node_execution_id.clone(), "first-agent".into()),
+        ]
+        .into(),
+    );
+    assert_eq!(actual, expected);
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    use releashd::test_support::integration::workspace::WorkspaceQueryService;
+    let mut individual_failures = Vec::new();
+    for (id, fails) in [
+        (broken_child_alias.as_str(), true),
+        (broken_node.as_str(), true),
+        ("broken-root", true),
+        (broken_root_alias.as_str(), true),
+        ("00000000-0000-4000-8000-000000002063", false),
+        ("missing", false),
+    ] {
+        let resolution = query
+            .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[id.into()])
+            .await;
+        assert_eq!(
+            resolution.failures.len(),
+            usize::from(fails),
+            "reference {id}"
+        );
+        if fails {
+            assert_eq!(resolution.failures[0].reference_id, id);
+        }
+        individual_failures.extend(
+            resolution
+                .failures
+                .into_iter()
+                .map(|failure| failure.failure.message),
+        );
+    }
+    individual_failures.sort();
+    let mut messages: Vec<_> = failures
+        .iter()
+        .map(|failure| failure.failure.message.clone())
+        .collect();
+    messages.sort();
+    assert_eq!(failures.len(), 4, "{messages:?}");
+    assert_eq!(messages, individual_failures);
+    // When: a structurally valid header with an empty workspace is also corrupt.
+    connection.execute(
+        "UPDATE node_events SET detail = json_set(?1, '$.root.worktreePath', '') WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [&original_root],
+    ).unwrap();
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let resolution = query
+        .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[broken_root_alias])
+        .await;
+    // Then
+    assert!(resolution.sessions.is_empty());
+    assert_eq!(resolution.failures.len(), 1);
 }

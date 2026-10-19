@@ -23,6 +23,10 @@ pub enum StateValue {
     Selection(crate::domain::workspace_tree::WorkspaceTree, bool),
     NodeDetail(Option<WorkspaceNodeDetailDto>),
     AgentSession(Option<(AgentSessionItemDto, AgentSessionAvailability)>),
+    SessionTab {
+        session: Option<(AgentSessionItemDto, AgentSessionAvailability)>,
+        node: Option<Box<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>>,
+    },
     SessionHistory(AgentSessionHistoryPageDto),
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),
@@ -47,7 +51,11 @@ pub enum StateValue {
     ),
     Worktrees(Vec<WorktreeEntryDto>),
     StartupRepository(Option<crate::usecase::repository_dto::StartupWorktree>),
-    WorkspaceState(Option<crate::domain::workspace_state::WorkspaceState>),
+    WorkspaceState(
+        Option<crate::domain::workspace_state::WorkspaceState>,
+        Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
+        Option<crate::domain::workspace_state::WorkspaceStateError>,
+    ),
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
     ReviewSnapshot(ReviewSnapshotDto),

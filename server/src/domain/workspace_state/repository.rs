@@ -22,11 +22,11 @@ pub trait WorkspaceStateRepository: Send + Sync {
         collapsed: bool,
         expected: StreamVersion,
     ) -> Result<(), WorkspaceStateError>;
-    async fn load(
+    async fn filter_missing_files(
         &self,
-        worktree_name: &str,
+        state: WorkspaceState,
         worktree_root: &str,
-    ) -> Result<Option<WorkspaceState>, WorkspaceStateError>;
+    ) -> Result<WorkspaceState, WorkspaceStateError>;
     async fn read(
         &self,
         worktree_name: &str,

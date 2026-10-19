@@ -35,10 +35,66 @@ pub async fn save_workspace_state(
 
 pub async fn load_workspace_state(
     repository: &dyn WorkspaceStateRepository,
+    query: &dyn crate::usecase::workspace_tree::WorkspaceQueryService,
     worktree_name: &str,
     worktree_root: &str,
-) -> Result<Option<WorkspaceState>, crate::domain::workspace_state::WorkspaceStateError> {
-    super::query_service::load_workspace_state(repository, worktree_name, worktree_root).await
+) -> Result<
+    (
+        Option<WorkspaceState>,
+        Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
+        Option<WorkspaceStateError>,
+    ),
+    WorkspaceStateError,
+> {
+    retry::attempts(
+        RetryBackoff::CONFLICT,
+        &RetryLimiter::new(),
+        |error| match error {
+            WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
+            _ => None,
+        },
+        |_| async {
+            let (version, state) = repository.read(worktree_name).await?;
+            let Some(mut state) = state else {
+                return Ok((None, Vec::new(), None));
+            };
+            let mut failures = Vec::new();
+            let mut migration_failure = None;
+            if let Some(layout) = state.panes.as_mut() {
+                let ids = layout
+                    .legacy_session_nodes()
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                if !ids.is_empty() {
+                    let resolution = query
+                        .resolve_session_nodes(
+                            &crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_root),
+                            &ids,
+                        )
+                        .await;
+                    failures = resolution.failures;
+                    let previous = layout.clone();
+                    layout.resolve_legacy_sessions(&resolution.sessions);
+                    if *layout != previous {
+                        match repository.save(worktree_name, state.clone(), version).await {
+                            Ok(()) => {}
+                            Err(WorkspaceStateError::VersionConflict) => {
+                                return Err(WorkspaceStateError::VersionConflict);
+                            }
+                            Err(error) => migration_failure = Some(error),
+                        }
+                    }
+                }
+            }
+            let state = repository
+                .filter_missing_files(state, worktree_root)
+                .await?;
+            Ok((Some(state), failures, migration_failure))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

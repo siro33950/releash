@@ -13,7 +13,8 @@ final class RootListViewTests: XCTestCase {
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
     var session = Releash_Client_V1_WorkspaceTreeItem()
-    session.node.id = "session"
+    session.node.id = "session-tree"
+    session.node.sessionID = "agent-session"
     session.node.title = "Session"
     session.node.contentKind.value = .session
     var command = Releash_Client_V1_WorkspaceTreeItem()
@@ -28,7 +29,8 @@ final class RootListViewTests: XCTestCase {
     fanout.fanout.title = "Fanout"
     for root in [session, command, sequence, fanout] { model.openRoot(root) }
     XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session, .command])
-    XCTAssertEqual(try model.panes.layout().tabs.map(\.nodeID), ["session", "command"])
+    XCTAssertEqual(try model.panes.layout().tabs.map(\.nodeID), [nil, "command"])
+    XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent-session")
     model.pendingRoots["/repo"] = "pending"
     model.openPendingRoot()
     XCTAssertEqual(model.pendingRoots["/repo"], "pending")

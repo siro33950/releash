@@ -24,12 +24,15 @@ final class TestHTTPClient: HTTPClientInterface {
     var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
     var sessions: [String: Releash_Client_V1_AgentSessionItemDto] = [:]
+    var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
     var history = Releash_Client_V1_AgentSessionHistoryPageDto()
     var failedMethod: String?
     var failureDetail: ConnectError.Detail?
     var failedSubscriptionTargets: [String: Int] = [:]
     var subscriptionFailureCode: Code = .internalError
     var pendingCreation: (@Sendable (HTTPResponse) -> Void)?
+    var deferOpenSession = false
+    var pendingOpenSession: (@Sendable (HTTPResponse) -> Void)?
     var deferCreation = false
     var deferSave = false
     var pendingSave: (@Sendable (HTTPResponse) -> Void)?
@@ -68,6 +71,10 @@ final class TestHTTPClient: HTTPClientInterface {
             tracingInfo: nil))
         return Cancelable(cancel: {})
       }
+      if method == "OpenAgentSession", state.withLock({ $0.deferOpenSession }) {
+        state.withLock { $0.pendingOpenSession = onResponse }
+        return Cancelable(cancel: {})
+      }
       if method == "CreateWorktrees", state.withLock({ $0.deferCreation }) {
         state.withLock { $0.pendingCreation = onResponse }
         return Cancelable(cancel: {})
@@ -93,6 +100,8 @@ final class TestHTTPClient: HTTPClientInterface {
             if let value = state.artifacts[subscription.args[0]] {
               payload.workflowOutput.value = value
             }
+          } else if subscription.target == "session-tab" {
+            payload.sessionTab = state.sessionTabs[subscription.args[0]] ?? .init()
           } else if subscription.target == "agent-session" {
             payload.agentSession = .init()
             if let value = state.sessions[subscription.args[0]] {
@@ -141,7 +150,7 @@ final class TestHTTPClient: HTTPClientInterface {
       {
         var selection = Releash_Client_V1_SessionSelection()
         selection.agentSessionID = "agent-session"
-        selection.nodeID = "session-node"
+        selection.nodeID = "session-tree"
         response = try selection.serializedData()
       } else if method == "StartWorkflow" {
         var result = Releash_Client_V1_ResultString()

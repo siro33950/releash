@@ -426,3 +426,70 @@ fn test_command失敗理由_非ゼロ終了を示し記録された理由を優�
     command.error_reason = Some("process failed".into());
     assert_eq!(command.failure_reason().as_deref(), Some("process failed"));
 }
+
+#[test]
+fn test_部分木の状態分類_子の状態と失敗を反映し過去の試行を含めない() {
+    // Given
+    let mut parent = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    )
+    .classification_input();
+    parent.id = "parent".into();
+    parent.activity = Some(AgentSessionActivity::AwaitingInstruction);
+    parent.has_session = true;
+    let mut child = parent.clone();
+    child.id = "child".into();
+    child.parent_id = Some("parent".into());
+    // When / Then
+    for (activity, expected) in [
+        (
+            AgentSessionActivity::Working,
+            WorkspaceNodeStatusClassification::Active,
+        ),
+        (
+            AgentSessionActivity::AwaitingAnswer,
+            WorkspaceNodeStatusClassification::Attention,
+        ),
+    ] {
+        child.activity = Some(activity);
+        assert_eq!(
+            WorkspaceNodeClassification::aggregate_all(&[parent.clone(), child.clone()])["parent"],
+            expected
+        );
+    }
+    // When
+    child.activity = Some(AgentSessionActivity::AwaitingInstruction);
+    child.background_failure = true;
+    // Then
+    assert_eq!(
+        WorkspaceNodeClassification::aggregate_all(&[parent.clone(), child.clone()])["parent"],
+        WorkspaceNodeStatusClassification::Attention
+    );
+    // When
+    child.hidden = true;
+    // Then
+    assert_eq!(
+        WorkspaceNodeClassification::aggregate_all(&[parent, child])["parent"],
+        WorkspaceNodeStatusClassification::Idle
+    );
+}
+
+#[test]
+fn test_背景失敗の観測_理由と分類を反映する() {
+    // Given
+    let mut target = node(
+        WorkspaceNodeKind::WorkflowSession,
+        WorkspaceNodeStatus::Completed,
+    );
+    target.error_reason = Some("existing".into());
+    // When
+    target.observe_background_failure("background");
+    // Then
+    assert!(target.background_failure);
+    assert_eq!(target.error_reason.as_deref(), Some("background"));
+    assert_eq!(
+        target.status_classification,
+        WorkspaceNodeStatusClassification::Attention
+    );
+}

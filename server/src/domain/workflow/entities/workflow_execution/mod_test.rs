@@ -3230,3 +3230,34 @@ fn test_command準備_実行環境を記録し終了済みattemptには上書き
         Some("/repo")
     );
 }
+
+#[test]
+fn test_順序合成の成果_children外への遷移は完了でき統合成果に含めない() {
+    let mut execution = execution("name: test\ndescription: test\nnodes:\n  main:\n    sequence:\n      children:\n        - first:\n            rules: [{next: target_only}]\n  first: {session: {provider: codex}}\n  target_only: {session: {provider: codex}}\n");
+    let mut new_id = id_source();
+    let first = next_leaf(execution.start_root(&mut new_id, 1.0).unwrap().decision);
+    assert_eq!(first.node_name, "first");
+    let target = next_leaf(
+        finish_leaf(
+            &mut execution,
+            &first,
+            Some(json!({"first": true})),
+            &mut new_id,
+        )
+        .decision,
+    );
+    assert_eq!(target.node_name, "target_only");
+    finish_leaf(
+        &mut execution,
+        &target,
+        Some(json!({"target": true})),
+        &mut new_id,
+    );
+    let root = execution
+        .node_executions()
+        .iter()
+        .find(|node| node.node_name == "main")
+        .unwrap();
+    assert_eq!(root.status, RuntimeNodeExecutionStatus::Succeeded);
+    assert_eq!(root.artifact, Some(json!({"first": {"first": true}})));
+}

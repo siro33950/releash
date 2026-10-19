@@ -13,13 +13,275 @@ use crate::usecase::workflow::{
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
+#[cfg(feature = "test-support")]
+type ReferenceSearchObserver = Arc<dyn Fn() + Send + Sync>;
+
 pub struct SqliteWorkspaceQueryService {
     repository: Arc<SqliteWorkspaceTreeRepository>,
+    #[cfg(feature = "test-support")]
+    reference_search_observer: parking_lot::Mutex<Option<ReferenceSearchObserver>>,
+    references: Arc<parking_lot::Mutex<ReferenceIndex>>,
+}
+
+#[derive(Default)]
+struct ReferenceIndex {
+    workspace: Option<String>,
+    trees: std::collections::HashMap<String, ReferenceTree>,
+    aliases: std::collections::HashMap<String, (String, String)>,
+    standalone: StandaloneReferences,
+}
+
+#[derive(Default)]
+pub struct StandaloneReferences {
+    heads: std::collections::HashMap<String, i64>,
+    aliases: std::collections::HashMap<String, String>,
+}
+
+impl StandaloneReferences {
+    pub fn owner(&self, alias: &str) -> Option<&str> {
+        self.aliases.get(alias).map(String::as_str)
+    }
+
+    pub fn update(&mut self, connection: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
+        use crate::adaptor::gateway::local_event_store::node_events;
+        let heads: std::collections::HashMap<_, _> =
+            node_events::tree_heads(connection)?.into_iter().collect();
+        self.aliases.retain(|_, tree| {
+            heads.get(tree).is_some_and(|head| {
+                self.heads
+                    .get(tree)
+                    .is_some_and(|previous| head >= previous)
+            })
+        });
+        for (tree, head) in &heads {
+            let after = self
+                .heads
+                .get(tree)
+                .copied()
+                .filter(|previous| previous <= head)
+                .unwrap_or_default();
+            if *head == after {
+                continue;
+            }
+            for name in node_events::standalone_roots_after(connection, tree, after)? {
+                let alias =
+                    crate::domain::workspace_tree::entities::standalone_reference(tree, &name);
+                self.aliases.insert(alias, tree.clone());
+            }
+        }
+        self.heads = heads;
+        Ok(())
+    }
+}
+
+impl ReferenceIndex {
+    fn update(
+        &mut self,
+        connection: &rusqlite::Connection,
+        heads: &[(String, i64)],
+        workspace: &str,
+    ) -> Result<(), rusqlite::Error> {
+        use crate::adaptor::gateway::{local_event_store::node_events, workflow::fact_log};
+        let live: std::collections::HashSet<_> = heads.iter().map(|(id, _)| id.as_str()).collect();
+        self.trees.retain(|id, _| live.contains(id.as_str()));
+        self.aliases
+            .retain(|_, (tree, _)| live.contains(tree.as_str()));
+        for (tree, head) in heads {
+            let held = self.trees.entry(tree.clone()).or_default();
+            if *head < held.seq {
+                *held = ReferenceTree::default();
+                self.aliases.retain(|_, (owner, _)| owner != tree);
+            }
+            if *head == held.seq {
+                continue;
+            }
+            for row in node_events::reference_starts_after(connection, tree, held.seq)? {
+                let result = fact_log::record_from_row(&row).and_then(|record| {
+                    if let Some(record) = record {
+                        if let crate::domain::workflow::NodeFact::Started(started) = &record.fact {
+                            if let Some(root) = &started.root {
+                                if !crate::domain::workflow::TreeRootFact::valid_worktree_path(
+                                    &root.worktree_path,
+                                ) {
+                                    return Err(format!(
+                                        "tree {} has an empty root workspace",
+                                        row.tree_id
+                                    ));
+                                }
+                                held.workspace = Some(root.worktree_path.clone());
+                            } else if held.workspace.is_none() && record.meta.parent_id.is_none() {
+                                return Err(format!("tree {} has no root header", row.tree_id));
+                            }
+                        }
+                        if held
+                            .workspace
+                            .as_deref()
+                            .is_some_and(|owner| owner != workspace)
+                        {
+                            return Ok(());
+                        }
+                        if held.errors.is_empty() {
+                            held.ids
+                                .record(&record)
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
+                    Ok(())
+                });
+                if held
+                    .workspace
+                    .as_deref()
+                    .is_some_and(|owner| owner != workspace)
+                {
+                    break;
+                }
+                if let Err(error) = result {
+                    held.errors
+                        .insert(row.node_execution_id.clone(), error.clone());
+                    if row.parent_id.is_none() {
+                        if let Ok(Some(header)) =
+                            crate::adaptor::gateway::workflow::stored_definition::read_tree_header(
+                                &row.detail,
+                            )
+                        {
+                            if crate::domain::workflow::TreeRootFact::valid_worktree_path(
+                                &header.worktree_path,
+                            ) {
+                                held.workspace = Some(header.worktree_path);
+                            }
+                        }
+                        if held
+                            .workspace
+                            .as_deref()
+                            .is_some_and(|owner| owner != workspace)
+                        {
+                            break;
+                        }
+                        if let Err(reason) = fact_log::node_meta_from_row(&row).and_then(|meta| {
+                            held.ids
+                                .record_start_identity(&meta, None)
+                                .map_err(|error| error.to_string())
+                        }) {
+                            held.errors.insert(
+                                row.node_execution_id.clone(),
+                                format!("{error}: {reason}"),
+                            );
+                        }
+                    }
+                }
+                if let Some(alias) = held.ids.identities.get(&row.node_execution_id) {
+                    self.aliases
+                        .insert(alias.clone(), (tree.clone(), row.node_execution_id));
+                }
+            }
+            held.seq = *head;
+        }
+        self.trees.retain(|_, held| {
+            held.workspace
+                .as_deref()
+                .is_none_or(|owner| owner == workspace)
+        });
+        self.aliases
+            .retain(|_, (tree, _)| self.trees.contains_key(tree));
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        connection: &rusqlite::Connection,
+        workspace: &str,
+        id: &str,
+        owner: Option<&str>,
+    ) -> Result<Option<crate::domain::workflow::NodeFactRecord>, WorkflowError> {
+        use crate::adaptor::gateway::{local_event_store::node_events, workflow::fact_log};
+        let storage = |error| {
+            WorkflowError::from(fact_log::FactReadError::Query(
+                crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error),
+            ))
+        };
+        let direct =
+            node_events::latest_row_for_node_with_event_types(connection, id, &["started"])
+                .map_err(storage)?;
+        let direct = match direct {
+            Some(row) => Some(row),
+            None => node_events::first_row_of_tree(connection, id).map_err(storage)?,
+        };
+        let matched = direct
+            .map(|row| (row.tree_id, row.node_execution_id))
+            .or_else(|| self.aliases.get(id).cloned());
+        let tree = matched.as_ref().map(|(tree, _)| tree.as_str()).or(owner);
+        let Some(tree) = tree else { return Ok(None) };
+        let Some(held) = self.trees.get(tree) else {
+            return Ok(None);
+        };
+        if let Some(owner) = held.workspace.as_deref() {
+            if owner != workspace {
+                return Ok(None);
+            }
+        } else if let Some(error) = held.errors.values().next() {
+            return Err(WorkflowError::CorruptStoredState(error.clone()));
+        } else {
+            return Ok(None);
+        }
+        let node = if tree == id {
+            held.ids.public_root().map(str::to_string)
+        } else {
+            matched.as_ref().map(|(_, node)| node.clone())
+        };
+        let Some(node) = node else {
+            if let Some(error) = held.errors.values().next() {
+                return Err(WorkflowError::CorruptStoredState(error.clone()));
+            }
+            return Ok(None);
+        };
+        if let Some(error) = held.errors.get(&node) {
+            return Err(WorkflowError::CorruptStoredState(error.clone()));
+        }
+        let Some(start) =
+            node_events::latest_row_for_node_with_event_types(connection, &node, &["started"])
+                .map_err(storage)?
+        else {
+            return Ok(None);
+        };
+        let meta =
+            fact_log::node_meta_from_row(&start).map_err(WorkflowError::CorruptStoredState)?;
+        if meta.kind != crate::domain::workflow::NodeKindName::Session {
+            return Ok(None);
+        }
+        if tree == id {
+            if let Some(error) = held.errors.values().next() {
+                return Err(WorkflowError::CorruptStoredState(error.clone()));
+            }
+        }
+        node_events::latest_row_for_node_with_event_types(connection, &node, &["session_attached"])
+            .map_err(storage)?
+            .map(|row| fact_log::record_from_row(&row).map_err(WorkflowError::CorruptStoredState))
+            .transpose()
+            .map(Option::flatten)
+    }
+}
+
+#[derive(Default)]
+struct ReferenceTree {
+    seq: i64,
+    workspace: Option<String>,
+    ids: crate::domain::workspace_tree::entities::NodeIdentityIndex,
+    errors: std::collections::HashMap<String, String>,
 }
 
 impl SqliteWorkspaceQueryService {
     pub fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
-        Arc::new(Self { repository })
+        Arc::new(Self {
+            repository,
+            references: Default::default(),
+            #[cfg(feature = "test-support")]
+            reference_search_observer: Default::default(),
+        })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn set_reference_search_observer(&self, observer: Option<ReferenceSearchObserver>) {
+        *self.reference_search_observer.lock() = observer;
     }
 
     pub async fn execution_records(
@@ -75,6 +337,135 @@ impl SqliteWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for SqliteWorkspaceQueryService {
+    async fn resolve_session_nodes(
+        &self,
+        workspace_identity: &WorkspaceIdentity,
+        node_ids: &[String],
+    ) -> crate::usecase::workspace_tree::query_service::SessionNodeResolutionDto {
+        use crate::adaptor::gateway::local_event_store::node_events;
+        let mut result =
+            crate::usecase::workspace_tree::query_service::SessionNodeResolutionDto::default();
+        let workspace = workspace_identity.as_str().to_string();
+        let ids = node_ids.to_vec();
+        let index = Arc::clone(&self.references);
+        #[cfg(feature = "test-support")]
+        let observer = self.reference_search_observer.lock().clone();
+        let rows = self
+            .repository
+            .fact_backend()
+            .run_indexed(move |connection| {
+                let unavailable = |error: rusqlite::Error| {
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
+                };
+                let transaction = connection.unchecked_transaction().map_err(unavailable)?;
+                let mut index = index.lock();
+                if index.workspace.as_deref() != Some(&workspace) {
+                    let standalone = std::mem::take(&mut index.standalone);
+                    *index = ReferenceIndex {
+                        workspace: Some(workspace.clone()),
+                        standalone,
+                        ..Default::default()
+                    };
+                }
+                if ids
+                    .iter()
+                    .any(|id| crate::domain::workspace_tree::entities::is_standalone_reference(id))
+                {
+                    index.standalone.update(&transaction).map_err(unavailable)?;
+                }
+                let mut selected = std::collections::HashSet::new();
+                let mut owners = std::collections::HashMap::new();
+                let mut needs_workspace = false;
+                for id in &ids {
+                    let direct = node_events::latest_row_for_node_with_event_types(
+                        &transaction,
+                        id,
+                        &["started"],
+                    )
+                    .map_err(unavailable)?;
+                    let owner = direct
+                        .map(|row| row.tree_id)
+                        .or_else(|| index.standalone.owner(id).map(str::to_string))
+                        .or(crate::domain::workspace_tree::entities::public_node_tree(
+                            id,
+                        ));
+                    let owner = match owner {
+                        Some(owner) => Some(owner),
+                        None => node_events::first_row_of_tree(&transaction, id)
+                            .map_err(unavailable)?
+                            .map(|row| row.tree_id),
+                    };
+                    if let Some(owner) = owner {
+                        selected.insert(owner.clone());
+                        owners.insert(id.clone(), owner);
+                    } else if !crate::domain::workspace_tree::entities::is_standalone_reference(id)
+                    {
+                        needs_workspace = true;
+                    }
+                }
+                if needs_workspace {
+                    #[cfg(feature = "test-support")]
+                    if let Some(observer) = &observer {
+                        observer();
+                    }
+                    selected.extend(
+                        node_events::workspace_reference_trees(&transaction, &workspace)
+                            .map_err(unavailable)?,
+                    );
+                }
+                selected.extend(index.trees.keys().cloned());
+                let heads =
+                    node_events::reference_heads(&transaction, &selected).map_err(unavailable)?;
+                index
+                    .update(&transaction, &heads, &workspace)
+                    .map_err(unavailable)?;
+                let rows = ids
+                    .into_iter()
+                    .map(|id| {
+                        let resolved = index.resolve(
+                            &transaction,
+                            &workspace,
+                            &id,
+                            owners.get(&id).map(String::as_str),
+                        );
+                        (id, resolved)
+                    })
+                    .collect::<Vec<_>>();
+                transaction.commit().map_err(unavailable)?;
+                Ok(rows)
+            })
+            .await;
+        match rows {
+            Ok(rows) => {
+                for (id, record) in rows {
+                    match record {
+                        Ok(Some(crate::domain::workflow::NodeFactRecord {
+                            fact: crate::domain::workflow::NodeFact::SessionAttached(attached),
+                            ..
+                        })) => {
+                            result.sessions.insert(id, attached.session_id);
+                        }
+                        Ok(_) => {}
+                        Err(error) => result.failures.push(crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                            reference_id: id,
+                            failure: crate::domain::failure::WorkFailure::from_error(&error),
+                        }),
+                    }
+                }
+            }
+            Err(error) => {
+                let failure = crate::domain::failure::WorkFailure::from_error(&query_error(error));
+                result.failures.extend(node_ids.iter().map(|id| {
+                    crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                        reference_id: id.clone(),
+                        failure: failure.clone(),
+                    }
+                }));
+            }
+        }
+        result
+    }
+
     async fn node_detail(
         &self,
         workspace_identity: &WorkspaceIdentity,
@@ -110,7 +501,20 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             let workflow = nodes.iter().find(|node| {
                 node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
             });
+            let pending_session = (node.kind == WorkspaceNodeKind::WorkflowSession
+                && node.session_id.is_none())
+            .then(|| node.node_execution_id.clone())
+            .flatten();
             let mut detail = node_detail_with_workflow(node, workflow);
+            if let Some(id) = pending_session {
+                if let Some(record) = crate::adaptor::gateway::workflow::fact_log::read_latest_record_for_node_with_event_types(
+                    &self.repository.fact_backend(), &id, &["runtime_failure_observed"],
+                ).await.map_err(WorkflowError::from)? {
+                    if let crate::domain::workflow::NodeFact::RuntimeFailureObserved(failure) = record.fact {
+                        detail.error_reason = Some(failure.reason);
+                    }
+                }
+            }
             detail.past_attempts = attempts;
             return Ok(Some(detail));
         }
@@ -168,22 +572,7 @@ fn node_detail_with_workflow(
 pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDetailDto {
     let updated_at = node.updated_at();
     let error_reason = node.failure_reason();
-    let submit_received = matches!(
-        node.completion_signals,
-        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
-            | crate::domain::workflow::NodeCompletionSignalState::Ready
-    );
-    let stop_received = matches!(
-        node.completion_signals,
-        crate::domain::workflow::NodeCompletionSignalState::StopReceived
-            | crate::domain::workflow::NodeCompletionSignalState::Ready
-    );
-    let waiting_for = match node.completion_signals {
-        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived => Some("stop"),
-        crate::domain::workflow::NodeCompletionSignalState::StopReceived => Some("submit"),
-        crate::domain::workflow::NodeCompletionSignalState::Pending
-        | crate::domain::workflow::NodeCompletionSignalState::Ready => None,
-    };
+    let (submit_received, stop_received, waiting_for) = signal_display(node.completion_signals);
     let content = match node.kind {
         WorkspaceNodeKind::WorkflowCommand => {
             WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
@@ -234,6 +623,28 @@ pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDet
         updated_at,
         content,
     }
+}
+
+fn signal_display(
+    signals: crate::domain::workflow::NodeCompletionSignalState,
+) -> (bool, bool, Option<&'static str>) {
+    let submit_received = matches!(
+        signals,
+        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived
+            | crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    let stop_received = matches!(
+        signals,
+        crate::domain::workflow::NodeCompletionSignalState::StopReceived
+            | crate::domain::workflow::NodeCompletionSignalState::Ready
+    );
+    let waiting_for = match signals {
+        crate::domain::workflow::NodeCompletionSignalState::SubmitReceived => Some("stop"),
+        crate::domain::workflow::NodeCompletionSignalState::StopReceived => Some("submit"),
+        crate::domain::workflow::NodeCompletionSignalState::Pending
+        | crate::domain::workflow::NodeCompletionSignalState::Ready => None,
+    };
+    (submit_received, stop_received, waiting_for)
 }
 
 pub fn execution_summary(

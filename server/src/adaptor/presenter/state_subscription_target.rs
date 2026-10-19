@@ -68,6 +68,7 @@ impl SubscriptionTarget {
             ("workspaces", []) => Ok(Self::Workspaces),
             ("selection", [path, id]) => Ok(Self::Selection((*path).into(), (*id).into())),
             ("node-detail", [path, id]) => Ok(Self::NodeDetail((*path).into(), (*id).into())),
+            ("session-tab", [id]) => Ok(Self::SessionTab((*id).into())),
             ("agent-session", [id]) => Ok(Self::AgentSession((*id).into())),
             ("session-history", [path, count]) => {
                 let parsed: usize = count.parse().map_err(|_| SubscriptionError::InvalidId)?;
@@ -202,6 +203,7 @@ impl SubscriptionTarget {
             Self::Workspaces => ("workspaces", vec![]),
             Self::Selection(p, id) => ("selection", vec![p.clone(), id.clone()]),
             Self::NodeDetail(p, id) => ("node-detail", vec![p.clone(), id.clone()]),
+            Self::SessionTab(id) => ("session-tab", vec![id.clone()]),
             Self::AgentSession(id) => ("agent-session", vec![id.clone()]),
             Self::SessionHistory(p, count) => {
                 ("session-history", vec![p.clone(), count.to_string()])

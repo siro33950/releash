@@ -196,10 +196,7 @@ impl RuntimeNodeExecution {
     }
 
     pub fn can_restart(&self) -> bool {
-        !self.kind.is_composite_kind()
-            && (self.status == RuntimeNodeExecutionStatus::Running
-                || (self.kind == NodeKindName::Session
-                    && self.status == RuntimeNodeExecutionStatus::WaitingApproval))
+        self.status.can_restart(self.kind)
     }
 
     pub fn can_retry(&self, presence: crate::domain::workflow::NodeProcessPresence) -> bool {
@@ -213,20 +210,51 @@ impl RuntimeNodeExecution {
         presence.can_resume_session(self.kind)
     }
 
+    pub(crate) fn session_attachment_transition(
+        status: RuntimeNodeExecutionStatus,
+        previous: Option<&str>,
+        current: Option<&str>,
+        next: &str,
+        fanout_child: bool,
+    ) -> TransitionOutcome {
+        if previous == Some(next) && (fanout_child || current == Some(next)) {
+            TransitionOutcome::AlreadyApplied
+        } else if status.is_active() {
+            TransitionOutcome::Applied
+        } else {
+            TransitionOutcome::NotApplicable
+        }
+    }
+
+    pub(crate) fn command_preparation_transition(
+        status: RuntimeNodeExecutionStatus,
+        previous: Option<(&str, Option<&str>, Option<&str>)>,
+        next: (&str, Option<&str>, Option<&str>),
+    ) -> TransitionOutcome {
+        if previous == Some(next) {
+            TransitionOutcome::AlreadyApplied
+        } else if status.is_active() {
+            TransitionOutcome::Applied
+        } else {
+            TransitionOutcome::NotApplicable
+        }
+    }
+
     pub fn prepare_command(
         &mut self,
         display_command: String,
         shell: Option<String>,
         cwd: Option<String>,
     ) -> TransitionOutcome {
-        if self.display_command.as_deref() == Some(display_command.as_str())
-            && self.shell == shell
-            && self.cwd == cwd
-        {
-            return TransitionOutcome::AlreadyApplied;
-        }
-        if !self.status.is_active() {
-            return TransitionOutcome::NotApplicable;
+        let outcome = Self::command_preparation_transition(
+            self.status,
+            self.display_command
+                .as_deref()
+                .map(|command| (command, self.shell.as_deref(), self.cwd.as_deref())),
+            (&display_command, shell.as_deref(), cwd.as_deref()),
+        );
+        if outcome != TransitionOutcome::Applied {
+            return outcome;
         }
         self.display_command = Some(display_command);
         self.shell = shell;
@@ -253,23 +281,10 @@ impl RuntimeNodeExecution {
         if self.kind != NodeKindName::Session || !self.status.is_active() {
             return TransitionOutcome::NotApplicable;
         }
-        let next = match (self.completion_signals, signal) {
-            (NodeCompletionSignalState::Pending, NodeCompletionSignal::Submit) => {
-                NodeCompletionSignalState::SubmitReceived
-            }
-            (NodeCompletionSignalState::Pending, NodeCompletionSignal::Stop) => {
-                NodeCompletionSignalState::StopReceived
-            }
-            (NodeCompletionSignalState::SubmitReceived, NodeCompletionSignal::Stop)
-            | (NodeCompletionSignalState::StopReceived, NodeCompletionSignal::Submit) => {
-                NodeCompletionSignalState::Ready
-            }
-            (NodeCompletionSignalState::SubmitReceived, NodeCompletionSignal::Submit)
-            | (NodeCompletionSignalState::StopReceived, NodeCompletionSignal::Stop)
-            | (NodeCompletionSignalState::Ready, _) => {
-                return TransitionOutcome::AlreadyApplied;
-            }
-        };
+        let next = self.completion_signals.receive(signal);
+        if next == self.completion_signals {
+            return TransitionOutcome::AlreadyApplied;
+        }
         self.completion_signals = next;
         TransitionOutcome::Applied
     }
@@ -581,14 +596,7 @@ pub enum PendingAdvance {
     },
 }
 
-/// replay 中の NodeRetryRequested → 直後の NodeStarted の対応付け。
-/// retry の前後の attempt と delegate の対応を復元する。
-#[derive(Debug, Clone, PartialEq)]
-struct PendingRestart {
-    node_execution_id: String,
-    node_name: String,
-    parent_scope_id: Option<String>,
-}
+use crate::domain::workflow::services::history::PendingRestart;
 
 /// Aggregate that owns the workflow execution lifecycle state.
 #[derive(Debug, Clone, PartialEq)]
@@ -1368,11 +1376,7 @@ impl ExecutionTree {
                 let value = parent_scope_id
                     .and_then(|id| self.scope(id))
                     .and_then(ScopeRuntime::sequence)
-                    .and_then(|sequence| sequence.artifacts.get(node))
-                    .and_then(|artifact| artifact.artifact.as_ref())
-                    .and_then(|artifact| {
-                        workflow_reference::resolve_value_at_path(artifact, field_path)
-                    })
+                    .and_then(|sequence| sequence.artifact_field(node, field_path))
                     .ok_or_else(|| {
                         crate::domain::workflow::WorkflowError::invalid_state(format!(
                             "fanout items source '{node}.{}' is unavailable",
@@ -1402,65 +1406,51 @@ impl ExecutionTree {
             // スコープが既に確定している（例: 失敗停止後の遅延完了）。前進しない。
             return Ok(());
         };
-        match &scope.kind {
-            ScopeRuntimeKind::Sequence(sequence) => {
-                let workflow = self.workflow_definition()?.clone();
-                let node = workflow.node_by_name(&scope.node_name).ok_or_else(|| {
-                    crate::domain::workflow::WorkflowError::invalid_state(format!(
-                        "sequence node '{}' is undefined",
-                        scope.node_name
-                    ))
-                })?;
-                let spec = node.sequence().ok_or_else(|| {
-                    crate::domain::workflow::WorkflowError::invalid_state(format!(
-                        "node '{}' is not a sequence",
-                        scope.node_name
-                    ))
-                })?;
-                let artifact = sequence
-                    .artifacts
-                    .get(completed_child)
-                    .and_then(|output| output.artifact.clone());
-                let counts = sequence.child_counts.clone();
-                let route = workflow_routing::route_in_scope(
-                    &workflow,
-                    spec,
-                    completed_child,
-                    artifact.as_ref(),
-                    &counts,
-                )?;
-                match route {
-                    workflow_routing::RouteDecision::TransitionTo(next) => match effects {
-                        AdvanceEffects::Live {
-                            new_id,
-                            events,
-                            starts,
-                        } => {
-                            self.start_node_instance(
-                                Some(scope_id),
-                                &next,
-                                &mut **new_id,
-                                timestamp,
-                                events,
-                                starts,
-                            )?;
-                        }
-                        AdvanceEffects::Derive => {}
-                    },
-                    workflow_routing::RouteDecision::Completed => {
-                        self.complete_scope(scope_id, false, effects, timestamp)?;
-                    }
+        let workflow = self.workflow_definition()?;
+        let node = self.node_definition(&scope.node_name).ok_or_else(|| {
+            crate::domain::workflow::WorkflowError::invalid_state(format!(
+                "composite node '{}' is undefined",
+                scope.node_name
+            ))
+        })?;
+        let counts = scope
+            .sequence()
+            .map(|sequence| &sequence.child_counts)
+            .cloned()
+            .unwrap_or_default();
+        let item_count = scope
+            .fanout()
+            .map(|fanout| fanout.items.as_ref().map_or(1, Vec::len));
+        let route = self.advance_composite(
+            scope_id,
+            workflow,
+            node,
+            completed_child,
+            &counts,
+            item_count,
+        )?;
+        match route {
+            Some(workflow_routing::RouteDecision::TransitionTo(next)) => {
+                if let AdvanceEffects::Live {
+                    new_id,
+                    events,
+                    starts,
+                } = effects
+                {
+                    self.start_node_instance(
+                        Some(scope_id),
+                        &next,
+                        &mut **new_id,
+                        timestamp,
+                        events,
+                        starts,
+                    )?;
                 }
             }
-            ScopeRuntimeKind::Fanout(fanout) => {
-                let all_terminal = fanout
-                    .children
-                    .iter()
-                    .all(|child| matches!(child.state, FanoutChildRuntimeState::Completed));
-                if all_terminal {
-                    self.complete_scope(scope_id, false, effects, timestamp)?;
-                }
+            Some(workflow_routing::RouteDecision::Completed) => {
+                self.complete_scope(scope_id, false, effects, timestamp)?
             }
+            None => {}
         }
         Ok(())
     }
@@ -1490,15 +1480,23 @@ impl ExecutionTree {
                     scope.node_name
                 ))
             })?;
-        if let ScopeRuntimeKind::Fanout(fanout) = &scope.kind {
-            if let Some(spec) = node.fanout() {
-                let expected = fanout.items.as_ref().map_or(1, Vec::len) * spec.children.len();
-                if fanout.children.len() < expected {
-                    return Ok(());
-                }
-            }
-        }
-        if node.requires_approval_completion() && !approved {
+        let item_count = scope
+            .fanout()
+            .map(|fanout| fanout.items.as_ref().map_or(1, Vec::len));
+        let status = self
+            .node_execution(scope_id)
+            .ok_or_else(|| {
+                crate::domain::workflow::WorkflowError::invalid_state(
+                    "composite execution is missing",
+                )
+            })?
+            .status;
+        let Some((status, artifact_value)) =
+            self.finish_composite(scope_id, &node, status, approved, item_count)?
+        else {
+            return Ok(());
+        };
+        if status == RuntimeNodeExecutionStatus::WaitingApproval {
             if self.mark_node_waiting_approval(scope_id, timestamp) == TransitionOutcome::Applied {
                 effects.emit(WorkflowEvent::ApprovalRequested {
                     execution_id: self.runtime.id.clone(),
@@ -1511,67 +1509,16 @@ impl ExecutionTree {
             return Ok(());
         }
 
-        // 成果の確定。
-        let (artifact_value, contract, result, token_usage) = match &scope.kind {
-            ScopeRuntimeKind::Sequence(sequence) => {
-                let spec = node.sequence().ok_or_else(|| {
-                    crate::domain::workflow::WorkflowError::invalid_state(format!(
-                        "node '{}' is not a sequence",
-                        node.name
-                    ))
-                })?;
-                let aggregated = serde_json::Value::Object(
-                    spec.children
-                        .iter()
-                        .filter_map(|entry| {
-                            sequence
-                                .artifacts
-                                .get(&entry.name)
-                                .and_then(|child| child.artifact.as_ref())
-                                .map(|value| (entry.name.clone(), value.clone()))
-                        })
-                        .collect(),
-                );
-                (Some(aggregated), None, None, None)
-            }
-
+        let (contract, result, token_usage) = match &scope.kind {
+            ScopeRuntimeKind::Sequence(_) => (None, None, None),
             ScopeRuntimeKind::Fanout(fanout) => {
                 let mut combined = TokenUsage::default();
                 for child in &fanout.children {
                     combined.add(&child.token_usage);
                 }
-                let aggregated = serde_json::Value::Object(
-                    fanout
-                        .children
-                        .iter()
-                        .map(|child| {
-                            let key = self
-                                .node_execution(&child.node_execution_id)
-                                .and_then(|execution| execution.parent.as_ref())
-                                .and_then(|parent| parent.fanout_slot())
-                                .and_then(|slot| node.fanout()?.artifact_key(slot))
-                                .ok_or_else(|| {
-                                    crate::domain::workflow::WorkflowError::invalid_state(format!(
-                                        "fanout child '{}' has no valid slot coordinates",
-                                        child.node_execution_id
-                                    ))
-                                })?;
-                            Ok((
-                                key,
-                                child.artifact.clone().unwrap_or(serde_json::Value::Null),
-                            ))
-                        })
-                        .collect::<Result<_, crate::domain::workflow::WorkflowError>>()?,
-                );
-                (
-                    Some(aggregated),
-                    None,
-                    Some("complete".to_string()),
-                    Some(combined),
-                )
+                (None, Some("complete".to_string()), Some(combined))
             }
         };
-
         let artifact_value = self.with_worktree_artifact(scope_id, artifact_value);
         let scope_attempt = self
             .node_execution(scope_id)
@@ -1613,15 +1560,11 @@ impl ExecutionTree {
             .scopes
             .retain(|active| active.node_execution_id != scope_id);
 
-        if let Some(parent_id) = scope
-            .parent_scope_id
-            .as_deref()
-            .filter(|id| self.is_delegate_parent(id))
-        {
-            return self.settle_delegate_child(parent_id, scope_id, effects, timestamp);
-        }
-        match scope.parent_scope_id.as_deref() {
-            None => {
+        match self.completion_parent(scope.parent_scope_id.as_deref()) {
+            scope::CompletionParent::Delegate(parent_id) => {
+                return self.settle_delegate_child(parent_id, scope_id, effects, timestamp)
+            }
+            scope::CompletionParent::Root => {
                 let _ = self.complete();
                 effects.emit(WorkflowEvent::ExecutionCompleted {
                     execution_id: self.runtime.id.clone(),
@@ -1633,10 +1576,9 @@ impl ExecutionTree {
                 });
                 self.runtime.updated_at = timestamp;
             }
-            Some(parent_scope_id) => {
+            scope::CompletionParent::Scope(parent_scope_id) => {
                 self.record_child_result_in_scope(
                     parent_scope_id,
-                    &scope.node_name,
                     scope_id,
                     RuntimeArtifact {
                         node_name: scope.node_name.clone(),
@@ -1666,7 +1608,6 @@ impl ExecutionTree {
     fn record_child_result_in_scope(
         &mut self,
         scope_id: &str,
-        child_name: &str,
         child_execution_id: &str,
         artifact: RuntimeArtifact,
         timestamp: f64,
@@ -1676,7 +1617,7 @@ impl ExecutionTree {
         };
         match &mut scope.kind {
             ScopeRuntimeKind::Sequence(sequence) => {
-                sequence.artifacts.insert(child_name.to_string(), artifact);
+                sequence.record_child_result(artifact);
             }
             ScopeRuntimeKind::Fanout(fanout) => {
                 if let Some(slot) = fanout
@@ -1764,14 +1705,11 @@ impl ExecutionTree {
             fanout_children: None,
             state: crate::domain::workflow::NODE_STATUS_COMPLETED.to_string(),
         });
-        if let Some(parent_id) = parent_scope_id
-            .as_deref()
-            .filter(|id| self.is_delegate_parent(id))
-        {
-            return self.settle_delegate_child(parent_id, node_execution_id, effects, timestamp);
-        }
-        match parent_scope_id.as_deref() {
-            None => {
+        match self.completion_parent(parent_scope_id.as_deref()) {
+            scope::CompletionParent::Delegate(parent_id) => {
+                return self.settle_delegate_child(parent_id, node_execution_id, effects, timestamp)
+            }
+            scope::CompletionParent::Root => {
                 // 単独実行の root leaf: workflow 完了。
                 let _ = self.complete();
                 effects.emit(WorkflowEvent::ExecutionCompleted {
@@ -1784,10 +1722,9 @@ impl ExecutionTree {
                 });
                 self.runtime.updated_at = timestamp;
             }
-            Some(scope_id) => {
+            scope::CompletionParent::Scope(scope_id) => {
                 self.record_child_result_in_scope(
                     scope_id,
-                    &node.node_name,
                     node_execution_id,
                     RuntimeArtifact {
                         node_name: node.node_name.clone(),
@@ -2098,7 +2035,7 @@ impl ExecutionTree {
                 }
             }
         };
-        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+        if !target.status.accepts_approval(true) {
             return Err(
                 crate::domain::workflow::WorkflowError::UnauthorizedApprovalTarget(format!(
                     "NodeExecution '{}' is not waiting for approval",
@@ -2145,7 +2082,7 @@ impl ExecutionTree {
                     "node execution '{target_node_execution_id}' disappeared"
                 ))
             })?;
-        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+        if !target.status.accepts_approval(true) {
             return Err(crate::domain::workflow::WorkflowError::invalid_state(
                 format!("NodeExecution '{target_node_execution_id}' is not waiting for approval"),
             ));
@@ -2257,14 +2194,15 @@ impl ExecutionTree {
             .parent
             .as_ref()
             .map(|parent| parent.parent_id.clone());
-        if execution.session_id.as_deref() == Some(session_id.as_str())
-            && (fanout_child
-                || self.runtime.current_session_id.as_deref() == Some(session_id.as_str()))
-        {
-            return TransitionOutcome::AlreadyApplied;
-        }
-        if !execution.status.is_active() {
-            return TransitionOutcome::NotApplicable;
+        let outcome = RuntimeNodeExecution::session_attachment_transition(
+            execution.status,
+            execution.session_id.as_deref(),
+            self.runtime.current_session_id.as_deref(),
+            &session_id,
+            fanout_child,
+        );
+        if outcome != TransitionOutcome::Applied {
+            return outcome;
         }
         execution.session_id = Some(session_id.clone());
         if fanout_child {
@@ -2691,7 +2629,11 @@ impl ExecutionTree {
         if node.status == RuntimeNodeExecutionStatus::Succeeded {
             return TransitionOutcome::AlreadyApplied;
         }
-        if !node.status.is_active() {
+        if !node.status.can_complete_standalone(
+            self.runtime.launched_as,
+            node.kind,
+            node.parent.is_none(),
+        ) {
             return TransitionOutcome::NotApplicable;
         }
         node.status = RuntimeNodeExecutionStatus::Succeeded;
@@ -2800,13 +2742,8 @@ impl ExecutionTree {
             RuntimeNodeExecutionStatus::Running => {}
         }
         if let Some(state) = self.delegates.get(node_execution_id) {
-            match state.phase {
-                DelegatePhase::StartChild => return NodeCompletionHandshakeDecision::Delegate,
-                DelegatePhase::InjectResult if execution.completion_signals.is_ready() => {
-                    return NodeCompletionHandshakeDecision::Delegate
-                }
-                DelegatePhase::Complete => {}
-                _ => return NodeCompletionHandshakeDecision::AwaitingSignal,
+            if let Some(decision) = state.handshake(execution.completion_signals) {
+                return decision;
             }
         }
         if self.is_delegate_parent(node_execution_id)
@@ -2823,19 +2760,18 @@ impl ExecutionTree {
         {
             return NodeCompletionHandshakeDecision::CompleteAuto;
         }
-        let Some(node) = self
+        match self
             .node_definition(&execution.node_name)
             .filter(|node| node.is_session())
-        else {
-            return NodeCompletionHandshakeDecision::NotApplicable;
-        };
-        match workflow_transition::decide_completion_disposition(node) {
-            workflow_transition::CompletionDisposition::Complete => {
+            .map(workflow_transition::decide_completion_disposition)
+        {
+            Some(workflow_transition::CompletionDisposition::Complete) => {
                 NodeCompletionHandshakeDecision::CompleteAuto
             }
-            workflow_transition::CompletionDisposition::RequestApproval => {
+            Some(workflow_transition::CompletionDisposition::RequestApproval) => {
                 NodeCompletionHandshakeDecision::RequestApproval
             }
+            None => NodeCompletionHandshakeDecision::NotApplicable,
         }
     }
 
@@ -3034,13 +2970,13 @@ impl ExecutionTree {
                 .iter_mut()
                 .find(|node| node.id == node_execution_id)
             {
-                node.status = RuntimeNodeExecutionStatus::Succeeded;
-                node.completed_at = Some(timestamp);
+                node.status
+                    .apply_approval(&mut node.completed_at, false, timestamp);
             }
             self.runtime.updated_at = timestamp;
             return Ok(());
         }
-        if target.status != RuntimeNodeExecutionStatus::WaitingApproval {
+        if !target.status.accepts_approval(true) {
             return Ok(());
         }
         match target.kind {
@@ -3312,12 +3248,11 @@ impl ExecutionTree {
             ));
         }
         // 直前の NodeRetryRequested に対応する restart の start か。
-        let retry_predecessor = self.pending_restart.take().and_then(|pending| {
-            (pending.node_name == node_name
-                && pending.parent_scope_id.as_deref()
-                    == parent.as_ref().map(|parent| parent.parent_id.as_str()))
-            .then_some(pending.node_execution_id)
-        });
+        let retry_predecessor = crate::domain::workflow::services::history::consume_restart(
+            &mut self.pending_restart,
+            node_name,
+            parent.as_ref().map(|parent| parent.parent_id.as_str()),
+        );
         let is_restart = retry_predecessor.is_some();
         // 親スコープの進行を再現する。
         if let Some(parent_ref) = parent.as_ref().filter(|_| node.is_some()) {
@@ -3327,8 +3262,7 @@ impl ExecutionTree {
                         .delegate_continuation_parent(&parent_ref.parent_id)
                         .to_string();
                     let state = self.delegates.entry(parent_id).or_default();
-                    state.last_child = Some(node_execution_id.to_string());
-                    state.phase = DelegatePhase::WaitingChild;
+                    state.child_restarted(node_execution_id);
                 } else {
                     self.delegate_child_started(&parent_ref.parent_id, node_execution_id);
                 }
@@ -3362,9 +3296,7 @@ impl ExecutionTree {
                     .ok_or_else(|| format!("parent scope '{scope_id}' is not active"))?;
                 match (&mut scope.kind, parent_ref.fanout_slot()) {
                     (ScopeRuntimeKind::Sequence(sequence), _) => {
-                        sequence.raise_child_count_to(node_name, attempt);
-                        sequence.current_child = Some(node_name.to_string());
-                        sequence.artifacts.remove(node_name);
+                        sequence.replay_child_start(node_name, attempt);
                     }
                     (ScopeRuntimeKind::Fanout(fanout), slot_ref) => {
                         // retry の replay では同じ展開座標の旧 slot を新しい attempt へ

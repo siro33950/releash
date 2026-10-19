@@ -18,6 +18,7 @@ fn generate_client_protocol() {
     let directory = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let mut config = prost_build::Config::new();
     config.boxed(".releash.client.v1.Push.event.workflow_execution_changed");
+    config.boxed(".releash.client.v1.SessionTabSnapshot.node");
     for message in ["CommandRequest", "CommandResult"] {
         config.message_attribute(
             format!(".releash.client.v1.{message}"),

@@ -1720,6 +1720,7 @@ message WorkspaceTreeItem {
 }
 
 message WorkspaceNode {
+  optional string session_id = 21 [json_name = "sessionId"];
   optional AgentSessionProviderDto provider = 14 [json_name = "provider"];
   optional NodeProcessPresence process_presence = 13 [json_name = "processPresence", (json_required) = true];
   optional string id = 1 [json_name = "id", (json_required) = true];
@@ -1983,6 +1984,7 @@ message PaneTab {
   optional string file_mode = 4;
   optional string file_base = 5;
   optional string node_id = 6;
+  optional string agent_session_id = 7;
 }
 enum PaneTabKind {
   PANE_TAB_KIND_UNSPECIFIED = 0;
@@ -1999,7 +2001,13 @@ enum SplitAxis {
   SPLIT_AXIS_VERTICAL = 2 [(json_enum_name) = "vertical"];
 }
 
+message WorkspaceStateReadFailure {
+  string reference_id = 1;
+  string message = 2;
+}
+
 message WorkspaceStateDto {
+  repeated WorkspaceStateReadFailure read_failures = 6 [json_name = "readFailures", (json_omit_empty) = true];
   PaneLayout pane_layout = 4;
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
   optional WorkspaceTabsStateDto tabs = 2 [json_name = "tabs", (json_required) = true];
@@ -2889,6 +2897,7 @@ message StatePayload {
     WorkspaceTreeSelectionSnapshot selection = 3;
     NullableWorkspaceNodeDetailDto node_detail = 4;
     NullableAgentSessionItemDto agent_session = 5;
+    SessionTabSnapshot session_tab = 75;
 
     AgentSessionHistoryPageDto session_history = 7;
     ListAgentSessionProviderDto providers = 8;
@@ -3128,3 +3137,8 @@ message ProviderUsageEntry {
   optional string plan = 3;
 }
 message ProviderUsageSnapshot { repeated ProviderUsageEntry items = 1; }
+
+message SessionTabSnapshot {
+  optional AgentSessionItemDto session = 1;
+  optional WorkspaceNodeDetailDto node = 2;
+}

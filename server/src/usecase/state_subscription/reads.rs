@@ -248,6 +248,21 @@ impl WorkspaceStateReads {
                     .map(StateValue::ReviewSessionThreadHistory)
                     .map_err(error);
             }
+            T::SessionTab(id) => {
+                let session = self.sessions.get(id).await.map_err(error)?;
+                let node = match &session {
+                    Some((item, _)) => self
+                        .workflow
+                        .get_session_node_detail(item)
+                        .await
+                        .map_err(error)?,
+                    None => None,
+                };
+                return Ok(StateValue::SessionTab {
+                    session,
+                    node: node.map(Box::new),
+                });
+            }
             T::AgentSession(id) => {
                 return self
                     .sessions
@@ -280,14 +295,15 @@ impl WorkspaceStateReads {
                 ))
             }
             T::WorkspaceState(name, path) => {
-                return Ok(StateValue::WorkspaceState(
-                    crate::usecase::workspace_state::usecase::load_workspace_state(
-                        self.workspace_state.as_ref(),
-                        name,
-                        path,
-                    )
+                let (state, failures, migration_failure) = self
+                    .workflow
+                    .load_workspace_state(self.workspace_state.as_ref(), name, path)
                     .await
-                    .map_err(error)?,
+                    .map_err(error)?;
+                return Ok(StateValue::WorkspaceState(
+                    state,
+                    failures,
+                    migration_failure,
                 ));
             }
             T::RepositoryGroupState(path) => {
@@ -474,6 +490,7 @@ impl WorkspaceStateReads {
             | T::Workspaces
             | T::Workflows
             | T::AgentSession(_)
+            | T::SessionTab(_)
             | T::SessionHistory(_, _)
             | T::Selection(_, _)
             | T::NodeDetail(_, _)

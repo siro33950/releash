@@ -58,10 +58,12 @@ async function waitFor(predicate) {
     while (!(await predicate())) { assert.ok(Date.now() < deadline, "desktop recovery deadline"); await setTimeout(10); }
 }
 let refreshedEditor;
+let refreshedSettings;
 const restore = async () => {
     await Promise.all([firstState("workspaces"), firstState("desktop-settings")]);
 };
 const stopRefresh = subscribeState("external-editor", editor => { refreshedEditor = editor; }, error => { console.error(error instanceof Error ? error.message : error); });
+const stopSettings = subscribeState("desktop-settings", settings => { refreshedSettings = settings; }, error => { console.error(error instanceof Error ? error.message : error); });
 try {
     await restore();
     if (restored) {
@@ -79,9 +81,9 @@ try {
         await invokeClient("update_app_settings", { app: { close_to_tray: true, start_minimized: false } });
         await invokeClient("update_app_settings", { app: { close_to_tray: false, start_minimized: true } });
         await invokeClient("update_crash_reporting", { enabled: false });
-        assert.equal((await firstState("desktop-settings")).crashReporting, false);
+        await waitFor(() => refreshedSettings?.crashReporting === false);
         await invokeClient("update_crash_reporting", { enabled: true });
-        assert.equal((await firstState("desktop-settings")).crashReporting, true);
+        await waitFor(() => refreshedSettings?.crashReporting === true);
         await invokeHost("damage_settings");
         const cached = await firstState("desktop-settings");
         assert.equal(cached.closeToTray, false);
@@ -98,6 +100,7 @@ try {
     }
 } finally {
     stopRefresh();
+    stopSettings();
     window.dispatchEvent(new Event("pagehide"));
     input.close();
     process.stdin.destroy();

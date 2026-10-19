@@ -34,7 +34,7 @@ final class PaneLayoutTests: XCTestCase {
 extension PaneLayoutTests {
   func testSessionAndCommandNodeReferencesSurviveWireRoundTrip() throws {
     let tabs = [
-      PaneTab(kind: .session, nodeID: "session-node"),
+      PaneTab(kind: .session, agentSessionID: "agent-session"),
       PaneTab(kind: .command, nodeID: "command-node"),
     ]
     let layout = PaneLayout.pane(id: "pane", tabs: tabs, active: tabs[1].id)

@@ -1936,6 +1936,62 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeAttemptDto> for wire::Worksp
     }
 }
 
+impl TryFrom<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>
+    for wire::WorkspaceNodeDetailDto
+{
+    type Error = String;
+    fn try_from(
+        (node, can_abort): (crate::domain::workspace_tree::WorkspaceTreeNode, bool),
+    ) -> Result<Self, String> {
+        use crate::domain::workflow::NodeCompletionSignalState as S;
+        let updated_at = node.updated_at();
+        let error_reason = node.failure_reason();
+        let submit_received = matches!(node.completion_signals, S::SubmitReceived | S::Ready);
+        let stop_received = matches!(node.completion_signals, S::StopReceived | S::Ready);
+        let waiting_for = match node.completion_signals {
+            S::SubmitReceived => Some("stop".to_string()),
+            S::StopReceived => Some("submit".to_string()),
+            S::Pending | S::Ready => None,
+        };
+        Ok(Self {
+            id: Some(node.id),
+            title: Some(node.title),
+            classification: Some(cv(node.status_classification.as_public_str().to_string())?),
+            status: Some(cv(node.status)?),
+            process_presence: Some(cv(node.process_presence.as_str())?),
+            node_execution_id: node.node_execution_id,
+            node_name: node.node_name,
+            model: node.model,
+            past_attempts: Vec::new(),
+            execution_id: node.execution_id,
+            can_abort: Some(can_abort),
+            worktree: node.worktree.map(|worktree| wire::NodeWorktreeDto {
+                branch: Some(worktree.branch),
+                path: Some(worktree.path),
+            }),
+            submit_received: Some(submit_received),
+            stop_received: Some(stop_received),
+            waiting_for: waiting_for.map(cv).transpose()?,
+            has_artifact: Some(node.has_artifact),
+            error_reason,
+            updated_at: Some(updated_at),
+            capabilities: Some(wire::WorkspaceNodeCapabilitiesDto {
+                can_rename: Some(node.can_rename),
+                can_approve: Some(node.can_approve),
+                can_retry: Some(node.can_retry),
+                can_resume_session: Some(node.can_resume_session),
+            }),
+            content: Some(wire::WorkspaceNodeContentDto {
+                variant: Some(wire::workspace_node_content_dto::Variant::Session(
+                    wire::WorkspaceSessionNodeContentDto {
+                        session_id: node.session_id,
+                    },
+                )),
+            }),
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::WorkspaceNodeDetailDto {
     type Error = String;
     fn try_from(value: crate::usecase::workflow::WorkspaceNodeDetailDto) -> Result<Self, String> {
@@ -2007,6 +2063,7 @@ impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::Workspace
     type Error = String;
     fn try_from(value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
         Ok(Self {
+            read_failures: Vec::new(),
             pane_layout: value.panes.map(cv).transpose()?,
             version: Some(cv(value.version)?),
             tabs: Some(cv(value.tabs)?),
@@ -2188,6 +2245,7 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                         .map(|tab| wire::PaneTab {
                             id: tab.id.clone(),
                             node_id: tab.node_id.clone(),
+                            agent_session_id: tab.agent_session_id.clone(),
                             file_path: tab.file_path.clone(),
                             file_mode: tab.file_mode.map(|mode| mode.as_str().into()),
                             file_base: tab.file_base.map(|base| base.as_str().into()),
@@ -2247,6 +2305,7 @@ impl TryFrom<wire::PaneLayout>
                         Ok(PaneTab {
                             id: tab.id,
                             node_id: tab.node_id,
+                            agent_session_id: tab.agent_session_id,
                             file_path: tab.file_path,
                             file_mode: tab
                                 .file_mode

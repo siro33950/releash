@@ -128,6 +128,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 	nodes: [
 		{
 			kind: "node",
+			hasArtifact: false,
 			processPresence: "unknown",
 			id: FALLBACK_NODE_ID,
 			title: "Fallback session",
@@ -145,6 +146,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 		},
 		{
 			kind: "sequence",
+			canApprove: false,
 			id: "archivable-workflow",
 			title: "Archivable workflow",
 			status: "idle",
@@ -155,6 +157,7 @@ const initialSnapshot: WorkspaceTreeSnapshot = {
 			children: [
 				{
 					kind: "node",
+					hasArtifact: false,
 					processPresence: "unknown",
 					id: SELECTED_NODE_ID,
 					title: "Selected workflow Node",
@@ -182,6 +185,7 @@ const fallbackSnapshot: WorkspaceTreeSnapshot = {
 	nodes: [
 		{
 			kind: "node",
+			hasArtifact: false,
 			processPresence: "unknown",
 			id: FALLBACK_NODE_ID,
 			title: "Fallback session",

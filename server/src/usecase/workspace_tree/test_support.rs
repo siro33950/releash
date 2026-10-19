@@ -9,16 +9,31 @@ use super::WorkspaceQueryService;
 /// Explicit unit-test fake. Production composition never branches to this type.
 pub struct TestWorkspaceQueryService {
     executions: Vec<WorkflowExecutionSummary>,
+    pub session_nodes: parking_lot::Mutex<super::query_service::SessionNodeResolutionDto>,
+    pub resolved_nodes: parking_lot::Mutex<Vec<Vec<String>>>,
 }
 
 impl TestWorkspaceQueryService {
     pub fn new(executions: Vec<WorkflowExecutionSummary>) -> Arc<Self> {
-        Arc::new(Self { executions })
+        Arc::new(Self {
+            executions,
+            session_nodes: Default::default(),
+            resolved_nodes: Default::default(),
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
+    async fn resolve_session_nodes(
+        &self,
+        _: &WorkspaceIdentity,
+        ids: &[String],
+    ) -> super::query_service::SessionNodeResolutionDto {
+        self.resolved_nodes.lock().push(ids.to_vec());
+        self.session_nodes.lock().clone()
+    }
+
     async fn node_detail(
         &self,
         _workspace_identity: &WorkspaceIdentity,
@@ -66,6 +81,17 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTre
             })
             .collect()
     }
+    async fn load_execution_tree(
+        &self,
+        _: &crate::domain::workspace_tree::WorkspaceIdentity,
+        _: &str,
+    ) -> Result<
+        Option<crate::domain::workspace_tree::WorkspaceTree>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        Ok(None)
+    }
+
     async fn load_node_by_session_id(
         &self,
         _: &crate::domain::workspace_tree::WorkspaceIdentity,

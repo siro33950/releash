@@ -573,25 +573,42 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             }),
         ),
         (
-            StateValue::WorkspaceState(Some(WorkspaceState {
-                panes: None,
-                version: 1,
-                tabs: WorkspaceTabsState {
-                    editors: vec![],
-                    active_editor_path: Some("/file".into()),
-                },
-                layout: WorkspaceLayoutState {
-                    center_tab: "agent".into(),
-                    active_view: "git".into(),
-                    left_nav_collapsed: true,
-                    right_collapsed: false,
-                    right_bottom_collapsed: true,
-                    right_bottom_active_tab: None,
-                    selected_diff_file: None,
-                },
-            })),
+            StateValue::WorkspaceState(
+                Some(WorkspaceState {
+                    panes: None,
+                    version: 1,
+                    tabs: WorkspaceTabsState {
+                        editors: vec![],
+                        active_editor_path: Some("/file".into()),
+                    },
+                    layout: WorkspaceLayoutState {
+                        center_tab: "agent".into(),
+                        active_view: "git".into(),
+                        left_nav_collapsed: true,
+                        right_collapsed: false,
+                        right_bottom_collapsed: true,
+                        right_bottom_active_tab: None,
+                        selected_diff_file: None,
+                    },
+                }),
+                vec![crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                    reference_id: "session-node".into(),
+                    failure: crate::domain::failure::WorkFailure {
+                    kind: crate::domain::failure::Failure::Technical(
+                        crate::domain::failure::TechnicalFailureNature::Other,
+                    ),
+                    message: "Session lookup failed".into(),
+                }}],
+                Some(crate::domain::workspace_state::WorkspaceStateError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "Session tab migration write failed".into(),
+                    },
+                )),
+            ),
             W::WorkspaceState(wire::NullableWorkspaceStateDto {
                 value: Some(wire::WorkspaceStateDto {
+                    read_failures: vec![wire::WorkspaceStateReadFailure { reference_id: "session-node".into(), message: "Session lookup failed".into() }],
                     pane_layout: None,
                     version: Some(1),
                     tabs: Some(wire::WorkspaceTabsStateDto {
@@ -1210,6 +1227,23 @@ async fn test_daemon状態payload_get_server_infoと同じ投影を使う() {
         value.value,
         Some(wire::state_payload::Value::DaemonInfo(
             crate::adaptor::presenter::daemon::server_info(info)
+        ))
+    );
+}
+
+#[test]
+fn test_sessionタブ購読_不在snapshotを専用payloadで配る() {
+    // Given / When
+    let snapshot = payload(&StateValue::SessionTab {
+        session: None,
+        node: None,
+    })
+    .unwrap();
+    // Then
+    assert_eq!(
+        snapshot.value,
+        Some(wire::state_payload::Value::SessionTab(
+            wire::SessionTabSnapshot::default()
         ))
     );
 }

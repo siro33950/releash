@@ -4,6 +4,7 @@ struct PaneTab: Equatable, Identifiable {
   var id: String = UUID().uuidString
   var kind: Kind
   var nodeID: String?
+  var agentSessionID: String?
   var filePath: String?
   var fileMode: String?
   var fileBase: String?
@@ -54,6 +55,7 @@ indirect enum PaneLayout: Equatable {
         return PaneTab(
           id: tab.id, kind: kind,
           nodeID: tab.hasNodeID ? tab.nodeID : nil,
+          agentSessionID: tab.hasAgentSessionID ? tab.agentSessionID : nil,
           filePath: tab.hasFilePath ? tab.filePath : nil,
           fileMode: tab.hasFileMode ? tab.fileMode : nil,
           fileBase: tab.hasFileBase ? tab.fileBase : nil)
@@ -83,6 +85,7 @@ indirect enum PaneLayout: Equatable {
         var value = Releash_Client_V1_PaneTab()
         value.id = tab.id
         if let nodeID = tab.nodeID { value.nodeID = nodeID }
+        if let id = tab.agentSessionID { value.agentSessionID = id }
         if let path = tab.filePath { value.filePath = path }
         if let mode = tab.fileMode { value.fileMode = mode }
         if let base = tab.fileBase { value.fileBase = base }

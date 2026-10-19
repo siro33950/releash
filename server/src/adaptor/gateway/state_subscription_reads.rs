@@ -27,6 +27,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::Workspaces
                 | T::Workflows
                 | T::AgentSession(_)
+                | T::SessionTab(_)
                 | T::SessionHistory(..)
                 | T::Selection(..)
                 | T::NodeDetail(..)
@@ -35,7 +36,22 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::WorkspaceState(..)
                 | T::RepositoryGroupState(_)
         ) {
-            return self.0.read(target).await;
+            return crate::common::telemetry::observe_result_async(
+                self.0.read(target),
+                |result, _| {
+                    if let Ok(crate::usecase::state_subscription::StateValue::WorkspaceState(
+                        _,
+                        _,
+                        Some(error),
+                    )) = result
+                    {
+                        log::warn!(
+                            "Session tab reference migration was not saved for {target:?}: {error}"
+                        );
+                    }
+                },
+            )
+            .await;
         }
         let reads = self.0.clone();
         let target = target.clone();

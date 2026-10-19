@@ -15,6 +15,7 @@ vi.mock("@/lib/client", () => ({
 }));
 beforeEach(() => vi.clearAllMocks());
 const detail: WorkspaceNodeDetail = {
+	classification: "idle",
 	id: "node",
 	title: "Node",
 	processPresence: "confirmed_absent",

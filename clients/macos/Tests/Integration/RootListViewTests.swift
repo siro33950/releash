@@ -55,6 +55,7 @@ final class RootListViewTests: XCTestCase {
     let http = TestHTTPClient()
     var session = Releash_Client_V1_WorkspaceTreeItem()
     session.node.id = "session-root"
+    session.node.sessionID = "agent-session"
     session.node.title = "Original title"
     session.node.contentKind.value = .session
     session.node.provider.value = .claude
@@ -82,7 +83,11 @@ final class RootListViewTests: XCTestCase {
     let model = try await testModel(http)
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
-    let host = await ViewHarness(RootListView(model: model, path: "/repo"))
+    let host = await ViewHarness(
+      VStack {
+        RootListView(model: model, path: "/repo")
+        WorkspacePaneView(model: model)
+      })
     try await eventuallyView(host) { host.element("root:session-root") != nil }
     for (id, status, title) in [
       ("session-root", "active", "Original title"), ("command-root", "attention", "Command title"),
@@ -102,7 +107,7 @@ final class RootListViewTests: XCTestCase {
     try await host.selectRow("root:session-root")
     XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
     try await host.press("open-node:session-root")
-    XCTAssertEqual(try model.panes.layout().tabs.last?.nodeID, "session-root")
+    XCTAssertEqual(try model.panes.layout().tabs.last?.agentSessionID, "agent-session")
     try await host.menu("root:command-root", selecting: nil) { texts in
       for action in ["Rename", "Resume", "Archive"] { XCTAssertFalse(texts.contains(action)) }
     }
@@ -146,6 +151,14 @@ final class RootListViewTests: XCTestCase {
       serializedBytes: XCTUnwrap(http.requests("RenameWorkspaceSessionNode").last?.message))
     XCTAssertEqual(request.nodeID, "session-root")
     XCTAssertEqual(request.name, "Renamed title")
+    var tabSnapshot = Releash_Client_V1_SessionTabSnapshot()
+    tabSnapshot.session.id = "agent-session"
+    tabSnapshot.session.workspaceWorktreePath = "/repo"
+    tabSnapshot.session.availability = .paused
+    tabSnapshot.node.title = "Renamed title"
+    var tabPayload = Releash_Client_V1_StatePayload()
+    tabPayload.sessionTab = tabSnapshot
+    try http.publish(tabPayload, target: "session-tab")
     session.node.title = "Renamed title"
     session.node.workflowCapabilities.canAbort = false
     tree.snapshot.nodes.items[0] = session
@@ -154,7 +167,7 @@ final class RootListViewTests: XCTestCase {
     try http.publish(payload, target: "workspaces")
     try await eventuallyView(host) {
       model.panes.controller.allPaneIds.flatMap { model.panes.controller.tabs(inPane: $0) }.last?
-        .title == "Claude Renamed title"
+        .title == "Renamed title"
         && host.element("root:session-root")?.label.contains("Renamed title") == true
     }
     try await host.menu("root:session-root", selecting: "Archive") {

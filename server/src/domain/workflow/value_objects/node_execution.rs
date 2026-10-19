@@ -10,6 +10,16 @@ pub enum NodeCompletionSignalState {
 }
 
 impl NodeCompletionSignalState {
+    pub(crate) fn receive(self, signal: NodeCompletionSignal) -> Self {
+        match (self, signal) {
+            (Self::Pending, NodeCompletionSignal::Submit) => Self::SubmitReceived,
+            (Self::Pending, NodeCompletionSignal::Stop) => Self::StopReceived,
+            (Self::SubmitReceived, NodeCompletionSignal::Stop)
+            | (Self::StopReceived, NodeCompletionSignal::Submit) => Self::Ready,
+            _ => self,
+        }
+    }
+
     pub fn is_ready(self) -> bool {
         self == Self::Ready
     }
@@ -101,6 +111,52 @@ pub enum NodeExecutionStatus {
 }
 
 impl NodeExecutionStatus {
+    pub(crate) fn can_complete_standalone(
+        self,
+        launch: super::ExecutionTreeLaunch,
+        kind: NodeKindName,
+        root: bool,
+    ) -> bool {
+        launch == super::ExecutionTreeLaunch::Session
+            && kind == NodeKindName::Session
+            && root
+            && self.is_active()
+    }
+
+    pub(crate) fn accepts_approval(self, workflow: bool) -> bool {
+        !workflow || self == Self::WaitingApproval
+    }
+
+    pub(crate) fn apply_approval(
+        &mut self,
+        completed_at: &mut Option<f64>,
+        workflow: bool,
+        timestamp: f64,
+    ) -> bool {
+        if !self.accepts_approval(workflow) {
+            return false;
+        }
+        *self = Self::Succeeded;
+        *completed_at = Some(timestamp);
+        true
+    }
+
+    pub(crate) fn can_restart(self, kind: NodeKindName) -> bool {
+        !kind.is_composite_kind()
+            && (self == Self::Running
+                || (kind == NodeKindName::Session && self == Self::WaitingApproval))
+    }
+
+    pub(crate) fn can_retry_in_execution(
+        self,
+        execution_active: bool,
+        kind: NodeKindName,
+        presence: NodeProcessPresence,
+        latest: impl FnOnce() -> bool,
+    ) -> bool {
+        execution_active && self.can_retry(kind, presence) && latest()
+    }
+
     pub fn can_retry(self, kind: NodeKindName, presence: NodeProcessPresence) -> bool {
         self == Self::Running
             && kind == NodeKindName::Command

@@ -1,4 +1,5 @@
 import AppKit
+import Bonsplit
 import SwiftProtobuf
 import SwiftUI
 import XCTest
@@ -6,136 +7,31 @@ import XCTest
 @testable import Releash
 
 final class NodePaneTests: XCTestCase {
-  @MainActor func testUnsetAvailabilityReleasesOpenTerminal() async throws {
-    let http = TestHTTPClient()
-    var session = Releash_Client_V1_AgentSessionItemDto()
-    session.id = "agent"
-    session.availability = .open
-    var node = Releash_Client_V1_WorkspaceNodeDetailDto()
-    node.id = "node"
-    node.content.session.sessionID = "agent"
-    http.state.withLock {
-      $0.sessions["agent"] = session
-      $0.nodeDetails["node"] = node
-    }
-    let model = try await testModel(http)
-    model.selectWorktree("/repo")
-    try await eventually { model.layoutLoaded }
-    let host = await ViewHarness(
-      AnyView(NodePane(model: model, path: "/repo", nodeID: "node", focused: true)))
-    try await eventuallyView(host) { host.element("terminal:agent") != nil }
-    session.clearAvailability()
-    var payload = Releash_Client_V1_StatePayload()
-    payload.agentSession.value = session
-    try http.publish(payload, target: "agent-session")
-    try await eventuallyView(host) { host.element("terminal:agent") == nil }
-    try await eventually {
-      model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
-    }
-    let subscription = try XCTUnwrap(
-      http.state.withLock {
-        $0.subscriptions.first { $0.target == "node-detail" && $0.args == ["/repo", "node"] }
-      })
-    let hostingView = try XCTUnwrap(host.window.contentView as? NSHostingView<AnyView>)
-    hostingView.rootView = AnyView(EmptyView())
-    try await eventually {
-      http.requests("StopStateSubscription").contains {
-        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
-          .subscriptionID) == subscription.subscriptionID
-      }
-    }
-    host.close()
-    await model.stop()
-  }
-
-  @MainActor func testSessionSubscriptionControlsVisibilityAndResumeSuccessAndFailure() async throws
-  {
-    for (availability, canResume, message) in [
-      (Releash_Client_V1_AgentSessionAvailability.paused, false, "Sessionは停止しています"),
-      (.paused, true, "Sessionは停止しています"), (.indeterminate, true, "Sessionを開けるか判定できません"),
-      (.archived, true, "SessionはArchiveされています"),
-    ] {
-      let http = TestHTTPClient()
-      var session = Releash_Client_V1_AgentSessionItemDto()
-      session.id = "agent"
-      session.availability = availability
-      var node = Releash_Client_V1_WorkspaceNodeDetailDto()
-      node.id = "node"
-      node.title = "Session"
-      node.capabilities.canResumeSession = canResume
-      node.content.session.sessionID = "agent"
-      http.state.withLock {
-        $0.sessions["agent"] = session
-        $0.nodeDetails["node"] = node
-        $0.terminalReplay = "resumed-output"
-      }
-      let model = try await testModel(http)
-      model.selectWorktree("/repo")
-      try await eventually { model.layoutLoaded }
-      let host = await ViewHarness(
-        NodePane(model: model, path: "/repo", nodeID: "node", focused: true))
-      try await eventuallyView(host) { host.texts().contains(message) }
-      XCTAssertNil(host.element("terminal:agent"))
-      XCTAssertEqual(host.element("Resume") != nil, availability == .paused && canResume)
-      try await eventually { !http.requests("OpenAgentSession").isEmpty }
-      if availability == .paused && canResume {
-        http.state.withLock { $0.failedMethod = "ResumeWorkspaceSessionNode" }
-        try await host.press("Resume")
-        try await eventually { model.failure == "ResumeWorkspaceSessionNode failed" }
-        XCTAssertNil(host.element("terminal:agent"))
-        XCTAssertTrue(host.texts().contains(message))
-        http.state.withLock { $0.failedMethod = nil }
-        try await host.press("Resume")
-        try await eventually { http.requests("ResumeWorkspaceSessionNode").count == 2 }
-        let request = try Releash_Client_V1_ResumeWorkspaceSessionNodeRequest(
-          serializedBytes: XCTUnwrap(http.requests("ResumeWorkspaceSessionNode").last?.message))
-        XCTAssertEqual(request.nodeID, "node")
-        XCTAssertEqual(request.worktreePath, "/repo")
-        XCTAssertNil(host.element("terminal:agent"))
-        var payload = Releash_Client_V1_StatePayload()
-        session.availability = .open
-        payload.agentSession.value = session
-        try http.publish(payload, target: "agent-session")
-        try await eventuallyView(host) { host.element("terminal:agent") != nil }
-        try await eventually {
-          http.state.withLock {
-            $0.subscriptions.contains { $0.target == "terminal" && $0.args == ["/repo", "agent"] }
-          }
-        }
-        try await eventuallyView(host) { host.texts().contains { $0.contains("resumed-output") } }
-        XCTAssertEqual(http.requests("OpenAgentSession").count, 1)
-        payload.agentSession = .init()
-        try http.publish(payload, target: "agent-session")
-        try await eventuallyView(host) { host.element("terminal:agent") == nil }
-        try await eventually {
-          model.terminalAttachment(path: "/repo", id: "agent", agent: true) == nil
-        }
-      }
-      host.close()
-      await model.stop()
-    }
-  }
-
   @MainActor func testNodeTabsSaveAndRestoreTheirSubscriptionsAndContent() async throws {
     // Given
     let http = TestHTTPClient()
     var session = Releash_Client_V1_AgentSessionItemDto()
     session.id = "agent"
     session.availability = .paused
+    session.workspaceWorktreePath = "/repo/a"
     var sessionNode = Releash_Client_V1_WorkspaceNodeDetailDto()
     sessionNode.id = "session-node"
+    sessionNode.title = "Restored Session"
     sessionNode.content.session.sessionID = "agent"
     var commandNode = Releash_Client_V1_WorkspaceNodeDetailDto()
     commandNode.id = "command-node"
     commandNode.content.command.result.stdout = "saved command output"
     http.state.withLock {
-      $0.sessions["agent"] = session
+      var snapshot = Releash_Client_V1_SessionTabSnapshot()
+      snapshot.session = session
+      snapshot.node = sessionNode
+      $0.sessionTabs["agent"] = snapshot
       $0.nodeDetails = ["session-node": sessionNode, "command-node": commandNode]
     }
     let model = try await testModel(http)
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
-    let sessionTab = PaneTab(kind: .session, nodeID: "session-node")
+    let sessionTab = PaneTab(kind: .session, agentSessionID: "agent")
     let commandTab = PaneTab(kind: .command, nodeID: "command-node")
     let layout = PaneLayout.split(
       id: "split", axis: .horizontal, ratio: 0.5,
@@ -164,22 +60,25 @@ final class NodePaneTests: XCTestCase {
       restored.selectWorktree("/repo/a")
       try await eventually { restored.layoutLoaded && restored.layout == layout }
       XCTAssertEqual(
-        try restored.panes.layout().tabs.map(\.nodeID), ["session-node", "command-node"])
+        try restored.panes.layout().tabs.map(\.nodeID), [nil, "command-node"])
       http.state.withLock { $0.subscriptions.removeAll { $0.target == "node-detail" } }
       let host = await ViewHarness(WorkspacePaneView(model: restored))
       try await eventually {
         http.state.withLock { state in
-          ["session-node", "command-node"].allSatisfy { id in
-            state.subscriptions.contains {
-              $0.target == "node-detail" && $0.args == ["/repo/a", id]
+          state.subscriptions.contains { $0.target == "session-tab" && $0.args == ["agent"] }
+            && state.subscriptions.contains {
+              $0.target == "node-detail" && $0.args == ["/repo/a", "command-node"]
             }
-          }
         }
       }
       try await eventuallyView(host) {
         host.texts().contains("Sessionは停止しています")
           && host.value(host.element("command-stdout")) == "saved command output"
       }
+      XCTAssertTrue(
+        restored.panes.controller.allTabIds.contains {
+          restored.panes.controller.tab($0)?.title == "Restored Session"
+        })
       host.close()
       if restarting { await restored.stop() }
     }
