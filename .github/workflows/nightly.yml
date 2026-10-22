@@ -39,7 +39,7 @@ jobs:
               .filter(release => !release.draft && release.prerelease && /^v\d+\.\d+\.\d+-nightly\.\d{8}\.[1-9]\d*$/.test(release.tag_name))
               .sort((a, b) => b.published_at.localeCompare(a.published_at) || b.id - a.id)[0];
             const previous = latest && (await github.rest.repos.getCommit({
-              ...context.repo, ref: `tags/${latest.tag_name}`,
+              ...context.repo, ref: latest.tag_name,
             })).data.sha;
             core.setOutput('run', previous !== main.sha);
       - name: Verify workflow commit
