@@ -279,14 +279,17 @@ final class RootListViewTests: XCTestCase {
     let model = try await testModel(http)
     let host = await ViewHarness(RootListView(model: model, path: "/repo"))
     defer { host.close() }
-    try await eventuallyView(host) { host.element("root:session") != nil }
-    XCTAssertNil(host.element("root:delegate"))
-    XCTAssertNil(host.element("root:past"))
-    try await host.setRowExpanded("root:session", true)
     try await eventuallyView(host) { host.element("root:delegate") != nil }
     XCTAssertNil(host.element("root:past"))
+    try await host.press("過去の試行")
+    try await eventuallyView(host) { host.element("root:past") != nil }
+    XCTAssertNotNil(host.element("root:delegate"))
     try await host.setRowExpanded("root:session", false)
     try await eventuallyView(host) { host.element("root:delegate") == nil }
+    XCTAssertNotNil(host.element("root:past"))
+    try await host.press("過去の試行")
+    try await eventuallyView(host) { host.element("root:past") == nil }
+    XCTAssertNil(host.element("root:delegate"))
     try await host.press("過去の試行")
     try await eventuallyView(host) { host.element("root:past") != nil }
     XCTAssertNil(host.element("root:delegate"))
@@ -299,7 +302,9 @@ final class RootListViewTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func testTreeExpandsParallelChildrenAndDeepReentriesAndApproveUsesNode() async throws {
+  @MainActor func testTreeDefaultsToExpandedForParallelChildrenAndDeepReentriesAndApproveUsesNode()
+    async throws
+  {
     let http = TestHTTPClient()
     var root = Releash_Client_V1_WorkspaceTreeItem()
     root.sequence.id = "flow"
@@ -371,15 +376,12 @@ final class RootListViewTests: XCTestCase {
     let host = await ViewHarness(RootListView(model: model, path: "/repo"))
     host.window.setContentSize(NSSize(width: 540, height: 900))
     try await eventuallyView(host) { host.element("root:flow") != nil }
-    try await host.selectRow("root:flow")
     try await eventuallyView(host) { host.element("root:parallel") != nil }
-    try await host.selectRow("root:parallel")
     for index in 0..<12 {
       try await eventuallyView(host) { host.element("root:leaf-\(index)") != nil }
     }
     for depth in 1...3 {
       try await eventuallyView(host) { host.element("root:depth-\(depth)") != nil }
-      try await host.selectRow("root:depth-\(depth)")
     }
     try await eventuallyView(host) { host.element("root:deep") != nil }
     try await host.selectRow("node-model:leaf-0")
@@ -395,6 +397,28 @@ final class RootListViewTests: XCTestCase {
     XCTAssertTrue(host.texts().contains("implementation_plan"))
     XCTAssertEqual(http.state.withLock { $0.subscriptions.count }, before)
     XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+    var delegate = Releash_Client_V1_WorkspaceTreeItem()
+    delegate.node.id = "new-delegate"
+    delegate.node.title = "New delegate"
+    delegate.node.contentKind.value = .command
+    var session = Releash_Client_V1_WorkspaceTreeItem()
+    session.node.id = "new-session"
+    session.node.title = "New session"
+    session.node.contentKind.value = .session
+    session.node.children.items = [delegate]
+    var newFanout = Releash_Client_V1_WorkspaceTreeItem()
+    newFanout.fanout.id = "new-fanout"
+    newFanout.fanout.title = "New fanout"
+    newFanout.fanout.children.items = [session]
+    root.sequence.children.items.append(newFanout)
+    tree.snapshot.nodes.items = [root]
+    repo.worktrees.items = [tree]
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaces.repositories.items = [repo]
+    try http.publish(payload, target: "workspaces")
+    try await eventuallyView(host) { host.element("root:new-delegate") != nil }
+    XCTAssertNil(host.element("root:leaf-0"))
+    XCTAssertTrue(host.texts().contains("implementation_plan"))
     try await host.selectRow("root:parallel")
     try await eventuallyView(host) { host.element("approve:leaf-0") != nil }
     var selected: CFTypeRef?

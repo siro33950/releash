@@ -457,7 +457,6 @@ extension WorkbenchTests {
     let root = app.descendants(matching: .any).matching(identifier: "root:\(execution.value)")
       .firstMatch
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
-    root.click()
     let child = app.descendants(matching: .any).matching(identifier: "root:\(childID)").firstMatch
     XCTAssertTrue(child.waitForExistence(timeout: 10), app.debugDescription)
     XCTAssertTrue(["active", "attention", "idle"].contains(child.value as? String ?? ""))
