@@ -370,7 +370,7 @@ fn test_カード集計_子のないworkflowもownerの状態で行に含める(
 }
 
 #[test]
-fn test_カード集計_ループの過去試行とその子を除きfanoutの別項目を残す() {
+fn test_カード集計_ループ再訪とその子とfanoutの別項目をすべて数える() {
     use crate::domain::workflow::ExecutionParentRef;
     // Given
     let id = "00000000-0000-4000-8000-000000001204";
@@ -394,6 +394,22 @@ fn test_カード集計_ループの過去試行とその子を除きfanoutの�
         ),
         ("c1", "command", NodeKindName::Command, 1, None),
         ("c2", "command", NodeKindName::Command, 2, None),
+        ("seq1", "sequence", NodeKindName::Sequence, 1, None),
+        (
+            "seq1-session",
+            "session",
+            NodeKindName::Session,
+            1,
+            Some(ExecutionParentRef::sequence_child("seq1")),
+        ),
+        ("seq2", "sequence", NodeKindName::Sequence, 2, None),
+        (
+            "seq2-command",
+            "command",
+            NodeKindName::Command,
+            1,
+            Some(ExecutionParentRef::sequence_child("seq2")),
+        ),
         ("f1", "fanout", NodeKindName::Fanout, 1, None),
         (
             "old",
@@ -449,8 +465,8 @@ fn test_カード集計_ループの過去試行とその子を除きfanoutの�
     // When
     let rows = tree.card_executions();
     // Then
-    assert_eq!(rows[0].1.node_count(), 5);
-    assert_eq!(rows[0].1.session_states().count(), 4);
+    assert_eq!(rows[0].1.node_count(), 11);
+    assert_eq!(rows[0].1.session_states().count(), 8);
     assert_eq!(
         rows[0]
             .1
@@ -458,6 +474,257 @@ fn test_カード集計_ループの過去試行とその子を除きfanoutの�
             .iter()
             .map(|node| node.node_execution_id.as_deref().unwrap())
             .collect::<Vec<_>>(),
-        ["s2", "delegated", "c2", "item1", "item0-retry"]
+        [
+            "s1",
+            "s2",
+            "delegated",
+            "c1",
+            "c2",
+            "seq1-session",
+            "seq2-command",
+            "old",
+            "item0",
+            "item1",
+            "item0-retry"
+        ]
     );
+}
+
+#[test]
+fn test_カード集計_delegateの各発火と入れ子の部分木を数える() {
+    use crate::domain::workflow::ExecutionParentRef;
+    // Given
+    for kind in [
+        NodeKindName::Session,
+        NodeKindName::Command,
+        NodeKindName::Sequence,
+        NodeKindName::Fanout,
+    ] {
+        let mut tree = WorkspaceTree::empty("/repo");
+        let mut facts = vec![
+            WorkspaceStructureFact::WorkflowStarted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                workflow_name: "review".into(),
+                worktree_path: "/repo".into(),
+                dynamic_fanout_names: Default::default(),
+                timestamp: 1.0,
+            },
+            WorkspaceStructureFact::NodeStarted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: "parent".into(),
+                node_name: "parent".into(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: None,
+                timestamp: 2.0,
+            },
+        ];
+        for attempt in 1..=2 {
+            let child = format!("child-{attempt}");
+            facts.push(WorkspaceStructureFact::NodeStarted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: child.clone(),
+                node_name: "child".into(),
+                kind,
+                attempt,
+                parent: Some(ExecutionParentRef::delegate_child("parent")),
+                timestamp: 3.0,
+            });
+            if kind == NodeKindName::Command {
+                continue;
+            }
+            let session = if kind == NodeKindName::Session {
+                child.clone()
+            } else {
+                let session = format!("session-{attempt}");
+                facts.push(WorkspaceStructureFact::NodeStarted {
+                    execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                    node_execution_id: session.clone(),
+                    node_name: "session".into(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: Some(if kind == NodeKindName::Sequence {
+                        ExecutionParentRef::sequence_child(&child)
+                    } else {
+                        ExecutionParentRef::fanout_child(&child, Some(0), 0)
+                    }),
+                    timestamp: 4.0,
+                });
+                session
+            };
+            for nested_attempt in 1..=2 {
+                let nested = format!("nested-{attempt}-{nested_attempt}");
+                facts.extend([
+                    WorkspaceStructureFact::NodeStarted {
+                        execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                        node_execution_id: nested.clone(),
+                        node_name: "nested".into(),
+                        kind: NodeKindName::Command,
+                        attempt: nested_attempt,
+                        parent: Some(ExecutionParentRef::delegate_child(&session)),
+                        timestamp: 5.0,
+                    },
+                    WorkspaceStructureFact::NodeCompleted {
+                        execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                        node_execution_id: nested,
+                        timestamp: 6.0,
+                    },
+                ]);
+            }
+            facts.extend([
+                WorkspaceStructureFact::NodeAgentBound {
+                    execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                    node_execution_id: session.clone(),
+                    session_id: format!("agent-{attempt}"),
+                    timestamp: 4.0,
+                },
+                WorkspaceStructureFact::NodeActivityProjected {
+                    execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                    node_execution_id: session.clone(),
+                    activity: crate::domain::workflow::AgentSessionActivity::AwaitingInstruction,
+                },
+                WorkspaceStructureFact::NodeCompleted {
+                    execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                    node_execution_id: session,
+                    timestamp: 6.0,
+                },
+            ]);
+        }
+        WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
+        tree.record_executions(vec![WorkspaceExecution {
+            execution_id: "00000000-0000-4000-8000-000000001204".into(),
+            launched_as: ExecutionTreeLaunch::Workflow,
+            worktree_path: "/repo".into(),
+            workflow_name: "review".into(),
+            status: ExecutionStatus::Running,
+            updated_at: 6.0,
+            archive: None,
+            session: None,
+        }]);
+        tree.observe_background_failure("parent", "needs attention");
+        // When
+        let rows = tree.card_executions();
+        // Then
+        assert_eq!(
+            rows[0].1.node_count(),
+            if kind == NodeKindName::Command { 3 } else { 7 }
+        );
+        assert_eq!(
+            rows[0].1.session_states().collect::<Vec<_>>(),
+            if kind == NodeKindName::Command {
+                vec![WorkspaceNodeStatusClassification::Attention]
+            } else {
+                vec![
+                    WorkspaceNodeStatusClassification::Attention,
+                    WorkspaceNodeStatusClassification::Idle,
+                    WorkspaceNodeStatusClassification::Idle,
+                ]
+            }
+        );
+    }
+}
+
+#[test]
+fn test_カード集計_retry履歴とその部分木を除き置き換え後の部分木を数える() {
+    use crate::domain::workflow::ExecutionParentRef;
+    // Given
+    for kind in [
+        NodeKindName::Session,
+        NodeKindName::Command,
+        NodeKindName::Sequence,
+        NodeKindName::Fanout,
+    ] {
+        let mut tree = WorkspaceTree::empty("/repo");
+        let mut facts = vec![WorkspaceStructureFact::WorkflowStarted {
+            execution_id: "00000000-0000-4000-8000-000000001204".into(),
+            workflow_name: "review".into(),
+            worktree_path: "/repo".into(),
+            dynamic_fanout_names: Default::default(),
+            timestamp: 1.0,
+        }];
+        for (attempt, id) in [(1, "past"), (2, "current")] {
+            facts.push(WorkspaceStructureFact::NodeStarted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: id.into(),
+                node_name: "work".into(),
+                kind,
+                attempt,
+                parent: None,
+                timestamp: 2.0,
+            });
+            if kind == NodeKindName::Command {
+                continue;
+            }
+            let session = format!("{id}-session");
+            facts.push(WorkspaceStructureFact::NodeStarted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: session.clone(),
+                node_name: "session".into(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                parent: Some(match kind {
+                    NodeKindName::Session => ExecutionParentRef::delegate_child(id),
+                    NodeKindName::Sequence => ExecutionParentRef::sequence_child(id),
+                    _ => ExecutionParentRef::fanout_child(id, Some(0), 0),
+                }),
+                timestamp: 3.0,
+            });
+            facts.push(WorkspaceStructureFact::NodeStarted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: format!("{id}-command"),
+                node_name: "command".into(),
+                kind: NodeKindName::Command,
+                attempt: 1,
+                parent: Some(ExecutionParentRef::delegate_child(session)),
+                timestamp: 4.0,
+            });
+        }
+        facts.extend([
+            WorkspaceStructureFact::NodeCompleted {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: "past".into(),
+                timestamp: 5.0,
+            },
+            WorkspaceStructureFact::NodeRetryLinked {
+                execution_id: "00000000-0000-4000-8000-000000001204".into(),
+                node_execution_id: "current".into(),
+                predecessor_node_execution_id: "past".into(),
+            },
+        ]);
+        WorkspaceTreeProjector::project(&mut tree, facts).unwrap();
+        tree.record_executions(vec![WorkspaceExecution {
+            execution_id: "00000000-0000-4000-8000-000000001204".into(),
+            launched_as: ExecutionTreeLaunch::Workflow,
+            worktree_path: "/repo".into(),
+            workflow_name: "review".into(),
+            status: ExecutionStatus::Running,
+            updated_at: 5.0,
+            archive: None,
+            session: None,
+        }]);
+        // When
+        let rows = tree.card_executions();
+        // Then
+        let expected = if kind == NodeKindName::Session {
+            vec!["current", "current-session", "current-command"]
+        } else if kind == NodeKindName::Command {
+            vec!["current"]
+        } else {
+            vec!["current-session", "current-command"]
+        };
+        assert_eq!(rows[0].1.node_count(), expected.len());
+        assert_eq!(
+            rows[0]
+                .1
+                .leaves
+                .iter()
+                .map(|node| node.node_execution_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            rows[0].1.session_states().collect::<Vec<_>>(),
+            vec![WorkspaceNodeStatusClassification::Active; expected.len() - 1]
+        );
+    }
 }
