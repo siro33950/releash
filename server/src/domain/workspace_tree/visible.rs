@@ -41,16 +41,17 @@ impl WorkspaceTree {
                     .push(node);
             }
         }
-        for siblings in children.values_mut() {
-            siblings.sort_by_key(|node| (node.sibling_order, node.id.as_str()));
-        }
         children
     }
 
     pub fn visible(&self) -> WorkspaceVisibleTree<'_> {
+        let mut children = self.visible_children();
+        for siblings in children.values_mut() {
+            siblings.sort_by_key(|node| (node.sibling_order, node.id.as_str()));
+        }
         WorkspaceVisibleTree {
             tree: self,
-            children: self.visible_children(),
+            children,
             by_id: self
                 .nodes()
                 .iter()
