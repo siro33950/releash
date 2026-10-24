@@ -1,0 +1,42 @@
+[
+  {
+    "checkpoint": {
+      "cols": 80,
+      "replay": "\u001bc\u001b[=0u\u001b[>7u\u001b[?1047h\u001b[=0u\u001b[>7u\u001b[?1047l\u001b[?1003h\u001b[?1006h\u001b[?1007l\u001b[?1004h\u001b[?2004h\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[H\u001b[2J\u001b[0m\u001b[?1047h\u001b[1;1HALT \u001b[76b\r\n\u001b[1;4H\u001b[0m",
+      "rows": 24,
+      "sequence": 1
+    },
+    "name": "codex",
+    "output": "\u001b[?2004h\u001b[>7u\u001b[?1004h\u001b[?1049h\u001b[>7u\u001b[?1007l\u001b[?1000;1002;1003;1006hALT"
+  },
+  {
+    "checkpoint": {
+      "cols": 80,
+      "replay": "\u001bc\u001b[=1u\u001b[>11u\u001b[?1047h\u001b[=2u\u001b[>15u\u001b[>31u\u001b[?1047l\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[H\u001b[2JNORMAL \u001b[73b\r\n\u001b[0m\u001b[1;7H\u001b[0m",
+      "rows": 24,
+      "sequence": 1
+    },
+    "name": "normal",
+    "output": "\u001b[=1u\u001b[>3u\u001b[=8;2u\u001b[?1049h\u001b[=2u\u001b[>15u\u001b[>31u\u001b[?1049lNORMAL"
+  },
+  {
+    "checkpoint": {
+      "cols": 80,
+      "replay": "\u001bc\u001b[?1000l\u001b[?1006l\u001b[?1007l\u001b[?1004l\u001b[?2004l\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[H\u001b[2J\u001b[0m\u001b[?1047h\u001b[1;1H\u001b[1;1H\u001b[0m",
+      "rows": 24,
+      "sequence": 1
+    },
+    "name": "disabled",
+    "output": "\u001b[?1003;1006;1004;2004h\u001b[?1003;1006;1004;2004l\u001b[?1007l\u001b[?1049h"
+  },
+  {
+    "checkpoint": {
+      "cols": 80,
+      "replay": "\u001bc\u001b[=3u\u001b[>4u\u001b[>5u\u001b[>6u\u001b[>7u\u001b[>8u\u001b[>9u\u001b[>10u\u001b[>11u\u001b[>12u\u001b[>13u\u001b[>14u\u001b[>15u\u001b[>16u\u001b[>17u\u001b[>18u\u001b[>19u\u001b[?1047h\u001b[=3u\u001b[>4u\u001b[>5u\u001b[>6u\u001b[>7u\u001b[>8u\u001b[>9u\u001b[>10u\u001b[>11u\u001b[>12u\u001b[>13u\u001b[>14u\u001b[>15u\u001b[>16u\u001b[>17u\u001b[>18u\u001b[>19u\u001b[?1047l\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[H\u001b[2J\u001b[0m\u001b[?1047h\u001b[1;1H\u001b[1;1H\u001b[0m",
+      "rows": 24,
+      "sequence": 1
+    },
+    "name": "stack_limit",
+    "output": "\u001b[>0u\u001b[>1u\u001b[>2u\u001b[>3u\u001b[>4u\u001b[>5u\u001b[>6u\u001b[>7u\u001b[>8u\u001b[>9u\u001b[>10u\u001b[>11u\u001b[>12u\u001b[>13u\u001b[>14u\u001b[>15u\u001b[>16u\u001b[>17u\u001b[>18u\u001b[>19u\u001b[?1049h\u001b[>0u\u001b[>1u\u001b[>2u\u001b[>3u\u001b[>4u\u001b[>5u\u001b[>6u\u001b[>7u\u001b[>8u\u001b[>9u\u001b[>10u\u001b[>11u\u001b[>12u\u001b[>13u\u001b[>14u\u001b[>15u\u001b[>16u\u001b[>17u\u001b[>18u\u001b[>19u"
+  }
+]

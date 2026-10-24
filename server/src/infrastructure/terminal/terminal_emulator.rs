@@ -11,6 +11,7 @@ pub struct NativeTerminalCheckpoint {
 
 pub struct NativeTerminalEmulator {
     terminal: avt::Vt,
+    input_modes: super::terminal_input_modes::TerminalInputModes,
 }
 
 impl NativeTerminalEmulator {
@@ -24,20 +25,21 @@ impl NativeTerminalEmulator {
             .size(usize::from(cols), usize::from(rows))
             .scrollback_limit(scrollback_rows)
             .build();
-        Self { terminal }
+        Self {
+            terminal,
+            input_modes: Default::default(),
+        }
     }
 
     pub fn restore(checkpoint: &NativeTerminalCheckpoint, scrollback_rows: usize) -> Self {
-        let mut terminal = avt::Vt::builder()
-            .size(usize::from(checkpoint.cols), usize::from(checkpoint.rows))
-            .scrollback_limit(scrollback_rows)
-            .build();
-        terminal.feed_str(&checkpoint.replay);
-        Self { terminal }
+        let mut terminal = Self::new(checkpoint.cols, checkpoint.rows, scrollback_rows);
+        terminal.apply(&checkpoint.replay);
+        terminal
     }
 
     pub fn apply(&mut self, output: &str) {
         self.terminal.feed_str(output);
+        self.input_modes.apply(output);
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -58,6 +60,8 @@ impl NativeTerminalEmulator {
         let (cols, rows) = self.terminal.size();
         let dump = self.terminal.dump();
         let mut replay = String::from("\x1bc");
+        self.input_modes.append_keyboard_replay(&mut replay);
+        self.input_modes.append_replay(&mut replay);
         let physical_history_len = self.terminal.lines().count().saturating_sub(rows);
         if physical_history_len > 0 {
             for line in self.terminal.lines().take(physical_history_len) {
