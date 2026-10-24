@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use super::latest_attempts::{AttemptScope, LatestAttempts};
 use super::{
     WorkspaceExecution, WorkspaceNodeKind, WorkspaceNodeStatusClassification, WorkspacePublicRoot,
     WorkspaceTree, WorkspaceTreeNode,
@@ -61,61 +60,14 @@ impl WorkspaceTree {
     }
     fn current_execution_leaves(&self) -> HashMap<&str, Vec<&WorkspaceTreeNode>> {
         let nodes = self.nodes();
-        let latest = LatestAttempts::new(nodes.iter().filter_map(|node| {
-            Some((
-                AttemptScope {
-                    execution: node.execution_id.as_deref()?,
-                    name: node.node_name.as_deref()?,
-                    parent: node.execution_parent.as_ref(),
-                },
-                node.attempt?,
-            ))
-        }));
-        let by_id = nodes
-            .iter()
-            .map(|node| (node.id.as_str(), node))
-            .collect::<HashMap<_, _>>();
-        let mut children = HashMap::<&str, Vec<&WorkspaceTreeNode>>::new();
-        let mut pending = Vec::new();
-        for node in nodes {
-            if let Some(parent) = node
-                .parent_id
-                .as_deref()
-                .filter(|id| by_id.contains_key(id))
-            {
-                children.entry(parent).or_default().push(node);
-            } else {
-                pending.push(node);
-            }
-        }
+        let mut children = self.visible_children();
+        let mut pending = children.remove(&None).unwrap_or_default();
         let mut visible = HashSet::new();
-        let mut visited = HashSet::new();
         while let Some(node) = pending.pop() {
-            if !visited.insert(node.id.as_str()) {
-                continue;
-            }
-            let current = !node.is_retry_history
-                && match (
-                    node.execution_id.as_deref(),
-                    node.node_name.as_deref(),
-                    node.attempt,
-                ) {
-                    (Some(execution), Some(name), Some(attempt)) => latest.contains(
-                        AttemptScope {
-                            execution,
-                            name,
-                            parent: node.execution_parent.as_ref(),
-                        },
-                        attempt,
-                    ),
-                    _ => true,
-                };
-            if current && node.is_leaf() {
+            if node.is_leaf() {
                 visible.insert(node.id.as_str());
             }
-            if current || node.is_leaf() {
-                pending.extend(children.remove(node.id.as_str()).unwrap_or_default());
-            }
+            pending.extend(children.remove(&Some(node.id.as_str())).unwrap_or_default());
         }
         let mut leaves = HashMap::<&str, Vec<&WorkspaceTreeNode>>::new();
         for node in nodes

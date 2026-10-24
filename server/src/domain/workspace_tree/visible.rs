@@ -31,7 +31,7 @@ pub struct WorkspaceVisibleNode<'a> {
 }
 
 impl WorkspaceTree {
-    pub fn visible(&self) -> WorkspaceVisibleTree<'_> {
+    pub(super) fn visible_children(&self) -> HashMap<Option<&str>, Vec<&WorkspaceTreeNode>> {
         let mut children: HashMap<Option<&str>, Vec<&WorkspaceTreeNode>> = HashMap::new();
         for node in self.nodes() {
             if !node.is_internal_rule_record() && !node.is_retry_history {
@@ -41,6 +41,11 @@ impl WorkspaceTree {
                     .push(node);
             }
         }
+        children
+    }
+
+    pub fn visible(&self) -> WorkspaceVisibleTree<'_> {
+        let mut children = self.visible_children();
         for siblings in children.values_mut() {
             siblings.sort_by_key(|node| (node.sibling_order, node.id.as_str()));
         }

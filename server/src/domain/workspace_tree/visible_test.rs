@@ -140,8 +140,10 @@ fn tree(nodes: Vec<WorkspaceTreeNode>, executions: Vec<WorkspaceExecution>) -> W
 #[test]
 fn test_画面に出す木_実行を代表する節は実行の識別子と題で公開し子を並び順で返す() {
     // Given
+    let mut nodes = workflow_nodes("exec-a");
+    nodes.reverse();
     let tree = tree(
-        workflow_nodes("exec-a"),
+        nodes,
         vec![execution("exec-a", ExecutionTreeLaunch::Workflow)],
     );
 
