@@ -8,6 +8,52 @@ use std::os::unix::fs::PermissionsExt;
 const TEST_SCROLLBACK_ROWS: usize = 1_000;
 
 #[test]
+pub fn test_入力モード保存_journal再生と圧縮後も入力設定と画面別スタックを保持する() {
+    // Given
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let store = TerminalCheckpointFileStore::new(data_dir.path(), TEST_SCROLLBACK_ROWS);
+    let mut live = NativeTerminalEmulator::new(80, 24, TEST_SCROLLBACK_ROWS);
+    live.apply("\x1b[?2004;1004h\x1b[>7u\x1b[?1049h\x1b[>3u\x1b[>15u");
+    store.replace_base("session", &live.snapshot(1)).unwrap();
+    let output = "\x1b[?1000;1002;1003;1006h\x1b[?1007l";
+    store
+        .append_records(
+            "session",
+            &[NativeTerminalCheckpointRecord::Output {
+                sequence: 2,
+                data: output.into(),
+            }],
+        )
+        .unwrap();
+    live.apply(output);
+    // When
+    let loaded = store.load("session").unwrap().unwrap();
+    // Then
+    assert_eq!(
+        loaded.replay.split("\r\n").next(),
+        live.snapshot(2).replay.split("\r\n").next()
+    );
+    // When
+    store.replace_base("session", &loaded).unwrap();
+    assert_eq!(store.journal_len("session").unwrap(), 0);
+    let compacted = store.load("session").unwrap().unwrap();
+    let mut restored = NativeTerminalEmulator::restore(&compacted, TEST_SCROLLBACK_ROWS);
+    for (sequence, output) in [
+        (3, "\x1b[<u"),
+        (4, "\x1b[?1049l\x1b[<u"),
+        (5, "\x1b[?1003;1006;1004;2004l\x1b[?1007h"),
+    ] {
+        live.apply(output);
+        restored.apply(output);
+        // Then
+        assert_eq!(
+            restored.snapshot(sequence).replay.split("\r\n").next(),
+            live.snapshot(sequence).replay.split("\r\n").next()
+        );
+    }
+}
+
+#[test]
 pub fn test_ターミナル復元点保存_上書きとセッションキー隔離を維持する() {
     let data_dir = tempfile::TempDir::new().unwrap();
     let store = TerminalCheckpointFileStore::new(data_dir.path(), TEST_SCROLLBACK_ROWS);

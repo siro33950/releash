@@ -2,6 +2,49 @@ use super::*;
 const TEST_SCROLLBACK_ROWS: usize = 1_000;
 
 #[test]
+fn test_入力モード再生_全分割位置のsnapshot後も設定と保存スタックを復元する() {
+    // Given
+    let output =
+        "\x1b[?2004h\x1b[>7u\x1b[?1004h\x1b[?1049h\x1b[>7u\x1b[?1007l\x1b[?1000;1002;1003;1006h";
+    let mut expected = NativeTerminalEmulator::new(80, 24, TEST_SCROLLBACK_ROWS);
+    expected.apply(output);
+    for split in 0..=output.len() {
+        let mut emulator = NativeTerminalEmulator::new(80, 24, TEST_SCROLLBACK_ROWS);
+        emulator.apply(&output[..split]);
+        // When
+        let mut restored =
+            NativeTerminalEmulator::restore(&emulator.snapshot(1), TEST_SCROLLBACK_ROWS);
+        restored.apply(&output[split..]);
+        // Then
+        for continuation in [
+            "",
+            "\x1b[<u",
+            "\x1b[?1049l\x1b[<u",
+            "\x1b[?1003;1006;1004;2004l\x1b[?1007h\x1b[=8;2u",
+        ] {
+            let mut actual =
+                NativeTerminalEmulator::restore(&restored.snapshot(2), TEST_SCROLLBACK_ROWS);
+            let mut expected =
+                NativeTerminalEmulator::restore(&expected.snapshot(2), TEST_SCROLLBACK_ROWS);
+            actual.apply(continuation);
+            expected.apply(continuation);
+            let mut actual_modes = String::new();
+            actual.input_modes.append_keyboard_replay(&mut actual_modes);
+            actual.input_modes.append_replay(&mut actual_modes);
+            let mut expected_modes = String::new();
+            expected
+                .input_modes
+                .append_keyboard_replay(&mut expected_modes);
+            expected.input_modes.append_replay(&mut expected_modes);
+            assert_eq!(
+                actual_modes, expected_modes,
+                "split={split}, continuation={continuation:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_ターミナル画面再生_旧64kib生出力末尾ではなく画面意味を保持する() {
     let mut surface = NativeTerminalEmulator::new(200, 24, TEST_SCROLLBACK_ROWS);
     let output = format!("oldest-marker{}newest-marker", "x".repeat(70 * 1024));
@@ -65,6 +108,34 @@ fn test_checkpoint失敗_文脈を加えてもio種類を保持する() {
 
 mod restored_memory_tests {
     use super::*;
+
+    #[test]
+    fn test_入力モード再生_swiftterm用fixtureがサーバの生成結果と一致する() {
+        // Given
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            name: String,
+            output: String,
+            checkpoint: NativeTerminalCheckpoint,
+        }
+        let fixtures: Vec<Fixture> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/terminal-input-modes.json"
+        )))
+        .unwrap();
+        for fixture in fixtures {
+            let mut emulator = NativeTerminalEmulator::new(80, 24, TEST_SCROLLBACK_ROWS);
+            // When
+            emulator.apply(&fixture.output);
+            // Then
+            assert_eq!(
+                emulator.snapshot(1).replay,
+                fixture.checkpoint.replay,
+                "{}",
+                fixture.name
+            );
+        }
+    }
 
     #[derive(serde::Deserialize)]
     struct BackendXtermCheckpointFixture {
