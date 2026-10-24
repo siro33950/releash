@@ -1,5 +1,9 @@
 import SwiftUI
 
+extension Releash_Client_V1_WorkspaceRepositoryList {
+  fileprivate var sidebarID: String { "repository:\(path)" }
+}
+
 struct SidebarView: View {
   @Bindable var model: AppModel
   @Binding var creating: Bool
@@ -30,7 +34,7 @@ struct SidebarView: View {
       .frame(height: UIStyle.iconButtonHeight)
       .padding(UIStyle.padding)
       List {
-        ForEach(model.repositories, id: \.path) { repository in
+        ForEach(model.repositories, id: \.sidebarID) { repository in
           Section(
             isExpanded: Binding(
               get: { !(model.collapsed[repository.path] ?? false) },
