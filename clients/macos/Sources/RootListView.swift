@@ -50,7 +50,8 @@ struct RootListView: View {
   @Bindable var model: AppModel
   let path: String
   @State private var selected: String?
-  @State private var expanded: Set<String> = []
+  @State private var collapsed: Set<String> = []
+  @State private var expandedPastAttempts: Set<String> = []
   @State private var history = false
   @State private var archive: String?
   @State private var renaming: String?
@@ -104,7 +105,8 @@ struct RootListView: View {
           TableColumn("MODEL") { item in modelCell(item) }.width(80)
           TableColumn("ART") { item in artifactCell(item) }.width(24)
         } rows: {
-          WorkspaceTableRows(items: roots, expanded: $expanded)
+          WorkspaceTableRows(
+            items: roots, collapsed: $collapsed, expandedPastAttempts: $expandedPastAttempts)
         }.scrollContentBackground(.hidden).alternatingRowBackgrounds(.disabled).frame(
           minHeight: 120)
         if let selected {
@@ -228,7 +230,11 @@ struct RootListView: View {
       }
       if !item.pastAttempts.isEmpty {
         Button {
-          toggle(item.pastAttemptsExpansionKey)
+          if expandedPastAttempts.contains(item.rootID) {
+            expandedPastAttempts.remove(item.rootID)
+          } else {
+            expandedPastAttempts.insert(item.rootID)
+          }
         } label: {
           Image(systemName: "clock.arrow.circlepath")
         }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
@@ -240,7 +246,7 @@ struct RootListView: View {
     if item.rootKind != nil { selected = item.rootID } else { toggle(item.rootID) }
   }
   func toggle(_ id: String) {
-    if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
   }
   func approve(_ id: String) {
     guard let client = model.client else { return }
@@ -266,7 +272,6 @@ struct RootListView: View {
 }
 
 extension Releash_Client_V1_WorkspaceTreeItem {
-  var pastAttemptsExpansionKey: String { "attempts:" + rootID }
   var compositeKind: String {
     if case .fanout = variant { return "FANOUT" }
     return "SEQ"
@@ -316,7 +321,8 @@ extension Releash_Client_V1_WorkspaceTreeItem {
 private struct WorkspaceTableRows: TableRowContent {
   typealias TableRowValue = Releash_Client_V1_WorkspaceTreeItem
   let items: [Releash_Client_V1_WorkspaceTreeItem]
-  @Binding var expanded: Set<String>
+  @Binding var collapsed: Set<String>
+  @Binding var expandedPastAttempts: Set<String>
 
   @TableRowBuilder<Releash_Client_V1_WorkspaceTreeItem>
   var tableRowBody: some TableRowContent<Releash_Client_V1_WorkspaceTreeItem> {
@@ -327,16 +333,20 @@ private struct WorkspaceTableRows: TableRowContent {
         DisclosureTableRow(
           item,
           isExpanded: Binding(
-            get: { expanded.contains(item.rootID) },
+            get: { !collapsed.contains(item.rootID) },
             set: { value in
-              if value { expanded.insert(item.rootID) } else { expanded.remove(item.rootID) }
+              if value { collapsed.remove(item.rootID) } else { collapsed.insert(item.rootID) }
             })
         ) {
-          WorkspaceTableRows(items: item.children, expanded: $expanded)
+          WorkspaceTableRows(
+            items: item.children, collapsed: $collapsed, expandedPastAttempts: $expandedPastAttempts
+          )
         }
       }
-      if expanded.contains(item.pastAttemptsExpansionKey) {
-        WorkspaceTableRows(items: item.pastAttempts, expanded: $expanded)
+      if expandedPastAttempts.contains(item.rootID) {
+        WorkspaceTableRows(
+          items: item.pastAttempts, collapsed: $collapsed,
+          expandedPastAttempts: $expandedPastAttempts)
       }
     }
   }
