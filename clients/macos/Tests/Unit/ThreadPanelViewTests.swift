@@ -66,43 +66,81 @@ final class ThreadPanelViewTests: XCTestCase {
     XCTAssertEqual(state.checked, ["resolved"])
   }
 
-  @MainActor func test_送り先_選択worktreeの子孫を含むopenのSessionだけを表示する() {
+  @MainActor func test_送り先_選択worktreeの子孫を含むliveのSessionだけを表示する() {
     // Given
     let model = AppModel()
     var worktree = Releash_Client_V1_WorkspaceWorktreeList()
     worktree.path = "/repo"
     let view = ThreadPanelView(model: model, worktree: "/repo")
     var nodes: [Releash_Client_V1_WorkspaceTreeItem] = []
-    for (index, availability) in [
-      Releash_Client_V1_AgentSessionAvailability.open, .paused, .archived, .indeterminate,
-      .unspecified,
+    for (index, presence) in [
+      Releash_Client_V1_NodeProcessPresence.Value.live, .confirmedAbsent, .unknown,
     ].enumerated() {
       let id = "session-\(index)"
       var node = Releash_Client_V1_WorkspaceTreeItem()
       node.node.sessionID = id
       node.node.title = id
+      node.node.processPresence.value = presence
       nodes.append(node)
-      view.state.sessionAvailability[id] = availability
     }
     var group = Releash_Client_V1_WorkspaceTreeItem()
     group.sequence.children.items = nodes
     var unknown = Releash_Client_V1_WorkspaceTreeItem()
     unknown.node.sessionID = "not-received"
-    worktree.snapshot.nodes.items = [group, unknown]
+    var command = Releash_Client_V1_WorkspaceTreeItem()
+    command.node.processPresence.value = .live
+    worktree.snapshot.nodes.items = [group, unknown, command]
     var other = worktree
     other.path = "/other"
-    other.snapshot.nodes.items = [.with { $0.node.sessionID = "foreign" }]
-    view.state.sessionAvailability["foreign"] = .open
+    other.snapshot.nodes.items = [
+      .with {
+        $0.node.sessionID = "foreign"
+        $0.node.processPresence.value = .live
+      }
+    ]
     var repository = Releash_Client_V1_WorkspaceRepositoryList()
     repository.worktrees.items = [other, worktree]
     model.repositories = [repository]
     // Then
-    XCTAssertEqual(view.sessionIDs, nodes.map { $0.node.sessionID } + ["not-received"])
     XCTAssertEqual(view.openSessions.map(\.sessionID), ["session-0"])
     // When
-    view.state.sessionAvailability["session-0"] = .unspecified
+    model.repositories = []
     // Then
     XCTAssertTrue(view.openSessions.isEmpty)
+  }
+
+  @MainActor func test_送り先_過去の試行にだけあるliveのSessionを含める() {
+    // Given
+    var current = Releash_Client_V1_WorkspaceTreeItem()
+    current.node.sessionID = "current"
+    current.node.processPresence.value = .confirmedAbsent
+    var past = Releash_Client_V1_WorkspacePastAttempt()
+    past.node.sessionID = "past"
+    past.node.processPresence.value = .live
+    past.node.children.items = [
+      .with {
+        $0.node.sessionID = "past-child"
+        $0.node.processPresence.value = .live
+      }
+    ]
+    var stopped = Releash_Client_V1_WorkspacePastAttempt()
+    stopped.node.sessionID = "stopped"
+    stopped.node.processPresence.value = .confirmedAbsent
+    current.node.pastAttempts.items = [past, stopped]
+    let model = AppModel()
+    model.repositories = [
+      .with {
+        $0.worktrees.items = [
+          .with {
+            $0.path = "/repo"
+            $0.snapshot.nodes.items = [current]
+          }
+        ]
+      }
+    ]
+    let view = ThreadPanelView(model: model, worktree: "/repo")
+    // Then
+    XCTAssertEqual(view.openSessions.map(\.sessionID), ["past", "past-child"])
   }
 
   @MainActor func test_Thread操作_RPCの宛先と本文と送信IDを渡す() async throws {
