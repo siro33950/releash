@@ -19,7 +19,109 @@ fn test_workflow設定入力_転送値の真偽と欠落を入力データへ写
 
 #[test]
 fn test_review転送_解決済みthreadの全項目を既存のjsonの形で保持する() {
-    todo!()
+    use crate::domain::comment::{Author, Comment, Resolve, State, Target, Thread};
+    // Given
+    let actor = Author::provider_agent("codex".into(), Some("session".into()));
+    let thread = Thread {
+        id: "thread".into(),
+        worktree_name: "/repo".into(),
+        target: Target {
+            file_path: Some("src/main.rs".into()),
+            line_number: Some(3),
+            end_line: Some(5),
+            side: None,
+            end_side: None,
+        },
+        state: State::Resolved,
+        comments: vec![Comment {
+            id: "comment".into(),
+            thread_id: "thread".into(),
+            author: actor.clone(),
+            content: "content".into(),
+            created_at: 1.0,
+        }],
+        resolve: Some(Resolve {
+            actor,
+            outcome: "fixed".into(),
+            summary: "summary".into(),
+            resolved_at: 2.0,
+        }),
+        created_at: 1.0,
+        updated_at: 2.0,
+        version: 3,
+        can_resolve: false,
+    };
+    // When
+    let message = wire::ReviewThreadDto::try_from(thread).unwrap();
+    let json = wire::from_message("releash.client.v1.ReviewThreadDto", &message).unwrap();
+    // Then
+    let actor = serde_json::json!({"kind":"agent", "backendId":"codex", "model":null, "displayName":"codex"});
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "id":"thread", "worktreeName":"/repo", "author":actor,
+            "target":{"filePath":"src/main.rs", "lineNumber":3, "endLine":5}, "state":"resolved",
+            "comments":[{"id":"comment", "threadId":"thread", "author":actor, "content":"content", "createdAt":1.0}],
+            "resolve":{"actor":actor, "outcome":"fixed", "summary":"summary", "resolvedAt":2.0},
+            "createdAt":1.0, "updatedAt":2.0, "version":3, "canResolve":false,
+        })
+    );
+}
+
+#[test]
+fn test_review転送_最初のcommentの作者を保持しcommentがなければ拒否する() {
+    use crate::domain::comment::{Author, Comment, State, Target, Thread};
+    // Given
+    let mut agent = Author::provider_agent("codex".into(), Some("private-session".into()));
+    agent.model = Some("model".into());
+    let mut thread = Thread {
+        id: "thread".into(),
+        worktree_name: "/repo".into(),
+        target: Target {
+            file_path: None,
+            line_number: None,
+            end_line: None,
+            side: None,
+            end_side: None,
+        },
+        state: State::Open,
+        comments: vec![
+            Comment {
+                id: "first".into(),
+                thread_id: "thread".into(),
+                author: Author::human(),
+                content: "first".into(),
+                created_at: 1.0,
+            },
+            Comment {
+                id: "reply".into(),
+                thread_id: "thread".into(),
+                author: agent,
+                content: "reply".into(),
+                created_at: 2.0,
+            },
+        ],
+        resolve: None,
+        created_at: 1.0,
+        updated_at: 2.0,
+        version: 2,
+        can_resolve: true,
+    };
+    // When
+    let message = wire::ReviewThreadDto::try_from(thread.clone()).unwrap();
+    let json = wire::from_message("releash.client.v1.ReviewThreadDto", &message).unwrap();
+    thread.comments.clear();
+    let empty = wire::ReviewThreadDto::try_from(thread);
+    // Then
+    let human =
+        serde_json::json!({"kind":"human", "backendId":null, "model":null, "displayName":"Human"});
+    assert_eq!(json["author"], human);
+    assert_eq!(json["comments"][0]["author"], human);
+    assert_eq!(
+        json["comments"][1]["author"],
+        serde_json::json!({"kind":"agent", "backendId":"codex", "model":"model", "displayName":"codex"})
+    );
+    assert_eq!(empty.unwrap_err(), "Missing first review comment");
 }
 
 #[test]
