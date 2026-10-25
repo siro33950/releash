@@ -102,7 +102,9 @@ impl ProviderAgentTerminalInputGateway for TerminalSurfaceApplication {
         owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
         instruction: &str,
     ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
-        todo!()
+        let instruction = instruction.trim_end_matches(['\r', '\n']);
+        self.write(owner, &format!("\u{1b}[200~{instruction}\u{1b}[201~\r"))
+            .map_err(map_terminal_error)
     }
 }
 
