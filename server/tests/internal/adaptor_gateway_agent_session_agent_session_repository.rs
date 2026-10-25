@@ -1,4 +1,5 @@
 use releashd::test_support::integration::sessions::session_location;
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::workflow_location;
 
 use std::sync::Arc;
@@ -29,7 +30,6 @@ use releashd::test_support::integration::sessions::AgentSessionOwnershipQuery;
 use releashd::test_support::integration::sessions::AgentSessionQueryService;
 use releashd::test_support::integration::sessions::AgentSessionRepository;
 use releashd::test_support::integration::sessions::AgentSessionRepositoryError;
-use releashd::test_support::integration::sessions::AgentSessionUsecase;
 use releashd::test_support::integration::workflow::seed_workflow_session_facts;
 use releashd::test_support::integration::workflow::AgentSessionActivity;
 use releashd::test_support::integration::workflow::ExecutionOrigin;
@@ -180,7 +180,12 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
     // Given: 活動観測を永続化する単独 Session
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(new_repository(&store)),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             "agent-session-activity",
@@ -329,7 +334,12 @@ pub async fn test_agent_session_repository_process_exit後のworking再観測を
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = Arc::new(new_repository(&store));
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        repository.clone(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             "agent-session-activity-exit",
@@ -434,7 +444,12 @@ pub async fn test_agent_session_repository_stop事実後のworking再観測をbo
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = Arc::new(new_repository(&store));
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        repository.clone(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     let session_id = "agent-session-activity-stop";
     sessions
         .create(
@@ -541,7 +556,12 @@ pub async fn test_agent_session_repository_workflow子sessionも同じ活動保�
     )
     .await
     .unwrap();
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(new_repository(&store)),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
 
     sessions
         .observe_activity(

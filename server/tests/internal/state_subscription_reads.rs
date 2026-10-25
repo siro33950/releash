@@ -1,4 +1,5 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget as T;
 
@@ -1063,8 +1064,7 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
     };
     use releashd::test_support::integration::providers::ProviderKind;
     use releashd::test_support::integration::sessions::{
-        AgentSessionTreeLocation, AgentSessionUsecase, LocalAgentSessionQueryService,
-        LocalAgentSessionRepository,
+        AgentSessionTreeLocation, LocalAgentSessionQueryService, LocalAgentSessionRepository,
     };
     use releashd::test_support::integration::workflow::AgentSessionActivity;
     use releashd::test_support::integration::workspace::WorkspaceIdentity;
@@ -1072,7 +1072,12 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
     // Given
     let fixture = Fixture::new();
     let archive = archive_fixture();
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(archive.store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             "session-tab",
@@ -1631,13 +1636,18 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     };
     use releashd::test_support::integration::providers::ProviderKind;
     use releashd::test_support::integration::sessions::{
-        AgentSessionTreeLocation, AgentSessionUsecase, LocalAgentSessionRepository,
+        AgentSessionTreeLocation, LocalAgentSessionRepository,
     };
     use releashd::test_support::integration::workspace::WorkspaceIdentity;
     // Given
     let fixture = Fixture::new();
     let archive = archive_fixture();
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(archive.store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     for id in ["ready", "broken", "broken-root", "broken-root-alias"] {
         sessions
             .create(

@@ -567,7 +567,11 @@ pub mod review {
     pub use crate::domain::code::value_objects::review::ReviewSection;
 }
 pub mod sessions {
+    pub use crate::test_support::agent_session::test_sessions;
     pub use crate::usecase::agent_session::test_helpers::MemoryHookHealthRepository;
+    pub use crate::usecase::agent_session::test_helpers::{
+        FakeThreadRepository, RecordingTerminalInput,
+    };
 
     pub use crate::usecase::agent_session::test_helpers::FixedHistory;
 

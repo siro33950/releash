@@ -1,5 +1,9 @@
 use super::*;
+use crate::domain::agent_session::services::AgentSessionService;
 use crate::domain::failure::{StorageFailure, StorageFailureSource, TechnicalFailureNature};
+use crate::usecase::agent_session::test_helpers::{
+    FakeThreadRepository, RecordingTerminal, RecordingTerminalInput,
+};
 
 #[test]
 fn test_所有済みセッション_ingressの両経路で分類を保持する() {
@@ -116,7 +120,14 @@ async fn test_生payload受付_信号を既存入口へ渡しsubagentと解釈�
             interpreter,
             Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(sessions.clone(), todo!(), todo!())),
+            Arc::new(AgentSessionUsecase::new(
+                sessions.clone(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
@@ -390,7 +401,14 @@ async fn test_使用率監視_受理したcodexの開始時刻から現行bindin
         interpreter,
         Arc::new(crate::usecase::test_helpers::TestIdentity),
         lifecycle.clone(),
-        Arc::new(AgentSessionUsecase::new(sessions.clone(), todo!(), todo!())),
+        Arc::new(AgentSessionUsecase::new(
+            sessions.clone(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+        )),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
         ))),
@@ -516,7 +534,14 @@ async fn test_使用率読取失敗_session開始は読取を待たず適用し�
         interpreter,
         Arc::new(crate::usecase::test_helpers::TestIdentity),
         lifecycle.clone(),
-        Arc::new(AgentSessionUsecase::new(sessions.clone(), todo!(), todo!())),
+        Arc::new(AgentSessionUsecase::new(
+            sessions.clone(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+        )),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
         ))),
@@ -609,7 +634,14 @@ async fn test_使用率受付_ingressで資格を照合し拒否した要求で�
         }),
         Arc::new(crate::usecase::test_helpers::TestIdentity),
         lifecycle,
-        Arc::new(AgentSessionUsecase::new(sessions.clone(), todo!(), todo!())),
+        Arc::new(AgentSessionUsecase::new(
+            sessions.clone(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+        )),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
         ))),
@@ -720,7 +752,14 @@ async fn test_使用率監視_hook保存失敗後の再送で欠けた観測を�
         interpreter,
         Arc::new(crate::usecase::test_helpers::TestIdentity),
         lifecycle.clone(),
-        Arc::new(AgentSessionUsecase::new(sessions.clone(), todo!(), todo!())),
+        Arc::new(AgentSessionUsecase::new(
+            sessions.clone(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+        )),
         health,
         (sessions, Arc::new(MemoryWorkflowStops::default())),
         crate::test_support::state_subscription::test_subscriptions(),

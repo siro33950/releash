@@ -1,5 +1,9 @@
+use crate::domain::agent_session::services::AgentSessionService;
 use crate::usecase::agent_session::test_helpers::session_location;
 use crate::usecase::agent_session::test_helpers::workflow_location;
+use crate::usecase::agent_session::test_helpers::{
+    FakeThreadRepository, RecordingTerminal, RecordingTerminalInput,
+};
 
 mod provider_lifecycle_ingress_tests {
     use super::*;
@@ -54,8 +58,11 @@ mod provider_lifecycle_ingress_tests {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 agent_repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
@@ -240,8 +247,11 @@ mod provider_lifecycle_ingress_tests {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(health.clone())),
             (repository.clone(), transaction.clone()),
@@ -329,8 +339,11 @@ mod provider_lifecycle_ingress_tests {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 agent_repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
@@ -446,8 +459,11 @@ mod provider_lifecycle_ingress_tests {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 agent_repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
@@ -545,8 +561,11 @@ mod provider_lifecycle_ingress_tests {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 agent_repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
@@ -655,8 +674,11 @@ mod provider_lifecycle_ingress_tests {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 agent_repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
@@ -729,8 +751,11 @@ mod provider_lifecycle_ingress_tests {
         });
         let sessions = Arc::new(AgentSessionUsecase::new(
             agent_repository.clone(),
-            todo!(),
-            todo!(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
         ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -822,8 +847,11 @@ mod provider_lifecycle_ingress_tests {
         });
         let sessions = Arc::new(AgentSessionUsecase::new(
             agent_repository.clone(),
-            todo!(),
-            todo!(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
         ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -913,8 +941,11 @@ mod provider_lifecycle_ingress_tests {
         });
         let sessions = Arc::new(AgentSessionUsecase::new(
             agent_repository.clone(),
-            todo!(),
-            todo!(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
         ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -998,8 +1029,11 @@ mod provider_lifecycle_ingress_tests {
         });
         let sessions = Arc::new(AgentSessionUsecase::new(
             agent_repository.clone(),
-            todo!(),
-            todo!(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
         ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
@@ -1083,8 +1117,11 @@ mod provider_lifecycle_ingress_tests {
         });
         let sessions = Arc::new(AgentSessionUsecase::new(
             agent_repository.clone(),
-            todo!(),
-            todo!(),
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
         ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
