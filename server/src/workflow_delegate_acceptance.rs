@@ -1,3 +1,7 @@
+use crate::domain::agent_session::services::AgentSessionService;
+use crate::usecase::agent_session::test_helpers::{
+    FakeThreadRepository, RecordingTerminal, RecordingTerminalInput,
+};
 use crate::usecase::agent_session::AgentSessionQueryService;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -126,8 +130,11 @@ impl WorkflowDelegateAcceptanceHost {
             lifecycle.clone(),
             Arc::new(AgentSessionUsecase::new(
                 repository.clone(),
-                todo!(),
-                todo!(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 LocalProviderHookHealthRepository::new(

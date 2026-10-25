@@ -1,11 +1,11 @@
 use releashd::test_support::integration::persistence::LocalEventStore;
 use releashd::test_support::integration::persistence::LocalEventStoreConfig;
 use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::AgentSession;
 use releashd::test_support::integration::sessions::AgentSessionRecoveryResult;
 use releashd::test_support::integration::sessions::AgentSessionRepository;
 use releashd::test_support::integration::sessions::AgentSessionTreeLocation;
-use releashd::test_support::integration::sessions::AgentSessionUsecase;
 use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
 use releashd::test_support::integration::workflow::seed_workflow_session_facts;
 use releashd::test_support::integration::workflow::AgentSessionActivity;
@@ -123,7 +123,12 @@ pub async fn test_workspace_tree_query_記録済み活動状態を一覧と詳�
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             "standalone-activity-session",
@@ -167,7 +172,12 @@ pub async fn test_workspace_tree_query_活動未観測の単独sessionは完了n
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-initial-activity");
     let session_id = "standalone-initial-activity";
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             session_id,
@@ -215,7 +225,12 @@ pub async fn test_workspace_tree_query_resume直後の単独sessionは緑にな�
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-resumed-activity");
     let session_id = "standalone-resumed-activity";
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             session_id,
@@ -298,7 +313,12 @@ pub async fn test_workspace_tree_query_workflow子sessionの活動状態を一�
     )
     .await
     .unwrap();
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .observe_activity(
             "workflow-child-session",
@@ -319,7 +339,12 @@ pub async fn test_workspace_tree_query_workflow子sessionの活動状態を一�
     .unwrap();
     assert_workflow_child_activity_projection(reopened.clone(), "active").await;
 
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(reopened.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .observe_activity(
             "workflow-child-session",
@@ -342,7 +367,12 @@ pub async fn test_workspace_tree_query_活動終了と再開の反復を一覧�
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-activity-round-trip");
     let session_id = "standalone-activity-round-trip";
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             session_id,
@@ -407,7 +437,12 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-stop-activity-read");
     let session_id = "standalone-stop-activity-read";
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             session_id,
@@ -477,7 +512,12 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
     assert_eq!(projected_classification(reopened.clone()).await, "idle");
 
     // When / Then: 後続の Working が青へ戻し、再度の Stop と Working にも同じく追従する
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(reopened.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     for index in 0..2 {
         sessions
             .observe_activity(
@@ -1538,7 +1578,12 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
     .unwrap();
     let workspace = WorkspaceIdentity::new("workspace-session-tab");
     let session_id = "session-tab";
-    let sessions: AgentSessionUsecase = todo!();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     sessions
         .create(
             session_id,

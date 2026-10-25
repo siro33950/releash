@@ -1,3 +1,4 @@
+use releashd::test_support::integration::sessions::test_sessions;
 use std::sync::Arc;
 
 use crate::test_support_git::create_initial_commit;
@@ -258,15 +259,21 @@ async fn seeded_workflow(
     )
     .await
     .unwrap();
-    let sessions: releashd::test_support::integration::sessions::AgentSessionUsecase = todo!();
-    sessions
-        .observe_activity(
-            "workflow-session",
-            releashd::test_support::integration::workflow::AgentSessionActivity::Working,
-            "observe-working",
-        )
-        .await
-        .unwrap();
+    test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
+        ),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    )
+    .observe_activity(
+        "workflow-session",
+        releashd::test_support::integration::workflow::AgentSessionActivity::Working,
+        "observe-working",
+    )
+    .await
+    .unwrap();
     (directory, usecase, worktree)
 }
 

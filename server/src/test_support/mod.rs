@@ -4,6 +4,8 @@ pub mod agent_tui_fixture;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
+#[cfg(feature = "test-support")]
+pub(crate) mod agent_session;
 pub(crate) mod retry;
 pub(crate) mod state_subscription;
 

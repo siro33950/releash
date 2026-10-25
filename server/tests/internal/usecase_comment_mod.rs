@@ -5,7 +5,6 @@ pub(crate) mod tests {
     use parking_lot::Mutex;
     use releashd::test_support::integration::platform::AuthorScope;
     use releashd::test_support::integration::platform::ReviewActor;
-    use releashd::test_support::integration::platform::ReviewActorKind;
     use releashd::test_support::integration::platform::ReviewClock;
     use releashd::test_support::integration::platform::ReviewCommentUsecase;
     use releashd::test_support::integration::platform::ReviewError;
@@ -205,7 +204,7 @@ pub(crate) mod tests {
         let history = usecase.history(dir.path(), "wt", &thread.id).unwrap();
         assert_eq!(history.len(), 3);
         let handoff = usecase.build_handoff(dir.path(), "wt", &thread.id).unwrap();
-        assert!(handoff.contains("releash-dev review get"));
+        assert!(handoff.contains("releash review get"));
     }
 
     #[test]
@@ -656,7 +655,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn public_actor_projection_does_not_expose_session_id() {
-        todo!()
+    pub fn test_公開actor投影_sessionidを公開しない() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let usecase = usecase();
+        let actor =
+            ReviewActor::provider_agent("codex".to_string(), Some("secret-session".to_string()));
+
+        let thread = usecase
+            .create_thread(dir.path(), "wt", actor, target(), "Claim".to_string())
+            .unwrap();
+        assert_eq!(
+            thread.comments[0].author.session_id.as_deref(),
+            Some("secret-session")
+        );
+
+        // When
+        let wire =
+            releashd::test_support::integration::wire::ReviewThreadDto::try_from(thread).unwrap();
+        let json = releashd::test_support::integration::wire::from_message(
+            "releash.client.v1.ReviewThreadDto",
+            &wire,
+        )
+        .unwrap();
+        // Then
+        assert_eq!(json["author"]["kind"], "agent");
+        assert_eq!(json["comments"][0]["author"]["kind"], "agent");
+        let json = json.to_string();
+        assert!(!json.contains("sessionId"));
+        assert!(!json.contains("secret-session"));
     }
 }

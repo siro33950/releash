@@ -3,9 +3,9 @@ use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
 use releashd::test_support::integration::sessions::hook_health_usecase;
 use releashd::test_support::integration::sessions::provider_runtime;
 use releashd::test_support::integration::sessions::started_execution_trees;
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::AgentSessionLaunchUsecase;
 use releashd::test_support::integration::sessions::AgentSessionLaunchUsecaseError;
-use releashd::test_support::integration::sessions::AgentSessionUsecase;
 use releashd::test_support::integration::sessions::FixedAvailability;
 use releashd::test_support::integration::sessions::FixedHistory;
 use releashd::test_support::integration::sessions::RecordingLaunchGateway;
@@ -27,7 +27,16 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
         ),
     )
     .unwrap();
-    let sessions = Arc::<AgentSessionUsecase>::new(todo!());
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
+        ),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let elapsed = Arc::new(tokio::sync::Notify::new());
