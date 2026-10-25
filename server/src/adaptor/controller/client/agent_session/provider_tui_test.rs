@@ -738,16 +738,12 @@ impl ProviderAgentTerminalInputGateway for SendTerminal {
 
 struct SendThreads(Vec<Thread>);
 impl ThreadRepository for SendThreads {
-    fn find_by_ids(&self, ids: &[String]) -> Result<Vec<Thread>, crate::domain::comment::Error> {
-        ids.iter()
-            .map(|id| {
-                self.0
-                    .iter()
-                    .find(|thread| thread.id == *id)
-                    .cloned()
-                    .ok_or_else(|| crate::domain::comment::Error::NotFound(id.clone()))
-            })
-            .collect()
+    fn find_by_ids(
+        &self,
+        _workspace: &WorkspaceIdentity,
+        _ids: &[String],
+    ) -> Result<Vec<Thread>, crate::domain::comment::Error> {
+        todo!()
     }
 }
 

@@ -92,10 +92,12 @@ impl AgentSessionUsecase {
             .map_err(SendThreadUsecaseError::Session)?
             .ok_or(SendThreadUsecaseError::SessionNotFound)?;
         let repository = Arc::clone(&self.threads);
-        let threads =
-            crate::usecase::comment::blocking(move || repository.find_by_ids(&thread_ids))
-                .await
-                .map_err(SendThreadUsecaseError::Thread)?;
+        let workspace = session.session().workspace().clone();
+        let threads = crate::usecase::comment::blocking(move || {
+            repository.find_by_ids(&workspace, &thread_ids)
+        })
+        .await
+        .map_err(SendThreadUsecaseError::Thread)?;
         self.service
             .send_thread(session.session(), threads)
             .map_err(SendThreadUsecaseError::Send)

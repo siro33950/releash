@@ -1,9 +1,6 @@
-mod node_timestamp;
-pub(crate) use node_timestamp::NodeTimestampObservation;
-
 use crate::domain::workflow::{
     AgentSessionActivity, ExecutionParentRef, ExecutionStatus, NodeCompletionSignalState,
-    NodeExecutionFailureKind, NodeKindName, NodeProcessPresence,
+    NodeExecutionFailureKind, NodeExecutionStatus, NodeKindName, NodeProcessPresence,
 };
 
 pub(super) const INTERNAL_SIBLING_ORDER: u64 = i64::MAX as u64;
@@ -381,10 +378,6 @@ impl WorkspaceTreeNode {
     }
 }
 
-#[cfg(test)]
-#[path = "mod_test.rs"]
-pub(crate) mod mod_tests;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceNodeClassification {
     pub id: String,
@@ -529,3 +522,108 @@ pub(super) fn observes_node(
 ) -> bool {
     id == target || execution == Some(target) || node_execution == Some(target)
 }
+
+#[derive(Clone, Copy)]
+pub(crate) enum NodeTimestampObservation {
+    Started(f64),
+    Bound(f64),
+    Prepared(f64),
+    Artifact(f64),
+    Approval(f64),
+    Completed(f64),
+    Failed(f64),
+}
+
+impl NodeTimestampObservation {
+    pub(crate) fn snapshot(
+        started: f64,
+        completed: Option<f64>,
+        status: NodeExecutionStatus,
+        has_artifact: bool,
+        execution_updated: f64,
+    ) -> impl Iterator<Item = Self> {
+        let settled = completed.unwrap_or(execution_updated);
+        [
+            Some(Self::Started(started)),
+            has_artifact.then_some(Self::Artifact(settled)),
+            match status {
+                NodeExecutionStatus::Running => None,
+                NodeExecutionStatus::WaitingApproval => Some(Self::Approval(execution_updated)),
+                NodeExecutionStatus::Succeeded => Some(Self::Completed(settled)),
+                NodeExecutionStatus::Aborted => Some(Self::Failed(settled)),
+            },
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    pub(crate) fn from_structure_fact(fact: &WorkspaceStructureFact) -> Option<(&str, &str, Self)> {
+        use WorkspaceStructureFact as F;
+        let (execution, node, change) = match fact {
+            F::NodeStarted {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Started(*timestamp)),
+            F::NodeAgentBound {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Bound(*timestamp)),
+            F::NodeCommandPrepared {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Prepared(*timestamp)),
+            F::NodeArtifactProduced {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Artifact(*timestamp)),
+            F::NodeApprovalRequested {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Approval(*timestamp)),
+            F::NodeCompleted {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Completed(*timestamp)),
+            F::NodeFailed {
+                execution_id,
+                node_execution_id,
+                timestamp,
+                ..
+            } => (execution_id, node_execution_id, Self::Failed(*timestamp)),
+            _ => return None,
+        };
+        Some((execution, node, change))
+    }
+
+    pub(crate) fn timestamp(self) -> f64 {
+        match self {
+            Self::Started(time)
+            | Self::Bound(time)
+            | Self::Prepared(time)
+            | Self::Artifact(time)
+            | Self::Approval(time)
+            | Self::Completed(time)
+            | Self::Failed(time) => time,
+        }
+    }
+
+    pub(crate) fn apply(self, current: u64) -> u64 {
+        super::entities::max_f64_bits(current, self.timestamp().to_bits())
+    }
+}
+
+#[cfg(test)]
+#[path = "value_objects_test.rs"]
+pub(crate) mod value_objects_tests;

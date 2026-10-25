@@ -19,19 +19,10 @@ pub struct FakeThreadRepository(pub Mutex<Vec<crate::domain::comment::Thread>>);
 impl crate::domain::comment::ThreadRepository for FakeThreadRepository {
     fn find_by_ids(
         &self,
-        thread_ids: &[String],
+        _workspace: &WorkspaceIdentity,
+        _thread_ids: &[String],
     ) -> Result<Vec<crate::domain::comment::Thread>, crate::domain::comment::Error> {
-        let threads = self.0.lock().unwrap();
-        thread_ids
-            .iter()
-            .map(|id| {
-                threads
-                    .iter()
-                    .find(|thread| thread.id == *id)
-                    .cloned()
-                    .ok_or_else(|| crate::domain::comment::Error::NotFound(id.clone()))
-            })
-            .collect()
+        todo!()
     }
 }
 
@@ -184,8 +175,7 @@ use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_unavail
 use crate::domain::provider_lifecycle::value_objects::scoped_provider_lifecycle_event::ScopedProviderLifecycleEvent;
 use crate::domain::terminal_surface::value_objects::terminal_process_launch::TerminalProcessLaunch;
 use crate::domain::terminal_surface::value_objects::terminal_surface_owner::TerminalSurfaceOwner;
-#[cfg(test)]
-use crate::domain::workspace_tree::value_objects::WorkspaceIdentity;
+use crate::domain::workspace_tree::WorkspaceIdentity;
 #[cfg(test)]
 use crate::usecase::agent_session::agent_session_launch::AgentSessionLaunchRequest;
 #[cfg(test)]

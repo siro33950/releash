@@ -291,7 +291,7 @@ pub fn compose_agent_sessions(
     let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
     let sessions = Arc::new(AgentSessionUsecase::new(
         session_repository.clone(),
-        Arc::new(crate::adaptor::gateway::comment::FileThreadRepository::new(
+        Arc::new(crate::adaptor::gateway::comment::ThreadRepositoryImpl::new(
             input.data_dir.clone(),
         )),
         crate::domain::agent_session::services::AgentSessionService::new(
