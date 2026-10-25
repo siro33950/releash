@@ -4,6 +4,7 @@ use crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub;
 use crate::domain::agent_session::aggregates::ManagedPtyPresence;
 use crate::domain::agent_session::ProviderAgentTerminalGateway;
 use crate::domain::agent_session::ProviderAgentTerminalGatewayError;
+use crate::domain::agent_session::ProviderAgentTerminalInputGateway;
 use crate::domain::terminal_surface::entities::TerminalSurface;
 use crate::domain::terminal_surface::gateway::TerminalSurfaceGateway;
 use crate::domain::terminal_surface::{
@@ -11,6 +12,7 @@ use crate::domain::terminal_surface::{
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
+use crate::usecase::terminal_surface::test_helpers::FakePtyGateway;
 
 fn surface_for(
     owner: &TerminalSurfaceOwner,
@@ -37,6 +39,12 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
     if let Some(surface) = surface {
         gateway.insert_surface(surface);
     }
+    application_with_gateway(gateway)
+}
+
+fn application_with_gateway(
+    gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
+) -> TerminalSurfaceApplication {
     let hub = Arc::new(TerminalSurfaceEventHub::new());
     TerminalSurfaceApplication::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
@@ -45,6 +53,79 @@ fn application_with(surface: Option<TerminalSurface>) -> TerminalSurfaceApplicat
         hub,
         crate::test_support::terminal_config(""),
     )
+}
+
+#[test]
+fn test_指示入力_複数行を包んで一回の書き込みで確定する() {
+    // Given
+    let owner =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
+    let gateway = Arc::new(FakePtyGateway::new());
+    let application = application_with_gateway(gateway.clone());
+
+    // When
+    application
+        .write_instruction(&owner, "  修正してください\n次の行\r\n末尾の空白  ")
+        .unwrap();
+
+    // Then
+    assert_eq!(
+        *gateway.writes.lock(),
+        vec![(
+            owner.stable_key(),
+            "\u{1b}[200~  修正してください\n次の行\r\n末尾の空白  \u{1b}[201~\r".to_string()
+        )]
+    );
+}
+
+#[test]
+fn test_指示入力_末尾の改行を除いて確定用の改行を一つ付ける() {
+    for instruction in [
+        "修正してください\r",
+        "修正してください\n",
+        "修正してください\r\n",
+        "修正してください\r\n\n\r",
+    ] {
+        // Given
+        let owner =
+            TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1")
+                .unwrap();
+        let gateway = Arc::new(FakePtyGateway::new());
+        let application = application_with_gateway(gateway.clone());
+
+        // When
+        application.write_instruction(&owner, instruction).unwrap();
+
+        // Then
+        assert_eq!(
+            *gateway.writes.lock(),
+            vec![(
+                owner.stable_key(),
+                "\u{1b}[200~修正してください\u{1b}[201~\r".to_string()
+            )],
+            "instruction: {instruction:?}"
+        );
+    }
+}
+
+#[test]
+fn test_指示入力_書き込み失敗をgatewayのエラーとして返す() {
+    // Given
+    let owner =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
+    let application = application_with(None);
+
+    // When
+    let result = application.write_instruction(&owner, "修正してください");
+
+    // Then
+    assert_eq!(
+        result,
+        Err(ProviderAgentTerminalGatewayError::NotFound(format!(
+            "Terminal Surface not found for owner {}",
+            owner.stable_key()
+        )))
+    );
 }
 
 #[test]
