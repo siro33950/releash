@@ -1195,6 +1195,18 @@ impl TryFrom<crate::domain::comment::ReviewActorDto> for wire::ReviewActorWireDt
     }
 }
 
+impl TryFrom<crate::domain::comment::Author> for wire::ReviewActorWireDto {
+    type Error = String;
+    fn try_from(value: crate::domain::comment::Author) -> Result<Self, String> {
+        cv(crate::domain::comment::ReviewActorDto {
+            kind: value.kind,
+            backend_id: value.backend_id,
+            model: value.model,
+            display_name: value.display_name,
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDto {
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewBinaryDto) -> Result<Self, String> {
@@ -1212,7 +1224,13 @@ impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDt
 impl TryFrom<crate::domain::comment::Comment> for wire::ReviewCommentDto {
     type Error = String;
     fn try_from(value: crate::domain::comment::Comment) -> Result<Self, String> {
-        todo!()
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            thread_id: Some(cv(value.thread_id)?),
+            author: Some(cv(value.author)?),
+            content: Some(cv(value.content)?),
+            created_at: Some(cv(value.created_at)?),
+        })
     }
 }
 
@@ -1324,7 +1342,12 @@ impl TryFrom<crate::usecase::code_dto::ReviewLimitReasonDto> for wire::ReviewLim
 impl TryFrom<crate::domain::comment::Resolve> for wire::ReviewResolveInfoDto {
     type Error = String;
     fn try_from(value: crate::domain::comment::Resolve) -> Result<Self, String> {
-        todo!()
+        Ok(Self {
+            actor: Some(cv(value.actor)?),
+            outcome: Some(cv(value.outcome)?),
+            summary: Some(cv(value.summary)?),
+            resolved_at: Some(cv(value.resolved_at)?),
+        })
     }
 }
 
@@ -1429,7 +1452,22 @@ impl TryFrom<crate::usecase::code_dto::ReviewTextSource> for wire::ReviewTextSou
 impl TryFrom<crate::domain::comment::Thread> for wire::ReviewThreadDto {
     type Error = String;
     fn try_from(value: crate::domain::comment::Thread) -> Result<Self, String> {
-        todo!()
+        let author = req(value.comments.first(), "first review comment")?
+            .author
+            .clone();
+        Ok(Self {
+            id: Some(cv(value.id)?),
+            worktree_name: Some(cv(value.worktree_name)?),
+            author: Some(cv(author)?),
+            target: Some(cv(value.target)?),
+            state: Some(cv(value.state)?),
+            comments: Some(cv(value.comments)?),
+            resolve: value.resolve.map(cv).transpose()?,
+            created_at: Some(cv(value.created_at)?),
+            updated_at: Some(cv(value.updated_at)?),
+            version: Some(cv(value.version)?),
+            can_resolve: Some(cv(value.can_resolve)?),
+        })
     }
 }
 
