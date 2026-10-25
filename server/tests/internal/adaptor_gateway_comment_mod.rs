@@ -5,6 +5,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::platform::OperationStopped;
 
     use releashd::test_support::integration::platform::acquire_worktree_file_lock;
+    use releashd::test_support::integration::platform::find_review_threads_by_ids;
     use releashd::test_support::integration::platform::lock_file;
     use releashd::test_support::integration::platform::state_file;
     use releashd::test_support::integration::platform::FileReviewEventStore;
@@ -19,6 +20,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::platform::ReviewCommentUsecase;
     use releashd::test_support::integration::platform::ReviewThreadState;
     use releashd::test_support::integration::platform::MAX_REVIEW_TEXT_BYTES;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -45,6 +47,159 @@ pub(crate) mod tests {
 
     fn agent(session_id: &str) -> ReviewActor {
         ReviewActor::provider_agent("codex".to_string(), Some(session_id.to_string()))
+    }
+
+    #[test]
+    pub fn test_thread取得_指定workspaceのidを要求順で復元する() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let comments = usecase(Arc::new(FileReviewEventStore::default()));
+        let first = comments
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                target(),
+                "first".into(),
+            )
+            .unwrap();
+        let second = comments
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                target(),
+                "second".into(),
+            )
+            .unwrap();
+        std::fs::write(dir.path().join("releash.toml"), "invalid config").unwrap();
+        std::fs::write(state_file(dir.path(), "other"), "{not-json").unwrap();
+
+        // When
+        let threads = find_review_threads_by_ids(
+            dir.path(),
+            &WorkspaceIdentity::new("wt"),
+            &[second.id.clone(), first.id.clone(), second.id.clone()],
+        )
+        .unwrap();
+
+        // Then
+        assert_eq!(threads, vec![second.clone(), first, second]);
+    }
+
+    #[test]
+    pub fn test_thread取得_別workspaceだけに存在するidはnotfound() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let comments = usecase(Arc::new(FileReviewEventStore::default()));
+        let thread = comments
+            .create_thread(
+                dir.path(),
+                "other",
+                ReviewActor::human(),
+                target(),
+                "body".into(),
+            )
+            .unwrap();
+
+        // When
+        let result =
+            find_review_threads_by_ids(dir.path(), &WorkspaceIdentity::new("wt"), &[thread.id]);
+
+        // Then
+        assert!(matches!(result, Err(ReviewError::NotFound(_))));
+    }
+
+    #[test]
+    pub fn test_thread取得_存在しないidか削除済みidが一つでもあれば失敗する() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let comments = usecase(Arc::new(FileReviewEventStore::default()));
+        let first = comments
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                target(),
+                "first".into(),
+            )
+            .unwrap();
+        let deleted = comments
+            .create_thread(
+                dir.path(),
+                "wt",
+                ReviewActor::human(),
+                target(),
+                "deleted".into(),
+            )
+            .unwrap();
+        comments
+            .delete_thread(dir.path(), "wt", ReviewActor::human(), &deleted.id)
+            .unwrap();
+
+        for missing in ["missing".into(), deleted.id] {
+            // When
+            let result = find_review_threads_by_ids(
+                dir.path(),
+                &WorkspaceIdentity::new("wt"),
+                &[first.id.clone(), missing],
+            );
+
+            // Then
+            assert!(matches!(result, Err(ReviewError::NotFound(_))));
+        }
+    }
+
+    #[test]
+    pub fn test_thread取得_空の要求は保存データを読まず空を返す() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let file = state_file(dir.path(), "wt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "{not-json").unwrap();
+
+        // When
+        let threads =
+            find_review_threads_by_ids(dir.path(), &WorkspaceIdentity::new("wt"), &[]).unwrap();
+
+        // Then
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    pub fn test_thread取得_壊れた保存データはserializeを返す() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let file = state_file(dir.path(), "wt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "{not-json").unwrap();
+
+        // When
+        let result = find_review_threads_by_ids(
+            dir.path(),
+            &WorkspaceIdentity::new("wt"),
+            &["requested".into()],
+        );
+
+        // Then
+        assert!(matches!(result, Err(ReviewError::Serialize(_))));
+    }
+
+    #[test]
+    pub fn test_thread取得_読めない保存データはioを返す() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(state_file(dir.path(), "wt")).unwrap();
+
+        // When
+        let result = find_review_threads_by_ids(
+            dir.path(),
+            &WorkspaceIdentity::new("wt"),
+            &["requested".into()],
+        );
+
+        // Then
+        assert!(matches!(result, Err(ReviewError::Io(_))));
     }
 
     #[test]

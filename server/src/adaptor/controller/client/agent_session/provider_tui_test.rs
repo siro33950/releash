@@ -740,10 +740,18 @@ struct SendThreads(Vec<Thread>);
 impl ThreadRepository for SendThreads {
     fn find_by_ids(
         &self,
-        _workspace: &WorkspaceIdentity,
-        _ids: &[String],
+        workspace: &WorkspaceIdentity,
+        ids: &[String],
     ) -> Result<Vec<Thread>, crate::domain::comment::Error> {
-        todo!()
+        ids.iter()
+            .map(|id| {
+                self.0
+                    .iter()
+                    .find(|thread| thread.id == *id && thread.worktree_name == workspace.as_str())
+                    .cloned()
+                    .ok_or_else(|| crate::domain::comment::Error::NotFound(id.clone()))
+            })
+            .collect()
     }
 }
 
@@ -900,7 +908,7 @@ async fn test_thread送信controller_拒否した要求は何も入力しない(
             false,
             false,
             vec!["one", "outside"],
-            C::FailedPrecondition,
+            C::NotFound,
         ),
         (
             ManagedPtyPresence::Live,
@@ -934,6 +942,10 @@ async fn test_thread送信controller_必須fieldが無い要求を拒否する()
         wire::SendThreadsToSessionRequest {
             agent_session_id: Some("session".into()),
             thread_ids: None,
+        },
+        wire::SendThreadsToSessionRequest {
+            agent_session_id: Some("session".into()),
+            thread_ids: Some(Vec::<String>::new().try_into().unwrap()),
         },
     ] {
         // When

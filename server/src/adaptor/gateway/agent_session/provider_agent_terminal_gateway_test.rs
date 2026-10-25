@@ -73,9 +73,37 @@ fn test_指示入力_複数行を包んで一回の書き込みで確定する()
         *gateway.writes.lock(),
         vec![(
             owner.stable_key(),
-            "\u{1b}[200~  修正してください\n次の行\r\n末尾の空白  \u{1b}[201~\r".to_string()
+            "\u{1b}[200~  修正してください\n次の行\n末尾の空白  \u{1b}[201~\r".to_string()
         )]
     );
+}
+
+#[test]
+fn test_指示入力_本文の制御文字を除き改行とtabを保持する() {
+    // Given
+    let owner =
+        TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent-session-1").unwrap();
+    let gateway = Arc::new(FakePtyGateway::new());
+    let application = application_with_gateway(gateway.clone());
+    let instruction = "本文\u{1b}[201~\r操作\u{0}\u{7}\u{8}\u{7f}\u{85}\u{9b}\n\t続き";
+
+    // When
+    application.write_instruction(&owner, instruction).unwrap();
+
+    // Then
+    let writes = gateway.writes.lock();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0, owner.stable_key());
+    let content = writes[0]
+        .1
+        .strip_prefix("\u{1b}[200~")
+        .unwrap()
+        .strip_suffix("\u{1b}[201~\r")
+        .unwrap();
+    assert_eq!(content, "本文[201~操作\n\t続き");
+    assert!(content
+        .chars()
+        .all(|c| !c.is_control() || matches!(c, '\n' | '\t')));
 }
 
 #[test]

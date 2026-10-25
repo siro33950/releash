@@ -19,10 +19,20 @@ pub struct FakeThreadRepository(pub Mutex<Vec<crate::domain::comment::Thread>>);
 impl crate::domain::comment::ThreadRepository for FakeThreadRepository {
     fn find_by_ids(
         &self,
-        _workspace: &WorkspaceIdentity,
-        _thread_ids: &[String],
+        workspace: &WorkspaceIdentity,
+        thread_ids: &[String],
     ) -> Result<Vec<crate::domain::comment::Thread>, crate::domain::comment::Error> {
-        todo!()
+        let threads = self.0.lock().unwrap();
+        thread_ids
+            .iter()
+            .map(|id| {
+                threads
+                    .iter()
+                    .find(|thread| thread.id == *id && thread.worktree_name == workspace.as_str())
+                    .cloned()
+                    .ok_or_else(|| crate::domain::comment::Error::NotFound(id.clone()))
+            })
+            .collect()
     }
 }
 

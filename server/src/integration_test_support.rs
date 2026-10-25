@@ -128,6 +128,16 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::{run_startup_gc, GcStopCause};
 }
 pub mod platform {
+    pub fn find_review_threads_by_ids(
+        app_data_dir: &std::path::Path,
+        workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
+        thread_ids: &[String],
+    ) -> Result<Vec<crate::domain::comment::Thread>, crate::domain::comment::Error> {
+        use crate::domain::comment::ThreadRepository;
+        crate::adaptor::gateway::comment::ThreadRepositoryImpl::new(app_data_dir.to_path_buf())
+            .find_by_ids(workspace, thread_ids)
+    }
+
     pub fn workspace_state_store(
         path: std::path::PathBuf,
     ) -> crate::adaptor::gateway::workspace_state::WorkspaceStateStore {
