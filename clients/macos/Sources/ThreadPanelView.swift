@@ -7,7 +7,6 @@ struct ThreadPanelView: View {
   let worktree: String
   @State var state = ThreadPanelState()
   @State private var subscription: UUID?
-  @State private var sessionSubscriptions: [String: UUID] = [:]
   @State private var addingGeneral = false
   @State private var content = ""
 
@@ -16,9 +15,8 @@ struct ThreadPanelView: View {
       model.repositories.flatMap(\.worktrees.items).first { $0.path == worktree }?.snapshot.nodes
         .items ?? [])
   }
-  var sessionIDs: [String] { sessionNodes.map(\.sessionID) }
   var openSessions: [Releash_Client_V1_WorkspaceNode] {
-    sessionNodes.filter { state.sessionAvailability[$0.sessionID] == .open }
+    sessionNodes.filter { $0.processPresence.value == .live }
   }
 
   var body: some View {
@@ -71,19 +69,15 @@ struct ThreadPanelView: View {
       .frame(maxWidth: .infinity).padding(UIStyle.spacing)
       .accessibilityIdentifier("thread-add-general")
     }
+    .textual.imageAttachmentLoader(ThreadImageAttachmentLoader())
     .onAppear {
       subscription = model.subscribe("review-threads", [worktree]) { payload in
         if case .reviewThreads(let value) = payload.value { state.receive(value.items) }
       }
-      subscribeSessions()
     }
-    .onChange(of: sessionIDs) { _, _ in subscribeSessions() }
     .onDisappear {
       if let subscription { model.unsubscribe(subscription) }
       subscription = nil
-      for id in sessionSubscriptions.values { model.unsubscribe(id) }
-      sessionSubscriptions.removeAll()
-      state.sessionAvailability.removeAll()
     }
     .sheet(isPresented: $addingGeneral) {
       VStack {
@@ -116,24 +110,7 @@ struct ThreadPanelView: View {
       } else {
         nodes = []
       }
-      return nodes + sessionNodes(item.children)
-    }
-  }
-
-  private func subscribeSessions() {
-    let ids = Set(sessionIDs)
-    for id in Array(sessionSubscriptions.keys) where !ids.contains(id) {
-      if let subscription = sessionSubscriptions.removeValue(forKey: id) {
-        model.unsubscribe(subscription)
-      }
-      state.sessionAvailability.removeValue(forKey: id)
-    }
-    for id in sessionIDs where sessionSubscriptions[id] == nil {
-      sessionSubscriptions[id] = model.subscribe("session-tab", [id]) { payload in
-        if case .sessionTab(let value) = payload.value {
-          state.sessionAvailability[id] = value.session.availability
-        }
-      }
+      return nodes + sessionNodes(item.children) + sessionNodes(item.pastAttempts)
     }
   }
 
@@ -190,7 +167,6 @@ struct ThreadPanelView: View {
   var threads: [Releash_Client_V1_ReviewThreadDto] = []
   var showResolved = false
   var checked: Set<String> = []
-  var sessionAvailability: [String: Releash_Client_V1_AgentSessionAvailability] = [:]
   var visibleThreads: [Releash_Client_V1_ReviewThreadDto] {
     threads.filter { $0.isResolved == showResolved }
   }
@@ -199,6 +175,14 @@ struct ThreadPanelView: View {
   func receive(_ threads: [Releash_Client_V1_ReviewThreadDto]) {
     self.threads = threads
     checked.formIntersection(threads.map(\.id))
+  }
+}
+
+private struct ThreadImageAttachmentLoader: AttachmentLoader {
+  func attachment(for url: URL, text: String, environment: ColorEnvironmentValues) async throws
+    -> AnyAttachment
+  {
+    throw URLError(.unsupportedURL)
   }
 }
 

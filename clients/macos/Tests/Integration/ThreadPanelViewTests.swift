@@ -127,13 +127,40 @@ final class ThreadPanelViewTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_Session購読_生きている送り先が無くなると送信できない() async throws {
+  @MainActor func test_Thread本文と返信_画像を取得せずaltを表示する() async throws {
+    // Given
+    ThreadImageURLProtocol.requested.isInverted = true
+    XCTAssertTrue(URLProtocol.registerClass(ThreadImageURLProtocol.self))
+    defer { URLProtocol.unregisterClass(ThreadImageURLProtocol.self) }
+    let http = TestHTTPClient()
+    var thread = testReviewThread("images")
+    thread.comments.items[0].content = "![本文の画像](https://thread-image.invalid/body.png)"
+    var reply = thread.comments.items[0]
+    reply.id = "reply"
+    reply.content = "![返信の画像](https://thread-image.invalid/reply.png)"
+    thread.comments.items.append(reply)
+    http.state.withLock { $0.reviewThreads["/repo"] = .with { $0.items = [thread] } }
+    let model = try await testModel(http)
+    let host = await ViewHarness(ThreadPanelView(model: model, worktree: "/repo"))
+    // When
+    try await eventuallyView(host) { host.texts().contains("本文の画像") }
+    try await host.press("thread-history:images")
+    // Then
+    try await eventuallyView(host) { host.texts().contains("返信の画像") }
+    let result = await XCTWaiter.fulfillment(of: [ThreadImageURLProtocol.requested], timeout: 0.5)
+    XCTAssertEqual(result, .completed)
+    host.close()
+    await model.stop()
+  }
+
+  @MainActor func test_実行木購読_生きている送り先が無くなると送信できない() async throws {
     // Given
     let http = TestHTTPClient()
     var node = Releash_Client_V1_WorkspaceTreeItem()
     node.node.id = "node"
     node.node.sessionID = "agent"
     node.node.title = "Session"
+    node.node.processPresence.value = .live
     var tree = Releash_Client_V1_WorkspaceWorktreeList()
     tree.path = "/repo"
     tree.snapshot.nodes.items = [node]
@@ -142,10 +169,6 @@ final class ThreadPanelViewTests: XCTestCase {
     http.state.withLock {
       $0.repositories = [repo]
       $0.reviewThreads["/repo"] = .with { $0.items = [testReviewThread("thread")] }
-      $0.sessionTabs["agent"] = .with {
-        $0.session.id = "agent"
-        $0.session.availability = .open
-      }
     }
     let model = try await testModel(http)
     let host = await ViewHarness(AnyView(ThreadPanelView(model: model, worktree: "/repo")))
@@ -155,26 +178,49 @@ final class ThreadPanelViewTests: XCTestCase {
     // Then
     try await eventuallyView(host) { host.element("thread-send")?.enabled == true }
     var payload = Releash_Client_V1_StatePayload()
-    payload.sessionTab.session.id = "agent"
-    payload.sessionTab.session.availability = .paused
+    node.node.processPresence.value = .confirmedAbsent
+    tree.snapshot.nodes.items = [node]
+    repo.worktrees.items = [tree]
+    payload.workspaces.repositories.items = [repo]
     // When
-    try http.publish(payload, target: "session-tab", args: ["agent"])
+    try http.publish(payload, target: "workspaces")
     // Then
     try await eventuallyView(host) { host.element("thread-send")?.enabled == false }
     // When
-    model.repositories = []
+    var past = Releash_Client_V1_WorkspacePastAttempt()
+    past.node.sessionID = "past"
+    past.node.processPresence.value = .live
+    node.node.pastAttempts.items = [past]
+    tree.snapshot.nodes.items = [node]
+    repo.worktrees.items = [tree]
+    payload.workspaces.repositories.items = [repo]
+    try http.publish(payload, target: "workspaces")
     // Then
-    let subscription = try XCTUnwrap(
-      http.state.withLock {
-        $0.subscriptions.first { $0.target == "session-tab" && $0.args == ["agent"] }
-      })
-    try await eventually {
-      http.requests("StopStateSubscription").contains {
-        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
-          .subscriptionID) == subscription.subscriptionID
-      }
-    }
+    try await eventuallyView(host) { host.element("thread-send")?.enabled == true }
+    XCTAssertFalse(http.state.withLock { $0.subscriptions.contains { $0.target == "session-tab" } })
+    // When
+    payload.workspaces.repositories.items = []
+    try http.publish(payload, target: "workspaces")
+    // Then
+    try await eventuallyView(host) { host.element("thread-send")?.enabled == false }
     host.close()
     await model.stop()
   }
+}
+
+private final class ThreadImageURLProtocol: URLProtocol, @unchecked Sendable {
+  static let requested = XCTestExpectation(description: "Threadの画像URLを読み込まない")
+
+  override class func canInit(with request: URLRequest) -> Bool {
+    request.url?.host == "thread-image.invalid"
+  }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    Self.requested.fulfill()
+    client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+  }
+
+  override func stopLoading() {}
 }
