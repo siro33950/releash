@@ -1364,6 +1364,13 @@ export type InputArchiveAgentSessionRequest = {
 	callerRequestId: string;
 };
 
+export type InputSendThreadsToSessionRequest = {
+	agentSessionId: string;
+	threadIds: InputListstring;
+};
+
+export type InputListstring = Array<string>;
+
 export type InputArchiveWorkspaceWorkflowExecutionRequest = {
 	worktreePath: string;
 	executionId: string;
@@ -1557,8 +1564,6 @@ export type InputGitStageRequest = {
 	repoPath: string;
 	paths: InputListstring;
 };
-
-export type InputListstring = Array<string>;
 
 export type InputGitStageReviewGroupRequest = {
 	input: InputReviewGroupActionInput;
@@ -2109,6 +2114,7 @@ export interface ClientCommandArgs {
 	append_review_comment: InputAppendReviewCommentRequest;
 	approve_workspace_node: InputApproveWorkspaceNodeRequest;
 	archive_agent_session: InputArchiveAgentSessionRequest;
+	send_threads_to_session: InputSendThreadsToSessionRequest;
 	archive_workspace_workflow_execution: InputArchiveWorkspaceWorkflowExecutionRequest;
 	build_review_thread_handoff: InputBuildReviewThreadHandoffRequest;
 	compute_hidden_ranges_from_content: InputComputeHiddenRangesFromContentRequest;
@@ -2212,6 +2218,9 @@ export interface ClientCommands {
 	archive_agent_session(
 		args: ClientCommandArgs["archive_agent_session"],
 	): Promise<AgentSessionArchiveResponse>;
+	send_threads_to_session(
+		args: ClientCommandArgs["send_threads_to_session"],
+	): Promise<void>;
 	archive_workspace_workflow_execution(
 		args: ClientCommandArgs["archive_workspace_workflow_execution"],
 	): Promise<void>;

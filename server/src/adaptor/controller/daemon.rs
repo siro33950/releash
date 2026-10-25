@@ -554,6 +554,7 @@ pub async fn compose(
             workflow_runtime_usecase.clone(),
         ));
     let dependencies = super::client::ClientDependencies {
+        agent_session_usecase: Some(agent_sessions.sessions),
         create_worktrees_usecase: Some(create_worktrees_usecase),
         installation_usecase: Some(installation),
         workspace_node_command_usecase: Some(workspace_node_command_usecase),

@@ -14,6 +14,20 @@ use crate::usecase::agent_session::{
     AgentSessionLifecycleUsecase, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
 
+pub(crate) async fn send_threads_to_session_shared(
+    sessions: &crate::usecase::agent_session::AgentSessionUsecase,
+    args: crate::adaptor::presenter::client::SendThreadsToSessionRequest,
+) -> Result<(), crate::adaptor::presenter::client::CommandFailure> {
+    use crate::adaptor::controller::client::{convert, required};
+    sessions
+        .send_thread(
+            &required(args.agent_session_id, "agentSessionId")?,
+            convert(required(args.thread_ids, "threadIds")?)?,
+        )
+        .await
+        .map_err(|error| crate::adaptor::presenter::connect::send_thread_error(error).into())
+}
+
 pub(crate) async fn refresh_provider_availability_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,
 ) -> Result<(), AppError> {

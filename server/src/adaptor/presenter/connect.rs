@@ -162,6 +162,29 @@ impl ConnectFailure for crate::domain::comment::Error {
     }
 }
 
+impl ConnectFailure for crate::usecase::agent_session::usecase::SendThreadUsecaseError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        use crate::domain::agent_session::services::AgentSessionSendThreadError;
+        match self {
+            Self::Session(error) => error.connect_code(),
+            Self::SessionNotFound => connectrpc::ErrorCode::NotFound,
+            Self::Thread(error) => error.connect_code(),
+            Self::Send(
+                AgentSessionSendThreadError::Instruction(_)
+                | AgentSessionSendThreadError::ThreadOutsideWorkspace(_),
+            ) => connectrpc::ErrorCode::FailedPrecondition,
+            Self::Send(AgentSessionSendThreadError::Terminal(error)) => error.connect_code(),
+        }
+    }
+}
+
+pub(crate) fn send_thread_error(
+    error: crate::usecase::agent_session::usecase::SendThreadUsecaseError,
+) -> crate::adaptor::presenter::error::AppError {
+    crate::adaptor::presenter::error::AppError::new(format!("{error:?}"))
+        .with_status(error.connect_code())
+}
+
 impl ConnectFailure for crate::domain::app_config::error::AppConfigError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
