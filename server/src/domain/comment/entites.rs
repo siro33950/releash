@@ -18,7 +18,20 @@ pub struct Thread {
 impl Thread {
     /// 自身の位置、ID、本文と、後続の Comment の確認方法を含む引き渡し内容を決める。
     pub(crate) fn handoff_content(&self) -> String {
-        todo!()
+        let location = match (
+            self.target.file_path.as_deref(),
+            self.target.line_number,
+            self.target.end_line,
+        ) {
+            (Some(path), Some(start), Some(end)) => format!("{path}:{start}-{end}"),
+            (Some(path), Some(line), None) => format!("{path}:{line}"),
+            (Some(path), None, _) => path.to_string(),
+            (None, _, _) => "General".to_string(),
+        };
+        format!(
+            "位置: {location}\nThread ID: {}\n本文:\n{}\n\nそれ以降のCommentは `releash review get --session-id \"$RELEASH_SESSION_ID\" {}` で確認してください。",
+            self.id, self.comments[0].content, self.id
+        )
     }
 }
 
@@ -121,7 +134,34 @@ pub struct Resolve {
 impl Target {
     /// 対象のパス、行範囲、行の側の指定が有効かを判定する。
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        todo!()
+        if let Some(file_path) = self.file_path.as_deref() {
+            super::validate_review_file_path(file_path)?;
+        }
+        if (self.side.is_some() && (self.file_path.is_none() || self.line_number.is_none()))
+            || (self.end_side.is_some() && (self.side.is_none() || self.end_line.is_none()))
+        {
+            return Err(Error::InvalidInput(
+                "line sides require a file and their line numbers".into(),
+            ));
+        }
+        if matches!(self.line_number, Some(0)) || matches!(self.end_line, Some(0)) {
+            return Err(Error::InvalidInput(
+                "line_number and end_line must be positive".to_string(),
+            ));
+        }
+        if self.end_line.is_some() && self.line_number.is_none() {
+            return Err(Error::InvalidInput(
+                "line_number is required when end_line is set".to_string(),
+            ));
+        }
+        if let (Some(start), Some(end)) = (self.line_number, self.end_line) {
+            if end < start {
+                return Err(Error::InvalidInput(
+                    "end_line must be greater than or equal to line_number".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

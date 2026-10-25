@@ -575,7 +575,11 @@ impl AgentSession {
         &self,
         presence: ManagedPtyPresence,
     ) -> Result<(), AgentSessionInstructionError> {
-        todo!()
+        if self.availability(presence) == AgentSessionAvailability::Open {
+            Ok(())
+        } else {
+            Err(AgentSessionInstructionError::NotOpen)
+        }
     }
 
     pub(crate) fn open_action(&self, pty_presence: ManagedPtyPresence) -> AgentSessionOpenAction {

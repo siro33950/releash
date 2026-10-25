@@ -27,7 +27,7 @@ impl AgentSessionService {
         terminal: Arc<dyn ProviderAgentTerminalGateway>,
         input: Arc<dyn ProviderAgentTerminalInputGateway>,
     ) -> Self {
-        todo!()
+        Self { terminal, input }
     }
 
     /// Open の Session に、同じ Workspace に属する Thread を一つの指示として送る。
@@ -53,7 +53,12 @@ impl AgentSessionService {
 
     /// 導入文と各 Thread の引き渡し内容から、一つの指示を決める。
     pub(crate) fn handoff_prompt(threads: Vec<Thread>) -> String {
-        todo!()
+        let mut prompt = "以下のスレッドの内容を確認してください。".to_string();
+        for thread in threads {
+            prompt.push_str("\n\n");
+            prompt.push_str(&thread.handoff_content());
+        }
+        prompt
     }
 
     /// すべての Thread が Session と同じ Workspace に属することを確認する。
@@ -62,6 +67,17 @@ impl AgentSessionService {
         session: &AgentSession,
         threads: &[Thread],
     ) -> Result<(), AgentSessionSendThreadError> {
-        todo!()
+        for thread in threads {
+            if thread.worktree_name != session.workspace().as_str() {
+                return Err(AgentSessionSendThreadError::ThreadOutsideWorkspace(
+                    thread.id.clone(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "agent_session_service_test.rs"]
+mod agent_session_service_tests;
