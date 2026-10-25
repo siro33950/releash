@@ -20,7 +20,10 @@ final class Fixture: Sendable {
         domain: "E2E", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing RELEASH_E2E_ROOT"])
     }
     root = URL(fileURLWithPath: path).standardizedFileURL
-    directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+    let temporary = try FileManager.default.temporaryDirectory.resourceValues(forKeys: [
+      .canonicalPathKey
+    ])
+    directory = URL(fileURLWithPath: try XCTUnwrap(temporary.canonicalPath)).appendingPathComponent(
       "releash-ui-\(UUID())")
     data = directory.appendingPathComponent("data")
     cli = root.appendingPathComponent("clients/macos/.build/Helpers/Debug/releash")

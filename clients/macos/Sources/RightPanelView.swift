@@ -35,6 +35,7 @@ struct RightPanelView: View {
             .toggleStyle(IconToggleStyle())
             .iconButtonFrame()
             .help(panel.title).accessibilityLabel(panel.title)
+            .accessibilityIdentifier("right-panel:\(panel.rawValue)")
             .accessibilityAddTraits(selected == panel ? .isSelected : [])
           }
           Spacer(minLength: 0)
@@ -56,6 +57,8 @@ struct RightPanelView: View {
         RootListView(model: model, path: path).id(path)
       } else if expanded, selected == .files, let path = model.selectedWorktree {
         FileTreeView(model: model, worktree: path).id(path)
+      } else if expanded, selected == .threads, let path = model.selectedWorktree {
+        ThreadPanelView(model: model, worktree: path).id(path)
       } else {
         Spacer(minLength: 0)
       }

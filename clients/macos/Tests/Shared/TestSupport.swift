@@ -25,8 +25,10 @@ final class TestHTTPClient: HTTPClientInterface {
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
     var sessions: [String: Releash_Client_V1_AgentSessionItemDto] = [:]
     var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
+    var reviewThreads: [String: Releash_Client_V1_ListReviewThreadDto] = [:]
     var history = Releash_Client_V1_AgentSessionHistoryPageDto()
     var failedMethod: String?
+    var failedMethodCode: Code = .internalError
     var failureDetail: ConnectError.Detail?
     var failedSubscriptionTargets: [String: Int] = [:]
     var subscriptionFailureCode: Code = .internalError
@@ -59,7 +61,7 @@ final class TestHTTPClient: HTTPClientInterface {
           state.failedSubscriptionTargets[subscription.target, default: 0] -= 1
           return state.subscriptionFailureCode
         }
-        return state.failedMethod == method ? .internalError : nil
+        return state.failedMethod == method ? state.failedMethodCode : nil
       }
       if let failureCode {
         let detail = state.withLock { $0.failureDetail }
@@ -102,6 +104,8 @@ final class TestHTTPClient: HTTPClientInterface {
             }
           } else if subscription.target == "session-tab" {
             payload.sessionTab = state.sessionTabs[subscription.args[0]] ?? .init()
+          } else if subscription.target == "review-threads" {
+            payload.reviewThreads = state.reviewThreads[subscription.args[0]] ?? .init()
           } else if subscription.target == "agent-session" {
             payload.agentSession = .init()
             if let value = state.sessions[subscription.args[0]] {
@@ -201,7 +205,9 @@ final class TestHTTPClient: HTTPClientInterface {
     framed.append(bytes)
     stream.receiveResponseData(framed)
   }
-  func publish(_ payload: Releash_Client_V1_StatePayload, target: String) throws {
+  func publish(_ payload: Releash_Client_V1_StatePayload, target: String, args: [String]? = nil)
+    throws
+  {
     let (subscriptions, stream) = state.withLock { state in
       switch payload.value {
       case .workspaces(let value): state.repositories = value.repositories.items
@@ -210,9 +216,16 @@ final class TestHTTPClient: HTTPClientInterface {
         if value.hasValue { state.sessions[value.value.id] = value.value }
       case .nodeDetail(let value):
         if value.hasValue { state.nodeDetails[value.value.id] = value.value }
+      case .sessionTab(let value):
+        if let id = args?.first { state.sessionTabs[id] = value }
+      case .reviewThreads(let value):
+        if let path = args?.first { state.reviewThreads[path] = value }
       default: break
       }
-      return (state.subscriptions.filter { $0.target == target }, state.streams.last)
+      return (
+        state.subscriptions.filter { $0.target == target && (args == nil || $0.args == args) },
+        state.streams.last
+      )
     }
     guard let stream else { return }
     for subscription in subscriptions {
@@ -225,6 +238,20 @@ final class TestHTTPClient: HTTPClientInterface {
   func requests(_ method: String) -> [HTTPRequest<Data?>] {
     state.withLock { $0.requests.filter { $0.url.lastPathComponent == method } }
   }
+}
+
+func testReviewThread(_ id: String, resolved: Bool = false) -> Releash_Client_V1_ReviewThreadDto {
+  var thread = Releash_Client_V1_ReviewThreadDto()
+  thread.id = id
+  thread.state.value = resolved ? .resolved : .open
+  thread.canResolve = !resolved
+  var comment = Releash_Client_V1_ReviewCommentDto()
+  comment.id = "comment:\(id)"
+  comment.content = "## \(id)\n\n- **確認**\n\n```swift\nlet value = 1\n```"
+  comment.author.displayName = "Reviewer"
+  comment.createdAt = 1_700_000_000
+  thread.comments.items = [comment]
+  return thread
 }
 
 @MainActor func eventually(
