@@ -63,7 +63,7 @@ pub struct AgentSessionUsecase {
 
 impl AgentSessionUsecase {
     /// Session と Thread の取得先、および Session への送信サービスを持つ。
-    pub fn new(
+    pub(crate) fn new(
         repository: Arc<dyn AgentSessionRepository>,
         threads: Arc<dyn ThreadRepository>,
         service: AgentSessionService,
