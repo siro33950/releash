@@ -97,12 +97,12 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
 }
 
 impl ProviderAgentTerminalInputGateway for TerminalSurfaceApplication {
-    fn write(
+    fn write_instruction(
         &self,
-        owner: &TerminalSurfaceOwner,
-        input: &str,
-    ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        self.write(owner, input).map_err(map_terminal_error)
+        owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+        instruction: &str,
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
+        todo!()
     }
 }
 

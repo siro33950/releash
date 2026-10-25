@@ -12,6 +12,8 @@ use crate::domain::agent_session::aggregates::{
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
 };
+use crate::domain::agent_session::services::{AgentSessionSendThreadError, AgentSessionService};
+use crate::domain::comment::ThreadRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::AgentSessionActivity;
@@ -28,6 +30,15 @@ pub enum AgentSessionUsecaseError {
     Corrupt,
 }
 
+/// Thread を Session へ送る操作の失敗。
+#[derive(Debug)]
+pub(crate) enum SendThreadUsecaseError {
+    Session(AgentSessionUsecaseError),
+    SessionNotFound,
+    Thread(crate::domain::comment::Error),
+    Send(AgentSessionSendThreadError),
+}
+
 pub(crate) struct AgentSessionCreateRequest {
     pub(crate) agent_session_id: String,
     pub(crate) workspace: WorkspaceIdentity,
@@ -42,17 +53,47 @@ pub struct AgentSessionActivityObservation {
     pub(crate) worktree_path: String,
 }
 
+/// Session の操作に必要な取得、排他、ドメイン処理を調整する。
 pub struct AgentSessionUsecase {
     repository: Arc<dyn AgentSessionRepository>,
     operation_locks: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
+    threads: Arc<dyn ThreadRepository>,
+    service: AgentSessionService,
 }
 
 impl AgentSessionUsecase {
-    pub fn new(repository: Arc<dyn AgentSessionRepository>) -> Self {
-        Self {
-            repository,
-            operation_locks: Mutex::new(HashMap::new()),
-        }
+    /// Session と Thread の取得先、および Session への送信サービスを持つ。
+    pub fn new(
+        repository: Arc<dyn AgentSessionRepository>,
+        threads: Arc<dyn ThreadRepository>,
+        service: AgentSessionService,
+    ) -> Self {
+        todo!()
+    }
+
+    /// 指定した Session に Thread の内容を一つの指示として送る。
+    pub(crate) async fn send_thread(
+        &self,
+        session_id: &str,
+        thread_ids: Vec<String>,
+    ) -> Result<(), SendThreadUsecaseError> {
+        let _operation = self
+            .lock_operation(session_id)
+            .await
+            .map_err(SendThreadUsecaseError::Session)?;
+        let session = self
+            .find(session_id)
+            .await
+            .map_err(SendThreadUsecaseError::Session)?
+            .ok_or(SendThreadUsecaseError::SessionNotFound)?;
+        let repository = Arc::clone(&self.threads);
+        let threads =
+            crate::usecase::comment::blocking(move || repository.find_by_ids(&thread_ids))
+                .await
+                .map_err(SendThreadUsecaseError::Thread)?;
+        self.service
+            .send_thread(session.session(), threads)
+            .map_err(SendThreadUsecaseError::Send)
     }
 
     pub async fn lock_operation(

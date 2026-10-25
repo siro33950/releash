@@ -1072,9 +1072,7 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
     // Given
     let fixture = Fixture::new();
     let archive = archive_fixture();
-    let sessions = AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(
-        archive.store.clone(),
-    )));
+    let sessions: AgentSessionUsecase = todo!();
     sessions
         .create(
             "session-tab",
@@ -1639,9 +1637,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     // Given
     let fixture = Fixture::new();
     let archive = archive_fixture();
-    let sessions = AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(
-        archive.store.clone(),
-    )));
+    let sessions: AgentSessionUsecase = todo!();
     for id in ["ready", "broken", "broken-root", "broken-root-alias"] {
         sessions
             .create(

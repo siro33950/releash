@@ -78,14 +78,13 @@ impl AgentSessionInitialInstructionUsecase {
         }
     }
 
+    /// 続行指示を Session の一つの入力として渡す。
     fn write_instruction(
         &self,
         owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
         instruction: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        let instruction = instruction.trim_end_matches(['\r', '\n']);
-        self.terminal
-            .write(owner, &format!("\u{1b}[200~{instruction}\u{1b}[201~\r"))
+        self.terminal.write_instruction(owner, instruction)
     }
 }
 

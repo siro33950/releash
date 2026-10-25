@@ -58,10 +58,11 @@ pub trait ProviderAgentTerminalGateway: Send + Sync {
 }
 
 pub trait ProviderAgentTerminalInputGateway: Send + Sync {
-    fn write(
+    /// 指示全体を一つの入力として渡し、確定する。
+    fn write_instruction(
         &self,
         owner: &TerminalSurfaceOwner,
-        input: &str,
+        instruction: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError>;
 }
 

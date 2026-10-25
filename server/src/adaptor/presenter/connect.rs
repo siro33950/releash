@@ -148,7 +148,7 @@ impl ConnectFailure for crate::domain::git_host::git_host::GitHostError {
     }
 }
 
-impl ConnectFailure for crate::domain::comment::ReviewError {
+impl ConnectFailure for crate::domain::comment::Error {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::SessionNotOpen(_) => connectrpc::ErrorCode::FailedPrecondition,

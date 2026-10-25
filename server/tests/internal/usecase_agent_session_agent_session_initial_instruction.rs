@@ -50,23 +50,12 @@ struct FailingTerminalInput {
 }
 
 impl ProviderAgentTerminalInputGateway for FailingTerminalInput {
-    fn write(
+    fn write_instruction(
         &self,
         owner: &TerminalSurfaceOwner,
         input: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        self.writes
-            .lock()
-            .unwrap()
-            .push((owner.clone(), input.to_string()));
-        self.write_observed.notify_one();
-        Err(ProviderAgentTerminalGatewayError::Technical(
-            releashd::test_support::integration::platform::TechnicalFailure {
-                nature:
-                    releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
-                message: "unavailable".into(),
-            },
-        ))
+        todo!()
     }
 }
 
@@ -78,9 +67,7 @@ pub async fn test_agent_session_continuation_session操作lock解放後に送る
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::<AgentSessionUsecase>::new(todo!());
     seed_workflow_tree(
         &store,
         "workflow-execution-1",
@@ -146,24 +133,12 @@ struct ContinuationTerminalInput {
 }
 
 impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
-    fn write(
+    fn write_instruction(
         &self,
         owner: &TerminalSurfaceOwner,
         input: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        if self.fail {
-            return Err(ProviderAgentTerminalGatewayError::Technical(
-                releashd::test_support::integration::platform::TechnicalFailure {
-                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::Transient,
-                    message: "unavailable".into(),
-                },
-            ));
-        }
-        self.writes
-            .lock()
-            .unwrap()
-            .push((owner.clone(), input.into()));
-        Ok(())
+        todo!()
     }
 }
 
@@ -179,9 +154,7 @@ pub async fn test_delegate_続行指示は識別子ごとに一度だけ送り�
             std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
-        let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-            LocalAgentSessionRepository::new(store.clone()),
-        )));
+        let sessions = Arc::<AgentSessionUsecase>::new(todo!());
         seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex).await;
         sessions
             .create(
@@ -261,8 +234,7 @@ pub async fn test_delegate_続行指示は識別子ごとに一度だけ送り�
             }
         }
         // 受理は terminal への書き込み結果によらず永続化され、再読込後も同じ識別子を拒む。
-        let reloaded =
-            AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+        let reloaded: AgentSessionUsecase = todo!();
         assert_eq!(
             reloaded
                 .admit_continuation("agent", "child-1")
@@ -289,9 +261,7 @@ pub async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::<AgentSessionUsecase>::new(todo!());
     seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex).await;
     sessions
         .create(

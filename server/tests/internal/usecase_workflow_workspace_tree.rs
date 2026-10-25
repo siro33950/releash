@@ -258,16 +258,15 @@ async fn seeded_workflow(
     )
     .await
     .unwrap();
-    releashd::test_support::integration::sessions::AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
-    ))
-    .observe_activity(
-        "workflow-session",
-        releashd::test_support::integration::workflow::AgentSessionActivity::Working,
-        "observe-working",
-    )
-    .await
-    .unwrap();
+    let sessions: releashd::test_support::integration::sessions::AgentSessionUsecase = todo!();
+    sessions
+        .observe_activity(
+            "workflow-session",
+            releashd::test_support::integration::workflow::AgentSessionActivity::Working,
+            "observe-working",
+        )
+        .await
+        .unwrap();
     (directory, usecase, worktree)
 }
 

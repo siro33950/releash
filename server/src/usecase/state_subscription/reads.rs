@@ -38,7 +38,7 @@ pub enum StateReadFailure {
     Watcher(Box<crate::usecase::watcher::UsecaseError>),
     Subscription(Box<crate::usecase::state_subscription::SubscriptionError>),
     Code(Box<crate::usecase::code_error::CodeUsecaseError>),
-    Review(Box<crate::domain::comment::ReviewError>),
+    Review(Box<crate::domain::comment::Error>),
     AppConfig(Box<crate::usecase::app_config::error::UsecaseError>),
     Notion(Box<crate::usecase::notion::error::NotionUsecaseError>),
     Editor(Box<crate::domain::external_editor::EditorError>),
@@ -56,8 +56,8 @@ impl From<crate::usecase::code_error::CodeUsecaseError> for StateReadFailure {
         Self::Code(Box::new(error))
     }
 }
-impl From<crate::domain::comment::ReviewError> for StateReadFailure {
-    fn from(error: crate::domain::comment::ReviewError) -> Self {
+impl From<crate::domain::comment::Error> for StateReadFailure {
+    fn from(error: crate::domain::comment::Error) -> Self {
         Self::Review(Box::new(error))
     }
 }
@@ -410,7 +410,7 @@ impl WorkspaceStateReads {
                     .map_err(error)?,
             ),
             T::FileThreads(path, file) => {
-                let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::ReviewActor::human()).map_err(error)?;
+                let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::Author::human()).map_err(error)?;
                 let count = crate::domain::comment::unresolved_thread_count(&threads);
                 StateValue::FileThreads(threads, count)
             }
@@ -420,7 +420,7 @@ impl WorkspaceStateReads {
                         &self.data_dir,
                         name,
                         None,
-                        crate::domain::comment::ReviewActor::human(),
+                        crate::domain::comment::Author::human(),
                     )
                     .map_err(error)?,
             ),

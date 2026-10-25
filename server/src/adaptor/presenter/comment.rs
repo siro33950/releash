@@ -9,16 +9,16 @@ pub enum ReviewThreadStateDto {
     Resolved,
 }
 
-impl From<&domain::ReviewThreadState> for ReviewThreadStateDto {
-    fn from(state: &domain::ReviewThreadState) -> Self {
+impl From<&domain::State> for ReviewThreadStateDto {
+    fn from(state: &domain::State) -> Self {
         match state {
-            domain::ReviewThreadState::Open => Self::Open,
-            domain::ReviewThreadState::Resolved => Self::Resolved,
+            domain::State::Open => Self::Open,
+            domain::State::Resolved => Self::Resolved,
         }
     }
 }
 
-impl From<ReviewThreadStateDto> for domain::ReviewThreadState {
+impl From<ReviewThreadStateDto> for domain::State {
     fn from(state: ReviewThreadStateDto) -> Self {
         match state {
             ReviewThreadStateDto::Open => Self::Open,

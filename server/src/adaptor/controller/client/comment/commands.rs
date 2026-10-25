@@ -2,8 +2,9 @@ use crate::adaptor::presenter::error::AppError;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::domain::comment::{ReviewActor, ReviewTarget, ReviewThread};
-use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
+use crate::domain::comment::{
+    Author as ReviewActor, Target as ReviewTarget, Thread as ReviewThread,
+};
 use crate::usecase::comment::ReviewCommentUsecase;
 
 async fn blocking<T, F>(f: F) -> Result<T, AppError>
@@ -84,7 +85,7 @@ pub(crate) async fn create_session_review_thread_shared(
     session_id: String,
     target: ReviewTarget,
     content: String,
-) -> Result<crate::domain::comment::ReviewThread, AppError> {
+) -> Result<crate::domain::comment::Thread, AppError> {
     usecase
         .create_thread(data_dir, &session_id, target, content)
         .await
@@ -96,7 +97,7 @@ pub(crate) async fn append_session_review_comment_shared(
     session_id: String,
     thread_id: String,
     content: String,
-) -> Result<crate::domain::comment::ReviewThread, AppError> {
+) -> Result<crate::domain::comment::Thread, AppError> {
     usecase
         .append_comment(data_dir, &session_id, thread_id, content)
         .await
@@ -109,7 +110,7 @@ pub(crate) async fn resolve_session_review_thread_shared(
     thread_id: String,
     outcome: String,
     summary: String,
-) -> Result<crate::domain::comment::ReviewThread, AppError> {
+) -> Result<crate::domain::comment::Thread, AppError> {
     usecase
         .resolve_thread(data_dir, &session_id, thread_id, outcome, summary)
         .await
@@ -140,9 +141,8 @@ pub(crate) async fn build_review_thread_handoff_shared(
 ) -> Result<String, AppError> {
     let usecase = Arc::clone(usecase);
     blocking(move || {
-        let releash_alias = alias_name_for_profile(BuildProfile::current());
         usecase
-            .build_handoff(&data_dir, &worktree_name, &thread_id, releash_alias)
+            .build_handoff(&data_dir, &worktree_name, &thread_id)
             .map_err(AppError::from_failure)
     })
     .await

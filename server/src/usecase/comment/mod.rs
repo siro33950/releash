@@ -1,32 +1,30 @@
 pub(crate) mod context;
 pub use context::ReviewContextUsecase;
 mod session;
+pub(crate) use session::blocking;
 pub use session::SessionReviewUsecase;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::domain::agent_session::services::AgentSessionService;
 use crate::domain::comment::{
     apply_filter, ensure_can_delete, ensure_thread_open, project_thread, project_threads,
-    validate_content, validate_filter, validate_target, ReviewActor, ReviewError, ReviewEvent,
-    ReviewHistoryEntry, ReviewTarget, ReviewThread, ReviewThreadFilter,
+    validate_content, validate_filter, Author, Error, ReviewEvent, ReviewHistoryEntry,
+    ReviewThreadFilter, Target, Thread,
 };
 
 pub type ReviewEventMutation<'a> =
-    Box<dyn FnOnce(&[ReviewEvent]) -> Result<Vec<ReviewEvent>, ReviewError> + Send + 'a>;
+    Box<dyn FnOnce(&[ReviewEvent]) -> Result<Vec<ReviewEvent>, Error> + Send + 'a>;
 
 pub trait ReviewEventStore: Send + Sync {
-    fn load(
-        &self,
-        app_data_dir: &Path,
-        worktree_name: &str,
-    ) -> Result<Vec<ReviewEvent>, ReviewError>;
+    fn load(&self, app_data_dir: &Path, worktree_name: &str) -> Result<Vec<ReviewEvent>, Error>;
 
     fn mutate(
         &self,
         app_data_dir: &Path,
         worktree_name: &str,
         mutation: ReviewEventMutation<'_>,
-    ) -> Result<Vec<ReviewEvent>, ReviewError>;
+    ) -> Result<Vec<ReviewEvent>, Error>;
 }
 
 pub trait ReviewClock: Send + Sync {
@@ -81,8 +79,8 @@ impl ReviewCommentUsecase {
         app_data_dir: &Path,
         worktree_name: &str,
         filter: Option<ReviewThreadFilter>,
-        viewer: ReviewActor,
-    ) -> Result<Vec<ReviewThread>, ReviewError> {
+        viewer: Author,
+    ) -> Result<Vec<Thread>, Error> {
         validate_filter(&filter)?;
         let events = self.store.load(app_data_dir, worktree_name)?;
         Ok(apply_filter(
@@ -97,7 +95,7 @@ impl ReviewCommentUsecase {
         app_data_dir: &Path,
         worktree_name: &str,
         thread_id: &str,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         let events = self.store.load(app_data_dir, worktree_name)?;
         find_thread(worktree_name, thread_id, &events)
     }
@@ -107,7 +105,7 @@ impl ReviewCommentUsecase {
         app_data_dir: &Path,
         worktree_name: &str,
         thread_id: &str,
-    ) -> Result<Vec<ReviewHistoryEntry>, ReviewError> {
+    ) -> Result<Vec<ReviewHistoryEntry>, Error> {
         Ok(self
             .history_events(app_data_dir, worktree_name, thread_id)?
             .iter()
@@ -119,12 +117,12 @@ impl ReviewCommentUsecase {
         &self,
         app_data_dir: &Path,
         worktree_name: &str,
-        actor: ReviewActor,
-        target: ReviewTarget,
+        actor: Author,
+        target: Target,
         content: String,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         validate_content(&content, "content")?;
-        validate_target(&target)?;
+        target.validate()?;
         let clock = Arc::clone(&self.clock);
         let id_generator = Arc::clone(&self.id_generator);
         let thread_id = id_generator.event_id();
@@ -154,10 +152,10 @@ impl ReviewCommentUsecase {
         &self,
         app_data_dir: &Path,
         worktree_name: &str,
-        actor: ReviewActor,
+        actor: Author,
         thread_id: &str,
         content: String,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         validate_content(&content, "content")?;
         let clock = Arc::clone(&self.clock);
         let id_generator = Arc::clone(&self.id_generator);
@@ -187,11 +185,11 @@ impl ReviewCommentUsecase {
         &self,
         app_data_dir: &Path,
         worktree_name: &str,
-        actor: ReviewActor,
+        actor: Author,
         thread_id: &str,
         outcome: String,
         summary: String,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         validate_content(&outcome, "outcome")?;
         validate_content(&summary, "summary")?;
         let clock = Arc::clone(&self.clock);
@@ -222,9 +220,9 @@ impl ReviewCommentUsecase {
         &self,
         app_data_dir: &Path,
         worktree_name: &str,
-        actor: ReviewActor,
+        actor: Author,
         thread_id: &str,
-    ) -> Result<(), ReviewError> {
+    ) -> Result<(), Error> {
         ensure_can_delete(&actor)?;
         let clock = Arc::clone(&self.clock);
         let id_generator = Arc::clone(&self.id_generator);
@@ -246,15 +244,15 @@ impl ReviewCommentUsecase {
         Ok(())
     }
 
+    /// 指定した Thread を引き渡す文面を、Session へ送る指示と同じ形式で返す。
     pub fn build_handoff(
         &self,
         app_data_dir: &Path,
         worktree_name: &str,
         thread_id: &str,
-        releash_alias: &str,
-    ) -> Result<String, ReviewError> {
+    ) -> Result<String, Error> {
         let thread = self.get_thread(app_data_dir, worktree_name, thread_id)?;
-        Ok(build_review_thread_handoff_message(releash_alias, &thread))
+        Ok(AgentSessionService::handoff_prompt(vec![thread]))
     }
 
     fn history_events(
@@ -262,7 +260,7 @@ impl ReviewCommentUsecase {
         app_data_dir: &Path,
         worktree_name: &str,
         thread_id: &str,
-    ) -> Result<Vec<ReviewEvent>, ReviewError> {
+    ) -> Result<Vec<ReviewEvent>, Error> {
         let events: Vec<_> = self
             .store
             .load(app_data_dir, worktree_name)?
@@ -273,7 +271,7 @@ impl ReviewCommentUsecase {
             .iter()
             .any(|event| matches!(event, ReviewEvent::ThreadCreated { .. }))
         {
-            return Err(ReviewError::NotFound(format!(
+            return Err(Error::NotFound(format!(
                 "Review thread not found: {thread_id}"
             )));
         }
@@ -281,21 +279,11 @@ impl ReviewCommentUsecase {
     }
 }
 
-pub(crate) fn build_review_thread_handoff_message(
-    releash_alias: &str,
-    thread: &ReviewThread,
-) -> String {
-    format!(
-        "以下のスレッドの内容を確認してください。\n\n{releash_alias} review get --session-id \"$RELEASH_SESSION_ID\" {}",
-        thread.id
-    )
-}
-
 fn find_thread(
     worktree_name: &str,
     thread_id: &str,
     events: &[ReviewEvent],
-) -> Result<ReviewThread, ReviewError> {
+) -> Result<Thread, Error> {
     project_thread(worktree_name, thread_id, events)
-        .ok_or_else(|| ReviewError::NotFound(format!("Review thread not found: {thread_id}")))
+        .ok_or_else(|| Error::NotFound(format!("Review thread not found: {thread_id}")))
 }

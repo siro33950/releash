@@ -4,11 +4,11 @@ pub(crate) mod provider_registry;
 
 pub(crate) use agent_session::{
     derive_agent_session_operations, AgentSession, AgentSessionArchiveOutcome,
-    AgentSessionAvailability, AgentSessionInitialInstructionOutcome, AgentSessionLifecycle,
-    AgentSessionLifecycleEvent, AgentSessionMutationOutcome, AgentSessionOpenAction,
-    AgentSessionOperations, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
-    AgentSessionRemovalAuthorization, AgentSessionTreeLocation, AgentSessionTreeLocationError,
-    ManagedPtyPresence,
+    AgentSessionAvailability, AgentSessionInitialInstructionOutcome, AgentSessionInstructionError,
+    AgentSessionLifecycle, AgentSessionLifecycleEvent, AgentSessionMutationOutcome,
+    AgentSessionOpenAction, AgentSessionOperations, AgentSessionProcessExitOutcome,
+    AgentSessionRecoveryResult, AgentSessionRemovalAuthorization, AgentSessionTreeLocation,
+    AgentSessionTreeLocationError, ManagedPtyPresence,
 };
 pub(crate) use provider_registry::{
     ProviderAvailability, ProviderExecutable, ProviderRegistry, ProviderRegistryEntry,

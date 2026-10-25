@@ -124,7 +124,11 @@ impl WorkflowDelegateAcceptanceHost {
             ),
             std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 LocalProviderHookHealthRepository::new(
                     store.clone(),

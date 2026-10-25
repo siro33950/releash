@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::domain::comment::{
-    ReviewActor, ReviewActorKind, ReviewError, ReviewEvent, ReviewTarget,
+    Author as ReviewActor, AuthorKind as ReviewActorKind, Error as ReviewError, ReviewEvent,
+    Target as ReviewTarget,
 };
 use crate::infrastructure::platform::file_replace;
 use crate::usecase::comment::{
@@ -94,15 +95,15 @@ enum StoredReviewLineSide {
     Deletions,
 }
 
-impl From<crate::domain::comment::ReviewLineSide> for StoredReviewLineSide {
-    fn from(side: crate::domain::comment::ReviewLineSide) -> Self {
+impl From<crate::domain::comment::LineSide> for StoredReviewLineSide {
+    fn from(side: crate::domain::comment::LineSide) -> Self {
         match side {
-            crate::domain::comment::ReviewLineSide::Additions => Self::Additions,
-            crate::domain::comment::ReviewLineSide::Deletions => Self::Deletions,
+            crate::domain::comment::LineSide::Additions => Self::Additions,
+            crate::domain::comment::LineSide::Deletions => Self::Deletions,
         }
     }
 }
-impl From<StoredReviewLineSide> for crate::domain::comment::ReviewLineSide {
+impl From<StoredReviewLineSide> for crate::domain::comment::LineSide {
     fn from(side: StoredReviewLineSide) -> Self {
         match side {
             StoredReviewLineSide::Additions => Self::Additions,

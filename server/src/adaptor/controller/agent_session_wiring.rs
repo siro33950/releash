@@ -290,7 +290,7 @@ pub fn compose_agent_sessions(
         )),
     ));
     let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
-    let sessions = Arc::new(AgentSessionUsecase::new(session_repository.clone()));
+    let sessions = Arc::<AgentSessionUsecase>::new(todo!());
     let mut hook_health = ProviderHookHealthUsecase::new(Arc::new(
         LocalProviderHookHealthRepository::new(repository, installation_id),
     ));

@@ -27,11 +27,7 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
-        ),
-    )));
+    let sessions = Arc::<AgentSessionUsecase>::new(todo!());
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let elapsed = Arc::new(tokio::sync::Notify::new());

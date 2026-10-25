@@ -2555,7 +2555,7 @@ mod connect_mapping_tests {
             // Given
             let cases = [
                 (
-                    crate::domain::comment::ReviewError::Technical(
+                    crate::domain::comment::Error::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                             message: "Operation deadline exceeded".into(),
@@ -2564,7 +2564,7 @@ mod connect_mapping_tests {
                     F::DeadlineExceeded,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Technical(
+                    crate::domain::comment::Error::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                             message: "Operation cancelled".into(),
@@ -2573,19 +2573,19 @@ mod connect_mapping_tests {
                     F::Canceled,
                 ),
                 (
-                    crate::domain::comment::ReviewError::InvalidInput("reason".into()),
+                    crate::domain::comment::Error::InvalidInput("reason".into()),
                     F::InvalidArgument,
                 ),
                 (
-                    crate::domain::comment::ReviewError::NotFound("reason".into()),
+                    crate::domain::comment::Error::NotFound("reason".into()),
                     F::NotFound,
                 ),
                 (
-                    crate::domain::comment::ReviewError::SessionNotOpen("reason".into()),
+                    crate::domain::comment::Error::SessionNotOpen("reason".into()),
                     F::FailedPrecondition,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Technical(
+                    crate::domain::comment::Error::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Transient,
                             message: "reason".into(),
@@ -2594,19 +2594,19 @@ mod connect_mapping_tests {
                     F::Unavailable,
                 ),
                 (
-                    crate::domain::comment::ReviewError::AlreadyResolved("reason".into()),
+                    crate::domain::comment::Error::AlreadyResolved("reason".into()),
                     F::FailedPrecondition,
                 ),
                 (
-                    crate::domain::comment::ReviewError::PermissionDenied("reason".into()),
+                    crate::domain::comment::Error::PermissionDenied("reason".into()),
                     F::PermissionDenied,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Io("reason".into()),
+                    crate::domain::comment::Error::Io("reason".into()),
                     F::Internal,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Serialize("reason".into()),
+                    crate::domain::comment::Error::Serialize("reason".into()),
                     F::Internal,
                 ),
             ];
@@ -2789,7 +2789,7 @@ mod connect_mapping_tests {
     mod review_stopped_transfer_tests {
         use crate::adaptor::presenter::connect::classified_error;
         use crate::adaptor::presenter::error::AppError;
-        use crate::domain::comment::ReviewError;
+        use crate::domain::comment::Error as ReviewError;
 
         #[test]
         fn test_review停止_転送コードを保ちメッセージをjsonで包まない() {

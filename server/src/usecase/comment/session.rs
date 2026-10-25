@@ -1,7 +1,6 @@
 use super::{ReviewCommentUsecase, ReviewContextUsecase};
 use crate::domain::comment::{
-    ReviewError, ReviewHistoryEntry, ReviewTarget, ReviewThread, ReviewThreadFilter,
-    ReviewWorktreeFilter,
+    Error, ReviewHistoryEntry, ReviewThreadFilter, ReviewWorktreeFilter, Target, Thread,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,9 +17,9 @@ impl SessionReviewUsecase {
         &self,
         data_dir: PathBuf,
         id: &str,
-        target: ReviewTarget,
+        target: Target,
         content: String,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         let (path, actor) = self.context.session_for_write(id).await?;
         let comments = self.comments.clone();
         blocking(move || comments.create_thread(&data_dir, &path, actor, target, content)).await
@@ -31,7 +30,7 @@ impl SessionReviewUsecase {
         id: &str,
         thread_id: String,
         content: String,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         let (path, actor) = self.context.session_for_write(id).await?;
         let comments = self.comments.clone();
         blocking(move || comments.append_comment(&data_dir, &path, actor, &thread_id, content))
@@ -44,7 +43,7 @@ impl SessionReviewUsecase {
         thread_id: String,
         outcome: String,
         summary: String,
-    ) -> Result<ReviewThread, ReviewError> {
+    ) -> Result<Thread, Error> {
         let (path, actor) = self.context.session_for_write(id).await?;
         let comments = self.comments.clone();
         blocking(move || {
@@ -57,7 +56,7 @@ impl SessionReviewUsecase {
         data_dir: PathBuf,
         id: &str,
         filter: ReviewThreadFilter,
-    ) -> Result<Option<Vec<ReviewThread>>, ReviewError> {
+    ) -> Result<Option<Vec<Thread>>, Error> {
         let context = self.context.session_for_read(id).await?;
         let comments = self.comments.clone();
         blocking(move || {
@@ -72,7 +71,7 @@ impl SessionReviewUsecase {
         data_dir: PathBuf,
         path: &str,
         filter: ReviewWorktreeFilter,
-    ) -> Result<Vec<ReviewThread>, ReviewError> {
+    ) -> Result<Vec<Thread>, Error> {
         let (path, actor) = self.context.worktree(path).await?;
         let comments = self.comments.clone();
         blocking(move || comments.list_threads(&data_dir, &path, Some(filter.into()), actor)).await
@@ -82,7 +81,7 @@ impl SessionReviewUsecase {
         data_dir: PathBuf,
         id: &str,
         thread_id: String,
-    ) -> Result<Option<ReviewThread>, ReviewError> {
+    ) -> Result<Option<Thread>, Error> {
         let context = self.context.session_for_read(id).await?;
         let comments = self.comments.clone();
         blocking(move || {
@@ -99,7 +98,7 @@ impl SessionReviewUsecase {
         data_dir: PathBuf,
         id: &str,
         thread_id: String,
-    ) -> Result<Option<Vec<ReviewHistoryEntry>>, ReviewError> {
+    ) -> Result<Option<Vec<ReviewHistoryEntry>>, Error> {
         let context = self.context.session_for_read(id).await?;
         let comments = self.comments.clone();
         blocking(move || {
@@ -115,20 +114,18 @@ impl SessionReviewUsecase {
         .await
     }
 }
-fn missing_as_none<T>(result: Result<Option<T>, ReviewError>) -> Result<Option<T>, ReviewError> {
+fn missing_as_none<T>(result: Result<Option<T>, Error>) -> Result<Option<T>, Error> {
     match result {
-        Err(ReviewError::NotFound(_)) => Ok(None),
+        Err(Error::NotFound(_)) => Ok(None),
         result => result,
     }
 }
-async fn blocking<T: Send + 'static>(
-    operation: impl FnOnce() -> Result<T, ReviewError> + Send + 'static,
-) -> Result<T, ReviewError> {
+pub(crate) async fn blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, Error> + Send + 'static,
+) -> Result<T, Error> {
     crate::common::operation_context::spawn_blocking(operation)
         .await
-        .map_err(|error| {
-            ReviewError::Technical(crate::domain::failure::TechnicalFailure::from(error))
-        })?
+        .map_err(|error| Error::Technical(crate::domain::failure::TechnicalFailure::from(error)))?
 }
 #[cfg(test)]
 #[path = "session_test.rs"]

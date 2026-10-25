@@ -52,7 +52,11 @@ mod provider_lifecycle_ingress_tests {
             ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                agent_repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
@@ -234,7 +238,11 @@ mod provider_lifecycle_ingress_tests {
             ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(health.clone())),
             (repository.clone(), transaction.clone()),
             crate::test_support::state_subscription::test_subscriptions(),
@@ -319,7 +327,11 @@ mod provider_lifecycle_ingress_tests {
             ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                agent_repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
@@ -432,7 +444,11 @@ mod provider_lifecycle_ingress_tests {
             ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                agent_repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
@@ -527,7 +543,11 @@ mod provider_lifecycle_ingress_tests {
             ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                agent_repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
@@ -633,7 +653,11 @@ mod provider_lifecycle_ingress_tests {
             ),
             std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
             lifecycle.clone(),
-            Arc::new(AgentSessionUsecase::new(agent_repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                agent_repository.clone(),
+                todo!(),
+                todo!(),
+            )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
             ))),
@@ -703,7 +727,11 @@ mod provider_lifecycle_ingress_tests {
             fail_activity_save: false,
             save_observed: None,
         });
-        let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
+        let sessions = Arc::new(AgentSessionUsecase::new(
+            agent_repository.clone(),
+            todo!(),
+            todo!(),
+        ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(MemoryLifecycleEvents),
@@ -792,7 +820,11 @@ mod provider_lifecycle_ingress_tests {
             fail_activity_save: false,
             save_observed: None,
         });
-        let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
+        let sessions = Arc::new(AgentSessionUsecase::new(
+            agent_repository.clone(),
+            todo!(),
+            todo!(),
+        ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(MemoryLifecycleEvents),
@@ -879,7 +911,11 @@ mod provider_lifecycle_ingress_tests {
             fail_activity_save: false,
             save_observed: None,
         });
-        let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
+        let sessions = Arc::new(AgentSessionUsecase::new(
+            agent_repository.clone(),
+            todo!(),
+            todo!(),
+        ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(MemoryLifecycleEvents),
@@ -960,7 +996,11 @@ mod provider_lifecycle_ingress_tests {
             fail_activity_save: false,
             save_observed: Some(save_observed.clone()),
         });
-        let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
+        let sessions = Arc::new(AgentSessionUsecase::new(
+            agent_repository.clone(),
+            todo!(),
+            todo!(),
+        ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(MemoryLifecycleEvents),
@@ -1041,7 +1081,11 @@ mod provider_lifecycle_ingress_tests {
             fail_activity_save: false,
             save_observed: Some(save_observed.clone()),
         });
-        let sessions = Arc::new(AgentSessionUsecase::new(agent_repository.clone()));
+        let sessions = Arc::new(AgentSessionUsecase::new(
+            agent_repository.clone(),
+            todo!(),
+            todo!(),
+        ));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
             Arc::new(LocalProviderLifecycleCredentialGateway),
             Arc::new(MemoryLifecycleEvents),

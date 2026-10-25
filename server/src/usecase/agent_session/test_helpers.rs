@@ -767,7 +767,7 @@ pub fn launch_usecase_with_tree_registrar(
     ));
     AgentSessionLaunchUsecase::new(
         std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-        Arc::new(AgentSessionUsecase::new(repository)),
+        Arc::new(AgentSessionUsecase::new(repository, todo!(), todo!())),
         lifecycle,
         provider_runtime(availability, launch_gateway, terminal),
         Arc::new(FixedHistory {

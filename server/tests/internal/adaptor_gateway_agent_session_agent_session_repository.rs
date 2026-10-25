@@ -180,7 +180,7 @@ pub async fn test_agent_session_repository_活動遷移だけをnode行へ追記
     // Given: 活動観測を永続化する単独 Session
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
-    let sessions = AgentSessionUsecase::new(Arc::new(new_repository(&store)));
+    let sessions: AgentSessionUsecase = todo!();
     sessions
         .create(
             "agent-session-activity",
@@ -329,7 +329,7 @@ pub async fn test_agent_session_repository_process_exit後のworking再観測を
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = Arc::new(new_repository(&store));
-    let sessions = AgentSessionUsecase::new(repository.clone());
+    let sessions: AgentSessionUsecase = todo!();
     sessions
         .create(
             "agent-session-activity-exit",
@@ -434,7 +434,7 @@ pub async fn test_agent_session_repository_stop事実後のworking再観測をbo
     let directory = TempDir::new().unwrap();
     let store = open_store(&directory);
     let repository = Arc::new(new_repository(&store));
-    let sessions = AgentSessionUsecase::new(repository.clone());
+    let sessions: AgentSessionUsecase = todo!();
     let session_id = "agent-session-activity-stop";
     sessions
         .create(
@@ -541,7 +541,7 @@ pub async fn test_agent_session_repository_workflow子sessionも同じ活動保�
     )
     .await
     .unwrap();
-    let sessions = AgentSessionUsecase::new(Arc::new(new_repository(&store)));
+    let sessions: AgentSessionUsecase = todo!();
 
     sessions
         .observe_activity(

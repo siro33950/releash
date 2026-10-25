@@ -449,9 +449,9 @@ impl From<&crate::usecase::state_subscription::SubscriptionError> for Failure {
     }
 }
 
-impl From<&crate::domain::comment::ReviewError> for Failure {
-    fn from(error: &crate::domain::comment::ReviewError) -> Self {
-        use crate::domain::comment::ReviewError as E;
+impl From<&crate::domain::comment::Error> for Failure {
+    fn from(error: &crate::domain::comment::Error) -> Self {
+        use crate::domain::comment::Error as E;
         match error {
             E::Technical(error) => Self::from(error),
             E::Io(_) | E::Serialize(_) => Self::Technical(TechnicalFailureNature::Other),

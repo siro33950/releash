@@ -138,7 +138,7 @@ pub(crate) mod tests {
         .unwrap();
         let store = Arc::new(FileReviewEventStore::default());
 
-        let result = usecase(store).build_handoff(dir.path(), "wt", "thread-1", "releash");
+        let result = usecase(store).build_handoff(dir.path(), "wt", "thread-1");
 
         assert!(matches!(result, Err(ReviewError::Serialize(_))));
     }

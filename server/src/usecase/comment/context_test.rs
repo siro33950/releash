@@ -47,7 +47,7 @@ async fn test_review文脈_sessionの書き手とworkspaceを解決し閉じたs
     assert_eq!(path, "/workspace");
     assert_eq!(
         actor,
-        ReviewActor::provider_agent("codex".into(), Some("session".into()))
+        Author::provider_agent("codex".into(), Some("session".into()))
     );
     // When
     repository
@@ -63,11 +63,11 @@ async fn test_review文脈_sessionの書き手とworkspaceを解決し閉じたs
     assert!(context.session_for_read("session").await.unwrap().is_some());
     assert!(matches!(
         context.session_for_write("session").await,
-        Err(ReviewError::SessionNotOpen(_))
+        Err(Error::SessionNotOpen(_))
     ));
     assert!(matches!(
         context.session_for_read("").await,
-        Err(ReviewError::InvalidInput(_))
+        Err(Error::InvalidInput(_))
     ));
     *repository.stored.lock().unwrap() = None;
     assert!(context.session_for_read("missing").await.unwrap().is_none());
@@ -91,19 +91,19 @@ async fn test_review文脈_worktreeは親workspaceと人へ解決し解決失敗
     // When / Then
     assert!(matches!(
         context.worktree("/invalid").await,
-        Err(ReviewError::InvalidInput(_))
+        Err(Error::InvalidInput(_))
     ));
     assert!(matches!(
         context.worktree("/failure").await,
-        Err(ReviewError::Technical(_))
+        Err(Error::Technical(_))
     ));
     assert_eq!(
         context.worktree("/isolated").await.unwrap(),
-        ("/workspace".into(), ReviewActor::human())
+        ("/workspace".into(), Author::human())
     );
     assert!(matches!(
         context.worktree("/missing").await,
-        Err(ReviewError::NotFound(_))
+        Err(Error::NotFound(_))
     ));
 }
 
@@ -177,8 +177,8 @@ async fn test_review文脈_sessionとworktreeの技術的失敗の分類と理�
         StorageFailure, TechnicalFailure, TechnicalFailureNature as Nature,
     };
     use crate::domain::workflow::WorkflowError;
-    fn technical(error: ReviewError) -> TechnicalFailure {
-        let ReviewError::Technical(failure) = error else {
+    fn technical(error: Error) -> TechnicalFailure {
+        let Error::Technical(failure) = error else {
             panic!("expected technical failure: {error:?}");
         };
         failure

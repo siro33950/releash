@@ -20,7 +20,7 @@ mod memory_tests {
         .unwrap();
         let repository = Arc::new(FailingSaveRepository::new(seed));
         *repository.stored.lock().unwrap() = None;
-        let usecase = AgentSessionUsecase::new(repository);
+        let usecase = AgentSessionUsecase::new(repository, todo!(), todo!());
 
         let created = usecase
             .create(
@@ -53,7 +53,7 @@ mod memory_tests {
         )
         .unwrap();
         let repository = Arc::new(FailingSaveRepository::new(session));
-        let usecase = AgentSessionUsecase::new(repository.clone());
+        let usecase = AgentSessionUsecase::new(repository.clone(), todo!(), todo!());
 
         let result = usecase
             .associate_provider_session(
