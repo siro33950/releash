@@ -68,7 +68,12 @@ impl AgentSessionUsecase {
         threads: Arc<dyn ThreadRepository>,
         service: AgentSessionService,
     ) -> Self {
-        todo!()
+        Self {
+            repository,
+            operation_locks: Mutex::new(HashMap::new()),
+            threads,
+            service,
+        }
     }
 
     /// 指定した Session に Thread の内容を一つの指示として送る。

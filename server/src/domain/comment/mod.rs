@@ -126,7 +126,72 @@ pub enum ReviewHistoryEntry {
 
 impl From<&ReviewEvent> for ReviewHistoryEntry {
     fn from(event: &ReviewEvent) -> Self {
-        todo!()
+        let public_actor = |actor: &Author| ReviewActorDto {
+            kind: actor.kind.clone(),
+            backend_id: actor.backend_id.clone(),
+            model: actor.model.clone(),
+            display_name: actor.display_name.clone(),
+        };
+        match event {
+            ReviewEvent::ThreadCreated {
+                event_id,
+                thread_id,
+                comment_id,
+                actor,
+                target,
+                content,
+                at,
+            } => Self::ThreadCreated {
+                id: event_id.clone(),
+                thread_id: thread_id.clone(),
+                comment_id: comment_id.clone(),
+                actor: public_actor(actor),
+                target: target.clone(),
+                content: content.clone(),
+                at: *at,
+            },
+            ReviewEvent::CommentAppended {
+                event_id,
+                thread_id,
+                comment_id,
+                actor,
+                content,
+                at,
+            } => Self::CommentAppended {
+                id: event_id.clone(),
+                thread_id: thread_id.clone(),
+                comment_id: comment_id.clone(),
+                actor: public_actor(actor),
+                content: content.clone(),
+                at: *at,
+            },
+            ReviewEvent::ThreadResolved {
+                event_id,
+                thread_id,
+                actor,
+                outcome,
+                summary,
+                at,
+            } => Self::ThreadResolved {
+                id: event_id.clone(),
+                thread_id: thread_id.clone(),
+                actor: public_actor(actor),
+                outcome: outcome.clone(),
+                summary: summary.clone(),
+                at: *at,
+            },
+            ReviewEvent::ThreadDeleted {
+                event_id,
+                thread_id,
+                actor,
+                at,
+            } => Self::ThreadDeleted {
+                id: event_id.clone(),
+                thread_id: thread_id.clone(),
+                actor: public_actor(actor),
+                at: *at,
+            },
+        }
     }
 }
 
@@ -307,12 +372,89 @@ pub(crate) struct ThreadAccumulator {
 impl ThreadAccumulator {
     /// Thread の事実を会話、対象、解決結果へ反映する。
     pub(crate) fn apply(&mut self, event: &ReviewEvent) {
-        todo!()
+        self.version += 1;
+        self.updated_at = event.at();
+        match event {
+            ReviewEvent::ThreadCreated {
+                thread_id,
+                comment_id,
+                actor,
+                target: event_target,
+                content,
+                at,
+                ..
+            } => {
+                self.target = Some(event_target.clone());
+                self.created_at = *at;
+                self.comments.push(Comment {
+                    id: comment_id.clone(),
+                    thread_id: thread_id.clone(),
+                    author: actor.clone(),
+                    content: content.clone(),
+                    created_at: *at,
+                });
+            }
+            ReviewEvent::CommentAppended {
+                thread_id,
+                comment_id,
+                actor,
+                content,
+                at,
+                ..
+            } => self.comments.push(Comment {
+                id: comment_id.clone(),
+                thread_id: thread_id.clone(),
+                author: actor.clone(),
+                content: content.clone(),
+                created_at: *at,
+            }),
+            ReviewEvent::ThreadResolved {
+                actor,
+                outcome,
+                summary,
+                at,
+                ..
+            } => {
+                self.resolve = Some(Resolve {
+                    actor: actor.clone(),
+                    outcome: outcome.clone(),
+                    summary: summary.clone(),
+                    resolved_at: *at,
+                });
+            }
+            ReviewEvent::ThreadDeleted { .. } => {
+                self.deleted = true;
+            }
+        }
     }
 
     /// 削除済みでない Thread を、最初の Comment を本文として復元する。
     pub(crate) fn finish(self, worktree_name: &str, thread_id: &str) -> Option<Thread> {
-        todo!()
+        if self.deleted {
+            return None;
+        }
+
+        self.comments.first()?;
+        let target = self.target?;
+        let state = if self.resolve.is_some() {
+            State::Resolved
+        } else {
+            State::Open
+        };
+        let can_resolve = state == State::Open;
+
+        Some(Thread {
+            id: thread_id.to_string(),
+            worktree_name: worktree_name.to_string(),
+            target,
+            state,
+            comments: self.comments,
+            resolve: self.resolve,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            version: self.version,
+            can_resolve,
+        })
     }
 }
 
@@ -364,7 +506,47 @@ pub(crate) fn apply_filter(
     filter: Option<ReviewThreadFilter>,
     viewer: &Author,
 ) -> Vec<Thread> {
-    todo!()
+    let Some(filter) = filter else {
+        return threads;
+    };
+    let viewer_key = viewer.participant_key();
+    threads
+        .into_iter()
+        .filter(|thread| {
+            if let Some(file) = &filter.file {
+                if thread.target.file_path.as_deref() != Some(file.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(state) = &filter.state {
+                if &thread.state != state {
+                    return false;
+                }
+            }
+            if let Some(author) = &filter.author {
+                let is_mine = thread
+                    .comments
+                    .first()
+                    .is_some_and(|comment| comment.author.participant_key() == viewer_key);
+                let matches = match author {
+                    AuthorScope::Mine => is_mine,
+                    AuthorScope::Other => !is_mine,
+                };
+                if !matches {
+                    return false;
+                }
+            }
+            if let Some(unread) = filter.unread {
+                if is_unread_for_viewer(&thread.comments, viewer) != unread {
+                    return false;
+                }
+            }
+            if !filter.thread_id.is_empty() && !filter.thread_id.iter().any(|id| id == &thread.id) {
+                return false;
+            }
+            true
+        })
+        .collect()
 }
 
 impl AuthorScope {
