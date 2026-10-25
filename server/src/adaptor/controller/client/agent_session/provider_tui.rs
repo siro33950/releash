@@ -18,12 +18,14 @@ pub(crate) async fn send_threads_to_session_shared(
     sessions: &crate::usecase::agent_session::AgentSessionUsecase,
     args: crate::adaptor::presenter::client::SendThreadsToSessionRequest,
 ) -> Result<(), crate::adaptor::presenter::client::CommandFailure> {
-    use crate::adaptor::controller::client::{convert, required};
+    use crate::adaptor::controller::client::{convert, invalid_request, required};
+    let agent_session_id = required(args.agent_session_id, "agentSessionId")?;
+    let thread_ids = required(args.thread_ids, "threadIds")?;
+    if thread_ids.items.is_empty() {
+        return Err(invalid_request("threadIds must not be empty"));
+    }
     sessions
-        .send_thread(
-            &required(args.agent_session_id, "agentSessionId")?,
-            convert(required(args.thread_ids, "threadIds")?)?,
-        )
+        .send_thread(&agent_session_id, convert(thread_ids)?)
         .await
         .map_err(|error| crate::adaptor::presenter::connect::send_thread_error(error).into())
 }

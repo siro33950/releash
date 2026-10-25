@@ -124,8 +124,8 @@ mod memory_tests {
             .send_thread("session", vec!["one".into(), "outside".into()])
             .await;
         // Then
-        assert!(matches!(result, Err(SendThreadUsecaseError::Send(
-            AgentSessionSendThreadError::ThreadOutsideWorkspace(id)
+        assert!(matches!(result, Err(SendThreadUsecaseError::Thread(
+            Error::NotFound(id)
         )) if id == "outside"));
         assert!(input.0.lock().unwrap().is_empty());
     }

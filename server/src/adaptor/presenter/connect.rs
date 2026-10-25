@@ -181,8 +181,27 @@ impl ConnectFailure for crate::usecase::agent_session::usecase::SendThreadUsecas
 pub(crate) fn send_thread_error(
     error: crate::usecase::agent_session::usecase::SendThreadUsecaseError,
 ) -> crate::adaptor::presenter::error::AppError {
-    crate::adaptor::presenter::error::AppError::new(format!("{error:?}"))
-        .with_status(error.connect_code())
+    use crate::domain::agent_session::services::AgentSessionSendThreadError as Send;
+    use crate::domain::comment::Error as Thread;
+    use crate::usecase::agent_session::usecase::SendThreadUsecaseError as E;
+    let message = match &error {
+        E::SessionNotFound => "The AgentSession is no longer available.",
+        E::Send(Send::Instruction(_)) => {
+            "The AgentSession is not open. Open the Session and try again."
+        }
+        E::Send(Send::ThreadOutsideWorkspace(_)) => {
+            "The Thread does not belong to the AgentSession workspace. Select a Thread from the same workspace."
+        }
+        E::Thread(Thread::NotFound(_)) => {
+            "The Thread is no longer available. Refresh and try again."
+        }
+        E::Thread(_) => "Releash could not access saved Thread data. Try again.",
+        E::Session(_) => "Releash could not access saved AgentSession data. Try again.",
+        E::Send(Send::Terminal(_)) => {
+            "Releash could not access the AgentSession terminal. Try again."
+        }
+    };
+    crate::adaptor::presenter::error::AppError::new(message).with_status(error.connect_code())
 }
 
 impl ConnectFailure for crate::domain::app_config::error::AppConfigError {

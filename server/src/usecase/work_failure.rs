@@ -68,38 +68,6 @@ impl From<&crate::domain::agent_session::repository::AgentSessionRepositoryError
     }
 }
 
-impl From<&crate::usecase::agent_session::AgentSessionUsecaseError> for Failure {
-    fn from(error: &crate::usecase::agent_session::AgentSessionUsecaseError) -> Self {
-        use crate::usecase::agent_session::AgentSessionUsecaseError as E;
-        match error {
-            E::Store(error) => Self::from(error),
-            E::Conflict => Self::Business(BusinessFailure::VersionConflict),
-            E::Unavailable => Self::Technical(TechnicalFailureNature::Transient),
-            E::Corrupt => Self::Technical(TechnicalFailureNature::Other),
-            E::NotFound | E::InvalidOperation | E::ProviderSessionAlreadyOwned { .. } => {
-                Self::Business(BusinessFailure::Other)
-            }
-        }
-    }
-}
-
-impl From<&crate::usecase::agent_session::usecase::SendThreadUsecaseError> for Failure {
-    fn from(error: &crate::usecase::agent_session::usecase::SendThreadUsecaseError) -> Self {
-        use crate::domain::agent_session::services::AgentSessionSendThreadError;
-        use crate::usecase::agent_session::usecase::SendThreadUsecaseError as E;
-        match error {
-            E::Session(error) => Self::from(error),
-            E::Thread(error) => Self::from(error),
-            E::Send(AgentSessionSendThreadError::Terminal(error)) => Self::from(error),
-            E::SessionNotFound
-            | E::Send(
-                AgentSessionSendThreadError::Instruction(_)
-                | AgentSessionSendThreadError::ThreadOutsideWorkspace(_),
-            ) => Self::Business(BusinessFailure::Other),
-        }
-    }
-}
-
 impl From<&crate::domain::app_config::error::AppConfigError> for Failure {
     fn from(error: &crate::domain::app_config::error::AppConfigError) -> Self {
         use crate::domain::app_config::error::AppConfigError as E;

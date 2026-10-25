@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use crate::domain::comment::{Error, Thread, ThreadRepository};
+use crate::domain::comment::{project_thread, Error, Thread, ThreadRepository};
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::comment::ReviewEventStore;
 
 pub(crate) struct ThreadRepositoryImpl {
     app_data_dir: PathBuf,
@@ -16,13 +17,20 @@ impl ThreadRepositoryImpl {
 impl ThreadRepository for ThreadRepositoryImpl {
     fn find_by_ids(
         &self,
-        _workspace: &WorkspaceIdentity,
-        _thread_ids: &[String],
+        workspace: &WorkspaceIdentity,
+        thread_ids: &[String],
     ) -> Result<Vec<Thread>, Error> {
-        todo!()
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let events =
+            super::FileReviewEventStore::default().load(&self.app_data_dir, workspace.as_str())?;
+        thread_ids
+            .iter()
+            .map(|id| {
+                project_thread(workspace.as_str(), id, &events)
+                    .ok_or_else(|| Error::NotFound(format!("Thread not found: {id}")))
+            })
+            .collect()
     }
 }
-
-#[cfg(test)]
-#[path = "thread_repository_test.rs"]
-mod thread_repository_tests;

@@ -2956,72 +2956,115 @@ fn test_失敗の分類_domainと読取失敗を同じstatusへ写す() {
 }
 
 #[test]
-fn test_thread送信失敗_原因のconnect_codeと再試行分類を保つ() {
+fn test_thread送信失敗_原因のconnect_codeと固定文言を返す() {
     use crate::domain::agent_session::aggregates::AgentSessionInstructionError;
     use crate::domain::agent_session::services::AgentSessionSendThreadError as Send;
     use crate::domain::agent_session::ProviderAgentTerminalGatewayError as Terminal;
     use crate::domain::comment::Error as Thread;
     use crate::domain::failure::{
-        BusinessFailure, Failure, TechnicalFailure, TechnicalFailureNature as N,
+        StorageFailure, StorageFailureSource, TechnicalFailure, TechnicalFailureNature as N,
     };
     use crate::usecase::agent_session::usecase::SendThreadUsecaseError as E;
     use crate::usecase::agent_session::AgentSessionUsecaseError as Session;
-    let business = Failure::Business(BusinessFailure::Other);
     // Given
-    for (error, code, failure) in [
-        (E::SessionNotFound, ErrorCode::NotFound, business),
-        (E::Session(Session::NotFound), ErrorCode::NotFound, business),
+    let session_data = "Releash could not access saved AgentSession data. Try again.";
+    let thread_data = "Releash could not access saved Thread data. Try again.";
+    let terminal = "Releash could not access the AgentSession terminal. Try again.";
+    for (error, code, message) in [
+        (
+            E::SessionNotFound,
+            ErrorCode::NotFound,
+            "The AgentSession is no longer available.",
+        ),
+        (E::Session(Session::NotFound), ErrorCode::NotFound, session_data),
         (
             E::Session(Session::InvalidOperation),
             ErrorCode::FailedPrecondition,
-            business,
+            session_data,
         ),
-        (
-            E::Session(Session::Conflict),
-            ErrorCode::Aborted,
-            Failure::Business(BusinessFailure::VersionConflict),
-        ),
+        (E::Session(Session::Conflict), ErrorCode::Aborted, session_data),
         (
             E::Session(Session::Unavailable),
             ErrorCode::Unavailable,
-            Failure::Technical(N::Transient),
+            session_data,
         ),
-        (
-            E::Session(Session::Corrupt),
-            ErrorCode::DataLoss,
-            Failure::Technical(N::Other),
-        ),
+        (E::Session(Session::Corrupt), ErrorCode::DataLoss, session_data),
         (
             E::Session(Session::ProviderSessionAlreadyOwned {
-                agent_session_id: "other".into(),
+                agent_session_id: "internal session id".into(),
             }),
             ErrorCode::FailedPrecondition,
-            business,
+            session_data,
+        ),
+        (
+            E::Session(Session::Store(StorageFailure {
+                nature: N::Other,
+                source: StorageFailureSource::Technical(TechnicalFailure {
+                    nature: N::Other,
+                    message: "internal storage details".into(),
+                }),
+                context: None,
+            })),
+            ErrorCode::Internal,
+            session_data,
         ),
         (
             E::Thread(Thread::NotFound("missing".into())),
             ErrorCode::NotFound,
-            business,
+            "The Thread is no longer available. Refresh and try again.",
         ),
         (
             E::Thread(Thread::Serialize("invalid".into())),
             ErrorCode::Internal,
-            Failure::Technical(N::Other),
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::Io("internal path".into())),
+            ErrorCode::Internal,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::InvalidInput("internal input".into())),
+            ErrorCode::InvalidArgument,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::PermissionDenied("internal permission".into())),
+            ErrorCode::PermissionDenied,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::AlreadyResolved("internal thread id".into())),
+            ErrorCode::FailedPrecondition,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::SessionNotOpen("internal session id".into())),
+            ErrorCode::FailedPrecondition,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::Technical(TechnicalFailure {
+                nature: N::Transient,
+                message: "internal failure".into(),
+            })),
+            ErrorCode::Unavailable,
+            thread_data,
         ),
         (
             E::Send(Send::Instruction(AgentSessionInstructionError::NotOpen)),
             ErrorCode::FailedPrecondition,
-            business,
+            "The AgentSession is not open. Open the Session and try again.",
         ),
         (
             E::Send(Send::ThreadOutsideWorkspace("outside".into())),
             ErrorCode::FailedPrecondition,
-            business,
+            "The Thread does not belong to the AgentSession workspace. Select a Thread from the same workspace.",
         ),
         (
             E::Send(Send::Terminal(Terminal::NotFound("missing".into()))),
             ErrorCode::NotFound,
-            business,
+            terminal,
         ),
         (
             E::Send(Send::Terminal(Terminal::Technical(TechnicalFailure {
@@ -3029,14 +3072,29 @@ fn test_thread送信失敗_原因のconnect_codeと再試行分類を保つ() {
                 message: "timeout".into(),
             }))),
             ErrorCode::DeadlineExceeded,
-            Failure::Technical(N::TimedOut),
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::InvalidOperation("internal state".into()))),
+            ErrorCode::FailedPrecondition,
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::StaleAttachment)),
+            ErrorCode::FailedPrecondition,
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::OwnerConflict)),
+            ErrorCode::FailedPrecondition,
+            terminal,
         ),
     ] {
         // When
-        let actual_failure = Failure::from(&error);
-        let response = command_error(send_thread_error(error).into());
+        let error = send_thread_error(error);
         // Then
+        assert_eq!(error.to_string(), message);
+        let response = command_error(error.into());
         assert_eq!(response.code, code);
-        assert_eq!(actual_failure, failure);
     }
 }
