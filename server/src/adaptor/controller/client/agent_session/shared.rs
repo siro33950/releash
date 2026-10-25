@@ -9,6 +9,26 @@ pub(crate) fn register_shared(
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
     {
+        let sessions = deps.agent_session_usecase.clone();
+        router.register_domain(
+            &["send_threads_to_session"],
+            Box::new(move |command| {
+                let sessions = sessions.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::SendThreadsToSession(args) = command else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let sessions = sessions
+                        .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                    let result = outcome(
+                        provider_tui::send_threads_to_session_shared(&sessions, args).await,
+                    )?;
+                    Ok(wire::command_result::Command::SendThreadsToSession(result))
+                })
+            }),
+        );
+    }
+    {
         let lifecycle = deps.agent_session_lifecycle_usecase.clone();
         router.register_domain(
             &["archive_agent_session"],

@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+mod thread_repository;
+pub(crate) use thread_repository::FileThreadRepository;
+
 use crate::domain::comment::{
     Author as ReviewActor, AuthorKind as ReviewActorKind, Error as ReviewError, ReviewEvent,
     Target as ReviewTarget,

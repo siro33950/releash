@@ -103,6 +103,7 @@ import {
 	SaveWorkflowSourceRequestSchema,
 	SaveWorkflowSourceResultDtoSchema,
 	SaveWorkspaceStateRequestSchema,
+	SendThreadsToSessionRequestSchema,
 	SessionSelectionSchema,
 	SetBranchBaseRequestSchema,
 	SetReleashBaseRequestSchema,
@@ -291,6 +292,25 @@ const commands = {
 					ArchiveAgentSessionRequestSchema,
 					clientJson(
 						ArchiveAgentSessionRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	send_threads_to_session: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["send_threads_to_session"],
+	) => {
+		const result = decode(
+			UnitSchema,
+			await client.sendThreadsToSession(
+				fromJson(
+					SendThreadsToSessionRequestSchema,
+					clientJson(
+						SendThreadsToSessionRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

@@ -2954,3 +2954,89 @@ fn test_失敗の分類_domainと読取失敗を同じstatusへ写す() {
     let error = crate::domain::notion::NotionError::RequestFailed("request failed".into());
     assert_eq!(Failure::from(&error).connect_code(), error.connect_code());
 }
+
+#[test]
+fn test_thread送信失敗_原因のconnect_codeと再試行分類を保つ() {
+    use crate::domain::agent_session::aggregates::AgentSessionInstructionError;
+    use crate::domain::agent_session::services::AgentSessionSendThreadError as Send;
+    use crate::domain::agent_session::ProviderAgentTerminalGatewayError as Terminal;
+    use crate::domain::comment::Error as Thread;
+    use crate::domain::failure::{
+        BusinessFailure, Failure, TechnicalFailure, TechnicalFailureNature as N,
+    };
+    use crate::usecase::agent_session::usecase::SendThreadUsecaseError as E;
+    use crate::usecase::agent_session::AgentSessionUsecaseError as Session;
+    let business = Failure::Business(BusinessFailure::Other);
+    // Given
+    for (error, code, failure) in [
+        (E::SessionNotFound, ErrorCode::NotFound, business),
+        (E::Session(Session::NotFound), ErrorCode::NotFound, business),
+        (
+            E::Session(Session::InvalidOperation),
+            ErrorCode::FailedPrecondition,
+            business,
+        ),
+        (
+            E::Session(Session::Conflict),
+            ErrorCode::Aborted,
+            Failure::Business(BusinessFailure::VersionConflict),
+        ),
+        (
+            E::Session(Session::Unavailable),
+            ErrorCode::Unavailable,
+            Failure::Technical(N::Transient),
+        ),
+        (
+            E::Session(Session::Corrupt),
+            ErrorCode::DataLoss,
+            Failure::Technical(N::Other),
+        ),
+        (
+            E::Session(Session::ProviderSessionAlreadyOwned {
+                agent_session_id: "other".into(),
+            }),
+            ErrorCode::FailedPrecondition,
+            business,
+        ),
+        (
+            E::Thread(Thread::NotFound("missing".into())),
+            ErrorCode::NotFound,
+            business,
+        ),
+        (
+            E::Thread(Thread::Serialize("invalid".into())),
+            ErrorCode::Internal,
+            Failure::Technical(N::Other),
+        ),
+        (
+            E::Send(Send::Instruction(AgentSessionInstructionError::NotOpen)),
+            ErrorCode::FailedPrecondition,
+            business,
+        ),
+        (
+            E::Send(Send::ThreadOutsideWorkspace("outside".into())),
+            ErrorCode::FailedPrecondition,
+            business,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::NotFound("missing".into()))),
+            ErrorCode::NotFound,
+            business,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::Technical(TechnicalFailure {
+                nature: N::TimedOut,
+                message: "timeout".into(),
+            }))),
+            ErrorCode::DeadlineExceeded,
+            Failure::Technical(N::TimedOut),
+        ),
+    ] {
+        // When
+        let actual_failure = Failure::from(&error);
+        let response = command_error(send_thread_error(error).into());
+        // Then
+        assert_eq!(response.code, code);
+        assert_eq!(actual_failure, failure);
+    }
+}

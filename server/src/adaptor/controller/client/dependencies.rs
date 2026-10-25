@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 pub struct ClientDependencies {
+    pub(crate) agent_session_usecase:
+        Option<Arc<crate::usecase::agent_session::AgentSessionUsecase>>,
     pub(crate) create_worktrees_usecase:
         Option<Arc<crate::usecase::create_worktrees::CreateWorktreesUsecase>>,
     pub(crate) workspace_node_command_usecase:
