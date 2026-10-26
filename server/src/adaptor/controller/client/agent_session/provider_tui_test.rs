@@ -841,8 +841,11 @@ fn send_request(ids: &[&str]) -> wire::command_request::Command {
 
 #[tokio::test]
 async fn test_thread送信controller_複数threadを指定順で一回入力してunitを返す() {
+    use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
+
     // Given
     let (dispatch, terminal) = send_dispatch(ManagedPtyPresence::Live, false, false);
+    let releash_alias = alias_name_for_profile(BuildProfile::current());
     // When
     let result = dispatch
         .dispatch(send_request(&["two", "one"]))
@@ -867,7 +870,9 @@ async fn test_thread送信controller_複数threadを指定順で一回入力し�
     assert!(prompt.contains("本文-two"));
     assert!(prompt.contains("本文-one"));
     assert!(prompt.find("Thread ID: two").unwrap() < prompt.find("Thread ID: one").unwrap());
-    assert!(prompt.contains("releash review get --session-id \"$RELEASH_SESSION_ID\" two"));
+    assert!(prompt.contains(&format!(
+        "{releash_alias} review get --session-id \"$RELEASH_SESSION_ID\" two"
+    )));
 }
 
 #[tokio::test]

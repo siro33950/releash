@@ -203,8 +203,10 @@ pub(crate) mod tests {
 
         let history = usecase.history(dir.path(), "wt", &thread.id).unwrap();
         assert_eq!(history.len(), 3);
-        let handoff = usecase.build_handoff(dir.path(), "wt", &thread.id).unwrap();
-        assert!(handoff.contains("releash review get"));
+        let handoff = usecase
+            .build_handoff(dir.path(), "wt", &thread.id, "releash-dev")
+            .unwrap();
+        assert!(handoff.contains("releash-dev review get"));
     }
 
     #[test]
@@ -410,7 +412,7 @@ pub(crate) mod tests {
         let history = usecase.history(dir.path(), "wt", "missing-thread");
         assert!(matches!(history, Err(ReviewError::NotFound(_))));
 
-        let handoff = usecase.build_handoff(dir.path(), "wt", "missing-thread");
+        let handoff = usecase.build_handoff(dir.path(), "wt", "missing-thread", "releash");
         assert!(matches!(handoff, Err(ReviewError::NotFound(_))));
     }
 

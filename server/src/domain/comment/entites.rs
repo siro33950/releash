@@ -17,7 +17,7 @@ pub struct Thread {
 
 impl Thread {
     /// 自身の位置、ID、本文と、後続の Comment の確認方法を含む引き渡し内容を決める。
-    pub(crate) fn handoff_content(&self) -> String {
+    pub(crate) fn handoff_content(&self, releash_alias: &str) -> String {
         let location = match (
             self.target.file_path.as_deref(),
             self.target.line_number,
@@ -29,7 +29,7 @@ impl Thread {
             (None, _, _) => "General".to_string(),
         };
         format!(
-            "位置: {location}\nThread ID: {}\n本文:\n{}\n\nそれ以降のCommentは `releash review get --session-id \"$RELEASH_SESSION_ID\" {}` で確認してください。",
+            "位置: {location}\nThread ID: {}\n本文:\n{}\n\nそれ以降のCommentは `{releash_alias} review get --session-id \"$RELEASH_SESSION_ID\" {}` で確認してください。",
             self.id, self.comments[0].content, self.id
         )
     }

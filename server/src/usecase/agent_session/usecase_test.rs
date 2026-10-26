@@ -76,7 +76,7 @@ mod memory_tests {
         );
         // When
         usecase
-            .send_thread("session", vec!["two".into(), "one".into()])
+            .send_thread("session", vec!["two".into(), "one".into()], "releash-dev")
             .await
             .unwrap();
         // Then
@@ -99,7 +99,9 @@ mod memory_tests {
             vec![thread("one")],
         );
         // When
-        let result = usecase.send_thread("session", vec!["one".into()]).await;
+        let result = usecase
+            .send_thread("session", vec!["one".into()], "releash")
+            .await;
         // Then
         assert!(matches!(
             result,
@@ -121,7 +123,7 @@ mod memory_tests {
         );
         // When
         let result = usecase
-            .send_thread("session", vec!["one".into(), "outside".into()])
+            .send_thread("session", vec!["one".into(), "outside".into()], "releash")
             .await;
         // Then
         assert!(matches!(result, Err(SendThreadUsecaseError::Thread(
@@ -139,7 +141,7 @@ mod memory_tests {
         );
         // When
         let result = usecase
-            .send_thread("session", vec!["one".into(), "missing".into()])
+            .send_thread("session", vec!["one".into(), "missing".into()], "releash")
             .await;
         // Then
         assert!(matches!(
@@ -156,7 +158,9 @@ mod memory_tests {
         *repository.stored.lock().unwrap() = None;
         let (usecase, input) = send_usecase(repository, vec![thread("one")]);
         // When
-        let result = usecase.send_thread("missing", vec!["one".into()]).await;
+        let result = usecase
+            .send_thread("missing", vec!["one".into()], "releash")
+            .await;
         // Then
         assert!(matches!(
             result,

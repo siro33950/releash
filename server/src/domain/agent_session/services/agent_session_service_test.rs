@@ -149,7 +149,7 @@ fn test_thread送信_open以外のsessionには入力しない() {
         let terminal = Arc::new(terminal(presence));
         let service = AgentSessionService::new(terminal.clone(), terminal.clone());
         // When
-        let result = service.send_thread(&session, vec![thread("one", target())]);
+        let result = service.send_thread(&session, vec![thread("one", target())], "releash");
         // Then
         assert_eq!(
             result,
@@ -170,7 +170,7 @@ fn test_thread送信_後続のthreadが別workspaceなら全件入力しない()
     let mut outside = thread("outside", target());
     outside.worktree_name = session.worktree_path().into();
     // When
-    let result = service.send_thread(&session, vec![thread("one", target()), outside]);
+    let result = service.send_thread(&session, vec![thread("one", target()), outside], "releash");
     // Then
     assert_eq!(
         result,
@@ -203,7 +203,9 @@ fn test_thread送信_一件の位置と本文と確認方法を一回で入力�
             },
         );
         // When
-        service.send_thread(&session, vec![thread]).unwrap();
+        service
+            .send_thread(&session, vec![thread], "releash")
+            .unwrap();
         // Then
         assert_eq!(
             *terminal.presence_owners.lock().unwrap(),
@@ -243,16 +245,18 @@ fn test_thread送信_未解決と解決済みを指定順に一つのプロン�
         resolved_at: 3.0,
     });
     // When
-    service.send_thread(&session, vec![general, file]).unwrap();
+    service
+        .send_thread(&session, vec![general, file], "releash-dev")
+        .unwrap();
     // Then
     assert_eq!(
         *terminal.writes.lock().unwrap(),
         vec![(session.terminal_surface_owner(), concat!(
             "以下のスレッドの内容を確認してください。\n\n",
             "位置: General\nThread ID: general\n本文:\n本文-general\n**確認**\n\n",
-            "それ以降のCommentは `releash review get --session-id \"$RELEASH_SESSION_ID\" general` で確認してください。\n\n",
+            "それ以降のCommentは `releash-dev review get --session-id \"$RELEASH_SESSION_ID\" general` で確認してください。\n\n",
             "位置: src/a.rs:3-5\nThread ID: file\n本文:\n本文-file\n**確認**\n\n",
-            "それ以降のCommentは `releash review get --session-id \"$RELEASH_SESSION_ID\" file` で確認してください。"
+            "それ以降のCommentは `releash-dev review get --session-id \"$RELEASH_SESSION_ID\" file` で確認してください。"
         ).into())]
     );
 }
@@ -272,7 +276,7 @@ fn test_thread送信_端末の確認と入力の失敗を保持する() {
         let terminal = Arc::new(terminal);
         let service = AgentSessionService::new(terminal.clone(), terminal.clone());
         // When
-        let result = service.send_thread(&session, vec![thread("one", target())]);
+        let result = service.send_thread(&session, vec![thread("one", target())], "releash");
         // Then
         assert_eq!(result, Err(AgentSessionSendThreadError::Terminal(error)));
         assert_eq!(

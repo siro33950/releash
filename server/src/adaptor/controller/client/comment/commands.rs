@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::domain::comment::{
     Author as ReviewActor, Target as ReviewTarget, Thread as ReviewThread,
 };
+use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
 use crate::usecase::comment::ReviewCommentUsecase;
 
 async fn blocking<T, F>(f: F) -> Result<T, AppError>
@@ -141,8 +142,9 @@ pub(crate) async fn build_review_thread_handoff_shared(
 ) -> Result<String, AppError> {
     let usecase = Arc::clone(usecase);
     blocking(move || {
+        let releash_alias = alias_name_for_profile(BuildProfile::current());
         usecase
-            .build_handoff(&data_dir, &worktree_name, &thread_id)
+            .build_handoff(&data_dir, &worktree_name, &thread_id, releash_alias)
             .map_err(AppError::from_failure)
     })
     .await

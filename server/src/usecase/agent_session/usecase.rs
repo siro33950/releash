@@ -81,6 +81,7 @@ impl AgentSessionUsecase {
         &self,
         session_id: &str,
         thread_ids: Vec<String>,
+        releash_alias: &str,
     ) -> Result<(), SendThreadUsecaseError> {
         let _operation = self
             .lock_operation(session_id)
@@ -99,7 +100,7 @@ impl AgentSessionUsecase {
         .await
         .map_err(SendThreadUsecaseError::Thread)?;
         self.service
-            .send_thread(session.session(), threads)
+            .send_thread(session.session(), threads, releash_alias)
             .map_err(SendThreadUsecaseError::Send)
     }
 

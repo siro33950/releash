@@ -9,6 +9,7 @@ use crate::adaptor::presenter::error::AppError;
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
 use crate::usecase::agent_session::{
     AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
     AgentSessionLifecycleUsecase, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
@@ -24,8 +25,9 @@ pub(crate) async fn send_threads_to_session_shared(
     if thread_ids.items.is_empty() {
         return Err(invalid_request("threadIds must not be empty"));
     }
+    let releash_alias = alias_name_for_profile(BuildProfile::current());
     sessions
-        .send_thread(&agent_session_id, convert(thread_ids)?)
+        .send_thread(&agent_session_id, convert(thread_ids)?, releash_alias)
         .await
         .map_err(|error| crate::adaptor::presenter::connect::send_thread_error(error).into())
 }

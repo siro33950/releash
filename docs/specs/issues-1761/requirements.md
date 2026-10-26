@@ -18,7 +18,7 @@
   - 送り先の Session: 本文は「対象 Session」とだけ書く。
     この開発では、選択中の worktree の生きている Session の一覧から利用者が一つ指定する。
   - プロンプトの中身: 本文は「行位置付きの 1 つのプロンプト」とだけ書く。
-    この開発では、Thread ごとに位置、ID、本文（Thread を立てた最初の Comment の文）を書き、それ以降の Comment は CLI の `releash review get` で確認するよう書く。返信や解決の指示は書かない。
+    この開発では、Thread ごとに位置、ID、本文（Thread を立てた最初の Comment の文）を書き、それ以降の Comment は起動環境に対応する CLI の `review get` で確認するよう書く。返信や解決の指示は書かない。
   - 既存の 1 Thread 分の引き渡し文（`BuildReviewThreadHandoff`）は、この新しい文面に揃える。
   - ポップオーバー 2 種を無くす対象は React の画面であり、この開発では React を触らない。
   - 証跡: 本文は手元で確認した証跡を PR に貼るとする。
@@ -107,7 +107,7 @@ provider の TUI の fixture は、受けた入力を `received-<n>:<入力>` �
 - R-005: 利用者は、面の「General に追加」からファイルに付かない Thread を作れる。作った Thread は未解決の側に出る。
 - R-006: Thread の行にチェックボックスがあり、未解決と解決済みのどちらの Thread もチェックできる。既定は未チェックである。チェックした件数が送るボタンに出る。
 - R-007: 送るボタンは、選択中の worktree の生きている Session（`availability` が `open`）の一覧を出し、利用者はその中から一つを指定する。生きている Session が無いときは送れない。
-- R-008: 利用者が Session を指定して送ると、チェックした Thread が 1 つのプロンプトとしてその Session の terminal に書き込まれ、Session の TUI は 1 回の入力として受ける。プロンプトは、冒頭の一文、Thread ごとの位置、ID、本文（最初の Comment の文）、それ以降の Comment を `releash review get --session-id "$RELEASH_SESSION_ID" <id>` で確認するよう書いた一文からなる。返信や解決の指示は含まない。
+- R-008: 利用者が Session を指定して送ると、チェックした Thread が 1 つのプロンプトとしてその Session の terminal に書き込まれ、Session の TUI は 1 回の入力として受ける。プロンプトは、冒頭の一文、Thread ごとの位置、ID、本文（最初の Comment の文）、それ以降の Comment を `<CLI名> review get --session-id "$RELEASH_SESSION_ID" <id>` で確認するよう書いた一文からなる。CLI 名はサーバの起動環境に合わせ、本番では `releash`、開発では `releash-dev` とする。返信や解決の指示は含まない。
 - R-009: どのクライアントも、Thread の ID の列と Session の ID を指定して R-008 の送信を呼べる。サーバは、生きていない Session と、指定した worktree に無い Thread の ID を拒む。
 - R-010: `BuildReviewThreadHandoff` が返す 1 Thread 分の引き渡し文は、R-008 のプロンプトと同じ形（Thread が 1 件）になる。
 - R-011: Thread の作成、返信、解決、削除が起きると、利用者の操作なしに面に反映される。

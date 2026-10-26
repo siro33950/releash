@@ -250,9 +250,13 @@ impl ReviewCommentUsecase {
         app_data_dir: &Path,
         worktree_name: &str,
         thread_id: &str,
+        releash_alias: &str,
     ) -> Result<String, Error> {
         let thread = self.get_thread(app_data_dir, worktree_name, thread_id)?;
-        Ok(AgentSessionService::handoff_prompt(vec![thread]))
+        Ok(AgentSessionService::handoff_prompt(
+            vec![thread],
+            releash_alias,
+        ))
     }
 
     fn history_events(

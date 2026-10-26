@@ -61,7 +61,8 @@ THEN 送るボタンから Session を指定できない
 GIVEN 利用者が Thread をチェックし、生きている Session を指定した
 WHEN 利用者が送る
 THEN その Session の terminal に 1 つのプロンプトが書き込まれ、Session の TUI は 1 回の入力として受ける
-AND プロンプトは、冒頭の一文、チェックした Thread ごとの位置、ID、本文、それ以降の Comment を `releash review get --session-id "$RELEASH_SESSION_ID" <id>` で確認するよう書いた一文からなる
+AND プロンプトは、冒頭の一文、チェックした Thread ごとの位置、ID、本文、それ以降の Comment を `<CLI名> review get --session-id "$RELEASH_SESSION_ID" <id>` で確認するよう書いた一文からなる
+AND CLI 名はサーバの起動環境に合わせ、本番では `releash`、開発では `releash-dev` となる
 AND プロンプトに返信や解決の指示は無い
 
 ## B-011: 送信の API

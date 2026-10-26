@@ -35,6 +35,7 @@ impl AgentSessionService {
         &self,
         session: &AgentSession,
         threads: Vec<Thread>,
+        releash_alias: &str,
     ) -> Result<(), AgentSessionSendThreadError> {
         let owner = session.terminal_surface_owner();
         let presence = self
@@ -45,18 +46,18 @@ impl AgentSessionService {
             .authorize_instruction(presence)
             .map_err(AgentSessionSendThreadError::Instruction)?;
         self.ensure_thread_worktree(session, &threads)?;
-        let prompt = Self::handoff_prompt(threads);
+        let prompt = Self::handoff_prompt(threads, releash_alias);
         self.input
             .write_instruction(&owner, &prompt)
             .map_err(AgentSessionSendThreadError::Terminal)
     }
 
     /// 導入文と各 Thread の引き渡し内容から、一つの指示を決める。
-    pub(crate) fn handoff_prompt(threads: Vec<Thread>) -> String {
+    pub(crate) fn handoff_prompt(threads: Vec<Thread>, releash_alias: &str) -> String {
         let mut prompt = "以下のスレッドの内容を確認してください。".to_string();
         for thread in threads {
             prompt.push_str("\n\n");
-            prompt.push_str(&thread.handoff_content());
+            prompt.push_str(&thread.handoff_content(releash_alias));
         }
         prompt
     }
