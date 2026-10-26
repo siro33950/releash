@@ -47,7 +47,6 @@ pub struct AgentSessionCompositionInput {
 
 pub struct AgentSessionComposition {
     pub(crate) provider_lifecycle: Arc<ProviderLifecycleUsecase>,
-    #[cfg(feature = "test-support")]
     pub(crate) sessions: Arc<AgentSessionUsecase>,
     pub(crate) usage: Arc<crate::usecase::provider_usage::ProviderUsageUsecase>,
     pub(crate) history_read: Arc<AgentSessionHistoryReadUsecase>,
@@ -290,7 +289,16 @@ pub fn compose_agent_sessions(
         )),
     ));
     let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
-    let sessions = Arc::new(AgentSessionUsecase::new(session_repository.clone()));
+    let sessions = Arc::new(AgentSessionUsecase::new(
+        session_repository.clone(),
+        Arc::new(crate::adaptor::gateway::comment::ThreadRepositoryImpl::new(
+            input.data_dir.clone(),
+        )),
+        crate::domain::agent_session::services::AgentSessionService::new(
+            input.terminal.clone(),
+            input.terminal.clone(),
+        ),
+    ));
     let mut hook_health = ProviderHookHealthUsecase::new(Arc::new(
         LocalProviderHookHealthRepository::new(repository, installation_id),
     ));
@@ -425,7 +433,6 @@ pub fn compose_agent_sessions(
     Ok(AgentSessionComposition {
         usage,
         provider_lifecycle,
-        #[cfg(feature = "test-support")]
         sessions,
         history_read,
         provider_session_title_ingestion,

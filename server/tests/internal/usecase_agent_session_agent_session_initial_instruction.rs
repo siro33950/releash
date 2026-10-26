@@ -1,3 +1,4 @@
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::workflow_location;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -7,7 +8,6 @@ use releashd::test_support::integration::persistence::LocalEventStoreConfig;
 use releashd::test_support::integration::providers::ProviderKind;
 use releashd::test_support::integration::sessions::AgentSessionInitialInstructionDeliveryOutcome;
 use releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase;
-use releashd::test_support::integration::sessions::AgentSessionUsecase;
 use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
 use releashd::test_support::integration::sessions::ProviderAgentTerminalGatewayError;
 use releashd::test_support::integration::sessions::ProviderAgentTerminalInputGateway;
@@ -50,7 +50,7 @@ struct FailingTerminalInput {
 }
 
 impl ProviderAgentTerminalInputGateway for FailingTerminalInput {
-    fn write(
+    fn write_instruction(
         &self,
         owner: &TerminalSurfaceOwner,
         input: &str,
@@ -78,9 +78,12 @@ pub async fn test_agent_session_continuation_session操作lock解放後に送る
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     seed_workflow_tree(
         &store,
         "workflow-execution-1",
@@ -146,11 +149,15 @@ struct ContinuationTerminalInput {
 }
 
 impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
-    fn write(
+    fn write_instruction(
         &self,
         owner: &TerminalSurfaceOwner,
         input: &str,
     ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        self.writes
+            .lock()
+            .unwrap()
+            .push((owner.clone(), input.into()));
         if self.fail {
             return Err(ProviderAgentTerminalGatewayError::Technical(
                 releashd::test_support::integration::platform::TechnicalFailure {
@@ -159,10 +166,6 @@ impl ProviderAgentTerminalInputGateway for ContinuationTerminalInput {
                 },
             ));
         }
-        self.writes
-            .lock()
-            .unwrap()
-            .push((owner.clone(), input.into()));
         Ok(())
     }
 }
@@ -179,9 +182,12 @@ pub async fn test_delegate_続行指示は識別子ごとに一度だけ送り�
             std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
-        let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-            LocalAgentSessionRepository::new(store.clone()),
-        )));
+        let sessions = Arc::new(test_sessions(
+            Arc::new(LocalAgentSessionRepository::new(store.clone())),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+        ));
         seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex).await;
         sessions
             .create(
@@ -247,22 +253,22 @@ pub async fn test_delegate_続行指示は識別子ごとに一度だけ送り�
         );
         {
             let writes = terminal.writes.lock().unwrap();
-            if fail {
-                assert!(writes.is_empty());
-            } else {
-                assert_eq!(writes.len(), 2);
-                assert_eq!(
-                    writes[0].0,
-                    TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent")
-                        .unwrap()
-                );
-                assert_eq!(writes[0].1, "\u{1b}[200~first\u{1b}[201~\r");
-                assert_eq!(writes[1].1, "\u{1b}[200~second\u{1b}[201~\r");
-            }
+            assert_eq!(writes.len(), 2);
+            assert_eq!(
+                writes[0].0,
+                TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), "agent").unwrap()
+            );
+            assert_eq!(writes[1].0, writes[0].0);
+            assert_eq!(writes[0].1, "first\n");
+            assert_eq!(writes[1].1, "second\r\n");
         }
         // 受理は terminal への書き込み結果によらず永続化され、再読込後も同じ識別子を拒む。
-        let reloaded =
-            AgentSessionUsecase::new(Arc::new(LocalAgentSessionRepository::new(store.clone())));
+        let reloaded = test_sessions(
+            Arc::new(LocalAgentSessionRepository::new(store.clone())),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+        );
         assert_eq!(
             reloaded
                 .admit_continuation("agent", "child-1")
@@ -281,7 +287,7 @@ pub async fn test_delegate_続行指示は識別子ごとに一度だけ送り�
 }
 
 #[tokio::test]
-pub async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste形式を使う() {
+pub async fn test_terminal投入_継続指示は包まずそのまま一回渡す() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -289,9 +295,12 @@ pub async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     seed_workflow_tree(&store, "tree", "node", "agent", ProviderKind::Codex).await;
     sessions
         .create(
@@ -314,13 +323,8 @@ pub async fn test_terminal投入_継続指示は同じ末尾改行処理とpaste
             .unwrap(),
         AgentSessionInitialInstructionDeliveryOutcome::Delivered
     );
-    usecase
-        .dispatch_continuation("agent", "first\nsecond \r\n\r", "child-1")
-        .await
-        .unwrap();
     // Then
     let writes = terminal.writes.lock().unwrap();
-    assert_eq!(writes.len(), 2);
-    assert_eq!(writes[0], writes[1]);
-    assert_eq!(writes[0].1, "\u{1b}[200~first\nsecond \u{1b}[201~\r");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].1, "first\nsecond \r\n\r");
 }

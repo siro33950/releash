@@ -15,6 +15,9 @@ packages:
   SwiftProtobuf:
     url: https://github.com/apple/swift-protobuf
     exactVersion: 1.38.1
+  Textual:
+    url: https://github.com/gonzalezreal/textual
+    exactVersion: 0.5.0
 settings:
   base:
     SWIFT_VERSION: '6.0'
@@ -40,6 +43,8 @@ targets:
       - path: Resources/SwiftTerm-LICENSE
         buildPhase: resources
       - path: Resources/Bonsplit-LICENSE
+        buildPhase: resources
+      - path: Resources/Textual-LICENSE
         buildPhase: resources
       - path: Resources/SarasaGothic-LICENSE
         buildPhase: resources
@@ -84,6 +89,7 @@ targets:
       - package: SwiftTerm
       - package: Connect
       - package: SwiftProtobuf
+      - package: Textual
   ReleashUnitTests:
     type: bundle.unit-test
     platform: macOS

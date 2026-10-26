@@ -1167,15 +1167,15 @@ impl TryFrom<crate::adaptor::presenter::agent_session::ProviderHookHealthWarning
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewActorKind> for wire::ReviewActorKindWireDto {
+impl TryFrom<crate::domain::comment::AuthorKind> for wire::ReviewActorKindWireDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewActorKind) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::AuthorKind) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::domain::comment::ReviewActorKind::Human => {
+                crate::domain::comment::AuthorKind::Human => {
                     wire::review_actor_kind_wire_dto::Value::Human as i32
                 }
-                crate::domain::comment::ReviewActorKind::Agent => {
+                crate::domain::comment::AuthorKind::Agent => {
                     wire::review_actor_kind_wire_dto::Value::Agent as i32
                 }
             }),
@@ -1195,6 +1195,18 @@ impl TryFrom<crate::domain::comment::ReviewActorDto> for wire::ReviewActorWireDt
     }
 }
 
+impl TryFrom<crate::domain::comment::Author> for wire::ReviewActorWireDto {
+    type Error = String;
+    fn try_from(value: crate::domain::comment::Author) -> Result<Self, String> {
+        cv(crate::domain::comment::ReviewActorDto {
+            kind: value.kind,
+            backend_id: value.backend_id,
+            model: value.model,
+            display_name: value.display_name,
+        })
+    }
+}
+
 impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDto {
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewBinaryDto) -> Result<Self, String> {
@@ -1209,9 +1221,9 @@ impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDt
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewComment> for wire::ReviewCommentDto {
+impl TryFrom<crate::domain::comment::Comment> for wire::ReviewCommentDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewComment) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Comment) -> Result<Self, String> {
         Ok(Self {
             id: Some(cv(value.id)?),
             thread_id: Some(cv(value.thread_id)?),
@@ -1327,9 +1339,9 @@ impl TryFrom<crate::usecase::code_dto::ReviewLimitReasonDto> for wire::ReviewLim
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewResolveInfo> for wire::ReviewResolveInfoDto {
+impl TryFrom<crate::domain::comment::Resolve> for wire::ReviewResolveInfoDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewResolveInfo) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Resolve) -> Result<Self, String> {
         Ok(Self {
             actor: Some(cv(value.actor)?),
             outcome: Some(cv(value.outcome)?),
@@ -1360,10 +1372,10 @@ impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapsh
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewLineSide> for wire::ReviewLineSideDto {
+impl TryFrom<crate::domain::comment::LineSide> for wire::ReviewLineSideDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewLineSide) -> Result<Self, String> {
-        use crate::domain::comment::ReviewLineSide;
+    fn try_from(value: crate::domain::comment::LineSide) -> Result<Self, String> {
+        use crate::domain::comment::LineSide as ReviewLineSide;
         use wire::review_line_side_dto::Value;
         Ok(Self {
             value: Some(match value {
@@ -1373,7 +1385,7 @@ impl TryFrom<crate::domain::comment::ReviewLineSide> for wire::ReviewLineSideDto
         })
     }
 }
-impl TryFrom<wire::ReviewLineSideDto> for crate::domain::comment::ReviewLineSide {
+impl TryFrom<wire::ReviewLineSideDto> for crate::domain::comment::LineSide {
     type Error = String;
     fn try_from(value: wire::ReviewLineSideDto) -> Result<Self, String> {
         use wire::review_line_side_dto::Value;
@@ -1386,9 +1398,9 @@ impl TryFrom<wire::ReviewLineSideDto> for crate::domain::comment::ReviewLineSide
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewTarget> for wire::ReviewTargetWireDto {
+impl TryFrom<crate::domain::comment::Target> for wire::ReviewTargetWireDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewTarget) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Target) -> Result<Self, String> {
         Ok(Self {
             file_path: value.file_path.map(cv).transpose()?,
             line_number: value.line_number.map(cv).transpose()?,
@@ -1437,13 +1449,16 @@ impl TryFrom<crate::usecase::code_dto::ReviewTextSource> for wire::ReviewTextSou
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewThread> for wire::ReviewThreadDto {
+impl TryFrom<crate::domain::comment::Thread> for wire::ReviewThreadDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Thread) -> Result<Self, String> {
+        let author = req(value.comments.first(), "first review comment")?
+            .author
+            .clone();
         Ok(Self {
             id: Some(cv(value.id)?),
             worktree_name: Some(cv(value.worktree_name)?),
-            author: Some(cv(value.author)?),
+            author: Some(cv(author)?),
             target: Some(cv(value.target)?),
             state: Some(cv(value.state)?),
             comments: Some(cv(value.comments)?),
@@ -1456,15 +1471,15 @@ impl TryFrom<crate::domain::comment::ReviewThread> for wire::ReviewThreadDto {
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewThreadState> for wire::ReviewThreadStateDto {
+impl TryFrom<crate::domain::comment::State> for wire::ReviewThreadStateDto {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewThreadState) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::State) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::domain::comment::ReviewThreadState::Open => {
+                crate::domain::comment::State::Open => {
                     wire::review_thread_state_dto::Value::Open as i32
                 }
-                crate::domain::comment::ReviewThreadState::Resolved => {
+                crate::domain::comment::State::Resolved => {
                     wire::review_thread_state_dto::Value::Resolved as i32
                 }
             }),
@@ -1472,7 +1487,7 @@ impl TryFrom<crate::domain::comment::ReviewThreadState> for wire::ReviewThreadSt
     }
 }
 
-impl TryFrom<wire::ReviewThreadStateDto> for crate::domain::comment::ReviewThreadState {
+impl TryFrom<wire::ReviewThreadStateDto> for crate::domain::comment::State {
     type Error = String;
     fn try_from(value: wire::ReviewThreadStateDto) -> Result<Self, String> {
         Ok(
@@ -2194,27 +2209,27 @@ impl TryFrom<crate::usecase::workflow::diagnostic_dto::DiagnosticReport>
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewThread> for wire::CreateSessionReviewThreadResponse {
+impl TryFrom<crate::domain::comment::Thread> for wire::CreateSessionReviewThreadResponse {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Thread) -> Result<Self, String> {
         Ok(Self {
             thread: Some(cv(value)?),
         })
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewThread> for wire::AppendSessionReviewCommentResponse {
+impl TryFrom<crate::domain::comment::Thread> for wire::AppendSessionReviewCommentResponse {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Thread) -> Result<Self, String> {
         Ok(Self {
             thread: Some(cv(value)?),
         })
     }
 }
 
-impl TryFrom<crate::domain::comment::ReviewThread> for wire::ResolveSessionReviewThreadResponse {
+impl TryFrom<crate::domain::comment::Thread> for wire::ResolveSessionReviewThreadResponse {
     type Error = String;
-    fn try_from(value: crate::domain::comment::ReviewThread) -> Result<Self, String> {
+    fn try_from(value: crate::domain::comment::Thread) -> Result<Self, String> {
         Ok(Self {
             thread: Some(cv(value)?),
         })

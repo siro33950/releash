@@ -663,3 +663,308 @@ fn test_provider起動準備_停止分類をrpcまで保持する() {
         );
     }
 }
+
+use crate::adaptor::controller::client::ClientCommandDispatch;
+use crate::adaptor::presenter::client as wire;
+use crate::domain::agent_session::aggregates::{
+    AgentSession, AgentSessionTreeLocation, ManagedPtyPresence,
+};
+use crate::domain::agent_session::services::AgentSessionService;
+use crate::domain::agent_session::{
+    ProviderAgentTerminalGateway, ProviderAgentTerminalGatewayError,
+    ProviderAgentTerminalInputGateway,
+};
+use crate::domain::comment::{
+    project_thread, Author, ReviewEvent, Target, Thread, ThreadRepository,
+};
+use crate::domain::terminal_surface::{TerminalProcessLaunch, TerminalSurfaceOwner};
+use crate::usecase::agent_session::test_helpers::FailingSaveRepository;
+use crate::usecase::agent_session::AgentSessionUsecase;
+use std::sync::Mutex;
+
+struct SendTerminal {
+    presence: ManagedPtyPresence,
+    writes: Mutex<Vec<(TerminalSurfaceOwner, String)>>,
+}
+
+impl ProviderAgentTerminalGateway for SendTerminal {
+    fn spawn(
+        &self,
+        _: TerminalSurfaceOwner,
+        _: &str,
+        _: TerminalProcessLaunch,
+        _: u16,
+        _: u16,
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        panic!("unexpected spawn")
+    }
+    fn presence(
+        &self,
+        _: &TerminalSurfaceOwner,
+    ) -> Result<ManagedPtyPresence, ProviderAgentTerminalGatewayError> {
+        Ok(self.presence)
+    }
+    fn stop_preserving_checkpoint(
+        &self,
+        _: &TerminalSurfaceOwner,
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        panic!("unexpected stop")
+    }
+    fn delete(&self, _: &TerminalSurfaceOwner) -> Result<(), ProviderAgentTerminalGatewayError> {
+        panic!("unexpected delete")
+    }
+    fn is_current_runtime_generation(
+        &self,
+        _: &TerminalSurfaceOwner,
+        _: u64,
+    ) -> Result<bool, ProviderAgentTerminalGatewayError> {
+        panic!("unexpected generation check")
+    }
+}
+
+impl ProviderAgentTerminalInputGateway for SendTerminal {
+    fn write_instruction(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        instruction: &str,
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        self.writes
+            .lock()
+            .unwrap()
+            .push((owner.clone(), instruction.into()));
+        Ok(())
+    }
+}
+
+struct SendThreads(Vec<Thread>);
+impl ThreadRepository for SendThreads {
+    fn find_by_ids(
+        &self,
+        workspace: &WorkspaceIdentity,
+        ids: &[String],
+    ) -> Result<Vec<Thread>, crate::domain::comment::Error> {
+        ids.iter()
+            .map(|id| {
+                self.0
+                    .iter()
+                    .find(|thread| thread.id == *id && thread.worktree_name == workspace.as_str())
+                    .cloned()
+                    .ok_or_else(|| crate::domain::comment::Error::NotFound(id.clone()))
+            })
+            .collect()
+    }
+}
+
+fn send_thread(id: &str, worktree: &str, resolved: bool) -> Thread {
+    let mut events = vec![ReviewEvent::ThreadCreated {
+        event_id: format!("event-{id}"),
+        thread_id: id.into(),
+        comment_id: format!("comment-{id}"),
+        actor: Author::human(),
+        target: Target {
+            file_path: Some("src/lib.rs".into()),
+            line_number: Some(3),
+            end_line: Some(5),
+            side: None,
+            end_side: None,
+        },
+        content: format!("本文-{id}"),
+        at: 1.0,
+    }];
+    if resolved {
+        events.push(ReviewEvent::ThreadResolved {
+            event_id: format!("resolved-{id}"),
+            thread_id: id.into(),
+            actor: Author::human(),
+            outcome: "done".into(),
+            summary: "解決済み".into(),
+            at: 2.0,
+        });
+    }
+    project_thread(worktree, id, &events).unwrap()
+}
+
+fn send_dispatch(
+    presence: ManagedPtyPresence,
+    missing_session: bool,
+    archived: bool,
+) -> (ClientCommandDispatch, Arc<SendTerminal>) {
+    let mut session = AgentSession::create(
+        "session",
+        WorkspaceIdentity::new("/repo"),
+        "/repo",
+        ProviderKind::Claude,
+        AgentSessionTreeLocation::session_tree_root("session").unwrap(),
+    )
+    .unwrap();
+    if archived {
+        session.archive().unwrap();
+    }
+    let repository = Arc::new(FailingSaveRepository::new(session));
+    if missing_session {
+        *repository.stored.lock().unwrap() = None;
+    }
+    let terminal = Arc::new(SendTerminal {
+        presence,
+        writes: Mutex::new(Vec::new()),
+    });
+    let sessions = AgentSessionUsecase::new(
+        repository,
+        Arc::new(SendThreads(vec![
+            send_thread("one", "/repo", false),
+            send_thread("two", "/repo", true),
+            send_thread("outside", "/other", false),
+        ])),
+        AgentSessionService::new(terminal.clone(), terminal.clone()),
+    );
+    let mut deps = crate::acceptance_test_support::build_client_dependencies(PathBuf::new());
+    deps.agent_session_usecase = Some(Arc::new(sessions));
+    let mut dispatch = ClientCommandDispatch::new(deps.daemon.clone());
+    crate::adaptor::controller::client::agent_session::register_shared(&mut dispatch, &deps);
+    (dispatch, terminal)
+}
+
+use std::path::PathBuf;
+
+fn send_request(ids: &[&str]) -> wire::command_request::Command {
+    wire::command_request::Command::SendThreadsToSession(wire::SendThreadsToSessionRequest {
+        agent_session_id: Some("session".into()),
+        thread_ids: Some(
+            ids.iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        ),
+    })
+}
+
+#[tokio::test]
+async fn test_thread送信controller_複数threadを指定順で一回入力してunitを返す() {
+    use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
+
+    // Given
+    let (dispatch, terminal) = send_dispatch(ManagedPtyPresence::Live, false, false);
+    let releash_alias = alias_name_for_profile(BuildProfile::current());
+    // When
+    let result = dispatch
+        .dispatch(send_request(&["two", "one"]))
+        .await
+        .unwrap();
+    // Then
+    assert!(matches!(
+        result,
+        wire::command_result::Command::SendThreadsToSession(_)
+    ));
+    let writes = terminal.writes.lock().unwrap();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0].0,
+        TerminalSurfaceOwner::Session {
+            workspace: WorkspaceIdentity::new("/repo"),
+            session_id: "session".into()
+        }
+    );
+    let prompt = &writes[0].1;
+    assert!(prompt.contains("src/lib.rs:3-5"));
+    assert!(prompt.contains("本文-two"));
+    assert!(prompt.contains("本文-one"));
+    assert!(prompt.find("Thread ID: two").unwrap() < prompt.find("Thread ID: one").unwrap());
+    assert!(prompt.contains(&format!(
+        "{releash_alias} review get --session-id \"$RELEASH_SESSION_ID\" two"
+    )));
+}
+
+#[tokio::test]
+async fn test_thread送信controller_拒否した要求は何も入力しない() {
+    use connectrpc::ErrorCode as C;
+    // Given
+    for (presence, missing, archived, ids, expected) in [
+        (
+            ManagedPtyPresence::ConfirmedAbsent,
+            false,
+            false,
+            vec!["one"],
+            C::FailedPrecondition,
+        ),
+        (
+            ManagedPtyPresence::Unknown,
+            false,
+            false,
+            vec!["one"],
+            C::FailedPrecondition,
+        ),
+        (
+            ManagedPtyPresence::Live,
+            false,
+            true,
+            vec!["one"],
+            C::FailedPrecondition,
+        ),
+        (
+            ManagedPtyPresence::Live,
+            true,
+            false,
+            vec!["one"],
+            C::NotFound,
+        ),
+        (
+            ManagedPtyPresence::Live,
+            false,
+            false,
+            vec!["one", "outside"],
+            C::NotFound,
+        ),
+        (
+            ManagedPtyPresence::Live,
+            false,
+            false,
+            vec!["one", "missing"],
+            C::NotFound,
+        ),
+    ] {
+        let (dispatch, terminal) = send_dispatch(presence, missing, archived);
+        // When
+        let error = dispatch.dispatch(send_request(&ids)).await.unwrap_err();
+        // Then
+        assert_eq!(
+            crate::adaptor::presenter::connect::command_error(error).code,
+            expected
+        );
+        assert!(terminal.writes.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_thread送信controller_必須fieldが無い要求を拒否する() {
+    // Given
+    let (dispatch, terminal) = send_dispatch(ManagedPtyPresence::Live, false, false);
+    for request in [
+        wire::SendThreadsToSessionRequest {
+            agent_session_id: None,
+            thread_ids: Some(vec!["one".to_string()].try_into().unwrap()),
+        },
+        wire::SendThreadsToSessionRequest {
+            agent_session_id: Some("session".into()),
+            thread_ids: None,
+        },
+        wire::SendThreadsToSessionRequest {
+            agent_session_id: Some("session".into()),
+            thread_ids: Some(Vec::<String>::new().try_into().unwrap()),
+        },
+    ] {
+        // When
+        let error = dispatch
+            .dispatch(wire::command_request::Command::SendThreadsToSession(
+                request,
+            ))
+            .await
+            .unwrap_err();
+        // Then
+        assert_eq!(
+            crate::adaptor::presenter::connect::command_error(error).code,
+            connectrpc::ErrorCode::InvalidArgument
+        );
+        assert!(terminal.writes.lock().unwrap().is_empty());
+    }
+}

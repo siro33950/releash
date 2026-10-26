@@ -97,12 +97,18 @@ impl ProviderAgentTerminalGateway for TerminalSurfaceApplication {
 }
 
 impl ProviderAgentTerminalInputGateway for TerminalSurfaceApplication {
-    fn write(
+    fn write_instruction(
         &self,
-        owner: &TerminalSurfaceOwner,
-        input: &str,
-    ) -> Result<(), ProviderAgentTerminalGatewayError> {
-        self.write(owner, input).map_err(map_terminal_error)
+        owner: &crate::domain::terminal_surface::TerminalSurfaceOwner,
+        instruction: &str,
+    ) -> Result<(), crate::domain::agent_session::ProviderAgentTerminalGatewayError> {
+        let instruction: String = instruction
+            .trim_end_matches(['\r', '\n'])
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .collect();
+        self.write(owner, &format!("\u{1b}[200~{instruction}\u{1b}[201~\r"))
+            .map_err(map_terminal_error)
     }
 }
 

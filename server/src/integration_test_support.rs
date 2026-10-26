@@ -128,6 +128,16 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::{run_startup_gc, GcStopCause};
 }
 pub mod platform {
+    pub fn find_review_threads_by_ids(
+        app_data_dir: &std::path::Path,
+        workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
+        thread_ids: &[String],
+    ) -> Result<Vec<crate::domain::comment::Thread>, crate::domain::comment::Error> {
+        use crate::domain::comment::ThreadRepository;
+        crate::adaptor::gateway::comment::ThreadRepositoryImpl::new(app_data_dir.to_path_buf())
+            .find_by_ids(workspace, thread_ids)
+    }
+
     pub fn workspace_state_store(
         path: std::path::PathBuf,
     ) -> crate::adaptor::gateway::workspace_state::WorkspaceStateStore {
@@ -254,16 +264,16 @@ pub mod platform {
     pub use crate::common::priority::PriorityGate;
     pub use crate::common::retry::AttemptProgress;
     pub use crate::common::retry::RetryLimiter;
+    pub use crate::domain::comment::Author as ReviewActor;
+    pub use crate::domain::comment::AuthorKind as ReviewActorKind;
     pub use crate::domain::comment::AuthorScope;
-    pub use crate::domain::comment::ReviewActor;
-    pub use crate::domain::comment::ReviewActorKind;
-    pub use crate::domain::comment::ReviewError;
+    pub use crate::domain::comment::Error as ReviewError;
     pub use crate::domain::comment::ReviewEvent;
     pub use crate::domain::comment::ReviewHistoryEntry;
     pub use crate::domain::comment::ReviewThreadFilter;
-    pub use crate::domain::comment::ReviewThreadState;
+    pub use crate::domain::comment::State as ReviewThreadState;
     pub use crate::domain::comment::MAX_REVIEW_TEXT_BYTES;
-    pub use crate::domain::comment::{ReviewLineSide, ReviewTarget};
+    pub use crate::domain::comment::{LineSide as ReviewLineSide, Target as ReviewTarget};
     pub use crate::domain::external_editor::gateway::EditorError;
     pub use crate::domain::external_editor::services::scan_applications_in;
     pub use crate::domain::failure::BusinessFailure;
@@ -567,7 +577,11 @@ pub mod review {
     pub use crate::domain::code::value_objects::review::ReviewSection;
 }
 pub mod sessions {
+    pub use crate::test_support::agent_session::test_sessions;
     pub use crate::usecase::agent_session::test_helpers::MemoryHookHealthRepository;
+    pub use crate::usecase::agent_session::test_helpers::{
+        FakeThreadRepository, RecordingTerminalInput,
+    };
 
     pub use crate::usecase::agent_session::test_helpers::FixedHistory;
 

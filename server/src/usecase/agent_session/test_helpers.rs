@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::domain::agent_session::services::AgentSessionService;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -10,6 +12,48 @@ use crate::domain::agent_session::{
     ProviderExecutableProbeGateway, ProviderExecutableProbeGatewayError,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
+
+#[derive(Default)]
+pub struct FakeThreadRepository(pub Mutex<Vec<crate::domain::comment::Thread>>);
+
+impl crate::domain::comment::ThreadRepository for FakeThreadRepository {
+    fn find_by_ids(
+        &self,
+        workspace: &WorkspaceIdentity,
+        thread_ids: &[String],
+    ) -> Result<Vec<crate::domain::comment::Thread>, crate::domain::comment::Error> {
+        let threads = self.0.lock().unwrap();
+        thread_ids
+            .iter()
+            .map(|id| {
+                threads
+                    .iter()
+                    .find(|thread| thread.id == *id && thread.worktree_name == workspace.as_str())
+                    .cloned()
+                    .ok_or_else(|| crate::domain::comment::Error::NotFound(id.clone()))
+            })
+            .collect()
+    }
+}
+
+#[derive(Default)]
+pub struct RecordingTerminalInput(pub Mutex<Vec<(TerminalSurfaceOwner, String)>>);
+
+impl crate::domain::agent_session::provider_terminal_gateway::ProviderAgentTerminalInputGateway
+    for RecordingTerminalInput
+{
+    fn write_instruction(
+        &self,
+        owner: &TerminalSurfaceOwner,
+        instruction: &str,
+    ) -> Result<(), ProviderAgentTerminalGatewayError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((owner.clone(), instruction.into()));
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 pub struct FakeProviderExecutableConfigRepository {
@@ -141,8 +185,7 @@ use crate::domain::provider_lifecycle::value_objects::provider_lifecycle_unavail
 use crate::domain::provider_lifecycle::value_objects::scoped_provider_lifecycle_event::ScopedProviderLifecycleEvent;
 use crate::domain::terminal_surface::value_objects::terminal_process_launch::TerminalProcessLaunch;
 use crate::domain::terminal_surface::value_objects::terminal_surface_owner::TerminalSurfaceOwner;
-#[cfg(test)]
-use crate::domain::workspace_tree::value_objects::WorkspaceIdentity;
+use crate::domain::workspace_tree::WorkspaceIdentity;
 #[cfg(test)]
 use crate::usecase::agent_session::agent_session_launch::AgentSessionLaunchRequest;
 #[cfg(test)]
@@ -767,7 +810,14 @@ pub fn launch_usecase_with_tree_registrar(
     ));
     AgentSessionLaunchUsecase::new(
         std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-        Arc::new(AgentSessionUsecase::new(repository)),
+        Arc::new(AgentSessionUsecase::new(
+            repository,
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+        )),
         lifecycle,
         provider_runtime(availability, launch_gateway, terminal),
         Arc::new(FixedHistory {

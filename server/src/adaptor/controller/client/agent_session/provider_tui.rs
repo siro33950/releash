@@ -9,10 +9,28 @@ use crate::adaptor::presenter::error::AppError;
 use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
 use crate::usecase::agent_session::{
     AgentSessionHistoryResumeRequest, AgentSessionLaunchRequest, AgentSessionLaunchUsecase,
     AgentSessionLifecycleUsecase, ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError,
 };
+
+pub(crate) async fn send_threads_to_session_shared(
+    sessions: &crate::usecase::agent_session::AgentSessionUsecase,
+    args: crate::adaptor::presenter::client::SendThreadsToSessionRequest,
+) -> Result<(), crate::adaptor::presenter::client::CommandFailure> {
+    use crate::adaptor::controller::client::{convert, invalid_request, required};
+    let agent_session_id = required(args.agent_session_id, "agentSessionId")?;
+    let thread_ids = required(args.thread_ids, "threadIds")?;
+    if thread_ids.items.is_empty() {
+        return Err(invalid_request("threadIds must not be empty"));
+    }
+    let releash_alias = alias_name_for_profile(BuildProfile::current());
+    sessions
+        .send_thread(&agent_session_id, convert(thread_ids)?, releash_alias)
+        .await
+        .map_err(|error| crate::adaptor::presenter::connect::send_thread_error(error).into())
+}
 
 pub(crate) async fn refresh_provider_availability_shared(
     availability: &Arc<ProviderAvailabilityUsecase>,

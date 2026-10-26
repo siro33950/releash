@@ -34,7 +34,7 @@ impl From<OperationStopped> for crate::domain::notion::NotionError {
         Self::Technical(error.into())
     }
 }
-impl From<OperationStopped> for crate::domain::comment::ReviewError {
+impl From<OperationStopped> for crate::domain::comment::Error {
     fn from(error: OperationStopped) -> Self {
         Self::Technical(error.into())
     }

@@ -2555,7 +2555,7 @@ mod connect_mapping_tests {
             // Given
             let cases = [
                 (
-                    crate::domain::comment::ReviewError::Technical(
+                    crate::domain::comment::Error::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                             message: "Operation deadline exceeded".into(),
@@ -2564,7 +2564,7 @@ mod connect_mapping_tests {
                     F::DeadlineExceeded,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Technical(
+                    crate::domain::comment::Error::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                             message: "Operation cancelled".into(),
@@ -2573,19 +2573,19 @@ mod connect_mapping_tests {
                     F::Canceled,
                 ),
                 (
-                    crate::domain::comment::ReviewError::InvalidInput("reason".into()),
+                    crate::domain::comment::Error::InvalidInput("reason".into()),
                     F::InvalidArgument,
                 ),
                 (
-                    crate::domain::comment::ReviewError::NotFound("reason".into()),
+                    crate::domain::comment::Error::NotFound("reason".into()),
                     F::NotFound,
                 ),
                 (
-                    crate::domain::comment::ReviewError::SessionNotOpen("reason".into()),
+                    crate::domain::comment::Error::SessionNotOpen("reason".into()),
                     F::FailedPrecondition,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Technical(
+                    crate::domain::comment::Error::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Transient,
                             message: "reason".into(),
@@ -2594,19 +2594,19 @@ mod connect_mapping_tests {
                     F::Unavailable,
                 ),
                 (
-                    crate::domain::comment::ReviewError::AlreadyResolved("reason".into()),
+                    crate::domain::comment::Error::AlreadyResolved("reason".into()),
                     F::FailedPrecondition,
                 ),
                 (
-                    crate::domain::comment::ReviewError::PermissionDenied("reason".into()),
+                    crate::domain::comment::Error::PermissionDenied("reason".into()),
                     F::PermissionDenied,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Io("reason".into()),
+                    crate::domain::comment::Error::Io("reason".into()),
                     F::Internal,
                 ),
                 (
-                    crate::domain::comment::ReviewError::Serialize("reason".into()),
+                    crate::domain::comment::Error::Serialize("reason".into()),
                     F::Internal,
                 ),
             ];
@@ -2789,7 +2789,7 @@ mod connect_mapping_tests {
     mod review_stopped_transfer_tests {
         use crate::adaptor::presenter::connect::classified_error;
         use crate::adaptor::presenter::error::AppError;
-        use crate::domain::comment::ReviewError;
+        use crate::domain::comment::Error as ReviewError;
 
         #[test]
         fn test_review停止_転送コードを保ちメッセージをjsonで包まない() {
@@ -2953,4 +2953,148 @@ fn test_失敗の分類_domainと読取失敗を同じstatusへ写す() {
     }
     let error = crate::domain::notion::NotionError::RequestFailed("request failed".into());
     assert_eq!(Failure::from(&error).connect_code(), error.connect_code());
+}
+
+#[test]
+fn test_thread送信失敗_原因のconnect_codeと固定文言を返す() {
+    use crate::domain::agent_session::aggregates::AgentSessionInstructionError;
+    use crate::domain::agent_session::services::AgentSessionSendThreadError as Send;
+    use crate::domain::agent_session::ProviderAgentTerminalGatewayError as Terminal;
+    use crate::domain::comment::Error as Thread;
+    use crate::domain::failure::{
+        StorageFailure, StorageFailureSource, TechnicalFailure, TechnicalFailureNature as N,
+    };
+    use crate::usecase::agent_session::usecase::SendThreadUsecaseError as E;
+    use crate::usecase::agent_session::AgentSessionUsecaseError as Session;
+    // Given
+    let session_data = "Releash could not access saved AgentSession data. Try again.";
+    let thread_data = "Releash could not access saved Thread data. Try again.";
+    let terminal = "Releash could not access the AgentSession terminal. Try again.";
+    for (error, code, message) in [
+        (
+            E::SessionNotFound,
+            ErrorCode::NotFound,
+            "The AgentSession is no longer available.",
+        ),
+        (E::Session(Session::NotFound), ErrorCode::NotFound, session_data),
+        (
+            E::Session(Session::InvalidOperation),
+            ErrorCode::FailedPrecondition,
+            session_data,
+        ),
+        (E::Session(Session::Conflict), ErrorCode::Aborted, session_data),
+        (
+            E::Session(Session::Unavailable),
+            ErrorCode::Unavailable,
+            session_data,
+        ),
+        (E::Session(Session::Corrupt), ErrorCode::DataLoss, session_data),
+        (
+            E::Session(Session::ProviderSessionAlreadyOwned {
+                agent_session_id: "internal session id".into(),
+            }),
+            ErrorCode::FailedPrecondition,
+            session_data,
+        ),
+        (
+            E::Session(Session::Store(StorageFailure {
+                nature: N::Other,
+                source: StorageFailureSource::Technical(TechnicalFailure {
+                    nature: N::Other,
+                    message: "internal storage details".into(),
+                }),
+                context: None,
+            })),
+            ErrorCode::Internal,
+            session_data,
+        ),
+        (
+            E::Thread(Thread::NotFound("missing".into())),
+            ErrorCode::NotFound,
+            "The Thread is no longer available. Refresh and try again.",
+        ),
+        (
+            E::Thread(Thread::Serialize("invalid".into())),
+            ErrorCode::Internal,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::Io("internal path".into())),
+            ErrorCode::Internal,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::InvalidInput("internal input".into())),
+            ErrorCode::InvalidArgument,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::PermissionDenied("internal permission".into())),
+            ErrorCode::PermissionDenied,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::AlreadyResolved("internal thread id".into())),
+            ErrorCode::FailedPrecondition,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::SessionNotOpen("internal session id".into())),
+            ErrorCode::FailedPrecondition,
+            thread_data,
+        ),
+        (
+            E::Thread(Thread::Technical(TechnicalFailure {
+                nature: N::Transient,
+                message: "internal failure".into(),
+            })),
+            ErrorCode::Unavailable,
+            thread_data,
+        ),
+        (
+            E::Send(Send::Instruction(AgentSessionInstructionError::NotOpen)),
+            ErrorCode::FailedPrecondition,
+            "The AgentSession is not open. Open the Session and try again.",
+        ),
+        (
+            E::Send(Send::ThreadOutsideWorkspace("outside".into())),
+            ErrorCode::FailedPrecondition,
+            "The Thread does not belong to the AgentSession workspace. Select a Thread from the same workspace.",
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::NotFound("missing".into()))),
+            ErrorCode::NotFound,
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::Technical(TechnicalFailure {
+                nature: N::TimedOut,
+                message: "timeout".into(),
+            }))),
+            ErrorCode::DeadlineExceeded,
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::InvalidOperation("internal state".into()))),
+            ErrorCode::FailedPrecondition,
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::StaleAttachment)),
+            ErrorCode::FailedPrecondition,
+            terminal,
+        ),
+        (
+            E::Send(Send::Terminal(Terminal::OwnerConflict)),
+            ErrorCode::FailedPrecondition,
+            terminal,
+        ),
+    ] {
+        // When
+        let error = send_thread_error(error);
+        // Then
+        assert_eq!(error.to_string(), message);
+        let response = command_error(error.into());
+        assert_eq!(response.code, code);
+    }
 }

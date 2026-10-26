@@ -1,4 +1,5 @@
 use releashd::test_support::integration::sessions::session_location;
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::workflow_location;
 use releashd::test_support::integration::sessions::MemoryHookHealthRepository;
 use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
@@ -677,9 +678,12 @@ fn setup_with_lifecycle_events(
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         lifecycle_events,
@@ -2123,7 +2127,12 @@ pub async fn test_agent_session_resume状態保存失敗時は起動済みproces
     ))
     .unwrap();
     let repository = Arc::new(LocalAgentSessionRepository::new(store.clone()));
-    let seed = AgentSessionUsecase::new(repository.clone());
+    let seed = test_sessions(
+        repository.clone(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
     seed.create(
         "agent-save-failure",
         WorkspaceIdentity::new("/repo"),
@@ -2145,9 +2154,12 @@ pub async fn test_agent_session_resume状態保存失敗時は起動済みproces
     seed.observe_process_exit("agent-save-failure", Some(0), "pause-save-failure")
         .await
         .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        SaveFailingAgentSessionRepository { inner: repository },
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(SaveFailingAgentSessionRepository { inner: repository }),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(NoopLifecycleEvents),
@@ -2256,9 +2268,12 @@ pub async fn test_agent_session_resume_同一sessionへの並行要求はptyを�
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     sessions
         .create(
             "agent-concurrent-resume",
@@ -2367,9 +2382,12 @@ pub async fn test_agent_session_resume中のarchiveは同一sessionの操作完�
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     sessions
         .create(
             "agent-resume-archive",
@@ -2479,9 +2497,12 @@ pub async fn test_agent_session_open_同一sessionへの並行要求は一度だ
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        LocalAgentSessionRepository::new(store.clone()),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     sessions
         .create(
             "agent-concurrent-open",
@@ -2994,7 +3015,7 @@ struct RecordingContinuationInput(Mutex<Vec<String>>);
 impl releashd::test_support::integration::sessions::ProviderAgentTerminalInputGateway
     for RecordingContinuationInput
 {
-    fn write(
+    fn write_instruction(
         &self,
         _owner: &TerminalSurfaceOwner,
         input: &str,

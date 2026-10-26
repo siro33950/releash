@@ -395,7 +395,7 @@ mod state_subscription_target_tests;
 fn parse_session_review_filters(
     args: &[&str],
 ) -> Result<crate::domain::comment::ReviewThreadFilter, SubscriptionError> {
-    use crate::domain::comment::{AuthorScope, ReviewThreadFilter, ReviewThreadState};
+    use crate::domain::comment::{AuthorScope, ReviewThreadFilter, State as ReviewThreadState};
     let mut filter = ReviewThreadFilter::default();
     for arg in args {
         let (key, value) = arg.split_once('=').ok_or(SubscriptionError::InvalidId)?;
@@ -438,7 +438,7 @@ fn parse_session_review_filters(
 fn parse_worktree_review_filters(
     args: &[&str],
 ) -> Result<crate::domain::comment::ReviewWorktreeFilter, SubscriptionError> {
-    use crate::domain::comment::{ReviewThreadState, ReviewWorktreeFilter};
+    use crate::domain::comment::{ReviewWorktreeFilter, State as ReviewThreadState};
     let mut filter = ReviewWorktreeFilter::default();
     for arg in args {
         let (key, value) = arg.split_once('=').ok_or(SubscriptionError::InvalidId)?;

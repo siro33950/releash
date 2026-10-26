@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::agent_session::test_helpers::session_location;
-use crate::domain::comment::ReviewActor;
+use crate::domain::comment::Author as ReviewActor;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::test_helpers::FailingSaveRepository;
@@ -29,7 +29,7 @@ impl super::super::ReviewEventStore for Store {
         &self,
         _: &std::path::Path,
         _: &str,
-    ) -> Result<Vec<crate::domain::comment::ReviewEvent>, ReviewError> {
+    ) -> Result<Vec<crate::domain::comment::ReviewEvent>, Error> {
         Ok(self.0.lock().unwrap().clone())
     }
     fn mutate(
@@ -37,7 +37,7 @@ impl super::super::ReviewEventStore for Store {
         _: &std::path::Path,
         _: &str,
         mutation: super::super::ReviewEventMutation<'_>,
-    ) -> Result<Vec<crate::domain::comment::ReviewEvent>, ReviewError> {
+    ) -> Result<Vec<crate::domain::comment::ReviewEvent>, Error> {
         let mut events = self.0.lock().unwrap();
         let appended = mutation(&events)?;
         events.extend(appended);
@@ -87,7 +87,7 @@ async fn test_review作成_存在しないsessionはnotfoundとなりstoreを変
         .create_thread(
             PathBuf::from("/unused"),
             "missing",
-            ReviewTarget {
+            Target {
                 file_path: None,
                 line_number: None,
                 end_line: None,
@@ -98,7 +98,7 @@ async fn test_review作成_存在しないsessionはnotfoundとなりstoreを変
         )
         .await;
     // Then
-    assert!(matches!(result, Err(ReviewError::NotFound(_))));
+    assert!(matches!(result, Err(Error::NotFound(_))));
     assert!(comments
         .list_threads(
             std::path::Path::new("/unused"),
@@ -124,11 +124,12 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
     .unwrap();
     let repository = Arc::new(FailingSaveRepository::new(session));
     let store = Arc::new(Store::default());
-    let comments = Arc::new(ReviewCommentUsecase::new(
-        store.clone(),
-        Arc::new(Clock),
-        Arc::new(Ids::default()),
-    ));
+    let subscriptions = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = subscriptions.changes();
+    let comments = Arc::new(
+        ReviewCommentUsecase::new(store.clone(), Arc::new(Clock), Arc::new(Ids::default()))
+            .with_subscriptions(subscriptions),
+    );
     let usecase = SessionReviewUsecase::new(
         ReviewContextUsecase::new(repository.clone(), Arc::new(Worktrees)),
         comments.clone(),
@@ -139,7 +140,7 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
         .create_thread(
             data.clone(),
             "session",
-            ReviewTarget {
+            Target {
                 file_path: None,
                 line_number: None,
                 end_line: None,
@@ -165,10 +166,19 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
         .await
         .unwrap();
     // Then
+    for _ in 0..3 {
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            crate::usecase::state_subscription::StateChangeSource::ReviewComments(Some(
+                "/workspace".into()
+            ))
+        );
+    }
+    assert!(changes.try_recv().is_err());
     assert_eq!(thread.worktree_name, "/workspace");
     assert_eq!(
-        thread.author,
-        ReviewActor::provider_agent("codex".into(), Some("session".into())).redacted_for_public()
+        thread.comments[0].author,
+        ReviewActor::provider_agent("codex".into(), Some("session".into()))
     );
     assert_eq!(appended.comments.len(), 2);
     assert_eq!(
@@ -232,7 +242,7 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
                 "rejected".into()
             )
             .await,
-        Err(ReviewError::SessionNotOpen(_))
+        Err(Error::SessionNotOpen(_))
     ));
     assert!(matches!(
         usecase
@@ -244,7 +254,7 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
                 "rejected".into()
             )
             .await,
-        Err(ReviewError::SessionNotOpen(_))
+        Err(Error::SessionNotOpen(_))
     ));
     assert_eq!(store.0.lock().unwrap().len(), count);
     assert!(usecase

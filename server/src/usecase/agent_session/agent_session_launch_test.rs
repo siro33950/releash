@@ -188,6 +188,7 @@ async fn test_workflow起動保持_期限が来てもactivating記録を消さ�
 }
 
 mod memory_tests {
+    use crate::domain::agent_session::services::AgentSessionService;
     use crate::usecase::agent_session::test_helpers::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -340,7 +341,14 @@ mod memory_tests {
         });
         let usecase = AgentSessionLaunchUsecase::new(
             std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
                 lifecycle_events.clone(),
@@ -413,7 +421,14 @@ mod memory_tests {
         let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
         let usecase = AgentSessionLaunchUsecase::new(
             std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
                 lifecycle_events.clone(),
@@ -582,7 +597,14 @@ mod memory_tests {
         });
         let usecase = Arc::new(AgentSessionLaunchUsecase::new(
             std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-            Arc::new(AgentSessionUsecase::new(repository.clone())),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
                 Arc::new(RecordingLifecycleEvents::default()),
@@ -777,7 +799,14 @@ mod memory_tests {
                 });
                 let usecase = Arc::new(AgentSessionLaunchUsecase::new(
                     std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-                    Arc::new(AgentSessionUsecase::new(repository.clone())),
+                    Arc::new(AgentSessionUsecase::new(
+                        repository.clone(),
+                        Arc::new(FakeThreadRepository::default()),
+                        AgentSessionService::new(
+                            Arc::new(RecordingTerminal::default()),
+                            Arc::new(RecordingTerminalInput::default()),
+                        ),
+                    )),
                     Arc::new(ProviderLifecycleUsecase::new(
                         Arc::new(crate::usecase::test_helpers::TestCredentials),
                         Arc::new(RecordingLifecycleEvents::default()),
@@ -888,7 +917,14 @@ mod memory_tests {
         let hook_health = hook_health_usecase();
         let usecase = AgentSessionLaunchUsecase::new(
             std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
-            Arc::new(AgentSessionUsecase::new(repository)),
+            Arc::new(AgentSessionUsecase::new(
+                repository,
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
                 Arc::new(RecordingLifecycleEvents::default()),

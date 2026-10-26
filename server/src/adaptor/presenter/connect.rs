@@ -148,7 +148,7 @@ impl ConnectFailure for crate::domain::git_host::git_host::GitHostError {
     }
 }
 
-impl ConnectFailure for crate::domain::comment::ReviewError {
+impl ConnectFailure for crate::domain::comment::Error {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::SessionNotOpen(_) => connectrpc::ErrorCode::FailedPrecondition,
@@ -160,6 +160,48 @@ impl ConnectFailure for crate::domain::comment::ReviewError {
             Self::Io(_) | Self::Serialize(_) => connectrpc::ErrorCode::Internal,
         }
     }
+}
+
+impl ConnectFailure for crate::usecase::agent_session::usecase::SendThreadUsecaseError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        use crate::domain::agent_session::services::AgentSessionSendThreadError;
+        match self {
+            Self::Session(error) => error.connect_code(),
+            Self::SessionNotFound => connectrpc::ErrorCode::NotFound,
+            Self::Thread(error) => error.connect_code(),
+            Self::Send(
+                AgentSessionSendThreadError::Instruction(_)
+                | AgentSessionSendThreadError::ThreadOutsideWorkspace(_),
+            ) => connectrpc::ErrorCode::FailedPrecondition,
+            Self::Send(AgentSessionSendThreadError::Terminal(error)) => error.connect_code(),
+        }
+    }
+}
+
+pub(crate) fn send_thread_error(
+    error: crate::usecase::agent_session::usecase::SendThreadUsecaseError,
+) -> crate::adaptor::presenter::error::AppError {
+    use crate::domain::agent_session::services::AgentSessionSendThreadError as Send;
+    use crate::domain::comment::Error as Thread;
+    use crate::usecase::agent_session::usecase::SendThreadUsecaseError as E;
+    let message = match &error {
+        E::SessionNotFound => "The AgentSession is no longer available.",
+        E::Send(Send::Instruction(_)) => {
+            "The AgentSession is not open. Open the Session and try again."
+        }
+        E::Send(Send::ThreadOutsideWorkspace(_)) => {
+            "The Thread does not belong to the AgentSession workspace. Select a Thread from the same workspace."
+        }
+        E::Thread(Thread::NotFound(_)) => {
+            "The Thread is no longer available. Refresh and try again."
+        }
+        E::Thread(_) => "Releash could not access saved Thread data. Try again.",
+        E::Session(_) => "Releash could not access saved AgentSession data. Try again.",
+        E::Send(Send::Terminal(_)) => {
+            "Releash could not access the AgentSession terminal. Try again."
+        }
+    };
+    crate::adaptor::presenter::error::AppError::new(message).with_status(error.connect_code())
 }
 
 impl ConnectFailure for crate::domain::app_config::error::AppConfigError {

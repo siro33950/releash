@@ -1,9 +1,9 @@
 use super::{
     AgentSession, AgentSessionArchiveOutcome, AgentSessionAvailability,
-    AgentSessionInitialInstructionOutcome, AgentSessionLifecycle, AgentSessionLifecycleEvent,
-    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionOperations,
-    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionTreeLocation,
-    ManagedPtyPresence,
+    AgentSessionInitialInstructionOutcome, AgentSessionInstructionError, AgentSessionLifecycle,
+    AgentSessionLifecycleEvent, AgentSessionMutationOutcome, AgentSessionOpenAction,
+    AgentSessionOperations, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
+    AgentSessionTreeLocation, ManagedPtyPresence,
 };
 use super::{
     AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
@@ -1711,5 +1711,40 @@ fn test_session表示状態_archiveを優先し端末の在否を判定する() 
         .unwrap();
         session.lifecycle = lifecycle;
         assert_eq!(session.availability(presence), expected);
+    }
+}
+
+#[test]
+fn test_session指示受付_端末が生きていてarchiveされていなければ許可する() {
+    // Given
+    for lifecycle in [
+        AgentSessionLifecycle::Open,
+        AgentSessionLifecycle::Paused,
+        AgentSessionLifecycle::Archived,
+    ] {
+        for (presence, live) in [
+            (ManagedPtyPresence::Live, true),
+            (ManagedPtyPresence::Unknown, false),
+            (ManagedPtyPresence::ConfirmedAbsent, false),
+        ] {
+            let mut session = AgentSession::create(
+                "instruction",
+                WorkspaceIdentity::new("/repo"),
+                "/repo",
+                ProviderKind::Claude,
+                standalone_location("instruction"),
+            )
+            .unwrap();
+            session.lifecycle = lifecycle;
+            // When
+            let result = session.authorize_instruction(presence);
+            // Then
+            let expected = if live && lifecycle != AgentSessionLifecycle::Archived {
+                Ok(())
+            } else {
+                Err(AgentSessionInstructionError::NotOpen)
+            };
+            assert_eq!(result, expected, "{lifecycle:?}, {presence:?}");
+        }
     }
 }

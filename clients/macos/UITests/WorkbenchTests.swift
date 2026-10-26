@@ -271,6 +271,97 @@ extension WorkbenchTests {
 }
 
 extension WorkbenchTests {
+  @MainActor func testThreadPanelRepliesResolvesAndSendsToSession() async throws {
+    try await fixture.startServer()
+    let repository = try await fixture.repository("thread-panel-repository", threads: ["確認する本文"])
+    var threadID = ""
+    try await fixture.waitForState(target: "review-threads", args: [repository.path]) { payload in
+      guard case .reviewThreads(let value) = payload.value, let thread = value.items.first else {
+        return false
+      }
+      threadID = thread.id
+      return true
+    }
+    let (client, headers) = try fixture.client()
+    var request = Releash_Client_V1_CreateAgentSessionRequest()
+    request.provider = "claude"
+    request.workspaceIdentity = repository.path
+    request.worktreePath = repository.path
+    request.rows = 24
+    request.cols = 80
+    request.callerRequestID = UUID().uuidString
+    let selection = try await client.createAgentSession(request: request, headers: headers).result
+      .get()
+    var rootID = ""
+    try await fixture.waitForState(target: "workspaces") { payload in
+      guard case .workspaces(let value) = payload.value,
+        let worktree = value.repositories.items.flatMap(\.worktrees.items).first(where: {
+          $0.path == repository.path
+        }),
+        let root = worktree.snapshot.nodes.items.first(where: {
+          if case .node(let node) = $0.variant {
+            return node.sessionID == selection.agentSessionID
+          }
+          return false
+        })
+      else { return false }
+      rootID = root.node.id
+      return true
+    }
+    launch()
+    app.buttons["worktree:main"].firstMatch.click()
+    app.checkBoxes["Node"].click()
+    let root = app.buttons["open-node:\(rootID)"]
+    XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
+    root.click()
+    let terminal = app.textViews["terminal:\(selection.agentSessionID)"]
+    XCTAssertTrue(terminal.waitForExistence(timeout: 30), app.debugDescription)
+    let ready = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value CONTAINS %@", "e2e-provider"), object: terminal)
+    let readyResult = await XCTWaiter.fulfillment(of: [ready], timeout: 30)
+    XCTAssertEqual(readyResult, .completed)
+
+    app.checkBoxes["Thread"].click()
+    let row = app.descendants(matching: .any).matching(identifier: "thread:\(threadID)").firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 30), app.debugDescription)
+    let comments = app.staticTexts["thread-comments:\(threadID)"]
+    XCTAssertEqual(comments.value as? String, "Comment 1件")
+    app.buttons["thread-reply:\(threadID)"].click()
+    let editor = app.textViews["thread-reply-content:\(threadID)"]
+    XCTAssertTrue(editor.waitForExistence(timeout: 10), app.debugDescription)
+    editor.click()
+    editor.typeText("E2E reply")
+    app.buttons["thread-reply-send:\(threadID)"].click()
+    let replied = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", "Comment 2件"), object: comments)
+    let replyResult = await XCTWaiter.fulfillment(of: [replied], timeout: 10)
+    XCTAssertEqual(replyResult, .completed, app.debugDescription)
+    app.buttons["thread-resolve:\(threadID)"].click()
+    let removed = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"), object: row)
+    let removedResult = await XCTWaiter.fulfillment(of: [removed], timeout: 10)
+    XCTAssertEqual(removedResult, .completed, app.debugDescription)
+    app.radioButtons["解決済み 1"].click()
+    XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertTrue(
+      app.descendants(matching: .any).matching(identifier: "thread-resolved:\(threadID)")
+        .firstMatch.exists)
+    app.checkBoxes["thread-check:\(threadID)"].click()
+    let send = app.menuButtons["thread-send"]
+    let canSend = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"), object: send)
+    let canSendResult = await XCTWaiter.fulfillment(of: [canSend], timeout: 10)
+    XCTAssertEqual(canSendResult, .completed, app.debugDescription)
+    send.click()
+    app.menuItems["thread-session:\(selection.agentSessionID)"].click()
+    let received = XCTNSPredicateExpectation(
+      predicate: NSPredicate(
+        format: "value CONTAINS %@ AND value CONTAINS %@", "received-0:", threadID),
+      object: terminal)
+    let receivedResult = await XCTWaiter.fulfillment(of: [received], timeout: 30)
+    XCTAssertEqual(receivedResult, .completed, app.debugDescription)
+  }
+
   @MainActor func testSessionTabShowsProviderTUIAndAcceptsInput() async throws {
     try await fixture.startServer()
     let repository = try await fixture.repository("session-tab-repository")

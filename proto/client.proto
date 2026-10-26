@@ -99,6 +99,7 @@ message CommandRequest {
     AppendReviewCommentRequest append_review_comment = 14;
     ApproveWorkspaceNodeRequest approve_workspace_node = 15;
     ArchiveAgentSessionRequest archive_agent_session = 16;
+    SendThreadsToSessionRequest send_threads_to_session = 206;
     ArchiveWorkspaceWorkflowExecutionRequest archive_workspace_workflow_execution = 17;
     BuildReviewThreadHandoffRequest build_review_thread_handoff = 19;
     ComputeHiddenRangesFromContentRequest compute_hidden_ranges_from_content = 20;
@@ -267,6 +268,7 @@ message CommandResult {
     ReviewThreadDto append_review_comment = 14;
     Unit approve_workspace_node = 15;
     AgentSessionArchiveResponse archive_agent_session = 16;
+    Unit send_threads_to_session = 206;
     Unit archive_workspace_workflow_execution = 17;
     ResultString build_review_thread_handoff = 19;
     ListHiddenRangeDto compute_hidden_ranges_from_content = 20;
@@ -2331,6 +2333,11 @@ message ListNotionPropertyInfoView {
   repeated NotionPropertyInfoView items = 1;
 }
 
+message SendThreadsToSessionRequest {
+  optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
+  optional Liststring thread_ids = 2 [json_name = "threadIds", (json_required) = true];
+}
+
 message WritePathsToTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
   optional Liststring paths = 2 [json_name = "paths", (json_required) = true];
@@ -2666,6 +2673,7 @@ service ClientService {
   rpc AppendReviewComment(AppendReviewCommentRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
   rpc ApproveWorkspaceNode(ApproveWorkspaceNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ArchiveAgentSession(ArchiveAgentSessionRequest) returns (AgentSessionArchiveResponse) { option (scope) = SCOPE_OPERATOR; }
+  rpc SendThreadsToSession(SendThreadsToSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ArchiveWorkspaceWorkflowExecution(ArchiveWorkspaceWorkflowExecutionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc BuildReviewThreadHandoff(BuildReviewThreadHandoffRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
   rpc ComputeHiddenRangesFromContent(ComputeHiddenRangesFromContentRequest) returns (ListHiddenRangeDto) { option (scope) = SCOPE_OPERATOR; }

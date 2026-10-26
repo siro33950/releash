@@ -257,6 +257,12 @@ pub enum AgentSessionAvailability {
     Archived,
 }
 
+/// Session が新しい指示を受け付けられない理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentSessionInstructionError {
+    NotOpen,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentSessionOpenAction {
     Attach,
@@ -561,6 +567,18 @@ impl AgentSession {
             ManagedPtyPresence::Live => AgentSessionAvailability::Open,
             ManagedPtyPresence::Unknown => AgentSessionAvailability::Indeterminate,
             ManagedPtyPresence::ConfirmedAbsent => AgentSessionAvailability::Paused,
+        }
+    }
+
+    /// availability が Open のときに指示を受け付ける。
+    pub(crate) fn authorize_instruction(
+        &self,
+        presence: ManagedPtyPresence,
+    ) -> Result<(), AgentSessionInstructionError> {
+        if self.availability(presence) == AgentSessionAvailability::Open {
+            Ok(())
+        } else {
+            Err(AgentSessionInstructionError::NotOpen)
         }
     }
 

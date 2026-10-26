@@ -29,7 +29,7 @@ pub(crate) fn register_shared(
                                 data_dir,
                                 &usecase,
                                 convert(required(args.session_id, "sessionId")?)?,
-                                crate::domain::comment::ReviewTarget {
+                                crate::domain::comment::Target {
                                     file_path: optional(args.file_path)?,
                                     line_number: optional(args.line_number)?,
                                     end_line: optional(args.end_line)?,
@@ -144,9 +144,9 @@ pub(crate) fn register_shared(
                                 &usecase,
                                 (
                                     convert(required(args.worktree_name, "worktreeName")?)?,
-                                    crate::domain::comment::ReviewActor::human(),
+                                    crate::domain::comment::Author::human(),
                                 ),
-                                crate::domain::comment::ReviewTarget {
+                                crate::domain::comment::Target {
                                     file_path: optional(args.file_path)?,
                                     line_number: optional(args.line_number)?,
                                     end_line: optional(args.end_line)?,
@@ -186,7 +186,7 @@ pub(crate) fn register_shared(
                                 &usecase,
                                 (
                                     convert(required(args.worktree_name, "worktreeName")?)?,
-                                    crate::domain::comment::ReviewActor::human(),
+                                    crate::domain::comment::Author::human(),
                                 ),
                                 convert(required(args.thread_id, "threadId")?)?,
                                 convert(required(args.content, "content")?)?,
@@ -222,7 +222,7 @@ pub(crate) fn register_shared(
                                 &usecase,
                                 (
                                     convert(required(args.worktree_name, "worktreeName")?)?,
-                                    crate::domain::comment::ReviewActor::human(),
+                                    crate::domain::comment::Author::human(),
                                 ),
                                 convert(required(args.thread_id, "threadId")?)?,
                                 convert(required(args.outcome, "outcome")?)?,

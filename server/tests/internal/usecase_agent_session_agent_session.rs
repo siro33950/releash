@@ -1,4 +1,5 @@
 use releashd::test_support::integration::platform::install_capturing_logger;
+use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecase;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -46,9 +47,14 @@ pub async fn test_agent_session_history_resume_実行木登録失敗ではcreate
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
+        ),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let execution_trees = Arc::new(RecordingStartedExecutionTrees {
@@ -121,11 +127,16 @@ pub async fn test_agent_session_history_resume_同一要求の再送は既存ses
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let usecase = AgentSessionLaunchUsecase::new(
@@ -208,11 +219,16 @@ pub async fn test_agent_session_history_resumeは新しいsessionを作り失敗
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
             releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway,
@@ -301,11 +317,16 @@ pub async fn test_agent_session_history_resume_lifecycle準備失敗でもpaused
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
             releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway,
@@ -381,7 +402,10 @@ fn durable_usecase(
             store.clone(),
         ),
     );
-    (store, AgentSessionUsecase::new(repository))
+    (
+        store,
+        test_sessions(repository, Arc::default(), Arc::default(), Arc::default()),
+    )
 }
 
 #[tokio::test]
@@ -537,11 +561,16 @@ pub async fn test_provider_agent_workflow_session_launch_workflow関連付け後
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     let usecase = AgentSessionLaunchUsecase::new(
@@ -629,9 +658,14 @@ pub async fn test_provider_agent_workflow_session_launch_別sessionのactivate�
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
+        ),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let (entered_sender, entered_receiver) = mpsc::channel();
     let (release_sender, release_receiver) = mpsc::channel();
     let terminal = Arc::new(BlockingLaunchTerminal {
@@ -739,9 +773,14 @@ pub async fn test_provider_agent_workflow_session_launch_activate後のrollback�
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
-    )));
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(store),
+        ),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
@@ -816,11 +855,16 @@ pub async fn test_agent_session_launch_spawn失敗時はsessionとlaunch資源�
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
@@ -899,11 +943,16 @@ pub async fn test_agent_session_launch_prepare失敗時のrollbackのterminal削
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     *launch_gateway.fail_prepare.lock().unwrap() = true;
     let terminal = Arc::new(RecordingTerminal::default());
@@ -981,11 +1030,16 @@ pub async fn test_agent_session_launch_spawn失敗時のrollbackのterminal削�
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let launch_gateway = Arc::new(RecordingLaunchGateway::default());
     let terminal = Arc::new(RecordingTerminal::default());
     *terminal.spawn_error.lock().unwrap() = Some(ProviderAgentTerminalGatewayError::Technical(
@@ -1142,11 +1196,16 @@ pub async fn test_session選択_欠落はcorruptとしqueryの技術的性質を
             ),
         )
         .unwrap();
-        let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-                store.clone(),
+        let sessions = Arc::new(test_sessions(
+            Arc::new(
+                releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                    store.clone(),
+                ),
             ),
-        )));
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+        ));
         let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
         let terminal = Arc::new(RecordingTerminal::default());
         let usecase = AgentSessionLaunchUsecase::new(
@@ -1219,11 +1278,16 @@ pub async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
         ),
     )
     .unwrap();
-    let sessions = Arc::new(AgentSessionUsecase::new(Arc::new(
-        releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-            store.clone(),
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
         ),
-    )));
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(
             releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway,
