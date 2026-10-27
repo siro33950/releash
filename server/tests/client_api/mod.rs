@@ -136,24 +136,61 @@ async fn test_connect_不正protoを拒否する() {
 }
 
 #[tokio::test]
-async fn test_生成client_connectとgrpcとgrpcwebが同じserviceを呼べる() {
+async fn test_生成client_各protocolで非圧縮とgzipの呼出しと購読ができる() {
     use connectrpc::client::{ClientConfig, HttpClient};
-    use connectrpc::Protocol;
-    let fixture = Fixture::new().await;
-    for protocol in [Protocol::Connect, Protocol::Grpc, Protocol::GrpcWeb] {
-        let config = ClientConfig::new(fixture.url.parse().unwrap())
-            .with_protocol(protocol)
-            .with_default_header("authorization", format!("Bearer {}", fixture.token));
-        let transport = if matches!(protocol, Protocol::Grpc) {
-            HttpClient::plaintext_http2_only()
-        } else {
-            HttpClient::plaintext()
-        };
-        let client = rpc::ClientServiceClient::new(transport, config);
-        assert_eq!(
-            read_current_branch(&client, fixture.args()).await.unwrap(),
-            "ws-branch"
-        );
+    use connectrpc::{CompressionPolicy, Protocol};
+
+    struct LongBranch(String);
+
+    impl BranchRepository for LongBranch {
+        fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
+            Ok(self.0.clone())
+        }
+
+        fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
+            BranchGateway.list(repo_path)
+        }
+
+        fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
+            BranchGateway.create(repo_path, branch_name)
+        }
+    }
+
+    // Given: exceed the server's compression threshold for streaming responses too.
+    let branch = "large-branch".repeat(128);
+    let fixture = Fixture::with_branch(Arc::new(LongBranch(branch.clone()))).await;
+    for (protocol, json) in [
+        (Protocol::Connect, false),
+        (Protocol::Connect, true),
+        (Protocol::Grpc, false),
+        (Protocol::GrpcWeb, false),
+    ] {
+        for gzip in [false, true] {
+            let mut config = ClientConfig::new(fixture.url.parse().unwrap())
+                .with_protocol(protocol)
+                .with_default_header("authorization", format!("Bearer {}", fixture.token));
+            if json {
+                config = config.json();
+            }
+            if gzip {
+                config = config
+                    .compress_requests("gzip")
+                    .with_compression_policy(CompressionPolicy::default().with_min_size(0));
+            }
+            let transport = if matches!(protocol, Protocol::Grpc) {
+                HttpClient::plaintext_http2_only()
+            } else {
+                HttpClient::plaintext()
+            };
+            let client = rpc::ClientServiceClient::new(transport, config);
+
+            // When / Then: unary and streaming share the same compression settings.
+            client.get_server_info(rpc::Unit::default()).await.unwrap();
+            assert_eq!(
+                read_current_branch(&client, fixture.args()).await.unwrap(),
+                branch
+            );
+        }
     }
 }
 
