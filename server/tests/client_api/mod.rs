@@ -140,19 +140,25 @@ async fn test_生成client_各protocolで非圧縮とgzipの呼出しと購読�
     use connectrpc::client::{ClientConfig, HttpClient};
     use connectrpc::{CompressionPolicy, Protocol};
 
-    // Given
-    let fixture = Fixture::new().await;
-    // Exceed the server's compression threshold so streaming responses use gzip too.
-    let branch = (0..8)
-        .map(|index| format!("topic{index}-{}", "a".repeat(180)))
-        .collect::<Vec<_>>()
-        .join("/");
-    {
-        let repo = git2::Repository::open(fixture.repo.path()).unwrap();
-        let commit = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch(&branch, &commit, false).unwrap();
-        repo.set_head(&format!("refs/heads/{branch}")).unwrap();
+    struct LongBranch(String);
+
+    impl BranchRepository for LongBranch {
+        fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
+            Ok(self.0.clone())
+        }
+
+        fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
+            BranchGateway.list(repo_path)
+        }
+
+        fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
+            BranchGateway.create(repo_path, branch_name)
+        }
     }
+
+    // Given: exceed the server's compression threshold for streaming responses too.
+    let branch = "large-branch".repeat(128);
+    let fixture = Fixture::with_branch(Arc::new(LongBranch(branch.clone()))).await;
     for (protocol, json) in [
         (Protocol::Connect, false),
         (Protocol::Connect, true),
