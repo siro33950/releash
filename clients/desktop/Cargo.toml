@@ -18,7 +18,7 @@ path = "src-native/main.rs"
 [dependencies]
 releashd = { path = "../../server" }
 releash = { path = "../cli" }
-connectrpc = { version = "=0.9.1", features = ["axum", "client"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["gzip", "json", "axum", "client"] }
 tauri = { version = "2.12", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = { version = "2" }
 tauri-plugin-fs = { version = "2" }
