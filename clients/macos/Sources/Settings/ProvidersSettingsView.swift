@@ -72,7 +72,7 @@ struct ProvidersSettingsView: View {
   }
 }
 
-@Observable @MainActor final class ProvidersSettingsState {
+@Observable @MainActor final class ProvidersSettingsState: SettingsSaving {
   enum Field: Hashable {
     case executable(String)
     case refresh
@@ -137,23 +137,14 @@ struct ProvidersSettingsView: View {
     _ field: Field, _ model: AppModel,
     operation: (any Releash_Client_V1_ClientServiceClientInterface, Headers) async throws -> Void
   ) async {
-    guard saving.insert(field).inserted else { return }
-    failure = nil
-    defer {
-      saving.remove(field)
-      if case .executable(let provider) = field {
-        executables[provider] =
-          snapshot?.providers.items.first { $0.provider == provider }?
-          .configuredExecutable
-      }
-    }
-    do {
-      guard let client = model.client, model.connected else {
-        throw CLIFailure(message: "サーバに接続されていません")
-      }
-      try await operation(client, model.headers)
-    } catch {
-      failure = model.failureMessage(error)
-    }
+    await saveSetting(
+      field, model,
+      cleanup: {
+        if case .executable(let provider) = field {
+          self.executables[provider] =
+            self.snapshot?.providers.items.first { $0.provider == provider }?
+            .configuredExecutable
+        }
+      }, operation: operation)
   }
 }

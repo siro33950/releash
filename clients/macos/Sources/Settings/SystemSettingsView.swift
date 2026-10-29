@@ -110,7 +110,7 @@ struct SystemSettingsView: View {
   }
 }
 
-@Observable @MainActor final class SystemSettingsState {
+@Observable @MainActor final class SystemSettingsState: SettingsSaving {
   enum Field { case login, minimized, performance, crash, cli, registration }
   var settings: Releash_Client_V1_DesktopSettings?
   var cliInstallation: Releash_Client_V1_CliInstallationResult?
@@ -205,16 +205,6 @@ struct SystemSettingsView: View {
     _ field: Field, _ model: AppModel,
     operation: (any Releash_Client_V1_ClientServiceClientInterface, Headers) async throws -> Void
   ) async {
-    guard saving.insert(field).inserted else { return }
-    failure = nil
-    defer { saving.remove(field) }
-    do {
-      guard let client = model.client, model.connected else {
-        throw CLIFailure(message: "サーバに接続されていません")
-      }
-      try await operation(client, model.headers)
-    } catch {
-      failure = model.failureMessage(error)
-    }
+    await saveSetting(field, model, operation: operation)
   }
 }

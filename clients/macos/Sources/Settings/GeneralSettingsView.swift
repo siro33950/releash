@@ -74,7 +74,7 @@ struct GeneralSettingsView: View {
   }
 }
 
-@Observable @MainActor final class GeneralSettingsState {
+@Observable @MainActor final class GeneralSettingsState: SettingsSaving {
   enum Field { case editor, command, approval }
   var editor: Releash_Client_V1_ExternalEditorState?
   var workflow: Releash_Client_V1_WorkflowSection?
@@ -92,8 +92,9 @@ struct GeneralSettingsView: View {
       },
       model.subscribe("terminal-startup-command") { [weak self] payload in
         if case .terminalStartupCommand(let value) = payload.value {
-          self?.terminalCommand = value.value
-          self?.command = value.value
+          guard let self else { return }
+          if command == (terminalCommand ?? "") { command = value.value }
+          terminalCommand = value.value
         }
       },
       model.subscribe("workflow-config") { [weak self] payload in
@@ -138,19 +139,10 @@ struct GeneralSettingsView: View {
     _ field: Field, _ model: AppModel,
     operation: (any Releash_Client_V1_ClientServiceClientInterface, Headers) async throws -> Void
   ) async {
-    guard saving.insert(field).inserted else { return }
-    failure = nil
-    defer {
-      saving.remove(field)
-      if field == .command { command = terminalCommand ?? "" }
-    }
-    do {
-      guard let client = model.client, model.connected else {
-        throw CLIFailure(message: "サーバに接続されていません")
-      }
-      try await operation(client, model.headers)
-    } catch {
-      failure = model.failureMessage(error)
-    }
+    await saveSetting(
+      field, model,
+      cleanup: {
+        if field == .command { self.command = self.terminalCommand ?? "" }
+      }, operation: operation)
   }
 }
