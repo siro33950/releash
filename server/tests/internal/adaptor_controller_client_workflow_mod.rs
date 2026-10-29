@@ -850,7 +850,63 @@ pub(crate) mod tests {
         TempDir,
         TempDir,
     ) {
-        todo!()
+        let (app, data_dir, local_event_store) = make_read_only_app();
+        let repo_parent = TempDir::new().unwrap();
+        let worktree_parent = TempDir::new().unwrap();
+        let repo_path = repo_parent.path().join("repo");
+        std::fs::create_dir(&repo_path).unwrap();
+        let repo = git2::Repository::init(&repo_path).unwrap();
+        std::fs::write(repo_path.join("README.md"), "test\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("README.md")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let worktree_path = worktree_parent.path().join("managed-wt");
+        repo.worktree("managed-wt", &worktree_path, None).unwrap();
+        let canonical = worktree_path.canonicalize().unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        let config_repository = app.client.config_repository.as_ref().unwrap();
+        let mut config = config_repository.load().unwrap();
+        assert!(config.add_repo_path(&repo_path.to_string_lossy()));
+        config_repository.save(config).unwrap();
+        (
+            app,
+            data_dir,
+            local_event_store,
+            canonical_str,
+            repo_parent,
+            worktree_parent,
+        )
+    }
+
+    #[test]
+    fn test_managed_worktree同期解決_repositoryの登録を削除するとworktreeを拒否する() {
+        // Given
+        let (app, _data_dir, _store, worktree_path, repo_parent, _worktree_parent) =
+            make_read_only_app_with_managed_worktree();
+        let workflow = &app.client.app_state.as_ref().unwrap().workflow_usecase;
+        assert_eq!(
+            workflow.resolve_worktree_path(&worktree_path).unwrap(),
+            worktree_path
+        );
+        let config_repository = app.client.config_repository.as_ref().unwrap();
+        let mut config = config_repository.load().unwrap();
+        assert!(config.remove_repo_path(&repo_parent.path().join("repo").to_string_lossy()));
+        config_repository.save(config).unwrap();
+
+        // When
+        let result = workflow.resolve_worktree_path(&worktree_path);
+
+        // Then
+        assert!(matches!(
+            result,
+            Err(releashd::test_support::integration::workflow::WorkflowError::External(message))
+                if message.contains("not a configured git worktree")
+        ));
+        assert!(std::path::Path::new(&worktree_path).exists());
     }
 
     /// Spec [05] Rule: 指定 execution の現在 state を観測する（event log からの純粋投影）。

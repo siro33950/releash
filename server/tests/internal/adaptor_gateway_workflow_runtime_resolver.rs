@@ -23,8 +23,103 @@ impl AppConfigRepository for Config {
 
 #[tokio::test]
 pub async fn test_managed_worktree非同期解決_期限と取消の分類をruntimeまで保持する() {
-    todo!()
+    // Given
+    let (dir, repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&repo);
+    let root = dir.path().to_str().unwrap().to_string();
+    let mut config = releashd::test_support::integration::settings::config_to_domain(
+        &releashd::test_support::integration::settings::ReleashConfig::default(),
+    );
+    assert!(config.add_repo_path(&root));
+    let resolver = AppConfigManagedWorktreeResolver::new(
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
+        Arc::new(Config(config)),
+    );
+    for expire in [false, true] {
+        let token = tokio_util::sync::CancellationToken::new();
+        if !expire {
+            token.cancel();
+        }
+        let context = OperationContext::new(
+            expire.then(|| Deadline::new(std::time::Instant::now())),
+            Arc::new(token),
+        );
+        // When
+        let error = releashd::test_support::integration::platform::scope(
+            context,
+            resolver.resolve(root.clone()),
+        )
+        .await
+        .unwrap_err();
+        let error = WorkflowRuntimeError::from(error);
+        // Then
+        let stopped = if expire {
+            OperationStopped::Expired
+        } else {
+            OperationStopped::Cancelled
+        };
+        assert_eq!(
+            error.connect_code(),
+            releashd::test_support::integration::platform::TechnicalFailure::from(stopped)
+                .connect_code()
+        );
+        assert!(matches!(error, WorkflowRuntimeError::Technical(value) if value == stopped.into()));
+    }
+    assert!(resolver.resolve(root).await.is_ok());
+    assert!(matches!(
+        resolver
+            .resolve(dir.path().join("missing").to_string_lossy().into_owned())
+            .await,
+        Err(ManagedWorktreeResolverError::Validation(_))
+    ));
 }
+
+#[tokio::test]
+async fn test_managed_worktree非同期解決_登録済みrepositoryのworktreeだけを解決する() {
+    // Given
+    let (registered_dir, registered_repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&registered_repo);
+    let (_unregistered_dir, unregistered_repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&unregistered_repo);
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let registered = worktree_parent.path().join("registered-wt");
+    registered_repo
+        .worktree("registered-wt", &registered, None)
+        .unwrap();
+    let unregistered = worktree_parent.path().join("unregistered-wt");
+    unregistered_repo
+        .worktree("unregistered-wt", &unregistered, None)
+        .unwrap();
+    let mut config = releashd::test_support::integration::settings::config_to_domain(
+        &releashd::test_support::integration::settings::ReleashConfig::default(),
+    );
+    assert!(config.add_repo_path(&registered_dir.path().to_string_lossy()));
+    let resolver = AppConfigManagedWorktreeResolver::new(
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
+        Arc::new(Config(config)),
+    );
+
+    // When
+    let accepted = resolver
+        .resolve(registered.join(".").to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    let rejected = resolver
+        .resolve(unregistered.to_string_lossy().into_owned())
+        .await;
+
+    // Then
+    assert_eq!(
+        std::path::PathBuf::from(accepted),
+        registered.canonicalize().unwrap()
+    );
+    assert!(matches!(
+        rejected,
+        Err(ManagedWorktreeResolverError::Validation(message))
+            if message.contains("not a configured git worktree")
+    ));
+}
+
 pub(crate) mod tests {
 
     use tempfile::TempDir;

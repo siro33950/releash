@@ -62,7 +62,16 @@ pub(crate) async fn canonicalize_managed_worktree_path(
     config: Arc<dyn AppConfigRepository>,
     worktree_path: String,
 ) -> Result<String, WorkflowError> {
-    todo!()
+    let repo_paths = config
+        .load()
+        .map_err(|e| WorkflowError::external(e.to_string()))?
+        .repo_paths()
+        .to_vec();
+    crate::common::operation_context::spawn_blocking(move || {
+        canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
+    })
+    .await
+    .map_err(|e| WorkflowError::external(format!("task join error: {e}")))?
 }
 
 #[derive(Clone)]
@@ -82,7 +91,15 @@ impl RepositoryManagedWorktreeGateway {
 
 impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
     fn resolve(&self, worktree_path: &str) -> Result<String, WorkflowError> {
-        todo!()
+        let config = self
+            .config
+            .load()
+            .map_err(|e| WorkflowError::external(e.to_string()))?;
+        canonicalize_managed_worktree_path_inner(
+            &self.repository,
+            config.repo_paths().to_vec(),
+            worktree_path.to_string(),
+        )
     }
 }
 
