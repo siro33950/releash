@@ -5,7 +5,6 @@ import { getErrorMessage } from "@/lib/errorMessage";
 import { useStateSubscriptionResult } from "./useStateSubscription";
 
 export interface BackgroundConfig {
-	close_to_tray: boolean;
 	auto_launch: boolean;
 	start_minimized: boolean;
 }
@@ -17,7 +16,6 @@ interface LoginItemStatus {
 }
 
 const DEFAULT_CONFIG: BackgroundConfig = {
-	close_to_tray: true,
 	auto_launch: false,
 	start_minimized: false,
 };
@@ -53,7 +51,6 @@ export function useBackgroundConfig() {
 	useEffect(() => {
 		if (!settings || !loginItem || dirty.current) return;
 		const cfg: BackgroundConfig = {
-			close_to_tray: settings.closeToTray,
 			auto_launch: loginItem.enabled,
 			start_minimized: settings.startMinimized,
 		};
@@ -83,7 +80,6 @@ export function useBackgroundConfig() {
 
 			await invoke("update_app_settings", {
 				app: {
-					close_to_tray: draft.close_to_tray,
 					start_minimized: draft.start_minimized,
 				},
 			});

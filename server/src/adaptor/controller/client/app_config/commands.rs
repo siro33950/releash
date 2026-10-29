@@ -26,10 +26,15 @@ pub(crate) async fn update_performance_telemetry_shared(
 
 pub(crate) async fn update_app_settings_shared(
     usecase: &Arc<AppConfigUsecase>,
-    close_to_tray: bool,
     start_minimized: bool,
 ) -> Result<(), AppError> {
-    todo!()
+    let usecase = usecase.clone();
+    crate::common::operation_context::spawn_blocking(move || {
+        usecase.update_app_settings(start_minimized)
+    })
+    .await
+    .map_err(map_join_error)?
+    .map_err(AppError::from_failure)
 }
 
 pub(crate) async fn update_login_item_preference_shared(

@@ -102,15 +102,6 @@ pub fn run() {
                 app.handle().clone(),
             )),
         ));
-        app.manage(
-            infrastructure::platform::window_lifecycle::WindowPreferencesState(
-                parking_lot::RwLock::new(
-                    infrastructure::platform::window_lifecycle::WindowPreferences {
-                        close_to_tray: true,
-                    },
-                ),
-            ),
-        );
         infrastructure::platform::menu::setup_menu(app)?;
         infrastructure::platform::tray::setup_tray(
             app,

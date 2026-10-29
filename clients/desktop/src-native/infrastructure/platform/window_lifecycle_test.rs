@@ -1,91 +1,76 @@
 pub(crate) mod tests {
     use super::super::*;
 
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering},
+        Arc,
+    };
+
+    struct ObservedWindow {
+        visible: Arc<AtomicBool>,
+    }
+
+    impl WindowVisibility for ObservedWindow {
+        fn hide(&self) -> Result<(), tauri::Error> {
+            self.visible.store(false, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_ウィンドウ閉鎖_close_requestedを処理しても終了要求せず再表示できる() {
-        for close_to_tray in [true, false] {
-            for label in [NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL] {
-                // Given
-                let app = tauri::test::mock_builder()
-                    .manage(WindowPreferencesState(parking_lot::RwLock::new(
-                        WindowPreferences { close_to_tray },
-                    )))
-                    .build(tauri::test::mock_context(tauri::test::noop_assets()))
-                    .unwrap();
-                let window = tauri::WebviewWindowBuilder::new(&app, label, Default::default())
-                    .build()
-                    .unwrap();
-                let closed = std::sync::Arc::new(AtomicUsize::new(0));
-                let observed = closed.clone();
-                let mut cleanup = false;
-                // When
-                app.run_return(move |app, event| match event {
-                    tauri::RunEvent::Ready => window.close().unwrap(),
-                    event @ tauri::RunEvent::WindowEvent {
-                        event: tauri::WindowEvent::CloseRequested { .. },
-                        ..
-                    } => {
-                        handle_run_event(
-                            app,
-                            event,
-                            |_| panic!("CloseRequested must not enter application quit"),
-                            || panic!("CloseRequested must not reopen the window"),
-                        );
-                        observed.fetch_add(1, AtomicOrdering::SeqCst);
-                    }
-                    tauri::RunEvent::MainEventsCleared
-                        if observed.load(AtomicOrdering::SeqCst) == 1 && !cleanup =>
-                    {
-                        // Then: prevent_close preserved the window through the event loop.
-                        let window = app.get_webview_window(label).expect("window was destroyed");
-                        window.show().unwrap();
-                        window.unminimize().unwrap();
-                        cleanup = true;
-                        window.destroy().unwrap();
-                    }
-                    tauri::RunEvent::ExitRequested { .. } if !cleanup => {
-                        panic!("window close must not request application exit");
-                    }
-                    _ => {}
-                });
-                assert_eq!(closed.load(AtomicOrdering::SeqCst), 1);
-            }
+        for label in [NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL] {
+            // Given
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .unwrap();
+            let window = tauri::WebviewWindowBuilder::new(&app, label, Default::default())
+                .build()
+                .unwrap();
+            let closed = std::sync::Arc::new(AtomicUsize::new(0));
+            let observed = closed.clone();
+            let visible = Arc::new(AtomicBool::new(true));
+            let observed_visibility = visible.clone();
+            let mut cleanup = false;
+            // When
+            app.run_return(move |app, event| match event {
+                tauri::RunEvent::Ready => window.close().unwrap(),
+                event @ tauri::RunEvent::WindowEvent {
+                    event: tauri::WindowEvent::CloseRequested { .. },
+                    ..
+                } => {
+                    handle_run_event_with_window(
+                        event,
+                        |_| panic!("CloseRequested must not enter application quit"),
+                        || panic!("CloseRequested must not reopen the window"),
+                        |closed_label| {
+                            assert_eq!(closed_label, label);
+                            Some(ObservedWindow {
+                                visible: visible.clone(),
+                            })
+                        },
+                    );
+                    observed.fetch_add(1, AtomicOrdering::SeqCst);
+                }
+                tauri::RunEvent::MainEventsCleared
+                    if observed.load(AtomicOrdering::SeqCst) == 1 && !cleanup =>
+                {
+                    // Then: prevent_close preserved the window through the event loop.
+                    let window = app.get_webview_window(label).expect("window was destroyed");
+                    assert!(!visible.load(AtomicOrdering::SeqCst));
+                    window.show().unwrap();
+                    window.unminimize().unwrap();
+                    cleanup = true;
+                    window.destroy().unwrap();
+                }
+                tauri::RunEvent::ExitRequested { .. } if !cleanup => {
+                    panic!("window close must not request application exit");
+                }
+                _ => {}
+            });
+            assert_eq!(closed.load(AtomicOrdering::SeqCst), 1);
+            assert!(!observed_visibility.load(AtomicOrdering::SeqCst));
         }
-    }
-
-    #[test]
-    fn close_quit_window_close_is_view_only() {
-        for (close_to_tray, expected_hidden, expected_minimized) in [(true, 1, 0), (false, 0, 1)] {
-            let hidden = AtomicUsize::new(0);
-            let minimized = AtomicUsize::new(0);
-
-            apply_window_view_close(
-                startup_visibility_action(close_to_tray),
-                || {
-                    hidden.fetch_add(1, AtomicOrdering::SeqCst);
-                },
-                || {
-                    minimized.fetch_add(1, AtomicOrdering::SeqCst);
-                },
-            );
-
-            assert_eq!(hidden.load(AtomicOrdering::SeqCst), expected_hidden);
-            assert_eq!(minimized.load(AtomicOrdering::SeqCst), expected_minimized);
-        }
-    }
-
-    #[test]
-    fn startup_visibility_action_follows_close_to_tray_policy() {
-        assert_eq!(
-            startup_visibility_action(true),
-            StartupVisibilityAction::Hide
-        );
-        assert_eq!(
-            startup_visibility_action(false),
-            StartupVisibilityAction::Minimize
-        );
     }
 
     #[test]

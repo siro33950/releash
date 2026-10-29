@@ -126,7 +126,6 @@ vi.mock("@/lib/client", async (importOriginal) => {
 				else if (name === "provider-hook-health") onValue([]);
 				else if (name === "desktop-settings")
 					onValue({
-						closeToTray: true,
 						startMinimized: false,
 						crashReporting: true,
 						performanceTelemetry: true,

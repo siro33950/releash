@@ -12,7 +12,6 @@ import App from "./App";
 
 const states = stateSubscriptions();
 const desktopSettings = {
-	closeToTray: true,
 	startMinimized: false,
 	crashReporting: true,
 	performanceTelemetry: false,

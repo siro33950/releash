@@ -716,30 +716,6 @@ function BackgroundSection({
 				<>
 					<div className="flex items-center gap-2">
 						<Checkbox
-							id="close-to-tray"
-							checked={background.draft.close_to_tray}
-							onCheckedChange={(checked) =>
-								background.setDraft((d) => ({
-									...d,
-									close_to_tray: checked === true,
-								}))
-							}
-						/>
-						<label
-							htmlFor="close-to-tray"
-							className={`${labelClass} cursor-pointer`}
-						>
-							Minimize to tray on close
-						</label>
-					</div>
-					<p className="text-[10px] text-muted-foreground ml-6 -mt-1">
-						{background.draft.close_to_tray
-							? "Window hides to tray; restore from tray icon."
-							: "Window minimizes to Dock/taskbar."}
-					</p>
-
-					<div className="flex items-center gap-2">
-						<Checkbox
 							id="auto-launch"
 							checked={background.draft.auto_launch}
 							onCheckedChange={(checked) =>

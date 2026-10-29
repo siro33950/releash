@@ -75,18 +75,18 @@ try {
         // Given
         const initial = await firstState("desktop-settings");
         assert.equal((await firstState("external-editor")).selected, "");
-        assert.equal(initial.closeToTray, false);
         assert.equal(initial.startMinimized, true);
         assert.equal(generations.size, 1);
-        await invokeClient("update_app_settings", { app: { close_to_tray: true, start_minimized: false } });
-        await invokeClient("update_app_settings", { app: { close_to_tray: false, start_minimized: true } });
+        await invokeClient("update_app_settings", { app: { start_minimized: false } });
+        await waitFor(() => refreshedSettings?.startMinimized === false);
+        await invokeClient("update_app_settings", { app: { start_minimized: true } });
+        await waitFor(() => refreshedSettings?.startMinimized === true);
         await invokeClient("update_crash_reporting", { enabled: false });
         await waitFor(() => refreshedSettings?.crashReporting === false);
         await invokeClient("update_crash_reporting", { enabled: true });
         await waitFor(() => refreshedSettings?.crashReporting === true);
         await invokeHost("damage_settings");
         const cached = await firstState("desktop-settings");
-        assert.equal(cached.closeToTray, false);
         assert.equal(cached.startMinimized, true);
         await assert.rejects(invokeClient("update_external_editor", { editor: "desktop-recovery" }));
         await waitFor(() => dropped);

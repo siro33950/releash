@@ -50,7 +50,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     let _daemon = DaemonGuard(directory.path().to_path_buf());
     std::fs::write(
         directory.path().join("releash.toml"),
-        "[app]\nclose_to_tray = false\nstart_minimized = true\n",
+        "[app]\nstart_minimized = true\n",
     )
     .unwrap();
     for (key, value) in [
@@ -75,10 +75,6 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
         .unwrap();
     assert_eq!(discovery(directory.path(), "client-api.json"), first);
     releash_desktop::test_support::initialize_desktop_settings(app.handle()).await;
-    assert_eq!(
-        releash_desktop::test_support::desktop_window_preferences(app.handle()),
-        false
-    );
     let mut client = tokio::process::Command::new("node")
         .arg("tests/helpers/desktop-daemon.mjs")
         .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")))
@@ -107,27 +103,6 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                     tokens.push(current["token"].clone());
                     serde_json::to_value(endpoint).unwrap()
                 }
-                "apply_desktop_settings" => {
-                    tauri::test::get_ipc_response(
-                        &window,
-                        tauri::webview::InvokeRequest {
-                            cmd: "apply_desktop_settings".into(),
-                            callback: tauri::ipc::CallbackFn(0),
-                            error: tauri::ipc::CallbackFn(1),
-                            url: "tauri://localhost".parse().unwrap(),
-                            body: tauri::ipc::InvokeBody::Json(request["args"].clone()),
-                            headers: Default::default(),
-                            invoke_key: tauri::test::INVOKE_KEY.to_string(),
-                        },
-                    )
-                    .unwrap();
-                    let settings = &request["args"]["settings"];
-                    assert_eq!(
-                        releash_desktop::test_support::desktop_window_preferences(app.handle()),
-                        settings["closeToTray"].as_bool().unwrap()
-                    );
-                    Value::Null
-                }
                 command @ "get_desktop_connection_failure" => tauri::test::get_ipc_response(
                     &window,
                     tauri::webview::InvokeRequest {
@@ -145,7 +120,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                 .unwrap(),
                 "damage_settings" => {
                     for content in [
-                        Some("[app]\nclose_to_tray = \"invalid\"\n"),
+                        Some("[app]\nstart_minimized = \"invalid\"\n"),
                         Some("[invalid"),
                         None,
                     ] {
@@ -156,17 +131,9 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                         }
                         releash_desktop::test_support::initialize_desktop_settings(app.handle())
                             .await;
-                        assert_eq!(
-                            releash_desktop::test_support::desktop_window_preferences(app.handle()),
-                            false
-                        );
                     }
                     std::fs::create_dir(directory.path().join("releash.toml")).unwrap();
                     releash_desktop::test_support::initialize_desktop_settings(app.handle()).await;
-                    assert_eq!(
-                        releash_desktop::test_support::desktop_window_preferences(app.handle()),
-                        false
-                    );
                     std::fs::remove_dir(directory.path().join("releash.toml")).unwrap();
                     Value::Null
                 }
@@ -179,7 +146,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
                     releashd::test_support::client_api_acceptance::request_client(
                         &client,
                         "update_app_settings",
-                        json!({"app":{"close_to_tray":true,"start_minimized":false}}),
+                        json!({"app":{"start_minimized":false}}),
                     )
                     .await
                     .unwrap();
@@ -227,7 +194,7 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     // Then
     assert!(restarted);
     tokio::time::timeout(Duration::from_secs(3), async {
-        while !releash_desktop::test_support::desktop_window_preferences(app.handle()) {
+        while !releash_desktop::test_support::desktop_login_preference(app.handle(), None).await {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -261,15 +228,8 @@ async fn test_desktop接続_discoveryとtauri経由で外部daemonの初回接�
     releashd::test_support::client_api_acceptance::request_client(
         &current_client,
         "update_app_settings",
-        json!({"app":{"close_to_tray":false,"start_minimized":true}}),
+        json!({"app":{"start_minimized":true}}),
     )
-    .await
-    .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while releash_desktop::test_support::desktop_window_preferences(app.handle()) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
     .await
     .unwrap();
     assert!(tokens.len() >= 2);

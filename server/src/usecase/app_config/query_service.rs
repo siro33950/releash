@@ -6,7 +6,6 @@ use crate::usecase::app_config::error::UsecaseError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopSettingsDto {
-    pub close_to_tray: bool,
     pub start_minimized: bool,
     pub crash_reporting: bool,
     pub performance_telemetry: bool,
@@ -18,7 +17,13 @@ pub struct WorkflowConfigDto {
     pub approval_auto_approve: bool,
 }
 
-pub trait WorkflowConfigQueryService: Send + Sync {
+pub trait DesktopSettingsQueryService: Send + Sync {
+    fn desktop_settings(
+        &self,
+    ) -> Result<DesktopSettingsDto, crate::domain::app_config::AppConfigError>;
+}
+
+pub trait WorkflowConfigQueryService: DesktopSettingsQueryService {
     fn get_workflow_config(
         &self,
     ) -> Result<WorkflowConfigDto, crate::domain::app_config::AppConfigError>;
@@ -30,26 +35,21 @@ pub trait TerminalStartupCommandQueryService: Send + Sync {
 }
 
 pub struct AppConfigQueryService {
-    repository: Arc<dyn AppConfigRepository>,
     workflow: Arc<dyn WorkflowConfigQueryService>,
     terminal: Arc<dyn TerminalStartupCommandQueryService>,
 }
 
 impl AppConfigQueryService {
     pub(crate) fn new(
-        repository: Arc<dyn AppConfigRepository>,
+        _repository: Arc<dyn AppConfigRepository>,
         workflow: Arc<dyn WorkflowConfigQueryService>,
         terminal: Arc<dyn TerminalStartupCommandQueryService>,
     ) -> Self {
-        Self {
-            repository,
-            workflow,
-            terminal,
-        }
+        Self { workflow, terminal }
     }
 
     pub(crate) fn desktop_settings(&self) -> Result<DesktopSettingsDto, UsecaseError> {
-        todo!()
+        Ok(self.workflow.desktop_settings()?)
     }
 
     pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {

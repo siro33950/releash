@@ -25,7 +25,6 @@ pub fn register_shared(
                         outcome(
                             commands::update_app_settings_shared(
                                 &state,
-                                required(app.close_to_tray, "close_to_tray")?,
                                 required(app.start_minimized, "start_minimized")?,
                             )
                             .await,
