@@ -10,7 +10,6 @@ pub trait EditorLauncherGateway: Send + Sync {
 
 pub trait EditorSettingsGateway: Send + Sync {
     fn selected_editor(&self) -> Result<String, EditorError>;
-    fn update_selected_editor(&self, editor: String) -> Result<(), EditorError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

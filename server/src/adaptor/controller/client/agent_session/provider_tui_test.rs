@@ -97,7 +97,7 @@ fn test_agent_session_controller_対象21codeを利用者向け英語文言へ�
             "Enter a Provider executable command name or path.",
         ),
         (
-            provider_availability_error(ProviderAvailabilityUsecaseError::Config(crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() }))),
+            provider_availability_error(ProviderAvailabilityUsecaseError::Config(crate::domain::app_config::AppConfigError::Technical(crate::domain::failure::TechnicalFailure { nature: crate::domain::failure::TechnicalFailureNature::Transient, message: "unavailable".into() }))),
             "PROVIDER_AVAILABILITY_CONFIG_UNAVAILABLE",
             "Releash could not access the Provider executable setting. Try again.",
         ),

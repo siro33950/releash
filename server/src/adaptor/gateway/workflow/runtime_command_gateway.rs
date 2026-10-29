@@ -1,7 +1,7 @@
 use super::workflow_host::WorkflowRuntimeDependencies;
 use std::sync::Arc;
 
-use crate::domain::app_config::ConfigRepository;
+use crate::domain::app_config::AppConfigRepository;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
@@ -28,7 +28,7 @@ pub struct WorkflowRuntimeCommandGatewayDeps {
     pub node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
     pub isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub repository_usecase: Arc<RepositoryUsecase>,
-    pub app_config: Arc<dyn ConfigRepository>,
+    pub app_config: Arc<dyn AppConfigRepository>,
     pub workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     pub agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,
     pub agent_session_initial_instruction:

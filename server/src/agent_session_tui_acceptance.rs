@@ -193,6 +193,7 @@ impl AgentSessionTuiAcceptanceHost {
         let data_dir = config.data_dir.clone();
         let subscriptions = terminal.subscriptions();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            config_mutation: Default::default(),
  hook_token: std::sync::Arc::<str>::from("hook-token"),
 launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),
             retrying: work.retrying.clone(),

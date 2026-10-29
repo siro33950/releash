@@ -44,6 +44,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        config_mutation: Default::default(),
         hook_token: std::sync::Arc::<str>::from("hook-token"),
         launch_retention: releashd::test_support::integration::platform::run(
             releashd::test_support::integration::platform::delays(
@@ -299,6 +300,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = releashd::test_support::integration::platform::build_terminal_surface_application_with_data_dir(data_dir.clone());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        config_mutation: Default::default(),
         hook_token: std::sync::Arc::<str>::from("hook-token"),
         launch_retention: releashd::test_support::integration::platform::run(
             releashd::test_support::integration::platform::delays(

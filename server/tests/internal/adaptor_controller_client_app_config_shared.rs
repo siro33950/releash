@@ -36,6 +36,7 @@ pub async fn test_workflow設定_転送要求の保存を購読の読み取り�
             fixture.config.clone(),
             fixture.config.clone(),
             fixture.config.clone(),
+            Default::default(),
         ),
     )));
 

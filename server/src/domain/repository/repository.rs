@@ -62,7 +62,6 @@ pub trait WorktreeRepository: Send + Sync {
 /// ため、write 側の名前で「override を書く」ことを明示する。
 pub trait GitConfigRepository: Send + Sync {
     fn get_releash_base(&self, repo_path: &str) -> Result<Option<String>, RepositoryError>;
-    fn set_releash_base(&self, repo_path: &str, base: Option<&str>) -> Result<(), RepositoryError>;
     fn get_branch_base(
         &self,
         repo_path: &str,
@@ -104,11 +103,7 @@ pub trait RepoLocator: Send + Sync {
     fn cwd(&self) -> Result<String, RepositoryError>;
 }
 
-/// 登録済みリポジトリパス一覧（メモリ共有リスト + アプリ設定への永続化）。
+/// 登録済み repository の一覧を取得する。
 pub trait RepoPathsRepository: Send + Sync {
     fn get(&self) -> Vec<String>;
-    /// 新規追加できた場合に `true`、既存・空文字で追加されなかった場合に `false`。
-    fn add(&self, path: &str) -> Result<bool, RepositoryError>;
-    /// 削除できた場合に `true`、存在せず削除されなかった場合に `false`。
-    fn remove(&self, path: &str) -> Result<bool, RepositoryError>;
 }

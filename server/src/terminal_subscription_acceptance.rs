@@ -29,7 +29,7 @@ impl TerminalSubscriptionHarness {
     pub fn new(
         work: Arc<crate::terminal_surface::BackgroundWork>,
         data_dir: PathBuf,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> Self {
         Self::compose(TerminalSurfaceRuntime::new(work, data_dir, config))
     }
@@ -37,7 +37,7 @@ impl TerminalSubscriptionHarness {
     pub fn new_with_data_dir_and_event_faults(
         work: Arc<crate::terminal_surface::BackgroundWork>,
         data_dir: PathBuf,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> (Self, TerminalSurfaceEventFaultController) {
         let (runtime, faults) =
             TerminalSurfaceRuntime::new_with_data_dir_and_event_faults(work, data_dir, config);

@@ -13,6 +13,7 @@ pub(crate) fn run() -> i32 {
         Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
             crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
         ))),
+        Default::default(),
     ));
     let scanner = crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
         repository,

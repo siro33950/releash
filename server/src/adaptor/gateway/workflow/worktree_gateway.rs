@@ -3,19 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
-use crate::domain::app_config::value_objects::AppSettings;
-use crate::domain::app_config::ConfigRepository;
+use crate::domain::app_config::AppConfigRepository;
 use crate::domain::repository::{RepositoryError, WorktreeRepository};
 use crate::domain::workflow::{ManagedWorktreeGateway, WorkflowError};
 use crate::usecase::repository_usecase::RepositoryUsecase;
-
-fn configured_repo_paths(app: &AppSettings) -> Vec<String> {
-    let mut paths = app.last_repo_paths.clone();
-    if !app.last_root_path.is_empty() && !paths.contains(&app.last_root_path) {
-        paths.push(app.last_root_path.clone());
-    }
-    paths
-}
 
 /// [05] API / CLI 共有 helper: `worktree_path` filter input を OS レベルで canonicalize し、
 /// 末尾 `/` を除去した正規化済み文字列を返す。
@@ -68,32 +59,22 @@ pub fn canonicalize_managed_worktree_path_inner(
 
 pub(crate) async fn canonicalize_managed_worktree_path(
     usecase: Arc<RepositoryUsecase>,
-    config: Arc<dyn ConfigRepository>,
+    config: Arc<dyn AppConfigRepository>,
     worktree_path: String,
 ) -> Result<String, WorkflowError> {
-    let repo_paths = configured_repo_paths(
-        &config
-            .load()
-            .map_err(|e| WorkflowError::external(e.to_string()))?
-            .app,
-    );
-    crate::common::operation_context::spawn_blocking(move || {
-        canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
-    })
-    .await
-    .map_err(|e| WorkflowError::external(format!("task join error: {e}")))?
+    todo!()
 }
 
 #[derive(Clone)]
 pub(crate) struct RepositoryManagedWorktreeGateway {
     repository: Arc<RepositoryUsecase>,
-    config: Arc<dyn ConfigRepository>,
+    config: Arc<dyn AppConfigRepository>,
 }
 
 impl RepositoryManagedWorktreeGateway {
     pub(crate) fn new(
         repository: Arc<RepositoryUsecase>,
-        config: Arc<dyn ConfigRepository>,
+        config: Arc<dyn AppConfigRepository>,
     ) -> Self {
         Self { repository, config }
     }
@@ -101,16 +82,7 @@ impl RepositoryManagedWorktreeGateway {
 
 impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
     fn resolve(&self, worktree_path: &str) -> Result<String, WorkflowError> {
-        let config = self
-            .config
-            .load()
-            .map_err(|e| WorkflowError::external(e.to_string()))?;
-        let repo_paths = configured_repo_paths(&config.app);
-        canonicalize_managed_worktree_path_inner(
-            &self.repository,
-            repo_paths,
-            worktree_path.to_string(),
-        )
+        todo!()
     }
 }
 

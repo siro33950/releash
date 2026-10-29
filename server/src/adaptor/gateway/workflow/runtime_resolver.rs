@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
-use crate::domain::app_config::ConfigRepository;
+use crate::domain::app_config::AppConfigRepository;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::runtime_resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
@@ -125,11 +125,11 @@ pub fn resolve_workflow_by_name(
 
 pub struct AppConfigManagedWorktreeResolver {
     usecase: Arc<RepositoryUsecase>,
-    config: Arc<dyn ConfigRepository>,
+    config: Arc<dyn AppConfigRepository>,
 }
 
 impl AppConfigManagedWorktreeResolver {
-    pub fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn ConfigRepository>) -> Self {
+    pub fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn AppConfigRepository>) -> Self {
         Self { usecase, config }
     }
 }

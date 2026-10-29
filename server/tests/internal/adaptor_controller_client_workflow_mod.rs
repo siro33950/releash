@@ -689,6 +689,7 @@ pub(crate) mod tests {
         let data_dir =
             std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
+        let config_mutation = Arc::new(parking_lot::Mutex::new(()));
         let app_config = Arc::new(
             releashd::test_support::integration::settings::AppConfig::new(
                 releashd::test_support::integration::settings::ReleashConfig::default(),
@@ -696,7 +697,7 @@ pub(crate) mod tests {
             ),
         );
         let config_repository: Arc<
-            dyn releashd::test_support::integration::repository::ConfigRepository,
+            dyn releashd::test_support::integration::repository::AppConfigRepository,
         > = app_config.clone();
         let repository_usecase =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
@@ -709,17 +710,21 @@ pub(crate) mod tests {
                         releashd::test_support::integration::platform::shared_limiter(),
                     ),
                 ),
+                config_mutation.clone(),
             ),
         );
-        let repo_paths_gateway =
+        let repo_paths_gateway = Arc::new(
             releashd::test_support::integration::repository::RepoPathsGateway::new(
                 <releashd::test_support::integration::repository::SharedRepoPaths>::default(),
                 config_repository.clone(),
-            );
+            ),
+        );
         let repo_paths_usecase = Arc::new(
             releashd::test_support::integration::platform::RepoPathsUsecase::new(
-                Arc::new(repo_paths_gateway),
+                repo_paths_gateway.clone(),
+                repo_paths_gateway,
                 releashd::test_support::integration::subscriptions::test_subscriptions(),
+                config_mutation.clone(),
             ),
         );
         let code_usecase =
@@ -807,11 +812,13 @@ pub(crate) mod tests {
         );
         client.app_state = Some(app_state);
         client.config_repository = Some(config_repository.clone());
+        client.config_mutation = config_mutation.clone();
         client.app_config_usecase = Some(Arc::new(
             releashd::test_support::integration::settings::AppConfigUsecase::new(
                 config_repository,
                 app_config.clone(),
                 app_config.clone(),
+                config_mutation.clone(),
             ),
         ));
         client.watcher = Arc::new(releashd::test_support::integration::platform::WatcherUsecase::new(
@@ -843,36 +850,7 @@ pub(crate) mod tests {
         TempDir,
         TempDir,
     ) {
-        let (app, data_dir, local_event_store) = make_read_only_app();
-        let repo_parent = TempDir::new().unwrap();
-        let worktree_parent = TempDir::new().unwrap();
-        let repo_path = repo_parent.path().join("repo");
-        std::fs::create_dir(&repo_path).unwrap();
-        let repo = git2::Repository::init(&repo_path).unwrap();
-        std::fs::write(repo_path.join("README.md"), "test\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new("README.md")).unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
-        let worktree_path = worktree_parent.path().join("managed-wt");
-        repo.worktree("managed-wt", &worktree_path, None).unwrap();
-        let canonical = worktree_path.canonicalize().unwrap();
-        let canonical_str = canonical.to_string_lossy().to_string();
-        let config_repository = app.client.config_repository.as_ref().unwrap();
-        let mut config = config_repository.load().unwrap();
-        config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
-        config_repository.save(config).unwrap();
-        (
-            app,
-            data_dir,
-            local_event_store,
-            canonical_str,
-            repo_parent,
-            worktree_parent,
-        )
+        todo!()
     }
 
     /// Spec [05] Rule: 指定 execution の現在 state を観測する（event log からの純粋投影）。

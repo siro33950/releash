@@ -2,76 +2,73 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::domain::agent_session::aggregates::ProviderExecutable;
-use crate::domain::agent_session::{
-    ProviderExecutableConfigRepository, ProviderExecutableConfigRepositoryError,
-};
+use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
+use crate::domain::app_config::{AppConfig, AppConfigError, AppConfigRepository};
 use crate::domain::provider_lifecycle::ProviderKind;
 
 pub(crate) struct InMemoryProviderExecutableConfigRepository {
-    overrides: Mutex<HashMap<ProviderKind, ProviderExecutable>>,
+    config: Mutex<AppConfig>,
 }
 
 impl InMemoryProviderExecutableConfigRepository {
     pub(crate) fn new(
         claude: Option<String>,
         codex: Option<String>,
-    ) -> Result<Self, ProviderExecutableConfigRepositoryError> {
+    ) -> Result<Self, AppConfigError> {
         let mut overrides = HashMap::new();
         for (provider, executable) in [(ProviderKind::Claude, claude), (ProviderKind::Codex, codex)]
         {
             if let Some(executable) = executable {
                 overrides.insert(
                     provider,
-                    ProviderExecutable::new(executable)
-                        .map_err(|_| ProviderExecutableConfigRepositoryError::InvalidInput)?,
+                    ProviderExecutable::new(executable).map_err(|_| {
+                        AppConfigError::InvalidInput("Invalid provider executable".into())
+                    })?,
                 );
             }
         }
         Ok(Self {
-            overrides: Mutex::new(overrides),
+            config: Mutex::new(AppConfig::new(
+                false,
+                false,
+                vec![],
+                String::new(),
+                String::new(),
+                TelemetryConfig {
+                    crash_reporting: false,
+                    performance_telemetry: false,
+                },
+                WorkflowConfig {
+                    approval_auto_approve: false,
+                },
+                overrides,
+                HashMap::new(),
+            )),
         })
     }
 }
 
-impl ProviderExecutableConfigRepository for InMemoryProviderExecutableConfigRepository {
-    fn configured_executable(
-        &self,
-        provider: ProviderKind,
-    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
-        self.overrides
+impl AppConfigRepository for InMemoryProviderExecutableConfigRepository {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
+        self.config
             .lock()
-            .map(|overrides| overrides.get(&provider).cloned())
+            .map(|config| config.clone())
             .map_err(|error| {
-                ProviderExecutableConfigRepositoryError::Technical(
-                    crate::domain::failure::TechnicalFailure {
-                        nature: crate::domain::failure::TechnicalFailureNature::Other,
-                        message: error.to_string(),
-                    },
-                )
+                AppConfigError::Technical(crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: error.to_string(),
+                })
             })
     }
 
-    fn save_configured_executable(
-        &self,
-        provider: ProviderKind,
-        executable: Option<&ProviderExecutable>,
-    ) -> Result<(), ProviderExecutableConfigRepositoryError> {
-        let mut overrides = self.overrides.lock().map_err(|error| {
-            ProviderExecutableConfigRepositoryError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                },
-            )
+    fn save(&self, config: AppConfig) -> Result<(), AppConfigError> {
+        let mut current = self.config.lock().map_err(|error| {
+            AppConfigError::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: error.to_string(),
+            })
         })?;
-        match executable {
-            Some(executable) => {
-                overrides.insert(provider, executable.clone());
-            }
-            None => {
-                overrides.remove(&provider);
-            }
-        }
+        *current = config;
         Ok(())
     }
 }

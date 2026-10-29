@@ -29,13 +29,7 @@ pub(crate) async fn update_app_settings_shared(
     close_to_tray: bool,
     start_minimized: bool,
 ) -> Result<(), AppError> {
-    let usecase = usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        usecase.update_app_settings(close_to_tray, start_minimized)
-    })
-    .await
-    .map_err(map_join_error)?
-    .map_err(AppError::from_failure)
+    todo!()
 }
 
 pub(crate) async fn update_login_item_preference_shared(

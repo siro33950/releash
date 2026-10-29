@@ -16,6 +16,7 @@ pub async fn test_workflow設定_転送入力をcontrollerで保存し購読用�
         config.clone(),
         config.clone(),
         config,
+        Default::default(),
     ));
     let input = releashd::test_support::integration::settings::WorkflowConfigInput::try_from(
         releashd::test_support::integration::wire::WorkflowSection {

@@ -211,9 +211,6 @@ impl GitConfigRepository for GitConfigGateway {
     fn get_releash_base(&self, repo_path: &str) -> Result<Option<String>, RepositoryError> {
         get_releash_base(repo_path)
     }
-    fn set_releash_base(&self, repo_path: &str, base: Option<&str>) -> Result<(), RepositoryError> {
-        set_releash_base(repo_path, base)
-    }
     fn get_branch_base(
         &self,
         repo_path: &str,

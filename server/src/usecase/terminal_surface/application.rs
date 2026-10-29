@@ -15,7 +15,7 @@ use crate::usecase::terminal_surface::spawn_usecase::GetOrSpawnTerminalOutcome;
 
 #[derive(Clone)]
 pub struct TerminalSurfaceApplication {
-    config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+    config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
     event_source: Arc<dyn TerminalSurfaceEventSource>,
@@ -118,7 +118,7 @@ impl TerminalSurfaceApplication {
         gateway: Arc<dyn TerminalSurfaceGateway + Send + Sync>,
         event_source: Arc<dyn TerminalSurfaceEventSource>,
         output: Arc<dyn TerminalSurfaceOutputControl>,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> Self {
         Self {
             config,

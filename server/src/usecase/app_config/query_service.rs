@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::app_config::repository::ConfigRepository;
+use crate::domain::app_config::repository::AppConfigRepository;
 use crate::usecase::app_config::error::UsecaseError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -30,14 +30,14 @@ pub trait TerminalStartupCommandQueryService: Send + Sync {
 }
 
 pub struct AppConfigQueryService {
-    repository: Arc<dyn ConfigRepository>,
+    repository: Arc<dyn AppConfigRepository>,
     workflow: Arc<dyn WorkflowConfigQueryService>,
     terminal: Arc<dyn TerminalStartupCommandQueryService>,
 }
 
 impl AppConfigQueryService {
     pub(crate) fn new(
-        repository: Arc<dyn ConfigRepository>,
+        repository: Arc<dyn AppConfigRepository>,
         workflow: Arc<dyn WorkflowConfigQueryService>,
         terminal: Arc<dyn TerminalStartupCommandQueryService>,
     ) -> Self {
@@ -49,14 +49,7 @@ impl AppConfigQueryService {
     }
 
     pub(crate) fn desktop_settings(&self) -> Result<DesktopSettingsDto, UsecaseError> {
-        let config = self.repository.load()?;
-        Ok(DesktopSettingsDto {
-            close_to_tray: config.app.close_to_tray,
-            start_minimized: config.app.start_minimized,
-            crash_reporting: config.telemetry.crash_reporting,
-            performance_telemetry: config.telemetry.performance_telemetry,
-            auto_launch: config.app.auto_launch,
-        })
+        todo!()
     }
 
     pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {

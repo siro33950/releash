@@ -35,11 +35,13 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
 
 #[derive(Clone)]
 pub struct RepositoryUsecase {
+    config_mutation: Arc<parking_lot::Mutex<()>>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     branch: Arc<dyn BranchRepository>,
     status: Arc<dyn StatusRepository>,
     worktree: Arc<dyn WorktreeRepository>,
     git_config: Arc<dyn GitConfigRepository>,
+    repository_config: Arc<dyn crate::domain::app_config::RepositoryConfigRepository>,
     locator: Arc<dyn RepoLocator>,
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
     worktree_operations: Arc<WorktreeOperations>,
@@ -85,16 +87,20 @@ impl RepositoryUsecase {
         status: Arc<dyn StatusRepository>,
         worktree: Arc<dyn WorktreeRepository>,
         git_config: Arc<dyn GitConfigRepository>,
+        repository_config: Arc<dyn crate::domain::app_config::RepositoryConfigRepository>,
         locator: Arc<dyn RepoLocator>,
         worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
         worktree_operations: Arc<WorktreeOperations>,
+        config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
         Self {
+            config_mutation,
             state_publisher: None,
             branch,
             status,
             worktree,
             git_config,
+            repository_config,
             locator,
             worktree_terminals,
             worktree_operations,
@@ -364,12 +370,17 @@ impl RepositoryUsecase {
 
     // ── git_config（書き込み） ──
 
+    /// repository の base branch の変更を保存する。
     pub fn set_releash_base(
         &self,
         repo_path: &str,
         base: Option<&str>,
     ) -> Result<(), UsecaseError> {
-        self.git_config.set_releash_base(repo_path, base)?;
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository_config.load(repo_path)?;
+        config.set_base_branch(base);
+        self.repository_config.save(config)?;
+        drop(guard);
         self.notify_repository_changed(repo_path);
         Ok(())
     }

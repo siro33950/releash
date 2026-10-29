@@ -1,3 +1,4 @@
+use crate::domain::app_config::{AppConfigError, RepositoryConfig, RepositoryConfigRepository};
 use crate::domain::repository::file_watcher::FileWatchGateway;
 use crate::domain::repository::GitConfigRepository;
 use crate::domain::repository::RepoLocator;
@@ -235,16 +236,6 @@ impl GitConfigRepository for FakeRepo {
     fn get_releash_base(&self, _repo_path: &str) -> Result<Option<String>, RepositoryError> {
         Ok(None)
     }
-    fn set_releash_base(
-        &self,
-        _repo_path: &str,
-        base: Option<&str>,
-    ) -> Result<(), RepositoryError> {
-        self.set_releash_base_calls
-            .lock()
-            .push(base.map(|s| s.to_string()));
-        Ok(())
-    }
     fn get_branch_base(
         &self,
         _repo_path: &str,
@@ -296,6 +287,19 @@ impl GitConfigRepository for FakeRepo {
     }
 }
 
+impl RepositoryConfigRepository for FakeRepo {
+    fn load(&self, repo_path: &str) -> Result<RepositoryConfig, AppConfigError> {
+        Ok(RepositoryConfig::new(repo_path.to_string(), None, None))
+    }
+
+    fn save(&self, config: RepositoryConfig) -> Result<(), AppConfigError> {
+        self.set_releash_base_calls
+            .lock()
+            .push(config.base_branch().map(str::to_owned));
+        Ok(())
+    }
+}
+
 impl RepoLocator for FakeRepo {
     fn cwd(&self) -> Result<String, RepositoryError> {
         Ok("/cwd".to_string())
@@ -319,7 +323,9 @@ pub fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
         fake.clone(),
         fake.clone(),
         fake.clone(),
+        fake.clone(),
         fake.operations.clone(),
+        Default::default(),
     )
 }
 

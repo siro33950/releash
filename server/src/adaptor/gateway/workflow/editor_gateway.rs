@@ -2,15 +2,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway;
-use crate::adaptor::gateway::workflow::{builtin, facet, storage};
-use crate::domain::app_config::ConfigRepository;
 use crate::domain::external_editor::EditorLauncherGateway as _;
+use crate::adaptor::gateway::workflow::{builtin, facet, storage};
+use crate::domain::app_config::AppConfigRepository;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 
 #[derive(Clone)]
 pub struct WorkflowExternalEditorGateway {
-    config: Arc<dyn ConfigRepository>,
+    config: Arc<dyn AppConfigRepository>,
     workflows_dir: PathBuf,
     facets_base_dir: PathBuf,
 }
@@ -30,7 +30,7 @@ impl ExternalEditorGateway for NoopWorkflowExternalEditorGateway {
 }
 
 impl WorkflowExternalEditorGateway {
-    pub(crate) fn new(config: Arc<dyn ConfigRepository>, workflows_dir: PathBuf) -> Self {
+    pub(crate) fn new(config: Arc<dyn AppConfigRepository>, workflows_dir: PathBuf) -> Self {
         Self {
             config,
             facets_base_dir: workflows_dir.clone(),
@@ -46,8 +46,8 @@ impl ExternalEditorGateway for WorkflowExternalEditorGateway {
             .config
             .load()
             .map_err(|e| WorkflowError::external(e.to_string()))?
-            .app
-            .external_editor;
+            .external_editor()
+            .to_owned();
         NativeEditorLauncherGateway
             .open_path(&path.to_string_lossy(), &editor, "ワークフロー")
             .map_err(WorkflowError::Editor)
@@ -59,8 +59,8 @@ impl ExternalEditorGateway for WorkflowExternalEditorGateway {
             .config
             .load()
             .map_err(|e| WorkflowError::external(e.to_string()))?
-            .app
-            .external_editor;
+            .external_editor()
+            .to_owned();
         NativeEditorLauncherGateway
             .open_path(&path.to_string_lossy(), &editor, "ファセット")
             .map_err(WorkflowError::Editor)
@@ -109,7 +109,7 @@ pub fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowE
 #[cfg(feature = "test-support")]
 impl WorkflowExternalEditorGateway {
     pub fn test_new(
-        config: Arc<dyn ConfigRepository>,
+        config: Arc<dyn AppConfigRepository>,
         workflows_dir: PathBuf,
         facets_base_dir: PathBuf,
     ) -> Self {

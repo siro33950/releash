@@ -1,8 +1,7 @@
 use connectrpc::ErrorCode;
 use releashd::test_support::integration::platform::EditorError;
-use releashd::test_support::integration::repository::ConfigRepository;
-use releashd::test_support::integration::repository::ConfigUpdate;
-use releashd::test_support::integration::settings::AppConfigDocument;
+use releashd::test_support::integration::repository::AppConfig;
+use releashd::test_support::integration::repository::AppConfigRepository;
 use releashd::test_support::integration::settings::AppConfigError;
 use releashd::test_support::integration::transport::ConnectFailure;
 use releashd::test_support::integration::workflow::resolve_facet_editor_path;
@@ -14,8 +13,8 @@ use std::sync::Arc;
 
 struct RemoveEditorTarget(PathBuf);
 
-impl ConfigRepository for RemoveEditorTarget {
-    fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
+impl AppConfigRepository for RemoveEditorTarget {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
         std::fs::remove_file(&self.0).unwrap();
         Ok(
             releashd::test_support::integration::settings::config_to_domain(
@@ -24,13 +23,10 @@ impl ConfigRepository for RemoveEditorTarget {
         )
     }
 
-    fn save(&self, _: AppConfigDocument) -> Result<(), AppConfigError> {
+    fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
         unreachable!()
     }
 
-    fn update(&self, _: ConfigUpdate) -> Result<(), AppConfigError> {
-        unreachable!()
-    }
 }
 
 #[test]

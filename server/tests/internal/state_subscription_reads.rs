@@ -244,16 +244,20 @@ impl Fixture {
             releashd::test_support::integration::platform::build_repository_usecase()
                 .with_state_publisher(publisher.clone()),
         );
+        let config_mutation = Arc::new(parking_lot::Mutex::new(()));
         let config = Arc::new(AppConfig::new(
             ReleashConfig::default(),
             root.join("config.toml"),
         ));
+        let repo_paths_gateway = Arc::new(RepoPathsGateway::new(
+            Arc::new(parking_lot::RwLock::new(vec![path.clone()])),
+            config.clone(),
+        ));
         let repositories = Arc::new(RepoPathsUsecase::new(
-            Arc::new(RepoPathsGateway::new(
-                Arc::new(parking_lot::RwLock::new(vec![path.clone()])),
-                config.clone(),
-            )),
+            repo_paths_gateway.clone(),
+            repo_paths_gateway,
             publisher.clone(),
+            config_mutation.clone(),
         ));
         let repository_state = Arc::new(RepositoryStateService::new(
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
@@ -330,6 +334,7 @@ impl Fixture {
                 Arc::new(
                     releashd::test_support::integration::sessions::FakeProviderExecutableProbeGateway::default(),
                 ),
+                config_mutation.clone(),
             )
             .unwrap()
             .with_state_publisher(publisher.clone()),
@@ -375,7 +380,7 @@ impl Fixture {
             review_comments_dir: releashd::test_support::integration::platform::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
             app_config: Arc::new(
-                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone(), config.clone())
+                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone(), config.clone(), config_mutation.clone())
                     .with_state_publisher(publisher.clone()),
             ),
             notion: Arc::new(
@@ -385,6 +390,7 @@ impl Fixture {
                     Arc::new(releashd::test_support::integration::platform::NotionApiGatewayImpl::new(
                         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
                     )),
+                    config_mutation.clone(),
                 )
                 .with_state_publisher(publisher.clone()),
             ),

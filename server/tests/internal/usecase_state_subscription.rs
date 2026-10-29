@@ -126,6 +126,7 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
                 fixture.config.clone(),
                 fixture.config.clone(),
                 Arc::new(ReopeningNotionApi::default()),
+                Default::default(),
             ),
         );
         fixture

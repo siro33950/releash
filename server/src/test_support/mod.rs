@@ -180,44 +180,34 @@ pub(crate) fn lock_crash_telemetry() -> std::sync::MutexGuard<'static, ()> {
 
 pub fn terminal_config(
     command: &str,
-) -> std::sync::Arc<dyn crate::domain::app_config::ConfigRepository> {
+) -> std::sync::Arc<dyn crate::domain::app_config::AppConfigRepository> {
     struct Config(String);
-    impl crate::domain::app_config::ConfigRepository for Config {
+    impl crate::domain::app_config::AppConfigRepository for Config {
         fn load(
             &self,
-        ) -> Result<
-            crate::domain::app_config::value_objects::AppConfigDocument,
-            crate::domain::app_config::AppConfigError,
-        > {
+        ) -> Result<crate::domain::app_config::AppConfig, crate::domain::app_config::AppConfigError>
+        {
             use crate::domain::app_config::value_objects::*;
-            Ok(AppConfigDocument {
-                telemetry: TelemetryConfig {
+            Ok(crate::domain::app_config::AppConfig::new(
+                false,
+                false,
+                vec![],
+                String::new(),
+                self.0.clone(),
+                TelemetryConfig {
                     crash_reporting: false,
                     performance_telemetry: false,
                 },
-                app: AppSettings {
-                    close_to_tray: false,
-                    auto_launch: false,
-                    start_minimized: false,
-                    last_root_path: String::new(),
-                    last_repo_paths: vec![],
-                    external_editor: String::new(),
-                    terminal_startup_command: self.0.clone(),
-                },
-                workflow: WorkflowConfig {
+                WorkflowConfig {
                     approval_auto_approve: false,
                 },
-            })
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+            ))
         }
         fn save(
             &self,
-            _: crate::domain::app_config::value_objects::AppConfigDocument,
-        ) -> Result<(), crate::domain::app_config::AppConfigError> {
-            panic!("read-only test config")
-        }
-        fn update(
-            &self,
-            _: crate::domain::app_config::repository::ConfigUpdate,
+            _: crate::domain::app_config::AppConfig,
         ) -> Result<(), crate::domain::app_config::AppConfigError> {
             panic!("read-only test config")
         }

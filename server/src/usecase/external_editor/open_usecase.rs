@@ -1,6 +1,8 @@
+use crate::domain::app_config::AppConfigRepository;
 use crate::domain::external_editor::services::validate_path;
 use crate::domain::external_editor::EditorError;
 use crate::domain::external_editor::{EditorLauncherGateway, EditorSettingsGateway};
+use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 
 pub fn open_in_editor(
     launcher: &dyn EditorLauncherGateway,
@@ -26,14 +28,21 @@ pub fn get_external_editor(settings: &dyn EditorSettingsGateway) -> Result<Strin
     settings.selected_editor()
 }
 
+/// アプリ設定の外部エディタ選択を保存し、変更を通知する。
 pub fn update_external_editor(
-    settings: &dyn EditorSettingsGateway,
-    publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
+    repository: &dyn AppConfigRepository,
+    publisher: Option<&StateSubscriptionUsecase>,
     editor: String,
+    config_mutation: &parking_lot::Mutex<()>,
 ) -> Result<(), EditorError> {
-    settings.update_selected_editor(editor)?;
+    let guard = config_mutation.lock();
+    let mut config = repository.load().map_err(EditorError::Settings)?;
+    config.update_external_editor(editor);
+    repository.save(config).map_err(EditorError::Settings)?;
+    drop(guard);
+
     if let Some(publisher) = publisher {
-        publisher.notify(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+        publisher.notify(StateChangeSource::AppConfig);
     }
     Ok(())
 }

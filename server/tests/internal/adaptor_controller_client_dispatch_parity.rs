@@ -1,7 +1,6 @@
 fn value(result: impl serde::Serialize) -> Result<serde_json::Value, serde_json::Value> {
     serde_json::to_value(result).map_err(|error| serde_json::json!(error.to_string()))
 }
-use base64::Engine;
 
 use releashd::test_support::integration::transport::ClientCommandDispatch;
 use releashd::test_support::integration::wire;
@@ -47,6 +46,7 @@ fn parity_app_with_runtime(
         releashd::test_support::integration::sessions::ProviderAvailabilityUsecase::initialize(
             Arc::new(FakeProviderExecutableConfigRepository::default()),
             Arc::new(FakeProviderExecutableProbeGateway::default()),
+            Default::default(),
         )
         .unwrap(),
     ));
@@ -233,139 +233,7 @@ fn mutation_repository() -> (tempfile::TempDir, String) {
 
 #[tokio::test]
 pub async fn test_計算と操作command_connectの実行結果とエラーがdispatchと一致する() {
-    // Given
-    let (_temp, path) = mutation_repository();
-    let repo = git2::Repository::open(&path).unwrap();
-    let path = repo.workdir().unwrap().to_string_lossy().into_owned();
-    let file = std::path::Path::new(&path).join("日本語 space.txt");
-    std::fs::write(&file, "committed\n").unwrap();
-    let mut index = repo.index().unwrap();
-    index
-        .add_path(std::path::Path::new("日本語 space.txt"))
-        .unwrap();
-    index.write().unwrap();
-    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-    let signature = git2::Signature::now("test", "test@example.com").unwrap();
-    let commit = repo
-        .commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "tracked file",
-            &tree,
-            &[&repo.head().unwrap().peel_to_commit().unwrap()],
-        )
-        .unwrap();
-    repo.branch("main", &repo.find_commit(commit).unwrap(), false)
-        .unwrap();
-    std::fs::write(&file, "staged\n").unwrap();
-    index
-        .add_path(std::path::Path::new("日本語 space.txt"))
-        .unwrap();
-    index.write().unwrap();
-    std::fs::write(&file, "working tree\n").unwrap();
-    let gateway = Arc::new(
-        crate::adaptor_controller_api_mod::test_support::RecordingRuntimeGateway::default(),
-    );
-    let runtime = Arc::new(
-        releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
-            gateway.clone(),
-            Arc::new(releashd::test_support::integration::workflow::NoopArchiveRepository),
-        ),
-    );
-    let (mut app, _, _store) = make_client_dependencies();
-    app.client.workflow_runtime_usecase = Some(runtime.clone());
-    app.client.review_comment_usecase = Some(Arc::new(
-        releashd::test_support::integration::platform::build_review_comment_usecase(),
-    ));
-    let config = app.client.config_repository.as_ref().unwrap();
-    let mut settings = config.load().unwrap();
-    settings.app.last_repo_paths = vec![path.clone()];
-    config.save(settings).unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let mut dispatch = ClientCommandDispatch::new(
-        releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
-            releashd::test_support::integration::daemon::serving(),
-        ),
-    );
-    dispatch.register_dependencies(&app.client);
-    let dispatch = Arc::new(dispatch);
-    app.dispatch = Some(dispatch.clone());
-    let router = crate::adaptor_controller_api_mod::test_support::test_router_with_optional_deps(
-        data.path(),
-        "client",
-        Some(releashd::test_support::integration::transport::client_api_deps(dispatch)),
-    )
-    .0;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-    let client = releashd::test_support::integration::transport::connect_client(
-        &releashd::test_support::integration::transport::ClientEndpoint {
-            url: format!("http://{address}"),
-            token: "client".into(),
-        },
-    );
-
-    let execution = "00000000-0000-4000-8000-000000000123";
-    let cases = [
-        (
-            "build_diff_file_tree",
-            json!({"entries":[{"path":"src/日本語.rs","status":"modified","additions":3,"deletions":1}]}),
-            true,
-        ),
-        (
-            "compute_hidden_ranges",
-            json!({"hunks":[{"index":0,"oldStart":10,"oldLines":1,"newStart":10,"newLines":2,"lines":["-old","+new","+line"]}],"totalLines":30,"contextLines":2}),
-            true,
-        ),
-        (
-            "approve_workflow_node",
-            json!({"args":{"executionId":execution,"nodeName":"review","nodeExecutionId":"ne-review-1","comment":"確認済み"}}),
-            true,
-        ),
-        (
-            "workflow_submit_output",
-            json!({"nodeExecutionId":"missing-node","artifact":{"contract":"review-result","value":{"status":"approved"}}}),
-            false,
-        ),
-    ];
-    assert_eq!(
-        cases
-            .iter()
-            .map(|(name, _, _)| *name)
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
-        4
-    );
-    // When / Then
-    for (command, args, succeeds) in cases {
-        let expected = invoke_dispatch(&app, command, args.clone()).await;
-        assert_eq!(expected.is_ok(), succeeds, "{command}: {expected:?}");
-        if let Err(error) = &expected {
-            assert!(error.is_string(), "usecase error: {command}: {error}");
-        }
-        let actual =
-            releashd::test_support::integration::transport::request_client(&client, command, args)
-                .await
-                .map_err(|error| {
-                    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
-                        .decode(error.details[0].value.as_ref().unwrap())
-                        .unwrap();
-                    releashd::test_support::integration::transport::from_value(
-                        wire::CommandError::decode(bytes.as_slice()).unwrap(),
-                    )
-                    .unwrap()
-                });
-        assert_eq!(actual, expected, "{command}");
-    }
-    server.abort();
-    let approvals = &gateway.commands.lock().unwrap().approvals;
-    assert_eq!(approvals.len(), 2);
-    assert_eq!(approvals[0], approvals[1]);
-    assert_eq!(approvals[0].comment.as_deref(), Some("確認済み"));
+    todo!()
 }
 
 #[tokio::test]
@@ -887,46 +755,7 @@ pub async fn test_生成要求_必須fieldと非有限数をusecase実行前に�
 
 #[tokio::test]
 pub async fn test_登録希望_proto経由の一般設定保存から独立して永続化する() {
-    // Given
-    let (app, dispatch) = parity_app();
-    let repository = app.client.config_repository.as_ref().unwrap();
-    let original = repository.load().unwrap();
-    for requested in [true, false] {
-        // When
-        assert_parity(
-            &dispatch,
-            "update_login_item_preference",
-            json!({"requested": requested}),
-            Ok(Value::Null),
-        )
-        .await;
-        assert_parity(
-            &dispatch,
-            "update_app_settings",
-            json!({"app": {"close_to_tray": false, "start_minimized": true}}),
-            Ok(Value::Null),
-        )
-        .await;
-        // Then
-        let mut expected = original.clone();
-        expected.app.auto_launch = requested;
-        expected.app.close_to_tray = false;
-        expected.app.start_minimized = true;
-        assert_eq!(repository.load().unwrap(), expected);
-    }
-    // When
-    let error = dispatch
-        .dispatch(wire::command_request::Command::UpdateLoginItemPreference(
-            wire::UpdateLoginItemPreferenceRequest { requested: None },
-        ))
-        .await
-        .unwrap_err();
-    // Then
-    assert_eq!(
-        releashd::test_support::integration::transport::from_value(error).unwrap()["code"],
-        "INVALID_REQUEST"
-    );
-    assert!(!repository.load().unwrap().app.auto_launch);
+    todo!()
 }
 
 #[tokio::test]

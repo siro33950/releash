@@ -5,9 +5,8 @@ use crate::domain::agent_session::aggregates::{
     ProviderExecutable, ProviderRegistry, ProviderRegistryEntry, ProviderUnavailableReason,
     ResolvedProviderExecutable,
 };
-use crate::domain::agent_session::{
-    ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
-};
+use crate::domain::agent_session::{ProviderAvailabilityReader, ProviderExecutableProbeGateway};
+use crate::domain::app_config::{AppConfigError, AppConfigRepository};
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::provider_dto::AgentSessionProviderDto;
 
@@ -51,7 +50,7 @@ impl From<ProviderUnavailableReason> for ProviderUnavailableReasonDto {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderAvailabilityUsecaseError {
     InvalidInput,
-    Config(crate::domain::agent_session::ProviderExecutableConfigRepositoryError),
+    Config(AppConfigError),
     Refresh(crate::domain::agent_session::ProviderExecutableProbeGatewayError),
     Corrupt,
 }
@@ -59,32 +58,26 @@ pub enum ProviderAvailabilityUsecaseError {
 impl ProviderAvailabilityUsecaseError {
     pub(crate) fn technical_failure(&self) -> Option<&crate::domain::failure::TechnicalFailure> {
         match self {
-            Self::Config(
-                crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
-                    failure,
-                ),
-            )
+            Self::Config(AppConfigError::Technical(failure))
             | Self::Refresh(
                 crate::domain::agent_session::ProviderExecutableProbeGatewayError::Technical(
                     failure,
                 ),
             ) => Some(failure),
-            Self::InvalidInput
-            | Self::Corrupt
-            | Self::Config(
-                crate::domain::agent_session::ProviderExecutableConfigRepositoryError::InvalidInput,
-            ) => None,
+            Self::InvalidInput | Self::Corrupt | Self::Config(AppConfigError::InvalidInput(_)) => {
+                None
+            }
         }
     }
 }
 
 pub struct ProviderAvailabilityUsecase {
+    config_mutation: Arc<parking_lot::Mutex<()>>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
-    config: Arc<dyn ProviderExecutableConfigRepository>,
+    config: Arc<dyn AppConfigRepository>,
     probe: Arc<dyn ProviderExecutableProbeGateway>,
     registry: RwLock<ProviderRegistry>,
     operation: Mutex<()>,
-    configuration_revisions: Mutex<std::collections::HashMap<ProviderKind, u32>>,
 }
 
 impl ProviderAvailabilityUsecase {
@@ -97,17 +90,18 @@ impl ProviderAvailabilityUsecase {
     }
 
     pub fn initialize(
-        config: Arc<dyn ProviderExecutableConfigRepository>,
+        config: Arc<dyn AppConfigRepository>,
         probe: Arc<dyn ProviderExecutableProbeGateway>,
+        config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Result<Self, ProviderAvailabilityUsecaseError> {
         let registry = build_registry(config.as_ref(), probe.as_ref())?;
         Ok(Self {
+            config_mutation,
             state_publisher: None,
             config,
             probe,
             registry: RwLock::new(registry),
             operation: Mutex::new(()),
-            configuration_revisions: Mutex::new(Default::default()),
         })
     }
 
@@ -125,10 +119,10 @@ impl ProviderAvailabilityUsecase {
             .operation
             .lock()
             .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
-        let revisions = self
-            .configuration_revisions
-            .lock()
-            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        let config = self
+            .config
+            .load()
+            .map_err(ProviderAvailabilityUsecaseError::Config)?;
         let registry = self
             .registry
             .read()
@@ -139,7 +133,8 @@ impl ProviderAvailabilityUsecase {
                 .iter()
                 .map(|entry| ProviderAvailabilityItemDto {
                     provider: entry.provider().into(),
-                    configuration_revision: revisions.get(&entry.provider()).copied().unwrap_or(0),
+                    configuration_revision: config
+                        .provider_configuration_revision(entry.provider()),
                     display_name: entry.display_name().to_string(),
                     default_executable: entry.default_executable().as_str().to_string(),
                     configured_executable: entry
@@ -168,6 +163,7 @@ impl ProviderAvailabilityUsecase {
             .collect())
     }
 
+    /// provider の実行ファイル指定を保存し、利用可能状態を更新する。
     pub(crate) fn update_configured_executable(
         &self,
         provider: ProviderKind,
@@ -175,14 +171,47 @@ impl ProviderAvailabilityUsecase {
     ) -> Result<(), ProviderAvailabilityUsecaseError> {
         let executable = ProviderExecutable::new(executable)
             .map_err(|_| ProviderAvailabilityUsecaseError::InvalidInput)?;
-        self.replace_configured_executable(provider, Some(executable))
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        let guard = self.config_mutation.lock();
+        let mut config = self
+            .config
+            .load()
+            .map_err(ProviderAvailabilityUsecaseError::Config)?;
+        config
+            .update_provider_executable(provider, Some(executable))
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        self.config
+            .save(config)
+            .map_err(ProviderAvailabilityUsecaseError::Config)?;
+        drop(guard);
+        self.rebuild_registry()
     }
 
+    /// provider の実行ファイルの上書きを解除し、利用可能状態を更新する。
     pub(crate) fn reset_configured_executable(
         &self,
         provider: ProviderKind,
     ) -> Result<(), ProviderAvailabilityUsecaseError> {
-        self.replace_configured_executable(provider, None)
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        let guard = self.config_mutation.lock();
+        let mut config = self
+            .config
+            .load()
+            .map_err(ProviderAvailabilityUsecaseError::Config)?;
+        config
+            .update_provider_executable(provider, None)
+            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
+        self.config
+            .save(config)
+            .map_err(ProviderAvailabilityUsecaseError::Config)?;
+        drop(guard);
+        self.rebuild_registry()
     }
 
     pub(crate) fn refresh(&self) -> Result<(), ProviderAvailabilityUsecaseError> {
@@ -193,30 +222,6 @@ impl ProviderAvailabilityUsecase {
         self.probe
             .refresh_search_path()
             .map_err(ProviderAvailabilityUsecaseError::Refresh)?;
-        self.rebuild_registry()
-    }
-
-    fn replace_configured_executable(
-        &self,
-        provider: ProviderKind,
-        executable: Option<ProviderExecutable>,
-    ) -> Result<(), ProviderAvailabilityUsecaseError> {
-        let _operation = self
-            .operation
-            .lock()
-            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
-        self.config
-            .save_configured_executable(provider, executable.as_ref())
-            .map_err(ProviderAvailabilityUsecaseError::Config)?;
-        let mut revisions = self
-            .configuration_revisions
-            .lock()
-            .map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)?;
-        let revision = revisions.entry(provider).or_default();
-        *revision = revision
-            .checked_add(1)
-            .ok_or(ProviderAvailabilityUsecaseError::Corrupt)?;
-        drop(revisions);
         self.rebuild_registry()
     }
 
@@ -250,23 +255,23 @@ impl ProviderAvailabilityReader for ProviderAvailabilityUsecase {
 }
 
 fn build_registry(
-    config: &dyn ProviderExecutableConfigRepository,
+    config: &dyn AppConfigRepository,
     probe: &dyn ProviderExecutableProbeGateway,
 ) -> Result<ProviderRegistry, ProviderAvailabilityUsecaseError> {
+    let config = config
+        .load()
+        .map_err(ProviderAvailabilityUsecaseError::Config)?;
     let entries = ProviderKind::supported()
         .iter()
         .copied()
         .map(|provider| {
-            let configured_executable = config
-                .configured_executable(provider)
-                .map_err(ProviderAvailabilityUsecaseError::Config)?;
-            Ok(ProviderRegistryEntry::detect(
+            ProviderRegistryEntry::detect(
                 provider,
-                configured_executable,
+                config.provider_executable(provider).cloned(),
                 |effective| probe.resolve(effective),
-            ))
+            )
         })
-        .collect::<Result<Vec<_>, ProviderAvailabilityUsecaseError>>()?;
+        .collect();
     ProviderRegistry::new(entries).map_err(|_| ProviderAvailabilityUsecaseError::Corrupt)
 }
 

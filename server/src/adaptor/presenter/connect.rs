@@ -64,6 +64,7 @@ impl ConnectFailure for crate::usecase::watcher::UsecaseError {
 impl ConnectFailure for crate::usecase::repository_error::UsecaseError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
+            Self::AppConfig(error) => error.connect_code(),
             Self::Workflow(error) => error.connect_code(),
             Self::Session(error) => error.connect_code(),
             Self::Repository(error) => error.connect_code(),
@@ -207,7 +208,7 @@ pub(crate) fn send_thread_error(
 impl ConnectFailure for crate::domain::app_config::error::AppConfigError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
-            Self::Repository(_) => connectrpc::ErrorCode::Internal,
+            Self::Technical(error) => error.connect_code(),
             Self::InvalidInput(_) => connectrpc::ErrorCode::InvalidArgument,
         }
     }
@@ -718,14 +719,6 @@ impl ConnectFailure for crate::domain::agent_session::ProviderAgentTerminalGatew
 }
 
 impl ConnectFailure for crate::domain::agent_session::ProviderAgentLaunchGatewayError {
-    fn connect_code(&self) -> connectrpc::ErrorCode {
-        match self {
-            Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,
-            Self::Technical(failure) => failure.connect_code(),
-        }
-    }
-}
-impl ConnectFailure for crate::domain::agent_session::ProviderExecutableConfigRepositoryError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::InvalidInput => connectrpc::ErrorCode::InvalidArgument,

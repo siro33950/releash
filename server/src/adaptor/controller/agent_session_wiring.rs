@@ -9,9 +9,8 @@ use crate::adaptor::gateway::provider_lifecycle::{
     LocalProviderHookHealthFailureQuery, LocalProviderHookHealthRepository,
     LocalProviderLifecycleCredentialGateway, LocalProviderLifecycleEventRepository,
 };
-use crate::domain::agent_session::{
-    ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
-};
+use crate::domain::agent_session::{ProviderAvailabilityReader, ProviderExecutableProbeGateway};
+use crate::domain::app_config::AppConfigRepository;
 use crate::usecase::agent_session::{
     AgentSessionExitUsecase, AgentSessionHistoryReadUsecase, AgentSessionInitialInstructionUsecase,
     AgentSessionLaunchUsecase, AgentSessionLifecycleUsecase, AgentSessionQueryService,
@@ -35,7 +34,8 @@ pub struct AgentSessionCompositionInput {
     pub state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     pub store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub data_dir: PathBuf,
-    pub provider_executable_config: Arc<dyn ProviderExecutableConfigRepository>,
+    pub provider_executable_config: Arc<dyn AppConfigRepository>,
+    pub config_mutation: Arc<parking_lot::Mutex<()>>,
     pub provider_executable_probe: Arc<dyn ProviderExecutableProbeGateway>,
     pub claude_config_dir: PathBuf,
     pub codex_home: PathBuf,
@@ -359,6 +359,7 @@ pub fn compose_agent_sessions(
     let mut provider_availability = ProviderAvailabilityUsecase::initialize(
         input.provider_executable_config,
         input.provider_executable_probe,
+        input.config_mutation,
     )?;
     if let Some(publisher) = input.state_publisher {
         provider_availability = provider_availability.with_state_publisher(publisher);

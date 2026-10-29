@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::app_config::value_objects as domain_vo;
-
 fn default_true() -> bool {
     true
 }
@@ -186,68 +184,15 @@ impl Default for TelemetrySection {
     }
 }
 
-pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument {
-    domain_vo::AppConfigDocument {
-        telemetry: telemetry_to_domain(&config.telemetry),
-        app: app_to_domain(&config.app),
-        workflow: workflow_to_domain(&config.workflow),
-    }
+pub fn config_to_domain(config: &ReleashConfig) -> crate::domain::app_config::AppConfig {
+    todo!()
 }
 
-pub fn apply_domain_to_config(config: &mut ReleashConfig, domain: domain_vo::AppConfigDocument) {
-    config.telemetry = telemetry_to_model(domain.telemetry);
-    config.app = app_to_model(domain.app);
-    config.workflow = workflow_to_model(domain.workflow);
-}
-
-pub fn telemetry_to_domain(telemetry: &TelemetrySection) -> domain_vo::TelemetryConfig {
-    domain_vo::TelemetryConfig {
-        crash_reporting: telemetry.crash_reporting,
-        performance_telemetry: telemetry.performance_telemetry,
-    }
-}
-
-pub fn telemetry_to_model(telemetry: domain_vo::TelemetryConfig) -> TelemetrySection {
-    TelemetrySection {
-        crash_reporting: telemetry.crash_reporting,
-        performance_telemetry: telemetry.performance_telemetry,
-    }
-}
-
-pub fn app_to_domain(app: &AppSection) -> domain_vo::AppSettings {
-    domain_vo::AppSettings {
-        close_to_tray: app.close_to_tray,
-        auto_launch: app.auto_launch,
-        start_minimized: app.start_minimized,
-        last_root_path: app.last_root_path.clone(),
-        last_repo_paths: app.last_repo_paths.clone(),
-        external_editor: app.external_editor.clone(),
-        terminal_startup_command: app.terminal_startup_command.clone(),
-    }
-}
-
-pub fn app_to_model(app: domain_vo::AppSettings) -> AppSection {
-    AppSection {
-        close_to_tray: app.close_to_tray,
-        auto_launch: app.auto_launch,
-        start_minimized: app.start_minimized,
-        last_root_path: app.last_root_path,
-        last_repo_paths: app.last_repo_paths,
-        external_editor: app.external_editor,
-        terminal_startup_command: app.terminal_startup_command,
-    }
-}
-
-pub fn workflow_to_domain(workflow: &WorkflowSection) -> domain_vo::WorkflowConfig {
-    domain_vo::WorkflowConfig {
-        approval_auto_approve: workflow.approval_auto_approve,
-    }
-}
-
-pub fn workflow_to_model(workflow: domain_vo::WorkflowConfig) -> WorkflowSection {
-    WorkflowSection {
-        approval_auto_approve: workflow.approval_auto_approve,
-    }
+pub fn apply_domain_to_config(
+    config: &mut ReleashConfig,
+    domain: crate::domain::app_config::AppConfig,
+) {
+    todo!()
 }
 
 #[cfg(test)]

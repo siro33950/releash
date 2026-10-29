@@ -76,7 +76,7 @@ use runtime_session as workflow_runtime_session;
 #[derive(Clone)]
 pub struct WorkflowRuntimeDependencies {
     pub store: Option<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
-    pub config: Option<Arc<dyn crate::domain::app_config::ConfigRepository>>,
+    pub config: Option<Arc<dyn crate::domain::app_config::AppConfigRepository>>,
     pub secrets: Option<Arc<dyn crate::domain::app_config::ConfigSecretRepository>>,
     pub state_changes: crate::usecase::state_subscription::StateSubscriptionUsecase,
 }

@@ -1,7 +1,7 @@
 use crate::adaptor::controller::terminal_surface_runtime as terminal_surface;
 use crate::{adaptor, domain, infrastructure, usecase};
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
-use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigRepository};
+use domain::app_config::{AppConfigRepository, ConfigSecretRepository, RepositoryConfigRepository};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -191,9 +191,10 @@ pub async fn compose(
     );
 
     let app_config = Arc::new(AppConfig::new(config, config_path));
-    let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
+    let config_mutation = Arc::new(parking_lot::Mutex::new(()));
+    let config_repository: Arc<dyn AppConfigRepository> = app_config.clone();
     let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
-    let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
+    let notion_config_repository: Arc<dyn RepositoryConfigRepository> = app_config.clone();
 
     let terminal_surface_runtime = terminal_surface::TerminalSurfaceRuntime::new(
         Arc::new(terminal_surface::BackgroundWork::new(
@@ -252,9 +253,8 @@ pub async fn compose(
         adaptor::gateway::notion::NotionApiGatewayImpl::new(retry_limiter.clone()),
     );
 
-    let provider_executable_config: Arc<
-        dyn domain::agent_session::ProviderExecutableConfigRepository,
-    > = app_config.clone();
+    let provider_executable_config: Arc<dyn domain::app_config::AppConfigRepository> =
+        app_config.clone();
     let provider_history_home =
         dirs::home_dir().unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
     let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
@@ -278,6 +278,7 @@ pub async fn compose(
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
+                        config_mutation: config_mutation.clone(),
                         provider_executable_probe: Arc::new(
                             #[cfg(any(target_os = "macos", target_os = "linux"))]
                             adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_initial_search_path(
@@ -338,8 +339,7 @@ pub async fn compose(
     {
         if let Ok(cfg) = config_repository.load() {
             let paths: Vec<String> = cfg
-                .app
-                .last_repo_paths
+                .repo_paths()
                 .iter()
                 .filter(|p| !p.is_empty())
                 .cloned()
@@ -354,6 +354,7 @@ pub async fn compose(
             Arc::new(usecase::worktree_operation::WorktreeOperations::new(Arc::new(
                 adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
             ))),
+            config_mutation.clone(),
         ).with_state_publisher(state_subscriptions.clone()),
     );
 
@@ -361,12 +362,16 @@ pub async fn compose(
     use adaptor::gateway::repository::repo_paths::RepoPathsGateway;
     use usecase::repo_paths_usecase::RepoPathsUsecase;
 
-    let repo_paths_gateway =
-        RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
+    let repo_paths_gateway = Arc::new(RepoPathsGateway::new(
+        shared_repo_paths.clone(),
+        config_repository.clone(),
+    ));
 
     let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
-        Arc::new(repo_paths_gateway),
+        repo_paths_gateway.clone(),
+        repo_paths_gateway,
         state_subscriptions.clone(),
+        config_mutation.clone(),
     ));
 
     repo_paths_usecase.initialize_from_cwd(&repository_usecase)?;
@@ -442,6 +447,7 @@ pub async fn compose(
             notion_config_repository.clone(),
             app_config.clone(),
             notion_api_gateway.clone(),
+            config_mutation.clone(),
         )
         .with_state_publisher(state_subscriptions.clone()),
     );
@@ -540,6 +546,7 @@ pub async fn compose(
             config_repository.clone(),
             app_config.clone(),
             app_config.clone(),
+            config_mutation.clone(),
         )
         .with_state_publisher(state_subscriptions.clone()),
     );
@@ -570,6 +577,7 @@ pub async fn compose(
         review_comment_usecase: Some(review_comment_usecase),
         session_review_usecase: Some(session_review_usecase.clone()),
         config_repository: Some(config_repository.clone()),
+        config_mutation: config_mutation.clone(),
         app_config_usecase: Some(app_config_usecase.clone()),
         workflow_runtime_usecase: Some(workflow_runtime_usecase.clone()),
         editor_launcher: Arc::new(adaptor::gateway::external_editor::NativeEditorLauncherGateway),

@@ -87,7 +87,10 @@ fn test_terminal初期化失敗_設定のvariantを通信の分類と表示へ�
     // Given / When / Then
     for (source, kind, code, cause) in [
         (
-            AppConfigError::Repository("config unavailable".into()),
+            AppConfigError::Technical(crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "config unavailable".into(),
+            }),
             connectrpc::ErrorCode::Internal,
             "PTY_ERROR",
             Some("config unavailable"),

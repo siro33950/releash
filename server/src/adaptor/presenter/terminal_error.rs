@@ -82,8 +82,8 @@ pub(crate) fn terminal_resize_error(error: UsecaseError) -> AppError {
 
 fn terminal_cause(error: &UsecaseError) -> Option<String> {
     match error {
-        UsecaseError::AppConfig(crate::domain::app_config::AppConfigError::Repository(message)) => {
-            Some(message.clone())
+        UsecaseError::AppConfig(crate::domain::app_config::AppConfigError::Technical(failure)) => {
+            Some(failure.message.clone())
         }
         _ => error
             .technical_failure()
@@ -134,7 +134,7 @@ impl TerminalCommandError {
             UsecaseError::AppConfig(crate::domain::app_config::AppConfigError::InvalidInput(_)) => {
                 TerminalCommandErrorCode::InvalidRequest
             }
-            UsecaseError::AppConfig(crate::domain::app_config::AppConfigError::Repository(_)) => {
+            UsecaseError::AppConfig(crate::domain::app_config::AppConfigError::Technical(_)) => {
                 TerminalCommandErrorCode::PtyError
             }
             UsecaseError::NotFound(_)

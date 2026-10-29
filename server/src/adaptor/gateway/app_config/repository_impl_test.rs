@@ -1,6 +1,7 @@
 use super::*;
 use crate::adaptor::gateway::app_config::config_models::{
-    AgentsSection, AppSection, WorkflowSection,
+    AgentsSection, AppSection, NotionLabelPropertyModel, NotionPropertyMappingModel,
+    NotionRepoConfigModel, WorkflowSection,
 };
 
 #[test]
@@ -109,48 +110,7 @@ fn app_section_defaults() {
 
 #[test]
 fn notion_config_model_domain_conversion_roundtrip_preserves_mapping() {
-    let model = NotionRepoConfigModel {
-        api_token: "ntn_test_token".to_string(),
-        database_id: "db-id-456".to_string(),
-        property_mapping: NotionPropertyMappingModel {
-            title: "Task Name".to_string(),
-            labels: vec![
-                NotionLabelPropertyModel {
-                    name: "Status".to_string(),
-                    property_type: "status".to_string(),
-                },
-                NotionLabelPropertyModel {
-                    name: "Tags".to_string(),
-                    property_type: "multi_select".to_string(),
-                },
-            ],
-            branch_name: "Branch".to_string(),
-            branch_prefix: "feat/".to_string(),
-        },
-    };
-
-    let domain = notion_to_domain(model.clone());
-    let model_again = notion_to_model(domain.clone());
-
-    assert_eq!(model_again.api_token, model.api_token);
-    assert_eq!(model_again.database_id, model.database_id);
-    assert_eq!(
-        model_again.property_mapping.title,
-        model.property_mapping.title
-    );
-    assert_eq!(
-        model_again.property_mapping.labels,
-        model.property_mapping.labels
-    );
-    assert_eq!(
-        model_again.property_mapping.branch_name,
-        model.property_mapping.branch_name
-    );
-    assert_eq!(
-        model_again.property_mapping.branch_prefix,
-        model.property_mapping.branch_prefix
-    );
-    assert_eq!(notion_to_domain(model_again), domain);
+    todo!()
 }
 
 #[test]
@@ -178,7 +138,7 @@ fn test_workflow設定の読み取り_ロック破損を失敗として返す() 
     let result = gateway.get_workflow_config();
 
     // Then
-    assert!(matches!(result, Err(AppConfigError::Repository(_))));
+    assert!(matches!(result, Err(AppConfigError::Technical(_))));
 }
 
 #[test]

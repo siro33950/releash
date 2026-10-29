@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use crate::domain::app_config::error::AppConfigError;
-use crate::domain::app_config::repository::ConfigRepository;
-use crate::domain::app_config::value_objects::{AppConfigDocument, WorkflowConfig};
+use crate::domain::app_config::repository::AppConfigRepository;
 use crate::usecase::app_config::error::UsecaseError;
 use crate::usecase::app_config::query_service::{
     AppConfigQueryService, WorkflowConfigQueryService,
 };
+use crate::usecase::state_subscription::StateChangeSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkflowConfigInput {
@@ -14,19 +13,22 @@ pub struct WorkflowConfigInput {
 }
 
 pub struct AppConfigUsecase {
-    repository: Arc<dyn ConfigRepository>,
+    config_mutation: Arc<parking_lot::Mutex<()>>,
+    repository: Arc<dyn AppConfigRepository>,
     query: AppConfigQueryService,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
 impl AppConfigUsecase {
     pub fn new(
-        repository: Arc<dyn ConfigRepository>,
+        repository: Arc<dyn AppConfigRepository>,
         workflow_query: Arc<dyn WorkflowConfigQueryService>,
         terminal_query: Arc<dyn super::query_service::TerminalStartupCommandQueryService>,
+        config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
         let query = AppConfigQueryService::new(repository.clone(), workflow_query, terminal_query);
         Self {
+            config_mutation,
             repository,
             query,
             state_publisher: None,
@@ -57,61 +59,88 @@ impl AppConfigUsecase {
         self.query.terminal_startup_command()
     }
 
+    /// Terminal の起動コマンドの変更を保存する。
     pub fn update_terminal_startup_command(&self, command: String) -> Result<(), UsecaseError> {
-        self.update(move |config| config.app.update_terminal_startup_command(command))
-    }
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository.load()?;
+        config.update_terminal_startup_command(command)?;
+        self.repository.save(config)?;
+        drop(guard);
 
-    fn update(
-        &self,
-        mutate: impl FnOnce(&mut AppConfigDocument) -> Result<(), AppConfigError> + Send + 'static,
-    ) -> Result<(), UsecaseError> {
-        self.repository.update(Box::new(mutate))?;
         if let Some(publisher) = &self.state_publisher {
-            publisher.notify(crate::usecase::state_subscription::StateChangeSource::AppConfig);
+            publisher.notify(StateChangeSource::AppConfig);
         }
         Ok(())
     }
 
+    /// performance telemetry の有効・無効を保存する。
     pub fn update_performance_telemetry(&self, enabled: bool) -> Result<(), UsecaseError> {
-        self.update(move |config| {
-            config.telemetry.performance_telemetry = enabled;
-            Ok(())
-        })
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository.load()?;
+        config.update_performance_telemetry(enabled);
+        self.repository.save(config)?;
+        drop(guard);
+
+        if let Some(publisher) = &self.state_publisher {
+            publisher.notify(StateChangeSource::AppConfig);
+        }
+        Ok(())
     }
 
-    pub fn update_app_settings(
-        &self,
-        close_to_tray: bool,
-        start_minimized: bool,
-    ) -> Result<(), UsecaseError> {
-        self.update(move |config| {
-            config.app.close_to_tray = close_to_tray;
-            config.app.start_minimized = start_minimized;
-            Ok(())
-        })
+    /// 最小化状態で起動する設定の変更を保存する。
+    pub fn update_app_settings(&self, start_minimized: bool) -> Result<(), UsecaseError> {
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository.load()?;
+        config.update_start_minimized(start_minimized);
+        self.repository.save(config)?;
+        drop(guard);
+
+        if let Some(publisher) = &self.state_publisher {
+            publisher.notify(StateChangeSource::AppConfig);
+        }
+        Ok(())
     }
 
+    /// ログイン時に起動する設定の変更を保存する。
     pub fn update_login_item_preference(&self, requested: bool) -> Result<(), UsecaseError> {
-        self.update(move |config| {
-            config.app.auto_launch = requested;
-            Ok(())
-        })
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository.load()?;
+        config.update_auto_launch(requested);
+        self.repository.save(config)?;
+        drop(guard);
+
+        if let Some(publisher) = &self.state_publisher {
+            publisher.notify(StateChangeSource::AppConfig);
+        }
+        Ok(())
     }
 
+    /// 承認の自動化の有効・無効を保存する。
     pub fn update_workflow_config(&self, input: WorkflowConfigInput) -> Result<(), UsecaseError> {
-        self.update(move |config| {
-            config.workflow = WorkflowConfig {
-                approval_auto_approve: input.approval_auto_approve,
-            };
-            Ok(())
-        })
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository.load()?;
+        config.update_approval_auto_approve(input.approval_auto_approve);
+        self.repository.save(config)?;
+        drop(guard);
+
+        if let Some(publisher) = &self.state_publisher {
+            publisher.notify(StateChangeSource::AppConfig);
+        }
+        Ok(())
     }
 
+    /// crash reporting の有効・無効を保存する。
     pub fn update_crash_reporting(&self, enabled: bool) -> Result<(), UsecaseError> {
-        self.update(move |config| {
-            config.telemetry.crash_reporting = enabled;
-            Ok(())
-        })
+        let guard = self.config_mutation.lock();
+        let mut config = self.repository.load()?;
+        config.update_crash_reporting(enabled);
+        self.repository.save(config)?;
+        drop(guard);
+
+        if let Some(publisher) = &self.state_publisher {
+            publisher.notify(StateChangeSource::AppConfig);
+        }
+        Ok(())
     }
 }
 

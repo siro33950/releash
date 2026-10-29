@@ -842,7 +842,12 @@ mod connect_mapping_tests {
                 ),
                 (
                     crate::usecase::notion::error::NotionUsecaseError::AppConfig(
-                        crate::domain::app_config::AppConfigError::Repository("io".into()),
+                        crate::domain::app_config::AppConfigError::Technical(
+                            crate::domain::failure::TechnicalFailure {
+                                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                                message: "io".into(),
+                            },
+                        ),
                     ),
                     F::Internal,
                 ),
@@ -891,7 +896,12 @@ mod connect_mapping_tests {
                 ),
                 (
                     crate::usecase::app_config::error::UsecaseError::AppConfig(
-                        crate::domain::app_config::AppConfigError::Repository("io".into()),
+                        crate::domain::app_config::AppConfigError::Technical(
+                            crate::domain::failure::TechnicalFailure {
+                                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                                message: "io".into(),
+                            },
+                        ),
                     ),
                     F::Internal,
                 ),
@@ -2179,8 +2189,11 @@ mod connect_mapping_tests {
                 (
                     crate::domain::workflow::error::WorkflowError::Editor(
                         crate::domain::external_editor::EditorError::Settings(
-                            crate::domain::app_config::AppConfigError::Repository(
-                                "settings".into(),
+                            crate::domain::app_config::AppConfigError::Technical(
+                                crate::domain::failure::TechnicalFailure {
+                                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                                    message: "settings".into(),
+                                },
                             ),
                         ),
                     ),
@@ -2453,7 +2466,12 @@ mod connect_mapping_tests {
                 ),
                 (
                     crate::domain::external_editor::gateway::EditorError::Settings(
-                        crate::domain::app_config::AppConfigError::Repository("store".into()),
+                        crate::domain::app_config::AppConfigError::Technical(
+                            crate::domain::failure::TechnicalFailure {
+                                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                                message: "store".into(),
+                            },
+                        ),
                     ),
                     F::Internal,
                 ),
@@ -2532,7 +2550,12 @@ mod connect_mapping_tests {
             // Given
             let cases = [
                 (
-                    crate::domain::app_config::error::AppConfigError::Repository("store".into()),
+                    crate::domain::app_config::error::AppConfigError::Technical(
+                        crate::domain::failure::TechnicalFailure {
+                            nature: crate::domain::failure::TechnicalFailureNature::Other,
+                            message: "store".into(),
+                        },
+                    ),
                     F::Internal,
                 ),
                 (

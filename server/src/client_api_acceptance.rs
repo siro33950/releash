@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
-use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
@@ -28,114 +27,7 @@ pub struct ClientApiAcceptanceHost {
 
 impl ClientApiAcceptanceHost {
     pub fn start(data_dir: &Path, branch: Arc<dyn BranchRepository>) -> Self {
-        let work = crate::terminal_surface::initialize_background_work_for_acceptance();
-        use crate::adaptor::gateway::repository;
-        let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
-            Arc::new(repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir)),
-        ));
-        let repository = RepositoryUsecase::new(
-            branch,
-            Arc::new(repository::status::StatusGateway),
-            Arc::new(repository::worktree::WorktreeGateway),
-            Arc::new(repository::git_config::GitConfigGateway),
-            Arc::new(repository::util::RepoLocatorGateway),
-            Arc::new(repository::worktree_terminal::NoopWorktreeTerminalGateway),
-            operations.clone(),
-        );
-        let repository = Arc::new(repository);
-        let state_presenter = Arc::new(
-            crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(),
-        );
-        let state = crate::usecase::state_subscription::StateSubscriptionUsecase::new_with_output(
-            state_presenter.clone(),
-            crate::adaptor::controller::state_subscription::drive(Arc::new(|| {
-                let period = crate::domain::git_host::CacheTtl::EXTERNAL_INFORMATION.duration();
-                Box::pin(crate::infrastructure::timer::ticks_after(period, period))
-            })),
-        )
-        .with_reads(
-            Arc::new(AcceptanceStateReads(repository.clone())),
-            None,
-            vec![],
-            String::new(),
-        );
-        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase::new(
-            crate::adaptor::gateway::daemon::serving(),
-        ));
-        dispatch.register_domain(
-            &["get_language_from_path"],
-            Box::new(move |command| {
-                let repository = repository.clone();
-                Box::pin(async move {
-                    let crate::adaptor::presenter::client::command_request::Command::GetLanguageFromPath(
-                        args,
-                    ) = command
-                    else {
-                        unreachable!()
-                    };
-                    let path =
-                        crate::adaptor::controller::client::required(args.file_path, "filePath")?;
-                    let result =
-                        crate::adaptor::controller::client::repository::run_blocking(move || {
-                            repository.get_current_branch(&path)
-                        })
-                        .await;
-                    crate::adaptor::controller::client::outcome(result).map(
-                        crate::adaptor::presenter::client::command_result::Command::GetLanguageFromPath,
-                    )
-                })
-            }),
-        );
-        let dispatch = Arc::new(dispatch);
-        let binding =
-            crate::infrastructure::local_api::test_binding(data_dir.to_path_buf()).unwrap();
-        let terminal = TerminalSurfaceRuntime::new(
-            work.clone(),
-            data_dir.to_path_buf(),
-            crate::test_support::terminal_config(""),
-        );
-        let output = Arc::new(
-            crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
-                &state_presenter,
-            ),
-        );
-        terminal
-            .application()
-            .connect_state(output.clone())
-            .unwrap();
-        let terminal_subscriptions =
-            crate::usecase::terminal_surface::subscription::TerminalSubscriptionUsecase::new(
-                output,
-                Some(terminal.application()),
-                crate::adaptor::controller::terminal_subscription::start(),
-            );
-
-        let priority = crate::adaptor::controller::daemon::client_priority_interceptor();
-        let router = crate::adaptor::controller::api::build_router(
-            crate::adaptor::controller::api::auth::ClientTokens {
-                operator: binding.client_bearer_token(),
-                hook: binding.hook_bearer_token(),
-            },
-            Some(
-                ClientApiDeps::new(dispatch, priority).with_state_subscriptions(
-                    crate::adaptor::controller::api::StateSubscriptionDeps::new(
-                        state,
-                        state_presenter,
-                        terminal_subscriptions,
-                    ),
-                ),
-            ),
-            crate::adaptor::controller::daemon::default_timeout(),
-        );
-        Self {
-            data_dir: data_dir.to_path_buf(),
-            server: binding
-                .start(router, &tokio::runtime::Handle::current())
-                .inspect(|server| {
-                    server.publish_discovery().unwrap();
-                })
-                .unwrap(),
-        }
+        todo!()
     }
 
     pub fn endpoint(&self) -> ClientEndpoint {

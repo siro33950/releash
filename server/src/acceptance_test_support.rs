@@ -33,6 +33,7 @@ pub fn build_client_dependencies(
         review_comment_usecase: None,
         session_review_usecase: None,
         config_repository: None,
+        config_mutation: Default::default(),
         app_config_usecase: None,
         workflow_runtime_usecase: None,
         editor_launcher: Arc::new(

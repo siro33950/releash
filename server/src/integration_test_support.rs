@@ -555,10 +555,10 @@ pub mod repository {
     pub use crate::usecase::test_helpers::usecase as repository_usecase;
     pub use crate::usecase::test_helpers::FakeRepo;
 
-    pub use crate::domain::app_config::repository::ConfigRepository;
+    pub use crate::domain::app_config::repository::AppConfigRepository;
     pub use crate::domain::app_config::repository::ConfigSecretRepository;
-    pub use crate::domain::app_config::repository::ConfigUpdate;
-    pub use crate::domain::app_config::repository::NotionConfigRepository;
+    pub use crate::domain::app_config::repository::RepositoryConfigRepository;
+    pub use crate::domain::app_config::AppConfig;
     pub use crate::domain::code::repository::ReviewSideBytes;
     pub use crate::domain::code::repository::ReviewSideMetadata;
     pub use crate::domain::local_event::repository::LocalEventTransactionRepository;
@@ -624,8 +624,6 @@ pub mod sessions {
     pub use crate::domain::agent_session::aggregates::provider_registry::ResolvedProviderExecutable;
     pub use crate::domain::agent_session::launch_identity::launch_resource_id;
     pub use crate::domain::agent_session::provider_availability_gateway::ProviderAvailabilityReader;
-    pub use crate::domain::agent_session::provider_availability_gateway::ProviderExecutableConfigRepository;
-    pub use crate::domain::agent_session::provider_availability_gateway::ProviderExecutableConfigRepositoryError;
     pub use crate::domain::agent_session::provider_availability_gateway::ProviderExecutableProbeGateway;
     pub use crate::domain::agent_session::provider_availability_gateway::ProviderExecutableProbeGatewayError;
     pub use crate::domain::agent_session::provider_history_gateway::AgentSessionHistoryGateway;
@@ -709,10 +707,10 @@ pub mod settings {
     pub use crate::adaptor::gateway::app_config::repository_impl::write_config_tmp_file;
     pub use crate::adaptor::gateway::app_config::repository_impl::AppConfig;
     pub use crate::domain::app_config::error::AppConfigError;
-    pub use crate::domain::app_config::value_objects::AppConfigDocument;
     pub use crate::domain::app_config::value_objects::NotionLabelProperty;
     pub use crate::domain::app_config::value_objects::NotionPropertyMapping;
     pub use crate::domain::app_config::value_objects::NotionRepoConfig;
+    pub use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
     pub use crate::usecase::app_config::usecase::AppConfigUsecase;
     pub use crate::usecase::app_config::usecase::WorkflowConfigInput;
 }
