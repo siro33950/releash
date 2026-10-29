@@ -22,6 +22,12 @@ final class TestHTTPClient: HTTPClientInterface {
     var externalEditor = Releash_Client_V1_ExternalEditorState()
     var terminalStartupCommand = ""
     var workflowConfig = Releash_Client_V1_WorkflowSection()
+    var releashBases: [String: Releash_Client_V1_Nullablestring] = [:]
+    var branches: [String: Releash_Client_V1_ListBranchDto] = [:]
+    var notionConfigs: [String: Releash_Client_V1_NullableNotionRepoConfigView] = [:]
+    var notionValidation = Releash_Client_V1_NotionValidationResultView()
+    var deferNotionValidation = false
+    var pendingNotionValidation: (@Sendable (HTTPResponse) -> Void)?
     var collapsed: [String: Bool] = [:]
     var terminalReplay = ""
     var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
@@ -84,6 +90,10 @@ final class TestHTTPClient: HTTPClientInterface {
         state.withLock { $0.pendingCreation = onResponse }
         return Cancelable(cancel: {})
       }
+      if method == "ValidateNotionConfig", state.withLock({ $0.deferNotionValidation }) {
+        state.withLock { $0.pendingNotionValidation = onResponse }
+        return Cancelable(cancel: {})
+      }
       if method == "StartStateSubscription" {
         let subscription = try Releash_Client_V1_StartStateSubscriptionRequest(
           serializedBytes: request.message ?? Data())
@@ -130,6 +140,12 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.terminalStartupCommand.value = state.terminalStartupCommand
           } else if subscription.target == "workflow-config" {
             payload.workflowConfig = state.workflowConfig
+          } else if subscription.target == "releash-base" {
+            payload.releashBase = state.releashBases[subscription.args[0]] ?? .init()
+          } else if subscription.target == "branches" {
+            payload.branches = state.branches[subscription.args[0]] ?? .init()
+          } else if subscription.target == "notion-config" {
+            payload.notionConfig = state.notionConfigs[subscription.args[0]] ?? .init()
           } else if subscription.target == "repository-group-state" {
             payload.repositoryGroupState.collapsed =
               state.collapsed[subscription.args[0], default: false]
@@ -169,6 +185,8 @@ final class TestHTTPClient: HTTPClientInterface {
         var result = Releash_Client_V1_ResultString()
         result.value = "workflow-execution"
         response = try result.serializedData()
+      } else if method == "ValidateNotionConfig" {
+        response = try state.withLock { try $0.notionValidation.serializedData() }
       }
       onResponse(
         HTTPResponse(
@@ -224,6 +242,12 @@ final class TestHTTPClient: HTTPClientInterface {
       case .externalEditor(let value): state.externalEditor = value
       case .terminalStartupCommand(let value): state.terminalStartupCommand = value.value
       case .workflowConfig(let value): state.workflowConfig = value
+      case .releashBase(let value):
+        if let path = args?.first { state.releashBases[path] = value }
+      case .branches(let value):
+        if let path = args?.first { state.branches[path] = value }
+      case .notionConfig(let value):
+        if let path = args?.first { state.notionConfigs[path] = value }
       case .agentSession(let value):
         if value.hasValue { state.sessions[value.value.id] = value.value }
       case .nodeDetail(let value):
