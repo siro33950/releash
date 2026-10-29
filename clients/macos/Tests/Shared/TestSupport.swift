@@ -20,6 +20,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var hookHealth = Releash_Client_V1_ProviderHookHealthSnapshot()
     var daemonInfo = Releash_Client_V1_ServerInfo()
     var externalEditor = Releash_Client_V1_ExternalEditorState()
+    var providerAvailability = Releash_Client_V1_ProviderAvailabilitySnapshotResponse()
     var terminalStartupCommand = ""
     var workflowConfig = Releash_Client_V1_WorkflowSection()
     var collapsed: [String: Bool] = [:]
@@ -84,6 +85,12 @@ final class TestHTTPClient: HTTPClientInterface {
         state.withLock { $0.pendingCreation = onResponse }
         return Cancelable(cancel: {})
       }
+      if ["UpdateProviderExecutable", "ResetProviderExecutable", "RefreshProviderAvailability"]
+        .contains(method), state.withLock({ $0.deferSave })
+      {
+        state.withLock { $0.pendingSave = onResponse }
+        return Cancelable(cancel: {})
+      }
       if method == "StartStateSubscription" {
         let subscription = try Releash_Client_V1_StartStateSubscriptionRequest(
           serializedBytes: request.message ?? Data())
@@ -126,6 +133,8 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.daemonInfo = state.daemonInfo
           } else if subscription.target == "external-editor" {
             payload.externalEditor = state.externalEditor
+          } else if subscription.target == "provider-availability" {
+            payload.providerAvailability = state.providerAvailability
           } else if subscription.target == "terminal-startup-command" {
             payload.terminalStartupCommand.value = state.terminalStartupCommand
           } else if subscription.target == "workflow-config" {
@@ -222,6 +231,7 @@ final class TestHTTPClient: HTTPClientInterface {
       case .workspaces(let value): state.repositories = value.repositories.items
       case .sessionHistory(let value): state.history = value
       case .externalEditor(let value): state.externalEditor = value
+      case .providerAvailability(let value): state.providerAvailability = value
       case .terminalStartupCommand(let value): state.terminalStartupCommand = value.value
       case .workflowConfig(let value): state.workflowConfig = value
       case .agentSession(let value):
@@ -249,6 +259,30 @@ final class TestHTTPClient: HTTPClientInterface {
   }
   func requests(_ method: String) -> [HTTPRequest<Data?>] {
     state.withLock { $0.requests.filter { $0.url.lastPathComponent == method } }
+  }
+}
+
+func testProviderAvailability() -> Releash_Client_V1_ProviderAvailabilitySnapshotResponse {
+  .with {
+    $0.providers.items = [
+      .with {
+        $0.provider = "claude"
+        $0.displayName = "Claude Code"
+        $0.defaultExecutable = "claude"
+        $0.configuredExecutable = "/custom/claude"
+        $0.effectiveExecutable = "/custom/claude"
+        $0.available = true
+        $0.resolvedExecutable = "/resolved/claude"
+      },
+      .with {
+        $0.provider = "codex"
+        $0.displayName = "Codex"
+        $0.defaultExecutable = "codex"
+        $0.effectiveExecutable = "codex"
+        $0.available = false
+        $0.unavailableReason = "not_found"
+      },
+    ]
   }
 }
 

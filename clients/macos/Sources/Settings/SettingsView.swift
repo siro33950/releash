@@ -9,7 +9,7 @@ struct SettingsView: View {
         .tabItem { Label("General", systemImage: "gearshape") }
       RepositoriesSettingsView()
         .tabItem { Label("Repositories", systemImage: "folder") }
-      ProvidersSettingsView()
+      ProvidersSettingsView(model: model)
         .tabItem { Label("Providers", systemImage: "terminal") }
       SystemSettingsView()
         .tabItem { Label("System", systemImage: "desktopcomputer") }
