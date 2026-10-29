@@ -5,9 +5,8 @@ import SwiftUI
   private var model: AppModel { windows.model }
 
   var body: some Scene {
-    Settings { EmptyView() }
+    Settings { SettingsView(model: model) }
       .commands {
-        CommandGroup(replacing: .appSettings) {}
         CommandGroup(replacing: .newItem) {
           Button("New Releash Window") { windows.openWindow() }.keyboardShortcut("n")
         }

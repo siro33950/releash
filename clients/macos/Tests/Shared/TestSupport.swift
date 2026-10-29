@@ -19,6 +19,9 @@ final class TestHTTPClient: HTTPClientInterface {
     var providerUsage = Releash_Client_V1_ProviderUsageSnapshot()
     var hookHealth = Releash_Client_V1_ProviderHookHealthSnapshot()
     var daemonInfo = Releash_Client_V1_ServerInfo()
+    var externalEditor = Releash_Client_V1_ExternalEditorState()
+    var terminalStartupCommand = ""
+    var workflowConfig = Releash_Client_V1_WorkflowSection()
     var collapsed: [String: Bool] = [:]
     var terminalReplay = ""
     var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
@@ -121,6 +124,12 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.providerHookHealth = state.hookHealth
           } else if subscription.target == "daemon-info" {
             payload.daemonInfo = state.daemonInfo
+          } else if subscription.target == "external-editor" {
+            payload.externalEditor = state.externalEditor
+          } else if subscription.target == "terminal-startup-command" {
+            payload.terminalStartupCommand.value = state.terminalStartupCommand
+          } else if subscription.target == "workflow-config" {
+            payload.workflowConfig = state.workflowConfig
           } else if subscription.target == "repository-group-state" {
             payload.repositoryGroupState.collapsed =
               state.collapsed[subscription.args[0], default: false]
@@ -212,6 +221,9 @@ final class TestHTTPClient: HTTPClientInterface {
       switch payload.value {
       case .workspaces(let value): state.repositories = value.repositories.items
       case .sessionHistory(let value): state.history = value
+      case .externalEditor(let value): state.externalEditor = value
+      case .terminalStartupCommand(let value): state.terminalStartupCommand = value.value
+      case .workflowConfig(let value): state.workflowConfig = value
       case .agentSession(let value):
         if value.hasValue { state.sessions[value.value.id] = value.value }
       case .nodeDetail(let value):

@@ -57,13 +57,14 @@ struct ViewElement {
         visited.append(element)
         var actionNames: CFArray?
         AXUIElementCopyActionNames(element, &actionNames)
+        let rawValue = attribute(element, kAXValueAttribute)
         let entry = ViewElement(
           reference: element,
           identifier: attribute(element, kAXIdentifierAttribute) as? String ?? "",
           role: attribute(element, kAXRoleAttribute) as? String ?? "",
           label: attribute(element, kAXTitleAttribute) as? String ?? attribute(
             element, kAXDescriptionAttribute) as? String ?? "",
-          value: attribute(element, kAXValueAttribute) as? String ?? "",
+          value: rawValue as? String ?? (rawValue as? NSNumber)?.stringValue ?? "",
           enabled: attribute(element, kAXEnabledAttribute) as? Bool ?? false,
           actions: actionNames as? [String] ?? [])
         return [entry]
