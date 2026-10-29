@@ -5,8 +5,8 @@ use crate::domain::daemon_connection::{
     DiscoveredDaemon,
 };
 use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
+use crate::usecase::daemon_connection_query::DesktopSettingsDto;
 use releash::daemon;
-use releashd::desktop_api::DesktopSettingsDto;
 use std::{path::PathBuf, sync::Arc};
 
 pub struct DaemonServiceGateway {

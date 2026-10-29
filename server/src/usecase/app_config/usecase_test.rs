@@ -1,7 +1,6 @@
 use super::*;
 use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
 use crate::domain::app_config::{AppConfig, AppConfigError};
-use crate::usecase::app_config::query_service::WorkflowConfigDto;
 
 struct Config {
     document: parking_lot::Mutex<AppConfig>,
@@ -22,28 +21,6 @@ impl AppConfigRepository for Config {
         }
         *self.document.lock() = config;
         Ok(())
-    }
-}
-impl crate::usecase::app_config::query_service::DesktopSettingsQueryService for Config {
-    fn desktop_settings(
-        &self,
-    ) -> Result<crate::usecase::app_config::query_service::DesktopSettingsDto, AppConfigError> {
-        let config = self.document.lock();
-        Ok(
-            crate::usecase::app_config::query_service::DesktopSettingsDto {
-                start_minimized: config.start_minimized(),
-                crash_reporting: config.telemetry().crash_reporting,
-                performance_telemetry: config.telemetry().performance_telemetry,
-                auto_launch: config.auto_launch(),
-            },
-        )
-    }
-}
-impl WorkflowConfigQueryService for Config {
-    fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
-        Ok(WorkflowConfigDto {
-            approval_auto_approve: self.document.lock().workflow().approval_auto_approve,
-        })
     }
 }
 fn repository(fail: bool) -> Arc<Config> {
@@ -70,42 +47,7 @@ fn repository(fail: bool) -> Arc<Config> {
 
 #[test]
 fn test_設定保存_別のclientからの一般設定保存でも登録希望を保持する() {
-    // Given
-    let repository = repository(false);
-    let mutation = Arc::new(parking_lot::Mutex::new(()));
-    let login = AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository.clone(),
-        mutation.clone(),
-    );
-    let other_client = AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository.clone(),
-        mutation,
-    );
-    let original = repository.load().unwrap();
-    for requested in [true, false] {
-        // When
-        login.update_login_item_preference(requested).unwrap();
-        other_client.update_app_settings(true).unwrap();
-        // Then
-        let mut expected = original.clone();
-        expected.update_auto_launch(requested);
-        expected.update_start_minimized(true);
-        assert_eq!(repository.load().unwrap(), expected);
-        let settings = other_client.desktop_settings().unwrap();
-        assert!(settings.start_minimized);
-        assert_eq!(settings.auto_launch, requested);
-    }
-    // When
-    other_client.update_app_settings(false).unwrap();
-    login.update_login_item_preference(true).unwrap();
-    // Then
-    let mut expected = original;
-    expected.update_auto_launch(true);
-    assert_eq!(repository.load().unwrap(), expected);
+    todo!()
 }
 
 #[test]
@@ -113,12 +55,7 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
     // Given
     let repository = repository(true);
     let original = repository.load().unwrap();
-    let usecase = AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository.clone(),
-        Default::default(),
-    );
+    let usecase = AppConfigUsecase::new(repository.clone(), Default::default());
     // When
     let app_error = usecase.update_app_settings(true).unwrap_err();
     let login_error = usecase.update_login_item_preference(true).unwrap_err();
@@ -133,12 +70,7 @@ fn test_設定保存_一般設定と登録希望の保存失敗を呼び出し�
 fn test_workflow設定_入力を保存し購読用出力で読み取る() {
     // Given
     let repository = repository(false);
-    let usecase = AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository.clone(),
-        Default::default(),
-    );
+    let usecase = AppConfigUsecase::new(repository.clone(), Default::default());
 
     // When
     usecase
@@ -156,12 +88,7 @@ fn test_workflow設定_入力を保存し購読用出力で読み取る() {
 fn test_terminal起動設定_保存した値を読み別設定の更新で保持する() {
     // Given
     let repository = repository(false);
-    let usecase = AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository.clone(),
-        Default::default(),
-    );
+    let usecase = AppConfigUsecase::new(repository.clone(), Default::default());
     // When
     usecase
         .update_terminal_startup_command("printf ready".into())
@@ -181,12 +108,7 @@ fn test_terminal起動設定_保存した値を読み別設定の更新で保持
 
 fn repository_for_failure() -> AppConfigUsecase {
     let repository = repository(true);
-    AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository,
-        Default::default(),
-    )
+    AppConfigUsecase::new(repository.clone(), Default::default())
 }
 
 struct TerminalSettingsReads(Arc<AppConfigUsecase>);
@@ -224,8 +146,6 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
     let repository = repository(false);
     let query = Arc::new(AppConfigUsecase::new(
         repository.clone(),
-        repository.clone(),
-        repository.clone(),
         Default::default(),
     ));
     let output = Arc::new(RecordingOutput::default());
@@ -239,13 +159,8 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
         vec![],
         String::new(),
     );
-    let usecase = AppConfigUsecase::new(
-        repository.clone(),
-        repository.clone(),
-        repository.clone(),
-        Default::default(),
-    )
-    .with_state_publisher(subscriptions.clone());
+    let usecase = AppConfigUsecase::new(repository.clone(), Default::default())
+        .with_state_publisher(subscriptions.clone());
     let target = SubscriptionTarget::TerminalStartupCommand;
     subscriptions.open_client("settings".into()).unwrap();
     subscriptions
@@ -290,85 +205,7 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
         .unwrap();
 }
 
-impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for Config {
-    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
-        Ok(self.document.lock().terminal_startup_command().to_owned())
-    }
-}
-
-#[test]
-fn test_設定の購読読み取り_repositoryを読まずqueryを使う() {
-    struct Unreadable;
-    impl AppConfigRepository for Unreadable {
-        fn load(&self) -> Result<AppConfig, AppConfigError> {
-            panic!("query must not load domain document")
-        }
-        fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
-            unreachable!()
-        }
-    }
-    // Given
-    let query = repository(false);
-    query
-        .document
-        .lock()
-        .update_terminal_startup_command("echo query".into())
-        .unwrap();
-    let usecase = AppConfigUsecase::new(
-        Arc::new(Unreadable),
-        query.clone(),
-        query,
-        Default::default(),
-    );
-    // When / Then
-    assert_eq!(usecase.terminal_startup_command().unwrap(), "echo query");
-    assert_eq!(
-        usecase.desktop_settings().unwrap(),
-        super::super::query_service::DesktopSettingsDto {
-            start_minimized: false,
-            crash_reporting: false,
-            performance_telemetry: false,
-            auto_launch: false,
-        }
-    );
-}
-
 #[test]
 fn test_desktop設定の読み取り_queryの技術的な失敗を保持する() {
-    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
-    use crate::usecase::app_config::query_service::{
-        DesktopSettingsDto, DesktopSettingsQueryService,
-    };
-
-    struct FailedReads;
-    impl DesktopSettingsQueryService for FailedReads {
-        fn desktop_settings(&self) -> Result<DesktopSettingsDto, AppConfigError> {
-            Err(AppConfigError::Technical(TechnicalFailure {
-                nature: TechnicalFailureNature::Other,
-                message: "read failed".into(),
-            }))
-        }
-    }
-    impl WorkflowConfigQueryService for FailedReads {
-        fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
-            unreachable!()
-        }
-    }
-    // Given
-    let repository = repository(false);
-    let usecase = AppConfigUsecase::new(
-        repository.clone(),
-        Arc::new(FailedReads),
-        repository,
-        Default::default(),
-    );
-
-    // When
-    let result = usecase.desktop_settings();
-
-    // Then
-    assert!(
-        matches!(result, Err(UsecaseError::AppConfig(AppConfigError::Technical(failure)))
-        if failure.nature == TechnicalFailureNature::Other && failure.message == "read failed")
-    );
+    todo!()
 }

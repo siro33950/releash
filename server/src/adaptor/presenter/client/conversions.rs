@@ -1762,16 +1762,12 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse
     }
 }
 
-impl TryFrom<crate::usecase::app_config::query_service::WorkflowConfigDto>
-    for wire::WorkflowSection
-{
+impl TryFrom<&crate::domain::app_config::value_objects::WorkflowConfig> for wire::WorkflowSection {
     type Error = String;
     fn try_from(
-        value: crate::usecase::app_config::query_service::WorkflowConfigDto,
+        _value: &crate::domain::app_config::value_objects::WorkflowConfig,
     ) -> Result<Self, String> {
-        Ok(Self {
-            approval_auto_approve: Some(cv(value.approval_auto_approve)?),
-        })
+        todo!()
     }
 }
 

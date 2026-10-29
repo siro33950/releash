@@ -10,9 +10,6 @@ use crate::domain::app_config::repository::{
     AppConfigRepository, ConfigSecretRepository, RepositoryConfigRepository,
 };
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
-use crate::usecase::app_config::query_service::{
-    DesktopSettingsDto, DesktopSettingsQueryService, WorkflowConfigDto, WorkflowConfigQueryService,
-};
 
 use super::config_models::{
     apply_domain_to_config, try_config_to_domain, NotionLabelPropertyModel,
@@ -106,47 +103,6 @@ impl AppConfigRepository for AppConfig {
                 nature: TechnicalFailureNature::Other,
                 message,
             })
-        })
-    }
-}
-
-impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for AppConfig {
-    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
-        let config = self.config.lock().map_err(|error| {
-            AppConfigError::Technical(TechnicalFailure {
-                nature: TechnicalFailureNature::Other,
-                message: format!("ロック取得失敗: {error}"),
-            })
-        })?;
-        Ok(config.app.terminal_startup_command.clone())
-    }
-}
-
-impl DesktopSettingsQueryService for AppConfig {
-    fn desktop_settings(&self) -> Result<DesktopSettingsDto, AppConfigError> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| config_technical_error(format!("ロック取得失敗: {error}")))?;
-        Ok(DesktopSettingsDto {
-            start_minimized: config.app.start_minimized,
-            crash_reporting: config.telemetry.crash_reporting,
-            performance_telemetry: config.telemetry.performance_telemetry,
-            auto_launch: config.app.auto_launch,
-        })
-    }
-}
-
-impl WorkflowConfigQueryService for AppConfig {
-    fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
-        let config = self.config.lock().map_err(|error| {
-            AppConfigError::Technical(TechnicalFailure {
-                nature: TechnicalFailureNature::Other,
-                message: format!("ロック取得失敗: {error}"),
-            })
-        })?;
-        Ok(WorkflowConfigDto {
-            approval_auto_approve: config.workflow.approval_auto_approve,
         })
     }
 }

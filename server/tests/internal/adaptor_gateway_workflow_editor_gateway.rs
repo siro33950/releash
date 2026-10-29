@@ -26,7 +26,6 @@ impl AppConfigRepository for RemoveEditorTarget {
     fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
         unreachable!()
     }
-
 }
 
 #[test]

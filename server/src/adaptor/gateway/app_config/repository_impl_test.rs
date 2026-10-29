@@ -6,15 +6,7 @@ use crate::adaptor::gateway::app_config::config_models::{
 
 #[test]
 fn test_workflow設定の読み取り_設定モデルから出力値を返す() {
-    // Given
-    let mut config = ReleashConfig::default();
-    config.workflow.approval_auto_approve = true;
-    let gateway = AppConfig::new(config, std::path::PathBuf::new());
-
-    // When
-    let output = gateway.get_workflow_config().unwrap();
-    // Then
-    assert!(output.approval_auto_approve);
+    todo!()
 }
 
 #[test]
@@ -161,35 +153,12 @@ fn agents_section_defaults() {
 
 #[test]
 fn test_workflow設定の読み取り_ロック破損を失敗として返す() {
-    // Given
-    let gateway = std::sync::Arc::new(AppConfig::new(
-        ReleashConfig::default(),
-        std::path::PathBuf::new(),
-    ));
-    let poisoned = gateway.clone();
-    let _ = std::thread::spawn(move || {
-        let _lock = poisoned.config.lock().unwrap();
-        panic!("poison config lock");
-    })
-    .join();
-
-    // When
-    let result = gateway.get_workflow_config();
-
-    // Then
-    assert!(matches!(result, Err(AppConfigError::Technical(_))));
+    todo!()
 }
 
 #[test]
 fn test_terminal起動設定の読み取り_保存モデルから値を返す() {
-    // Given
-    let mut config = ReleashConfig::default();
-    config.app.terminal_startup_command = "echo startup".into();
-    let gateway = AppConfig::new(config, std::path::PathBuf::new());
-    // When
-    let command = crate::usecase::app_config::query_service::TerminalStartupCommandQueryService::terminal_startup_command(&gateway).unwrap();
-    // Then
-    assert_eq!(command, "echo startup");
+    todo!()
 }
 
 #[test]
@@ -250,48 +219,10 @@ fn test_設定変更_変更処理失敗時はmemoryを進めない() {
 
 #[test]
 fn test_desktop設定の読み取り_entityを生成せず保存モデルの値を返す() {
-    for enabled in [true, false] {
-        // Given
-        let mut config = ReleashConfig::default();
-        config.app.start_minimized = enabled;
-        config.app.auto_launch = !enabled;
-        config.telemetry.crash_reporting = enabled;
-        config.telemetry.performance_telemetry = !enabled;
-        config.agents.codex.cli_path = Some("invalid\0path".into());
-        let gateway = AppConfig::new(config, PathBuf::new());
-
-        // When
-        let settings = gateway.desktop_settings().unwrap();
-
-        // Then
-        assert_eq!(
-            settings,
-            DesktopSettingsDto {
-                start_minimized: enabled,
-                auto_launch: !enabled,
-                crash_reporting: enabled,
-                performance_telemetry: !enabled,
-            }
-        );
-    }
+    todo!()
 }
 
 #[test]
 fn test_desktop設定の読み取り_ロック破損を技術的な失敗として返す() {
-    // Given
-    let _crash_guard = crate::test_support::lock_crash_telemetry();
-    let gateway = std::sync::Arc::new(AppConfig::new(ReleashConfig::default(), PathBuf::new()));
-    let poisoned = gateway.clone();
-    let _ = std::thread::spawn(move || {
-        let _lock = poisoned.config.lock().unwrap();
-        panic!("poison config lock");
-    })
-    .join();
-
-    // When
-    let result = gateway.desktop_settings();
-
-    // Then
-    assert!(matches!(result, Err(AppConfigError::Technical(failure))
-        if failure.nature == TechnicalFailureNature::Other && failure.message.contains("ロック取得失敗")));
+    todo!()
 }

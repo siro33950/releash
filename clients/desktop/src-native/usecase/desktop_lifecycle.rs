@@ -6,7 +6,7 @@ use crate::domain::{
     daemon_connection::{DaemonConnectionFailure, DaemonEndpoint, DaemonSubscription},
     desktop_lifecycle::{ConnectedWindow, DesktopLifecycle, DesktopWindow},
 };
-use releashd::desktop_api::DesktopSettingsDto;
+use crate::usecase::daemon_connection_query::DesktopSettingsDto;
 use std::sync::Arc;
 
 pub struct ConnectedDesktop {

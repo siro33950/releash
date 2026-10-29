@@ -385,7 +385,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             host::apply_observed_desktop_settings(
                 &handle,
                 stale_client,
-                releashd::desktop_api::DesktopSettingsDto {
+                host::integration::daemon_connection::DesktopSettingsDto {
                     start_minimized: false,
                     crash_reporting: true,
                     performance_telemetry: false,

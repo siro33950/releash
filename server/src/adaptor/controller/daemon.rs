@@ -545,8 +545,6 @@ pub async fn compose(
     let app_config_usecase = Arc::new(
         usecase::app_config::AppConfigUsecase::new(
             config_repository.clone(),
-            app_config.clone(),
-            app_config.clone(),
             config_mutation.clone(),
         )
         .with_state_publisher(state_subscriptions.clone()),

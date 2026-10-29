@@ -106,7 +106,7 @@ pub async fn initialize_desktop_with_settings_applied<R: tauri::Runtime>(
 pub async fn apply_observed_desktop_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     client: Arc<crate::adaptor::gateway::desktop_client::DesktopClient>,
-    settings: releashd::desktop_api::DesktopSettingsDto,
+    settings: crate::usecase::daemon_connection_query::DesktopSettingsDto,
 ) {
     crate::adaptor::controller::desktop_lifecycle::settings_changed(
         app,

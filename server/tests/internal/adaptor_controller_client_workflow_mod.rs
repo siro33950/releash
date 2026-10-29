@@ -816,8 +816,6 @@ pub(crate) mod tests {
         client.app_config_usecase = Some(Arc::new(
             releashd::test_support::integration::settings::AppConfigUsecase::new(
                 config_repository,
-                app_config.clone(),
-                app_config.clone(),
                 config_mutation.clone(),
             ),
         ));

@@ -6,7 +6,7 @@ use crate::infrastructure::platform::{
     desktop_runtime::{self, ConfirmationReply, DesktopRuntime},
     window_lifecycle::{NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL},
 };
-use releashd::desktop_api::DesktopSettingsDto;
+use crate::usecase::daemon_connection_query::DesktopSettingsDto;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 pub struct TauriDesktopLifecycle<R: tauri::Runtime>(pub Arc<DesktopRuntime<R>>);

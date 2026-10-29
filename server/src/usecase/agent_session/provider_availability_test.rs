@@ -5,8 +5,7 @@ use crate::domain::agent_session::aggregates::{
     ProviderAvailability, ProviderExecutable, ProviderUnavailableReason, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::{
-    ProviderAvailabilityReader, ProviderExecutableProbeGateway,
-    ProviderExecutableProbeGatewayError,
+    ProviderAvailabilityReader, ProviderExecutableProbeGateway, ProviderExecutableProbeGatewayError,
 };
 use crate::domain::app_config::AppConfigRepository;
 use crate::domain::provider_lifecycle::ProviderKind;

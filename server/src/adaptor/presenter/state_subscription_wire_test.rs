@@ -832,7 +832,7 @@ fn test_購読payload_設定とproviderの出力値を維持する() {
         ),
         (
             StateValue::WorkflowConfig(
-                crate::usecase::app_config::query_service::WorkflowConfigDto {
+                crate::domain::app_config::value_objects::WorkflowConfig {
                     approval_auto_approve: true,
                 },
             ),

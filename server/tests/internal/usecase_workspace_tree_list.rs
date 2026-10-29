@@ -19,7 +19,9 @@ use releashd::test_support::integration::platform::NoopRepositoryStateWatcher;
 use releashd::test_support::integration::platform::TestRepositoryStateWorkerRuntime;
 use releashd::test_support::integration::repository::RepoPathsRepository;
 use releashd::test_support::integration::repository::{AppConfig, AppConfigRepository};
-use releashd::test_support::integration::settings::{AppConfigError, TelemetryConfig, WorkflowConfig};
+use releashd::test_support::integration::settings::{
+    AppConfigError, TelemetryConfig, WorkflowConfig,
+};
 use releashd::test_support::integration::subscriptions::StateChangeSource;
 use std::time::Duration;
 

@@ -88,7 +88,7 @@ pub fn stream_client(
     ))
 }
 
-type DesktopSettingsDto = releashd::desktop_api::DesktopSettingsDto;
+type DesktopSettingsDto = crate::usecase::daemon_connection_query::DesktopSettingsDto;
 
 pub struct DesktopClient {
     subscription: DaemonSubscription,
@@ -276,17 +276,10 @@ impl<'a> SettingsSubscription<'a> {
 }
 
 fn apply_settings(
-    payload: wire::StatePayload,
-    settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
+    _payload: wire::StatePayload,
+    _settings: &tokio::sync::watch::Sender<Option<DesktopSettingsDto>>,
 ) {
-    if let Some(wire::state_payload::Value::DesktopSettings(value)) = payload.value {
-        match value.try_into() {
-            Ok(value) => {
-                settings.send_replace(Some(value));
-            }
-            Err(error) => log::warn!("Desktop settings decode failed: {error}"),
-        }
-    }
+    todo!()
 }
 
 async fn observe(

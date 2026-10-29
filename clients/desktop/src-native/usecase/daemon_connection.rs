@@ -2,7 +2,7 @@ use super::daemon_connection_query::DaemonConnectionQueryService;
 use crate::domain::daemon_connection::{
     DaemonConnection, DaemonConnectionFailure, DaemonEndpoint, DaemonService, DaemonSubscription,
 };
-use releashd::desktop_api::DesktopSettingsDto;
+use crate::usecase::daemon_connection_query::DesktopSettingsDto;
 use std::sync::Arc;
 
 pub struct DaemonConnectionUsecase {

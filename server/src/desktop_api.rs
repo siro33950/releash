@@ -41,7 +41,6 @@ pub use crate::infrastructure::telemetry::metrics::{
     record_startup_from_origin, set_startup_origin, Startup,
 };
 pub use crate::infrastructure::telemetry::{init_telemetry, TelemetryGuard};
-pub use crate::usecase::app_config::query_service::DesktopSettingsDto;
 pub use crate::usecase::telemetry::TelemetryPort;
 #[cfg(feature = "test-support")]
 pub mod test_support {

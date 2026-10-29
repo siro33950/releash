@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::adaptor::gateway::external_editor::NativeEditorLauncherGateway;
-use crate::domain::external_editor::EditorLauncherGateway as _;
 use crate::adaptor::gateway::workflow::{builtin, facet, storage};
 use crate::domain::app_config::AppConfigRepository;
+use crate::domain::external_editor::EditorLauncherGateway as _;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 

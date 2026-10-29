@@ -32,8 +32,8 @@ fn test_desktop観測_初回windowとappの起動時間を設定に従って記�
 
 #[test]
 fn test_desktop設定_クラッシュ送信の無効化と再有効化を再起動なしで反映する() {
+    use crate::usecase::daemon_connection_query::DesktopSettingsDto;
     use releashd::desktop_api::test_support::{install_test_exporter, TEST_LOCK};
-    use releashd::desktop_api::DesktopSettingsDto;
     // Given
     let _telemetry = releashd::desktop_api::test_support::lock_test_telemetry();
     let _guard = TEST_LOCK.lock().unwrap();

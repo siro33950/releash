@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use crate::domain::app_config::repository::AppConfigRepository;
+use crate::domain::app_config::value_objects::WorkflowConfig;
+use crate::domain::app_config::AppConfig;
 use crate::usecase::app_config::error::UsecaseError;
-use crate::usecase::app_config::query_service::{
-    AppConfigQueryService, WorkflowConfigQueryService,
-};
 use crate::usecase::state_subscription::StateChangeSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,25 +11,22 @@ pub struct WorkflowConfigInput {
     pub approval_auto_approve: bool,
 }
 
+/// アプリ全体の設定の取得と変更を受け付ける。
 pub struct AppConfigUsecase {
     config_mutation: Arc<parking_lot::Mutex<()>>,
     repository: Arc<dyn AppConfigRepository>,
-    query: AppConfigQueryService,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
 impl AppConfigUsecase {
+    /// 設定の保存先と変更時の排他を受け取る。
     pub fn new(
         repository: Arc<dyn AppConfigRepository>,
-        workflow_query: Arc<dyn WorkflowConfigQueryService>,
-        terminal_query: Arc<dyn super::query_service::TerminalStartupCommandQueryService>,
         config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
-        let query = AppConfigQueryService::new(repository.clone(), workflow_query, terminal_query);
         Self {
             config_mutation,
             repository,
-            query,
             state_publisher: None,
         }
     }
@@ -43,20 +39,21 @@ impl AppConfigUsecase {
         self
     }
 
-    pub(crate) fn desktop_settings(
-        &self,
-    ) -> Result<super::query_service::DesktopSettingsDto, UsecaseError> {
-        self.query.desktop_settings()
+    /// desktop の設定を含む、保存済みのアプリ全体の設定を返す。
+    pub(crate) fn desktop_settings(&self) -> Result<AppConfig, UsecaseError> {
+        Ok(self.repository.load()?)
     }
 
-    pub fn get_workflow_config(
-        &self,
-    ) -> Result<super::query_service::WorkflowConfigDto, UsecaseError> {
-        self.query.get_workflow_config()
+    /// 保存済みの workflow の承認方針を返す。
+    pub fn get_workflow_config(&self) -> Result<WorkflowConfig, UsecaseError> {
+        let config = self.repository.load()?;
+        Ok(config.workflow().clone())
     }
 
+    /// 保存済みの Terminal の起動コマンドを返す。
     pub fn terminal_startup_command(&self) -> Result<String, UsecaseError> {
-        self.query.terminal_startup_command()
+        let config = self.repository.load()?;
+        Ok(config.terminal_startup_command().to_owned())
     }
 
     /// Terminal の起動コマンドの変更を保存する。

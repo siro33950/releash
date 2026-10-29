@@ -26,7 +26,9 @@ pub mod daemon_connection {
         DiscoveredDaemon,
     };
     pub use crate::usecase::daemon_connection::DaemonConnectionUsecase;
-    pub use crate::usecase::daemon_connection_query::DaemonConnectionQueryService;
+    pub use crate::usecase::daemon_connection_query::{
+        DaemonConnectionQueryService, DesktopSettingsDto,
+    };
 }
 
 pub mod settings_observer {

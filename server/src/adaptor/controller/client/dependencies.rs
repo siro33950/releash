@@ -29,7 +29,8 @@ pub struct ClientDependencies {
         Option<std::sync::Arc<crate::usecase::comment::SessionReviewUsecase>>,
     pub review_comment_usecase:
         Option<std::sync::Arc<crate::usecase::comment::ReviewCommentUsecase>>,
-    pub config_repository: Option<std::sync::Arc<dyn crate::domain::app_config::AppConfigRepository>>,
+    pub config_repository:
+        Option<std::sync::Arc<dyn crate::domain::app_config::AppConfigRepository>>,
     pub app_config_usecase: Option<std::sync::Arc<crate::usecase::app_config::AppConfigUsecase>>,
     pub workflow_runtime_usecase:
         Option<std::sync::Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
