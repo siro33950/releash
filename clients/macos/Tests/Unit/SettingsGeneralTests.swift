@@ -115,6 +115,31 @@ final class SettingsGeneralTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_Terminal保存_応答後に届いた通知で次の未確定入力を上書きしない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock { $0.terminalStartupCommand = "saved" }
+    let model = try await testModel(http)
+    let state = GeneralSettingsState()
+    state.subscribe(model)
+    try await eventually { state.terminalCommand == "saved" }
+    state.command = "command A"
+    await state.updateCommand(model: model)
+    XCTAssertNil(state.failure)
+    XCTAssertTrue(state.saving.isEmpty)
+    // When
+    state.command = "command B"
+    var payload = Releash_Client_V1_StatePayload()
+    payload.terminalStartupCommand.value = "command A"
+    try http.publish(payload, target: "terminal-startup-command")
+    // Then
+    try await eventually { state.terminalCommand == "command A" }
+    XCTAssertEqual(state.command, "command B")
+    XCTAssertEqual(http.requests("UpdateTerminalStartupCommand").count, 1)
+    state.unsubscribe(model)
+    await model.stop()
+  }
+
   @MainActor func test_General保存_拒否の理由を表示して購読済みの値に戻す() async throws {
     // Given
     let http = TestHTTPClient()

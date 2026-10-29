@@ -145,7 +145,7 @@ struct RepositorySettingsView: View {
 
 }
 
-@Observable @MainActor final class RepositorySettingsState {
+@Observable @MainActor final class RepositorySettingsState: SettingsSaving {
   enum Field { case repository, base, notion, validation }
   let path: String
   var base: Releash_Client_V1_Nullablestring?
@@ -184,8 +184,13 @@ struct RepositorySettingsView: View {
       },
       model.subscribe("notion-config", [path]) { [weak self] payload in
         if case .notionConfig(let value) = payload.value {
-          self?.notion = value
-          self?.restoreNotion()
+          guard let self else { return }
+          let restore =
+            apiToken == (notion?.value.apiToken ?? "")
+            && databaseID == (notion?.value.databaseID ?? "")
+            && mapping == (notion?.value.propertyMapping ?? .init())
+          notion = value
+          if restore { restoreNotion() }
         }
       },
     ]
@@ -260,19 +265,10 @@ struct RepositorySettingsView: View {
     _ field: Field, _ model: AppModel,
     operation: (any Releash_Client_V1_ClientServiceClientInterface, Headers) async throws -> Void
   ) async {
-    guard saving.insert(field).inserted else { return }
-    failure = nil
-    defer {
-      saving.remove(field)
-      if field == .notion { restoreNotion() }
-    }
-    do {
-      guard let client = model.client, model.connected else {
-        throw CLIFailure(message: "サーバに接続されていません")
-      }
-      try await operation(client, model.headers)
-    } catch {
-      failure = model.failureMessage(error)
-    }
+    await saveSetting(
+      field, model,
+      cleanup: {
+        if field == .notion { self.restoreNotion() }
+      }, operation: operation)
   }
 }

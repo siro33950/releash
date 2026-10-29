@@ -211,6 +211,59 @@ final class SettingsRepositoriesTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_Notion保存_応答後に届いた通知で次の未確定入力と検証結果を上書きしない() async throws {
+    for field in ["token", "database", "mapping"] {
+      // Given
+      let http = TestHTTPClient()
+      http.state.withLock {
+        $0.notionConfigs["/repo"] = .with {
+          $0.value.apiToken = "saved-token"
+          $0.value.databaseID = "saved-database"
+          $0.value.propertyMapping.title = "Saved"
+        }
+        $0.notionValidation.status.value = .configured
+      }
+      let model = try await testModel(http)
+      let state = RepositorySettingsState(path: "/repo")
+      state.subscribe(model)
+      try await eventually { state.apiToken == "saved-token" }
+      state.apiToken = "token A"
+      state.databaseID = "database A"
+      state.mapping.title = "Title A"
+      await state.validateNotion(model: model)
+      await state.saveNotion(model: model)
+      XCTAssertNil(state.failure)
+      XCTAssertTrue(state.saving.isEmpty)
+      let request = try Releash_Client_V1_SaveNotionConfigRequest(
+        serializedBytes: XCTUnwrap(http.requests("SaveNotionConfig").last?.message))
+      // When
+      switch field {
+      case "token": state.apiToken = "token B"
+      case "database": state.databaseID = "database B"
+      default: state.mapping.branchPrefix = "draft/"
+      }
+      await state.validateNotion(model: model)
+      let apiToken = state.apiToken
+      let databaseID = state.databaseID
+      let mapping = state.mapping
+      let validation = try XCTUnwrap(state.validation)
+      var payload = Releash_Client_V1_StatePayload()
+      payload.notionConfig.value.apiToken = request.apiToken
+      payload.notionConfig.value.databaseID = request.databaseID
+      payload.notionConfig.value.propertyMapping = request.propertyMapping
+      try http.publish(payload, target: "notion-config", args: ["/repo"])
+      // Then
+      try await eventually { state.notion == payload.notionConfig }
+      XCTAssertEqual(state.apiToken, apiToken, field)
+      XCTAssertEqual(state.databaseID, databaseID, field)
+      XCTAssertEqual(state.mapping, mapping, field)
+      XCTAssertEqual(state.validation, validation, field)
+      XCTAssertEqual(http.requests("SaveNotionConfig").count, 1)
+      state.unsubscribe(model)
+      await model.stop()
+    }
+  }
+
   @MainActor func test_Repository削除_一覧とサイドバーはworkspacesの通知で更新する() async throws {
     // Given
     let http = TestHTTPClient()
