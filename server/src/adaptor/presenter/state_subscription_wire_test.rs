@@ -783,6 +783,67 @@ fn test_購読payload_review対象をreview欄へ変換する() {
 }
 
 #[test]
+fn test_設定購読payload_entityの値を必須項目付きのprotoに写す() {
+    use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
+    use crate::domain::app_config::AppConfig;
+    use wire::state_payload::Value as W;
+
+    for enabled in [false, true] {
+        // Given
+        let config = AppConfig::new(
+            !enabled,
+            enabled,
+            vec![],
+            String::new(),
+            "printf '準備完了\\n'".into(),
+            TelemetryConfig {
+                crash_reporting: !enabled,
+                performance_telemetry: enabled,
+            },
+            WorkflowConfig {
+                approval_auto_approve: enabled,
+            },
+            Default::default(),
+            Default::default(),
+        );
+        let workflow = config.workflow().clone();
+        let command = config.terminal_startup_command().to_owned();
+
+        // When
+        let desktop = payload(&StateValue::DesktopSettings(config)).unwrap().value;
+        let workflow = payload(&StateValue::WorkflowConfig(workflow))
+            .unwrap()
+            .value;
+        let terminal = payload(&StateValue::TerminalStartupCommand(command.clone()))
+            .unwrap()
+            .value;
+
+        // Then
+        assert_eq!(
+            desktop,
+            Some(W::DesktopSettings(wire::DesktopSettings {
+                start_minimized: Some(enabled),
+                crash_reporting: Some(!enabled),
+                performance_telemetry: Some(enabled),
+                auto_launch: Some(!enabled),
+            }))
+        );
+        assert_eq!(
+            workflow,
+            Some(W::WorkflowConfig(wire::WorkflowSection {
+                approval_auto_approve: Some(enabled),
+            }))
+        );
+        assert_eq!(
+            terminal,
+            Some(W::TerminalStartupCommand(wire::ResultString {
+                value: Some(command),
+            }))
+        );
+    }
+}
+
+#[test]
 fn test_購読payload_設定とproviderの出力値を維持する() {
     use crate::usecase::agent_session::{
         ProviderAvailabilityItemDto, ProviderAvailabilitySnapshotDto,

@@ -636,6 +636,98 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
 }
 
 #[tokio::test]
+pub async fn test_設定購読_初期値と保存後の値を既存のproto内容で配信する() {
+    use releashd::test_support::integration::subscriptions::PublishedState;
+    use releashd::test_support::integration::wire::{from_message, state_payload::Value as W};
+    use serde_json::json;
+
+    // Given
+    let fixture = Fixture::new();
+    for (target, before, after) in [
+        (
+            "desktop-settings",
+            json!({"startMinimized":false,"crashReporting":true,"performanceTelemetry":true,"autoLaunch":false}),
+            json!({"startMinimized":true,"crashReporting":true,"performanceTelemetry":true,"autoLaunch":false}),
+        ),
+        (
+            "workflow-config",
+            json!({"approval_auto_approve":false}),
+            json!({"approval_auto_approve":true}),
+        ),
+        (
+            "terminal-startup-command",
+            json!(""),
+            json!("printf '準備完了\\n'"),
+        ),
+    ] {
+        let mut stream = Box::pin(fixture.subscriptions.open(target.into()).unwrap());
+        assert!(matches!(
+            stream.next().await,
+            Some(StateSubscriptionEvent::Ready)
+        ));
+        start_read(&fixture.subscriptions, target, target, None)
+            .await
+            .unwrap();
+
+        for (index, expected) in [before, after].into_iter().enumerate() {
+            // When
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap();
+            let value = match event {
+                StateSubscriptionEvent::Item(_, Event::Snapshot(_, value)) if index == 0 => value,
+                StateSubscriptionEvent::Item(_, Event::Change(_, _, value)) if index == 1 => value,
+                _ => panic!("settings snapshot or change"),
+            };
+            let PublishedState::Value(value) = value.as_ref() else {
+                panic!("settings payload");
+            };
+            let actual = match value.value.as_ref().unwrap() {
+                W::DesktopSettings(value) => {
+                    from_message("releash.client.v1.DesktopSettings", value).unwrap()
+                }
+                W::WorkflowConfig(value) => {
+                    from_message("releash.client.v1.WorkflowSection", value).unwrap()
+                }
+                W::TerminalStartupCommand(value) => json!(value.value.as_ref().unwrap()),
+                other => panic!("unexpected payload: {other:?}"),
+            };
+
+            // Then
+            assert_eq!(actual, expected, "{target}");
+            if index == 0 {
+                assert!(matches!(
+                    stream.next().await,
+                    Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+                ));
+                match target {
+                    "desktop-settings" => {
+                        fixture.reads.app_config.update_app_settings(true).unwrap()
+                    }
+                    "workflow-config" => fixture
+                        .reads
+                        .app_config
+                        .update_workflow_config(
+                            releashd::test_support::integration::settings::WorkflowConfigInput {
+                                approval_auto_approve: true,
+                            },
+                        )
+                        .unwrap(),
+                    "terminal-startup-command" => fixture
+                        .reads
+                        .app_config
+                        .update_terminal_startup_command("printf '準備完了\\n'".into())
+                        .unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        fixture.subscriptions.close_client(target);
+    }
+}
+
+#[tokio::test]
 pub async fn test_状態読取_workflow一覧に置き場所の定義を含む() {
     // Given
     let fixture = Fixture::new();

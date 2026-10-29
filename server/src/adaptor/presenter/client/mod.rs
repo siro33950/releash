@@ -147,8 +147,13 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
 }
 
 impl From<&crate::domain::app_config::AppConfig> for DesktopSettings {
-    fn from(_value: &crate::domain::app_config::AppConfig) -> Self {
-        todo!()
+    fn from(value: &crate::domain::app_config::AppConfig) -> Self {
+        Self {
+            start_minimized: Some(value.start_minimized()),
+            crash_reporting: Some(value.telemetry().crash_reporting),
+            performance_telemetry: Some(value.telemetry().performance_telemetry),
+            auto_launch: Some(value.auto_launch()),
+        }
     }
 }
 

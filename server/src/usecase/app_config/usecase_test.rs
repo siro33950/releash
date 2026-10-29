@@ -47,7 +47,32 @@ fn repository(fail: bool) -> Arc<Config> {
 
 #[test]
 fn test_設定保存_別のclientからの一般設定保存でも登録希望を保持する() {
-    todo!()
+    // Given
+    let repository = repository(false);
+    let mutation = Arc::new(parking_lot::Mutex::new(()));
+    let login = AppConfigUsecase::new(repository.clone(), mutation.clone());
+    let other_client = AppConfigUsecase::new(repository.clone(), mutation);
+    let original = repository.load().unwrap();
+    for requested in [true, false] {
+        // When
+        login.update_login_item_preference(requested).unwrap();
+        other_client.update_app_settings(true).unwrap();
+        // Then
+        let mut expected = original.clone();
+        expected.update_auto_launch(requested);
+        expected.update_start_minimized(true);
+        assert_eq!(repository.load().unwrap(), expected);
+        let settings = other_client.desktop_settings().unwrap();
+        assert!(settings.start_minimized());
+        assert_eq!(settings.auto_launch(), requested);
+    }
+    // When
+    other_client.update_app_settings(false).unwrap();
+    login.update_login_item_preference(true).unwrap();
+    // Then
+    let mut expected = original;
+    expected.update_auto_launch(true);
+    assert_eq!(repository.load().unwrap(), expected);
 }
 
 #[test]
@@ -206,6 +231,36 @@ async fn test_terminal起動設定_保存成功だけが購読へ通知され新
 }
 
 #[test]
-fn test_desktop設定の読み取り_queryの技術的な失敗を保持する() {
-    todo!()
+fn test_設定の読み取り_repositoryの技術的な失敗を保持する() {
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+
+    struct FailedReads;
+    impl AppConfigRepository for FailedReads {
+        fn load(&self) -> Result<AppConfig, AppConfigError> {
+            Err(AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Transient,
+                message: "read failed".into(),
+            }))
+        }
+        fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
+            panic!("読み取りでは保存しない")
+        }
+    }
+    // Given
+    let usecase = AppConfigUsecase::new(Arc::new(FailedReads), Default::default());
+
+    // When
+    let results = [
+        usecase.desktop_settings().map(|_| ()),
+        usecase.get_workflow_config().map(|_| ()),
+        usecase.terminal_startup_command().map(|_| ()),
+    ];
+
+    // Then
+    for result in results {
+        assert!(
+            matches!(result, Err(UsecaseError::AppConfig(AppConfigError::Technical(failure)))
+            if failure.nature == TechnicalFailureNature::Transient && failure.message == "read failed")
+        );
+    }
 }
