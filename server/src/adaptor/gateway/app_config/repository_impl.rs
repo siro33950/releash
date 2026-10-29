@@ -12,7 +12,12 @@ use crate::domain::app_config::repository::{
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::usecase::app_config::query_service::{WorkflowConfigDto, WorkflowConfigQueryService};
 
-use super::config_models::{apply_domain_to_config, config_to_domain, ReleashConfig};
+use super::config_models::{
+    apply_domain_to_config, try_config_to_domain, NotionLabelPropertyModel,
+    NotionPropertyMappingModel, NotionRepoConfigModel, ReleashConfig,
+};
+use crate::adaptor::gateway::repository::git_config::{get_releash_base, set_releash_base};
+use crate::domain::app_config::value_objects as domain_vo;
 
 static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -45,8 +50,10 @@ impl AppConfig {
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        let result = f(&mut config)?;
-        write_config(&self.config_path, &config)?;
+        let mut next = config.clone();
+        let result = f(&mut next)?;
+        write_config(&self.config_path, &next)?;
+        *config = next;
         Ok(result)
     }
 
@@ -78,14 +85,13 @@ impl AppConfig {
 
 impl AppConfigRepository for AppConfig {
     fn load(&self) -> Result<crate::domain::app_config::AppConfig, AppConfigError> {
-        self.get_config()
-            .map(|config| config_to_domain(&config))
-            .map_err(|message| {
-                AppConfigError::Technical(TechnicalFailure {
-                    nature: TechnicalFailureNature::Other,
-                    message,
-                })
+        let config = self.get_config().map_err(|message| {
+            AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message,
             })
+        })?;
+        try_config_to_domain(&config)
     }
 
     fn save(&self, config: crate::domain::app_config::AppConfig) -> Result<(), AppConfigError> {
@@ -100,7 +106,6 @@ impl AppConfigRepository for AppConfig {
             })
         })
     }
-
 }
 
 impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for AppConfig {
@@ -194,14 +199,127 @@ impl RepositoryConfigRepository for AppConfig {
         &self,
         repo_path: &str,
     ) -> Result<crate::domain::app_config::RepositoryConfig, AppConfigError> {
-        todo!()
+        let config = self
+            .config
+            .lock()
+            .map_err(|error| config_technical_error(error.to_string()))?;
+        let base = get_releash_base(repo_path).map_err(repository_config_error)?;
+        let notion = config.notion.get(repo_path).cloned().map(notion_to_domain);
+        Ok(crate::domain::app_config::RepositoryConfig::new(
+            repo_path.to_owned(),
+            base,
+            notion,
+        ))
     }
 
     fn save(
         &self,
         config: crate::domain::app_config::RepositoryConfig,
     ) -> Result<(), AppConfigError> {
-        todo!()
+        let mut current = self
+            .config
+            .lock()
+            .map_err(|error| config_technical_error(error.to_string()))?;
+        let repo_path = config.repo_path();
+        let previous_base = get_releash_base(repo_path).map_err(repository_config_error)?;
+        let base_changed = previous_base.as_deref() != config.base_branch();
+        let previous_notion = current.notion.get(repo_path).cloned().map(notion_to_domain);
+        let notion_changed = previous_notion.as_ref() != config.notion();
+        let mut next = current.clone();
+        match config.notion() {
+            Some(notion) => {
+                next.notion
+                    .insert(repo_path.to_owned(), notion_to_model(notion.clone()));
+            }
+            None => {
+                next.notion.remove(repo_path);
+            }
+        }
+        if base_changed {
+            set_releash_base(repo_path, config.base_branch()).map_err(repository_config_error)?;
+        }
+        if notion_changed {
+            if let Err(error) = write_config_typed(&self.config_path, &next) {
+                if base_changed {
+                    set_releash_base(repo_path, previous_base.as_deref()).map_err(|rollback| {
+                        config_technical_error(format!(
+                            "{error}; base branch の復元失敗: {rollback}"
+                        ))
+                    })?;
+                }
+                return Err(AppConfigError::Technical(error));
+            }
+            *current = next;
+        }
+        Ok(())
+    }
+}
+
+fn config_technical_error(message: String) -> AppConfigError {
+    AppConfigError::Technical(TechnicalFailure {
+        nature: TechnicalFailureNature::Other,
+        message,
+    })
+}
+
+fn repository_config_error(error: crate::domain::repository::RepositoryError) -> AppConfigError {
+    match error {
+        crate::domain::repository::RepositoryError::Technical(failure) => {
+            AppConfigError::Technical(failure)
+        }
+        error => config_technical_error(error.to_string()),
+    }
+}
+
+fn notion_to_domain(config: NotionRepoConfigModel) -> domain_vo::NotionRepoConfig {
+    domain_vo::NotionRepoConfig {
+        api_token: config.api_token,
+        database_id: config.database_id,
+        property_mapping: notion_mapping_to_domain(config.property_mapping),
+    }
+}
+
+fn notion_to_model(config: domain_vo::NotionRepoConfig) -> NotionRepoConfigModel {
+    NotionRepoConfigModel {
+        api_token: config.api_token,
+        database_id: config.database_id,
+        property_mapping: notion_mapping_to_model(config.property_mapping),
+    }
+}
+
+fn notion_mapping_to_domain(
+    mapping: NotionPropertyMappingModel,
+) -> domain_vo::NotionPropertyMapping {
+    domain_vo::NotionPropertyMapping {
+        title: mapping.title,
+        labels: mapping
+            .labels
+            .into_iter()
+            .map(|label| domain_vo::NotionLabelProperty {
+                name: label.name,
+                property_type: label.property_type,
+            })
+            .collect(),
+        branch_name: mapping.branch_name,
+        branch_prefix: mapping.branch_prefix,
+    }
+}
+
+fn notion_mapping_to_model(
+    mapping: domain_vo::NotionPropertyMapping,
+) -> NotionPropertyMappingModel {
+    NotionPropertyMappingModel {
+        title: mapping.title,
+        labels: mapping
+            .labels
+            .into_iter()
+            .map(|label| NotionLabelPropertyModel {
+                name: label.name,
+                property_type: label.property_type,
+            })
+            .collect(),
+        branch_name: mapping.branch_name,
+        branch_prefix: mapping.branch_prefix,
     }
 }
 
@@ -298,13 +416,6 @@ fn write_config_typed(
         return Err(config_io_failure(e, "ファイルのリネーム失敗"));
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| config_io_failure(error, "パーミッション設定失敗"))?;
-    }
-
     Ok(())
 }
 
@@ -335,6 +446,12 @@ pub fn write_config_tmp_file(
     let mut file = options
         .open(tmp_path)
         .map_err(|error| config_io_failure(error, "一時ファイル作成失敗"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| config_io_failure(error, "パーミッション設定失敗"))?;
+    }
     file.write_all(content.as_bytes())
         .map_err(|error| config_io_failure(error, "一時ファイル書き込み失敗"))?;
     Ok(())

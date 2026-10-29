@@ -558,7 +558,7 @@ pub mod repository {
     pub use crate::domain::app_config::repository::AppConfigRepository;
     pub use crate::domain::app_config::repository::ConfigSecretRepository;
     pub use crate::domain::app_config::repository::RepositoryConfigRepository;
-    pub use crate::domain::app_config::AppConfig;
+    pub use crate::domain::app_config::{AppConfig, RepositoryConfig};
     pub use crate::domain::code::repository::ReviewSideBytes;
     pub use crate::domain::code::repository::ReviewSideMetadata;
     pub use crate::domain::local_event::repository::LocalEventTransactionRepository;

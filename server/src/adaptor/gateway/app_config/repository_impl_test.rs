@@ -100,17 +100,56 @@ fn workflow_section_defaults_to_manual_approval() {
 #[test]
 fn app_section_defaults() {
     let app = AppSection::default();
-    assert!(app.close_to_tray);
     assert!(!app.auto_launch);
     assert!(!app.start_minimized);
-    assert!(app.last_root_path.is_empty());
     assert!(app.last_repo_paths.is_empty());
     assert!(app.external_editor.is_empty());
 }
 
 #[test]
 fn notion_config_model_domain_conversion_roundtrip_preserves_mapping() {
-    todo!()
+    let model = NotionRepoConfigModel {
+        api_token: "ntn_test_token".to_string(),
+        database_id: "db-id-456".to_string(),
+        property_mapping: NotionPropertyMappingModel {
+            title: "Task Name".to_string(),
+            labels: vec![
+                NotionLabelPropertyModel {
+                    name: "Status".to_string(),
+                    property_type: "status".to_string(),
+                },
+                NotionLabelPropertyModel {
+                    name: "Tags".to_string(),
+                    property_type: "multi_select".to_string(),
+                },
+            ],
+            branch_name: "Branch".to_string(),
+            branch_prefix: "feat/".to_string(),
+        },
+    };
+
+    let domain = notion_to_domain(model.clone());
+    let model_again = notion_to_model(domain.clone());
+
+    assert_eq!(model_again.api_token, model.api_token);
+    assert_eq!(model_again.database_id, model.database_id);
+    assert_eq!(
+        model_again.property_mapping.title,
+        model.property_mapping.title
+    );
+    assert_eq!(
+        model_again.property_mapping.labels,
+        model.property_mapping.labels
+    );
+    assert_eq!(
+        model_again.property_mapping.branch_name,
+        model.property_mapping.branch_name
+    );
+    assert_eq!(
+        model_again.property_mapping.branch_prefix,
+        model.property_mapping.branch_prefix
+    );
+    assert_eq!(notion_to_domain(model_again), domain);
 }
 
 #[test]
@@ -151,4 +190,60 @@ fn test_terminal起動設定の読み取り_保存モデルから値を返す() 
     let command = crate::usecase::app_config::query_service::TerminalStartupCommandQueryService::terminal_startup_command(&gateway).unwrap();
     // Then
     assert_eq!(command, "echo startup");
+}
+
+#[test]
+fn test_設定読み込み_不正なprovider実行ファイルを入力エラーとして返す() {
+    for path in ["", " \t ", "invalid\0path"] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.agents.codex.cli_path = Some(path.into());
+        let gateway = AppConfig::new(config, PathBuf::new());
+
+        // When
+        let result = AppConfigRepository::load(&gateway);
+
+        // Then
+        assert!(matches!(result, Err(AppConfigError::InvalidInput(_))));
+    }
+}
+
+#[test]
+fn test_repository設定_ロック破損を読み込みと保存の失敗として返す() {
+    // Given
+    let _crash_guard = crate::test_support::lock_crash_telemetry();
+    let gateway = std::sync::Arc::new(AppConfig::new(ReleashConfig::default(), PathBuf::new()));
+    let poisoned = gateway.clone();
+    let _ = std::thread::spawn(move || {
+        let _lock = poisoned.config.lock().unwrap();
+        panic!("poison config lock");
+    })
+    .join();
+
+    // When / Then
+    assert!(matches!(
+        RepositoryConfigRepository::load(&*gateway, "/repo"),
+        Err(AppConfigError::Technical(_))
+    ));
+    let config = crate::domain::app_config::RepositoryConfig::new("/repo".into(), None, None);
+    assert!(matches!(
+        RepositoryConfigRepository::save(&*gateway, config),
+        Err(AppConfigError::Technical(_))
+    ));
+}
+
+#[test]
+fn test_設定変更_変更処理失敗時はmemoryを進めない() {
+    // Given
+    let gateway = AppConfig::new(ReleashConfig::default(), PathBuf::new());
+
+    // When
+    let result: Result<(), String> = gateway.with_config_mut(|config| {
+        config.app.auto_launch = true;
+        Err("変更失敗".into())
+    });
+
+    // Then
+    assert_eq!(result, Err("変更失敗".into()));
+    assert!(!gateway.get_config().unwrap().app.auto_launch);
 }

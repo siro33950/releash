@@ -2,10 +2,14 @@ use super::*;
 
 fn assert_domain_roundtrip(config: ReleashConfig) {
     let domain = config_to_domain(&config);
-    let mut roundtripped = config.clone();
+    let mut roundtripped = ReleashConfig {
+        notion: config.notion.clone(),
+        ..Default::default()
+    };
 
-    apply_domain_to_config(&mut roundtripped, domain);
+    apply_domain_to_config(&mut roundtripped, domain.clone());
 
+    assert_eq!(config_to_domain(&roundtripped), domain);
     assert_eq!(roundtripped.telemetry, config.telemetry);
     assert_eq!(roundtripped.app, config.app);
     assert_eq!(roundtripped.workflow, config.workflow);
@@ -33,10 +37,8 @@ fn test_config_model変換_変更済み値がdomain往復で同値になる() {
             performance_telemetry: false,
         },
         app: AppSection {
-            close_to_tray: false,
             auto_launch: true,
             start_minimized: true,
-            last_root_path: "/repo".to_string(),
             last_repo_paths: vec!["/repo".to_string(), "/repo2".to_string()],
             external_editor: "cursor".to_string(),
             terminal_startup_command: "printf ready".into(),
@@ -56,6 +58,45 @@ fn test_config_model変換_変更済み値がdomain往復で同値になる() {
     };
 
     assert_domain_roundtrip(config);
+}
+
+#[test]
+fn test_config_model変換_providerの上書き解除後も版を保持する() {
+    use crate::domain::agent_session::aggregates::ProviderExecutable;
+    use crate::domain::provider_lifecycle::ProviderKind;
+
+    // Given
+    let mut domain = config_to_domain(&ReleashConfig::default());
+    domain
+        .update_provider_executable(
+            ProviderKind::Claude,
+            Some(ProviderExecutable::new("claude-custom").unwrap()),
+        )
+        .unwrap();
+    domain
+        .update_provider_executable(ProviderKind::Claude, None)
+        .unwrap();
+    domain
+        .update_provider_executable(
+            ProviderKind::Codex,
+            Some(ProviderExecutable::new("codex-custom").unwrap()),
+        )
+        .unwrap();
+
+    // When
+    let mut model = ReleashConfig::default();
+    apply_domain_to_config(&mut model, domain.clone());
+
+    // Then
+    assert_eq!(config_to_domain(&model), domain);
+    assert_eq!(
+        config_to_domain(&model).provider_configuration_revision(ProviderKind::Claude),
+        2
+    );
+    assert_eq!(
+        config_to_domain(&model).provider_configuration_revision(ProviderKind::Codex),
+        1
+    );
 }
 
 #[test]
