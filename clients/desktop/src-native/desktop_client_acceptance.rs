@@ -197,15 +197,7 @@ pub async fn initialize_desktop_settings<R: tauri::Runtime>(app: &tauri::AppHand
         .state::<Arc<crate::usecase::daemon_connection::DaemonConnectionUsecase>>()
         .settings()
         .unwrap();
-    crate::adaptor::presenter::desktop_lifecycle::apply_desktop_settings(app, settings);
-}
-
-pub fn desktop_window_preferences<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    use tauri::Manager;
-    let settings = app
-        .state::<crate::infrastructure::platform::window_lifecycle::WindowPreferencesState>()
-        .read();
-    settings.close_to_tray
+    crate::adaptor::presenter::desktop_lifecycle::apply_desktop_settings(settings);
 }
 
 pub fn spawn_desktop_successor() -> Result<(), String> {

@@ -992,7 +992,6 @@ export type FacetUsageEntry = {
 };
 
 export type DesktopSettings = {
-	closeToTray: boolean;
 	startMinimized: boolean;
 	crashReporting: boolean;
 	performanceTelemetry: boolean;
@@ -1843,7 +1842,6 @@ export type InputUpdateAppSettingsRequest = {
 };
 
 export type InputWindowSettings = {
-	close_to_tray: boolean;
 	start_minimized: boolean;
 };
 

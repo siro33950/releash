@@ -84,7 +84,6 @@ impl LoginPreferencePort for Login {
 async fn test_接続後処理_初回設定を一度復元して窓の値を返し再要求では適用しない() {
     // Given
     let settings = DesktopSettingsDto {
-        close_to_tray: true,
         start_minimized: true,
         crash_reporting: false,
         performance_telemetry: false,
@@ -151,7 +150,6 @@ async fn test_接続後処理_初回設定を一度復元して窓の値を返�
 async fn test_設定変更_復元失敗を返し初回接続では窓と適用する設定を返す() {
     // Given
     let settings = DesktopSettingsDto {
-        close_to_tray: true,
         start_minimized: false,
         crash_reporting: false,
         performance_telemetry: false,
@@ -201,7 +199,6 @@ async fn test_設定変更_復元失敗を返し初回接続では窓と適用�
 async fn test_設定変更_未接続と旧接続の通知では復元も適用もせず現在の接続だけ受理する() {
     // Given
     let settings = DesktopSettingsDto {
-        close_to_tray: true,
         start_minimized: false,
         crash_reporting: false,
         performance_telemetry: false,
@@ -261,7 +258,6 @@ async fn test_設定変更_未接続と旧接続の通知では復元も適用�
 async fn test_同じ接続先への再接続_旧購読の通知では初回設定を上書きしない() {
     // Given
     let settings = DesktopSettingsDto {
-        close_to_tray: false,
         start_minimized: false,
         crash_reporting: false,
         performance_telemetry: false,
@@ -292,7 +288,6 @@ async fn test_同じ接続先への再接続_旧購読の通知では初回設�
     assert_eq!(reconnected.settings, Some(settings));
     let stale = DesktopSettingsDto {
         auto_launch: true,
-        close_to_tray: true,
         ..settings
     };
     assert!(matches!(

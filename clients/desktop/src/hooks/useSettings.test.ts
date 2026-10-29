@@ -14,7 +14,6 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 }));
 
 const desktopSettings = (performanceTelemetry: boolean) => ({
-	closeToTray: true,
 	startMinimized: false,
 	crashReporting: true,
 	performanceTelemetry,

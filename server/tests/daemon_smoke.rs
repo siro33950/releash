@@ -519,13 +519,12 @@ async fn test_daemon起動_ログ作成失敗でも従来どおりstoreとapiを
     // When
     let (mut daemon, discovery) = start(directory.path());
     let (mut socket, _) = connect(&discovery).await;
-    let wire::state_payload::Value::DesktopSettings(settings) =
+    let wire::state_payload::Value::DesktopSettings(_) =
         read_state(&socket, "desktop-settings").await
     else {
         panic!("settings")
     };
     // Then
-    assert_eq!(settings.close_to_tray, Some(true));
     quit(&mut daemon, &mut socket).await;
 }
 

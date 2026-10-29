@@ -58,7 +58,6 @@ const providerSnapshot = {
 	],
 };
 const desktopSettings = {
-	closeToTray: true,
 	startMinimized: false,
 	crashReporting: true,
 	performanceTelemetry: true,
@@ -430,6 +429,11 @@ describe("SettingsModal", () => {
 					</>
 				);
 			}
+			vi.mocked(invokeTauri).mockResolvedValue({
+				enabled: true,
+				requiresApproval: false,
+				reason: null,
+			});
 			render(<SettingsScreen />);
 			await user.click(screen.getByText("Privacy & Updates"));
 			await user.click(
@@ -440,7 +444,7 @@ describe("SettingsModal", () => {
 			if (failure === "background") {
 				await user.click(screen.getByText("Background"));
 				await user.click(
-					screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
+					screen.getByRole("checkbox", { name: "Start minimized" }),
 				);
 			}
 			const command =
@@ -502,16 +506,16 @@ describe("SettingsModal", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			"login unavailable",
 		);
-		const closeToTray = screen.getByRole("checkbox", {
-			name: "Minimize to tray on close",
+		const autoLaunch = screen.getByRole("checkbox", {
+			name: "Launch at login",
 		});
-		await user.click(closeToTray);
+		await user.click(autoLaunch);
 		await user.click(screen.getByRole("button", { name: "Save" }));
 
 		expect(screen.getByRole("alert")).toHaveTextContent(
 			"Background settings are not loaded.",
 		);
-		expect(closeToTray).not.toBeChecked();
+		expect(autoLaunch).toBeChecked();
 		expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
 		expect(invokeClient).not.toHaveBeenCalledWith("report_usage_event", {
 			name: "settings_saved",
@@ -650,7 +654,6 @@ describe("SettingsModal", () => {
 			});
 			states.publish("desktop-settings", {
 				...desktopSettings,
-				closeToTray: false,
 				startMinimized: true,
 				autoLaunch: true,
 			});
@@ -665,9 +668,6 @@ describe("SettingsModal", () => {
 				screen.queryByText(/処理中にエラーが発生しました/),
 			).not.toBeInTheDocument(),
 		);
-		expect(
-			screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
-		).not.toBeChecked();
 		expect(
 			screen.getByRole("checkbox", { name: "Start minimized" }),
 		).toBeChecked();
@@ -1677,15 +1677,23 @@ describe("SettingsModal", () => {
 					});
 				},
 			);
+			vi.mocked(invokeTauri).mockResolvedValue({
+				enabled: true,
+				requiresApproval: false,
+				reason: null,
+			});
 			render(<SettingsModal {...defaultProps} />);
 			fireEvent.click(screen.getByText("Background"));
 			const checkbox = await screen.findByRole("checkbox", {
-				name: "Minimize to tray on close",
+				name: "Start minimized",
 			});
 			await userEvent.click(checkbox);
 			const save = screen.getByRole("button", { name: "Save" });
 			await userEvent.click(save);
 			expect(save.querySelector(".animate-spin")).not.toBeNull();
+			expect(invoke).toHaveBeenCalledWith("update_app_settings", {
+				app: { start_minimized: true },
+			});
 			expect(options).toBeUndefined();
 			expect(save).toBeDisabled();
 			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -1698,8 +1706,8 @@ describe("SettingsModal", () => {
 				states.publish("desktop-settings", desktopSettings),
 			);
 			expect(
-				screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
-			).not.toBeChecked();
+				screen.getByRole("checkbox", { name: "Start minimized" }),
+			).toBeChecked();
 			expect(
 				vi
 					.mocked(invoke)
@@ -1713,8 +1721,8 @@ describe("SettingsModal", () => {
 				expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 				expect(save).toBeDisabled();
 				expect(
-					screen.getByRole("checkbox", { name: "Minimize to tray on close" }),
-				).not.toBeChecked();
+					screen.getByRole("checkbox", { name: "Start minimized" }),
+				).toBeChecked();
 			} else {
 				expect(screen.getByRole("alert")).toHaveTextContent(
 					"保存が拒否されました",

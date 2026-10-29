@@ -1,4 +1,3 @@
-use super::window_lifecycle::{WindowPreferences, WindowPreferencesState};
 use releashd::desktop_api::{TelemetryGuard, TelemetryPort};
 use std::{future::Future, pin::Pin, sync::OnceLock};
 use tauri::Manager;
@@ -18,24 +17,14 @@ impl<R: tauri::Runtime> DesktopRuntime<R> {
             telemetry_initializations: std::sync::atomic::AtomicUsize::new(0),
         }
     }
-    pub fn apply_settings(
-        &self,
-        preferences: WindowPreferences,
-        crash_reporting: bool,
-        performance_telemetry: bool,
-    ) {
+    pub fn apply_settings(&self, crash_reporting: bool, performance_telemetry: bool) {
         self.telemetry.get_or_init(|| {
             #[cfg(test)]
             self.telemetry_initializations
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             releashd::desktop_api::init_telemetry(crash_reporting, performance_telemetry)
         });
-        apply_preferences(
-            &self.app,
-            preferences,
-            crash_reporting,
-            performance_telemetry,
-        );
+        apply_preferences(crash_reporting, performance_telemetry);
     }
     pub fn has_window(&self, label: &str) -> bool {
         self.app.get_webview_window(label).is_some()
@@ -85,19 +74,7 @@ impl<R: tauri::Runtime> DesktopRuntime<R> {
     }
 }
 
-pub fn apply_preferences<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    preferences: WindowPreferences,
-    crash_reporting: bool,
-    performance_telemetry: bool,
-) {
-    if let Some(state) = app.try_state::<WindowPreferencesState>() {
-        *state.0.write() = preferences;
-    } else {
-        app.manage(WindowPreferencesState(parking_lot::RwLock::new(
-            preferences,
-        )));
-    }
+pub fn apply_preferences(crash_reporting: bool, performance_telemetry: bool) {
     releashd::desktop_api::TelemetryGateway.set_crash_reporting_enabled(crash_reporting);
     releashd::desktop_api::TelemetryGateway.set_performance_enabled(performance_telemetry);
 }
