@@ -213,7 +213,10 @@ final class SettingsProvidersTests: XCTestCase {
     payload.providerAvailability = testProviderAvailability()
     payload.providerAvailability.providers.items[0].configuredExecutable = "/new/claude"
     try http.publish(payload, target: "provider-availability")
-    try await eventually { state.executables["claude"] == "/new/claude" }
+    try await eventually {
+      state.snapshot?.providers.items.first { $0.provider == "claude" }?.configuredExecutable
+        == "/new/claude"
+    }
     let respond = http.state.withLock { $0.pendingSave }
     try XCTUnwrap(respond)(
       HTTPResponse(
