@@ -11,7 +11,7 @@ struct SettingsView: View {
         .tabItem { Label("Repositories", systemImage: "folder") }
       ProvidersSettingsView(model: model)
         .tabItem { Label("Providers", systemImage: "terminal") }
-      SystemSettingsView()
+      SystemSettingsView(model: model)
         .tabItem { Label("System", systemImage: "desktopcomputer") }
     }
     .frame(width: UIStyle.createDialogWidth, height: UIStyle.createDialogHeight)
