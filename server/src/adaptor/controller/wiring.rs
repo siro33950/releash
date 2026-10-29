@@ -22,7 +22,11 @@ use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache, 
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
+use crate::adaptor::gateway::repository::branch::BranchGateway;
 use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
+use crate::adaptor::gateway::repository::status::StatusGateway;
+use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
+use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
 #[cfg(any(test, feature = "test-support"))]
@@ -38,7 +42,7 @@ use crate::adaptor::gateway::workflow::{
 use crate::adaptor::gateway::workflow::{
     NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
-use crate::domain::app_config::AppConfigRepository;
+use crate::domain::app_config::{AppConfigRepository, RepositoryConfigRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo};
 use crate::domain::repository::WorktreeTerminalGateway;
 use crate::domain::workflow::ManagedWorktreeGateway;
@@ -67,6 +71,10 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 pub fn build_repository_usecase() -> RepositoryUsecase {
     build_repository_usecase_with_worktree_terminals(
         Arc::new(NoopWorktreeTerminalGateway),
+        Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            Default::default(),
+            std::path::PathBuf::new(),
+        )),
         Default::default(),
         Default::default(),
     )
@@ -76,10 +84,21 @@ pub fn build_repository_usecase() -> RepositoryUsecase {
 /// （Tauri アプリ本体の composition 用）。
 pub(crate) fn build_repository_usecase_with_worktree_terminals(
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
+    repository_config: Arc<dyn RepositoryConfigRepository>,
     operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
     config_mutation: Arc<parking_lot::Mutex<()>>,
 ) -> RepositoryUsecase {
-    todo!()
+    RepositoryUsecase::new(
+        Arc::new(BranchGateway),
+        Arc::new(StatusGateway),
+        Arc::new(WorktreeGateway),
+        Arc::new(GitConfigGateway),
+        repository_config,
+        Arc::new(RepoLocatorGateway),
+        worktree_terminals,
+        operations,
+        config_mutation,
+    )
 }
 
 pub fn build_git_host_usecase() -> GitHostUsecase {

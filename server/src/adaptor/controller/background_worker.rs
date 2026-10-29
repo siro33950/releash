@@ -8,8 +8,21 @@ pub(crate) fn run() -> i32 {
             return 1;
         }
     };
+    let config_path = data_dir.join("releash.toml");
+    let config = match crate::adaptor::gateway::app_config::read_config_if_exists(&config_path) {
+        Ok(config) => config.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("background worker configuration: {error}");
+            return 1;
+        }
+    };
+    let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+        config,
+        config_path,
+    ));
     let repository = Arc::new(super::wiring::build_repository_usecase_with_worktree_terminals(
         Arc::new(crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway),
+        app_config,
         Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
             crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
         ))),

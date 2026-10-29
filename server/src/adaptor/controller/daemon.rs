@@ -351,6 +351,7 @@ pub async fn compose(
     let repository_usecase = Arc::new(
         adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
             terminal_surface.clone(),
+            app_config.clone(),
             Arc::new(usecase::worktree_operation::WorktreeOperations::new(Arc::new(
                 adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
             ))),
