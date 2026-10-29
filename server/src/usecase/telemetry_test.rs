@@ -1,4 +1,6 @@
 use super::*;
+use crate::domain::app_config::{AppConfig, AppConfigError, AppConfigRepository};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -27,9 +29,73 @@ impl TelemetryPort for Port {
     }
 }
 
+struct Config {
+    document: Mutex<AppConfig>,
+    fail: bool,
+}
+impl AppConfigRepository for Config {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
+        Ok(self.document.lock().unwrap().clone())
+    }
+    fn save(&self, document: AppConfig) -> Result<(), AppConfigError> {
+        if self.fail {
+            return Err(AppConfigError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "save failed".into(),
+                },
+            ));
+        }
+        *self.document.lock().unwrap() = document;
+        Ok(())
+    }
+}
+
 #[test]
 fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
-    todo!()
+    for fail in [false, true] {
+        // Given
+        let repository = Arc::new(Config {
+            document: Mutex::new(AppConfig::new(
+                false,
+                false,
+                Vec::new(),
+                String::new(),
+                String::new(),
+                crate::domain::app_config::value_objects::TelemetryConfig {
+                    crash_reporting: false,
+                    performance_telemetry: false,
+                },
+                crate::domain::app_config::value_objects::WorkflowConfig {
+                    approval_auto_approve: false,
+                },
+                Default::default(),
+                Default::default(),
+            )),
+            fail,
+        });
+        let config =
+            crate::usecase::app_config::AppConfigUsecase::new(repository, Default::default());
+        let port = Port::default();
+        let usecase = TelemetryUsecase::new(&port);
+        // When
+        let performance = usecase.update_performance_telemetry(&config, true);
+        let crash = usecase.update_crash_reporting(&config, true);
+        let calls = port.0.lock().unwrap().clone();
+        let settings = config.desktop_settings().unwrap();
+        let workflow = config.get_workflow_config().unwrap();
+        // Then
+        assert_eq!(performance.is_err(), fail);
+        assert_eq!(crash.is_err(), fail);
+        if fail {
+            assert!(calls.is_empty());
+        } else {
+            assert_eq!(calls, ["performance:true", "crash:true"]);
+        }
+        assert_eq!(settings.telemetry().performance_telemetry, !fail);
+        assert_eq!(settings.telemetry().crash_reporting, !fail);
+        assert!(!workflow.approval_auto_approve);
+    }
 }
 
 #[test]

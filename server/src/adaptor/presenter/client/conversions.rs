@@ -1765,9 +1765,11 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowGetOutputResponse
 impl TryFrom<&crate::domain::app_config::value_objects::WorkflowConfig> for wire::WorkflowSection {
     type Error = String;
     fn try_from(
-        _value: &crate::domain::app_config::value_objects::WorkflowConfig,
+        value: &crate::domain::app_config::value_objects::WorkflowConfig,
     ) -> Result<Self, String> {
-        todo!()
+        Ok(Self {
+            approval_auto_approve: Some(value.approval_auto_approve),
+        })
     }
 }
 

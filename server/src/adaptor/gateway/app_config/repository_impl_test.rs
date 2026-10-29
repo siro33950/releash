@@ -6,7 +6,18 @@ use crate::adaptor::gateway::app_config::config_models::{
 
 #[test]
 fn test_workflow設定の読み取り_設定モデルから出力値を返す() {
-    todo!()
+    for enabled in [false, true] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.workflow.approval_auto_approve = enabled;
+        let gateway = AppConfig::new(config, PathBuf::new());
+
+        // When
+        let config = AppConfigRepository::load(&gateway).unwrap();
+
+        // Then
+        assert_eq!(config.workflow().approval_auto_approve, enabled);
+    }
 }
 
 #[test]
@@ -152,13 +163,37 @@ fn agents_section_defaults() {
 }
 
 #[test]
-fn test_workflow設定の読み取り_ロック破損を失敗として返す() {
-    todo!()
+fn test_設定読み込み_ロック破損を技術的な失敗として返す() {
+    // Given
+    let _crash_guard = crate::test_support::lock_crash_telemetry();
+    let gateway = AppConfig::new(ReleashConfig::default(), PathBuf::new());
+    let _ = std::panic::catch_unwind(|| {
+        let _lock = gateway.config.lock().unwrap();
+        panic!("poison config lock");
+    });
+
+    // When
+    let result = AppConfigRepository::load(&gateway);
+
+    // Then
+    assert!(matches!(result, Err(AppConfigError::Technical(failure))
+        if failure.nature == TechnicalFailureNature::Other && failure.message.contains("ロック取得失敗")));
 }
 
 #[test]
 fn test_terminal起動設定の読み取り_保存モデルから値を返す() {
-    todo!()
+    for command in ["", "printf '準備完了\\n'"] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.app.terminal_startup_command = command.into();
+        let gateway = AppConfig::new(config, PathBuf::new());
+
+        // When
+        let config = AppConfigRepository::load(&gateway).unwrap();
+
+        // Then
+        assert_eq!(config.terminal_startup_command(), command);
+    }
 }
 
 #[test]
@@ -218,11 +253,23 @@ fn test_設定変更_変更処理失敗時はmemoryを進めない() {
 }
 
 #[test]
-fn test_desktop設定の読み取り_entityを生成せず保存モデルの値を返す() {
-    todo!()
-}
+fn test_desktop設定の読み取り_保存モデルの値をentityに写す() {
+    for enabled in [false, true] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.app.start_minimized = enabled;
+        config.app.auto_launch = !enabled;
+        config.telemetry.crash_reporting = enabled;
+        config.telemetry.performance_telemetry = !enabled;
+        let gateway = AppConfig::new(config, PathBuf::new());
 
-#[test]
-fn test_desktop設定の読み取り_ロック破損を技術的な失敗として返す() {
-    todo!()
+        // When
+        let config = AppConfigRepository::load(&gateway).unwrap();
+
+        // Then
+        assert_eq!(config.start_minimized(), enabled);
+        assert_eq!(config.auto_launch(), !enabled);
+        assert_eq!(config.telemetry().crash_reporting, enabled);
+        assert_eq!(config.telemetry().performance_telemetry, !enabled);
+    }
 }
