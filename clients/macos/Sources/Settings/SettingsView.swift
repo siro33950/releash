@@ -7,7 +7,7 @@ struct SettingsView: View {
     TabView {
       GeneralSettingsView(model: model)
         .tabItem { Label("General", systemImage: "gearshape") }
-      RepositoriesSettingsView()
+      RepositoriesSettingsView(model: model)
         .tabItem { Label("Repositories", systemImage: "folder") }
       ProvidersSettingsView()
         .tabItem { Label("Providers", systemImage: "terminal") }
