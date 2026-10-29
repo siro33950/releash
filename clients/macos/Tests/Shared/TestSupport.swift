@@ -19,6 +19,9 @@ final class TestHTTPClient: HTTPClientInterface {
     var providerUsage = Releash_Client_V1_ProviderUsageSnapshot()
     var hookHealth = Releash_Client_V1_ProviderHookHealthSnapshot()
     var daemonInfo = Releash_Client_V1_ServerInfo()
+    var desktopSettings = Releash_Client_V1_DesktopSettings()
+    var loginRegistration = Releash_Client_V1_LoginRegistrationResult()
+    var cliInstallResult = Releash_Client_V1_InstallCliResponse()
     var externalEditor = Releash_Client_V1_ExternalEditorState()
     var terminalStartupCommand = ""
     var workflowConfig = Releash_Client_V1_WorkflowSection()
@@ -124,6 +127,8 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.providerHookHealth = state.hookHealth
           } else if subscription.target == "daemon-info" {
             payload.daemonInfo = state.daemonInfo
+          } else if subscription.target == "desktop-settings" {
+            payload.desktopSettings = state.desktopSettings
           } else if subscription.target == "external-editor" {
             payload.externalEditor = state.externalEditor
           } else if subscription.target == "terminal-startup-command" {
@@ -169,6 +174,10 @@ final class TestHTTPClient: HTTPClientInterface {
         var result = Releash_Client_V1_ResultString()
         result.value = "workflow-execution"
         response = try result.serializedData()
+      } else if method == "CheckLoginRegistration" {
+        response = try state.withLock { try $0.loginRegistration.serializedData() }
+      } else if method == "InstallCli" {
+        response = try state.withLock { try $0.cliInstallResult.serializedData() }
       }
       onResponse(
         HTTPResponse(
@@ -219,6 +228,8 @@ final class TestHTTPClient: HTTPClientInterface {
   {
     let (subscriptions, stream) = state.withLock { state in
       switch payload.value {
+      case .desktopSettings(let value): state.desktopSettings = value
+      case .daemonInfo(let value): state.daemonInfo = value
       case .workspaces(let value): state.repositories = value.repositories.items
       case .sessionHistory(let value): state.history = value
       case .externalEditor(let value): state.externalEditor = value
