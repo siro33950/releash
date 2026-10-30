@@ -184,8 +184,12 @@ struct ViewElement {
     let views = ([window] + window.sheets).compactMap(\.contentView)
     let button = try XCTUnwrap(views.flatMap(buttons).first { $0.title == name })
     let sheet = window.attachedSheet
+    let dismissed = XCTNSNotificationExpectation(
+      name: NSWindow.didEndSheetNotification, object: window)
     button.performClick(nil)
     if let sheet {
+      let result = await XCTWaiter.fulfillment(of: [dismissed], timeout: 5)
+      XCTAssertEqual(result, .completed)
       try await eventually { !sheet.isVisible && self.window.attachedSheet !== sheet }
       window.makeKeyAndOrderFront(nil)
     }
