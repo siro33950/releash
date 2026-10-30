@@ -2,7 +2,7 @@
 //! git config 読み書きを封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::domain::git::GitError;
+use crate::domain::git::{GitError, GitService};
 use crate::infrastructure::git::client;
 
 /// `value` が `Some` なら `key` を設定、`None` なら削除する。削除時の
@@ -54,7 +54,7 @@ pub fn set_releash_base(repo_path: &str, base: Option<&str>) -> Result<(), GitEr
 
 /// `path_hint` からリポジトリを discover する。`path_hint` が存在しないファイル
 /// （削除済みファイル等）の場合は親ディレクトリから discover する。
-fn discover_repo(path: &std::path::Path) -> Result<git2::Repository, GitError> {
+pub(super) fn discover_repo(path: &std::path::Path) -> Result<git2::Repository, GitError> {
     match git_operation::run(|| client::discover(path)) {
         Ok(repo) => Ok(repo),
         Err(error @ git_operation::GitOperationError::Stopped(_)) => Err(error.into()),
@@ -96,9 +96,52 @@ fn resolve_base_ref_oid(
 
 /// Provider TUI の `RELEASH_BASE_BRANCH` に渡す現在ブランチの実効 base 名を返す。
 /// detached / unborn / ref 不在 / merge-base 不成立は `None`。
+#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_effective_base_branch(repo_path: &str) -> Result<Option<String>, GitError> {
-    let _ = repo_path;
-    todo!()
+    let git = super::git::GitGateway::new(std::sync::Arc::new(
+        crate::adaptor::gateway::app_config::AppConfig::new(
+            Default::default(),
+            std::path::PathBuf::new(),
+        ),
+    ));
+    resolve_effective_base_branch_with_git(repo_path, &git)
+}
+
+pub(crate) fn resolve_effective_base_branch_with_git(
+    repo_path: &str,
+    git: &dyn GitService,
+) -> Result<Option<String>, GitError> {
+    let Some(repo) = git_operation::optional(git_operation::run(|| client::open(repo_path)))?
+    else {
+        return Ok(None);
+    };
+    let Some(head) = git_operation::optional(match git_operation::run(|| repo.head()) {
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
+        result => result,
+    })?
+    else {
+        return Ok(None);
+    };
+    if !head.is_branch() {
+        return Ok(None);
+    }
+    let Some(current_oid) = head.target() else {
+        return Ok(None);
+    };
+    let Some(base_name) = git.resolve_current_base_branch(repo_path)? else {
+        return Ok(None);
+    };
+    let Some(base_oid) = resolve_base_ref_oid(&repo, &base_name)? else {
+        return Ok(None);
+    };
+    if git_operation::optional(git_operation::run(|| {
+        repo.merge_base(current_oid, base_oid)
+    }))?
+    .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(base_name))
 }
 
 pub fn resolve_base_commit_oid(

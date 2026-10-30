@@ -111,8 +111,8 @@ fn isolated_worktree_error(error: GitError) -> WorkflowError {
 
 impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWorktreeGateway {
     fn repository_root(&self, worktree_path: &str) -> Result<String, WorkflowError> {
-        let _ = worktree_path;
-        todo!()
+        crate::adaptor::gateway::repository::worktree::get_main_repo_path(worktree_path)
+            .map_err(isolated_worktree_error)
     }
 
     fn is_created(

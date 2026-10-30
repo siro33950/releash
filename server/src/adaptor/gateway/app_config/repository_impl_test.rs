@@ -214,7 +214,32 @@ fn test_設定読み込み_不正なprovider実行ファイルを入力エラー
 
 #[test]
 fn test_repository設定_ロック破損を読み込みと保存の失敗として返す() {
-    todo!()
+    // Given
+    let _crash_guard = crate::test_support::lock_crash_telemetry();
+    let gateway = std::sync::Arc::new(AppConfig::new(ReleashConfig::default(), PathBuf::new()));
+    let poisoned = gateway.clone();
+    let _ = std::thread::spawn(move || {
+        let _lock = poisoned.config.lock().unwrap();
+        panic!("poison config lock");
+    })
+    .join();
+
+    // When / Then
+    assert!(matches!(
+        RepositoryConfigRepository::load(&*gateway, "/repo"),
+        Err(AppConfigError::Technical(_))
+    ));
+    let config = crate::domain::app_config::RepositoryConfig::new(
+        "/repo".into(),
+        None,
+        Default::default(),
+        None,
+        None,
+    );
+    assert!(matches!(
+        RepositoryConfigRepository::save(&*gateway, config),
+        Err(AppConfigError::Technical(_))
+    ));
 }
 
 #[test]

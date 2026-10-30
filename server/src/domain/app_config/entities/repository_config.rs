@@ -21,14 +21,13 @@ impl RepositoryConfig {
         default_branch: Option<String>,
         notion: Option<NotionRepoConfig>,
     ) -> Self {
-        let _ = (
+        Self {
             repo_path,
             base_branch,
             branch_overrides,
             default_branch,
             notion,
-        );
-        todo!()
+        }
     }
 
     /// この設定が属する repository のパスを返す。
@@ -43,14 +42,21 @@ impl RepositoryConfig {
 
     /// 個別指定、repository の設定、既定ブランチの優先順位で選ぶ。
     pub fn resolve_base_branch(&self, branch_name: &str) -> Option<&str> {
-        let _ = (&self.branch_overrides, &self.default_branch, branch_name);
-        todo!()
+        self.branch_overrides
+            .get(branch_name)
+            .map(String::as_str)
+            .or(self.base_branch.as_deref())
+            .or(self.default_branch.as_deref())
     }
 
     /// 現存しないブランチに残っている個別指定のブランチ名を返す。
     pub fn stale_branch_overrides(&self, existing_branches: &[String]) -> Vec<String> {
-        let _ = (&self.branch_overrides, existing_branches);
-        todo!()
+        let existing: std::collections::HashSet<_> = existing_branches.iter().collect();
+        self.branch_overrides
+            .keys()
+            .filter(|branch| !existing.contains(branch))
+            .cloned()
+            .collect()
     }
 
     /// 保存されている Notion 設定を返す。
@@ -73,3 +79,7 @@ impl RepositoryConfig {
         self.notion = notion;
     }
 }
+
+#[cfg(test)]
+#[path = "repository_config_test.rs"]
+mod repository_config_tests;

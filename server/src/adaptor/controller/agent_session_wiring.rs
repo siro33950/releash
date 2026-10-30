@@ -35,6 +35,7 @@ pub struct AgentSessionCompositionInput {
     pub store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     pub data_dir: PathBuf,
     pub provider_executable_config: Arc<dyn AppConfigRepository>,
+    pub git: Arc<dyn crate::domain::git::GitService>,
     pub config_mutation: Arc<parking_lot::Mutex<()>>,
     pub provider_executable_probe: Arc<dyn ProviderExecutableProbeGateway>,
     pub claude_config_dir: PathBuf,
@@ -355,6 +356,7 @@ pub fn compose_agent_sessions(
         input.cli_binary,
         input.hook_token,
         input.claude_config_dir.clone(),
+        input.git,
     ));
     let mut provider_availability = ProviderAvailabilityUsecase::initialize(
         input.provider_executable_config,
