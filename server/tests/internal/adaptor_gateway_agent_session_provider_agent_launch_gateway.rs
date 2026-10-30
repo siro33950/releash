@@ -36,6 +36,7 @@ pub fn test_provider_launch_gateway_claudeのpluginをlaunch単位で生成しcl
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
 
     let prepared = gateway
@@ -93,6 +94,7 @@ pub fn test_provider_launch_gateway_codexのresumeを同じroot_process契約で
         "releash-dev".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
 
     let prepared = gateway
@@ -130,6 +132,7 @@ pub fn test_provider_launch_gateway_modelとauto_permissionをresume引数より
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
 
     for (provider, executable, permission_arguments, resume_flag) in [
@@ -199,6 +202,7 @@ pub fn test_provider_launch_gateway_両providerへhook実行環境を渡す() {
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
@@ -264,6 +268,7 @@ pub fn test_provider_launch_gateway_解決済みbase_branchを両providerへ渡�
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
 
     for provider in [ProviderKind::Claude, ProviderKind::Codex] {
@@ -302,6 +307,7 @@ pub fn test_provider_launch_gateway_base_branch未解決なら環境変数を渡
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
 
     let prepared = gateway
@@ -331,6 +337,7 @@ pub fn test_provider_launch_gateway_non_utf8実行pathをterminal_processまで�
         "releash".to_string(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
     let executable = std::path::PathBuf::from(std::ffi::OsString::from_vec(
         b"/opt/bin/claude-\xff".to_vec(),
@@ -361,6 +368,7 @@ pub fn test_provider起動準備_base解決の停止を欠損へ変換しない(
         "releash".into(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
     let (dir, repo) = crate::test_support_git::create_test_repo();
     crate::test_support_git::create_initial_commit(&repo);
@@ -400,6 +408,7 @@ pub fn test_provider起動準備_ファイル生成失敗の性質とメッセ�
         "releash".into(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
     let armed = armed(ProviderKind::Claude);
     let path = gateway.session_directory("agent-1").join(
@@ -436,6 +445,7 @@ pub fn test_provider起動資源削除_失敗の性質とメッセージを保�
         "releash".into(),
         std::sync::Arc::<str>::from("hook-token"),
         data_dir.path().join("claude"),
+        git(),
     );
     let path = gateway.session_directory("agent-1");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -539,4 +549,15 @@ fn test_statusline設定_linked_worktreeはmainのlocalを引き継ぎ旧配置�
     )
     .unwrap();
     assert_eq!(inherit()["command"], "main");
+}
+
+fn git() -> std::sync::Arc<dyn releashd::test_support::integration::repository::GitService> {
+    use releashd::test_support::integration::{
+        repository::GitGateway,
+        settings::{AppConfig, ReleashConfig},
+    };
+    std::sync::Arc::new(GitGateway::new(std::sync::Arc::new(AppConfig::new(
+        ReleashConfig::default(),
+        std::path::PathBuf::new(),
+    ))))
 }

@@ -489,6 +489,15 @@ fn removal_target(
     Ok((wt, target_path, wt_branch, is_locked))
 }
 
+pub(super) fn validate_removal(
+    repo_path: &str,
+    worktree_path: &str,
+    force: bool,
+) -> Result<String, GitError> {
+    let (_, path, _, _) = removal_target(repo_path, worktree_path, force)?;
+    path_to_normalized_repo_string(&path)
+}
+
 pub fn remove_worktree(
     repo_path: &str,
     worktree_path: &str,

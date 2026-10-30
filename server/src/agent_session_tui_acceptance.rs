@@ -193,6 +193,9 @@ impl AgentSessionTuiAcceptanceHost {
         let data_dir = config.data_dir.clone();
         let subscriptions = terminal.subscriptions();
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            git: Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(Arc::new(
+                crate::adaptor::gateway::app_config::AppConfig::new(Default::default(), std::path::PathBuf::new()),
+            ))),
             config_mutation: Default::default(),
  hook_token: std::sync::Arc::<str>::from("hook-token"),
 launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),

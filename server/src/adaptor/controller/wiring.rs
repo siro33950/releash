@@ -124,7 +124,12 @@ pub(crate) fn build_code_usecase_with_gateways(
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn build_code_usecase() -> CodeUsecase {
-    todo!()
+    build_code_usecase_with_gateways(Arc::new(
+        crate::adaptor::gateway::app_config::AppConfig::new(
+            Default::default(),
+            std::path::PathBuf::new(),
+        ),
+    ))
 }
 
 #[cfg(any(test, feature = "test-support"))]

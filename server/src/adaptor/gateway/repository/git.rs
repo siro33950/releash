@@ -13,8 +13,7 @@ pub struct GitGateway {
 impl GitGateway {
     /// repository の設定の読み取り先を受け取る。
     pub fn new(repository_config: Arc<dyn RepositoryConfigRepository>) -> Self {
-        let _ = repository_config;
-        todo!()
+        Self { repository_config }
     }
 }
 
@@ -58,8 +57,7 @@ impl GitService for GitGateway {
         worktree_path: &str,
         force: bool,
     ) -> Result<String, GitError> {
-        let _ = (repo_path, worktree_path, force);
-        todo!()
+        worktree::validate_removal(repo_path, worktree_path, force)
     }
     fn remove(
         &self,
@@ -83,12 +81,38 @@ impl GitService for GitGateway {
         repo_path: &str,
         branches: &[String],
     ) -> Result<(), GitError> {
-        let _ = (repo_path, branches);
-        todo!()
+        for branch in branches {
+            git_config::set_branch_base_override(repo_path, branch, None)?;
+        }
+        Ok(())
     }
     fn resolve_current_base_branch(&self, path_hint: &str) -> Result<Option<String>, GitError> {
-        let _ = (&self.repository_config, path_hint);
-        todo!()
+        use crate::adaptor::gateway::shared::git_operation;
+        use crate::domain::app_config::AppConfigError;
+
+        let repo = git_config::discover_repo(std::path::Path::new(path_hint))?;
+        let head = match git_operation::run(|| repo.head()) {
+            Ok(head) => head,
+            Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !head.is_branch() {
+            return Ok(None);
+        }
+        let branch = git_operation::run(|| head.shorthand())?;
+        let repo_path = repo
+            .workdir()
+            .unwrap_or(repo.path())
+            .to_str()
+            .ok_or_else(|| GitError::rule("invalid path encoding"))?;
+        let config = self
+            .repository_config
+            .load(repo_path)
+            .map_err(|error| match error {
+                AppConfigError::Technical(failure) => GitError::Technical(failure),
+                AppConfigError::InvalidInput(message) => GitError::rule(message),
+            })?;
+        Ok(config.resolve_base_branch(branch).map(str::to_owned))
     }
     fn resolve_base_commit_oid(
         &self,

@@ -278,6 +278,7 @@ pub async fn compose(
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
+                        git: Arc::new(adaptor::gateway::repository::git::GitGateway::new(app_config.clone())),
                         config_mutation: config_mutation.clone(),
                         provider_executable_probe: Arc::new(
                             #[cfg(any(target_os = "macos", target_os = "linux"))]
