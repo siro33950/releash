@@ -506,6 +506,29 @@ extension AppModelTests {
   }
 }
 
+@MainActor final class AppModelLayoutEchoTests: XCTestCase {
+  func test_同じ配置の再配信_未保存のペイン分割を取り消さない() throws {
+    // Given
+    let model = AppModel()
+    model.selectedWorktree = "/repo"
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.paneLayout = testLayout(.file).message
+    model.receiveWorkspaceState(state, path: "/repo")
+    XCTAssertTrue(model.layoutLoaded)
+    let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allPaneIds, [first, second])
+    // When
+    state.value.paneLayout = PaneLayout.empty().message
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allPaneIds.count, 1)
+  }
+}
+
 private func testLayout(_ kind: PaneTab.Kind) -> PaneLayout {
   let tab = PaneTab(kind: kind)
   return .pane(id: "test-pane", tabs: [tab], active: tab.id)

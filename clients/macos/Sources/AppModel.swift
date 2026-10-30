@@ -470,6 +470,7 @@ import SwiftProtobuf
       let visible = errors.filter { workspaceReadErrors[$0.key] == false }
       if !visible.isEmpty { displayedFailure = .workspace(visible) }
     }
+    let previous = layoutLoaded ? layout : nil
     if value.hasValue {
       workspaceState = value.value
       workspaceState.readFailures = []
@@ -493,14 +494,16 @@ import SwiftProtobuf
       workspaceState.layout.rightCollapsed = true
       workspaceState.layout.rightBottomCollapsed = true
     }
-    do {
-      if (try? panes.layout()) != layout { try panes.restore(layout) }
-    } catch {
-      failure = failureMessage(error)
-      return
+    if layout != previous {
+      do {
+        if (try? panes.layout()) != layout { try panes.restore(layout) }
+      } catch {
+        failure = failureMessage(error)
+        return
+      }
     }
     layoutLoaded = true
-    syncTerminalTabs(layout)
+    syncTerminalTabs((try? panes.layout()) ?? layout)
     syncNodeTabTitles()
     openPendingRoot()
   }

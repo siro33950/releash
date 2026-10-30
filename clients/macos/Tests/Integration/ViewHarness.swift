@@ -85,6 +85,9 @@ struct ViewElement {
   }
   func value(_ element: ViewElement?) -> String? { element?.value }
   func texts() -> [String] { snapshot.flatMap { [$0.label, $0.value] } }
+  func debugDump() -> String {
+    snapshot.map { "\($0.role)#\($0.identifier)[\($0.label)|\($0.value)]" }.joined(separator: " ")
+  }
   func press(_ name: String, file: StaticString = #filePath, line: UInt = #line) async throws {
     await refresh()
     let element = try XCTUnwrap(
@@ -127,10 +130,11 @@ struct ViewElement {
     trackingMenu = notification.object as? NSMenu
   }
   func menu(
-    _ name: String, selecting choice: String?, inspect: @escaping @MainActor ([String]) -> Void
+    _ name: String, selecting choice: String?, file: StaticString = #filePath, line: UInt = #line,
+    inspect: @escaping @MainActor ([String]) -> Void
   ) async throws {
-    await refresh()
-    let row = try XCTUnwrap(element(name))
+    try await eventuallyView(self, { element(name) != nil }, file: file, line: line)
+    let row = try XCTUnwrap(element(name), file: file, line: line)
     menuHandled = false
     trackingMenu = nil
     NotificationCenter.default.addObserver(
@@ -195,23 +199,54 @@ struct ViewElement {
     }
     await refresh()
   }
-  func focusTextField(index: Int = 0) async throws {
+  func focusTextField(
+    index: Int = 0, file: StaticString = #filePath, line: UInt = #line
+  ) async throws {
     await refresh()
     let element = try XCTUnwrap(
-      snapshot.filter { $0.role == kAXTextFieldRole && $0.enabled }.dropFirst(index).first)
-    XCTAssertEqual(
-      AXUIElementSetAttributeValue(
-        element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
-    try await Task.sleep(for: .milliseconds(50))
+      snapshot.filter { $0.role == kAXTextFieldRole && $0.enabled }.dropFirst(index).first,
+      file: file, line: line)
+    let deadline = ContinuousClock.now + .seconds(5)
+    repeat {
+      NSApp.activate()
+      window.makeKeyAndOrderFront(nil)
+      XCTAssertEqual(
+        AXUIElementSetAttributeValue(
+          element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success,
+        file: file, line: line)
+      try await Task.sleep(for: .milliseconds(20))
+      if isEditing(element.reference) { break }
+    } while ContinuousClock.now < deadline
+    XCTAssertTrue(
+      isEditing(element.reference), "text field did not take focus", file: file, line: line)
     await refresh()
   }
-  func setTextField(_ value: String) async throws {
+  private func isEditing(_ element: AXUIElement) -> Bool {
+    var value: CFTypeRef?
+    guard
+      AXUIElementCopyAttributeValue(element, kAXFocusedAttribute as CFString, &value) == .success,
+      (value as? Bool) == true
+    else { return false }
+    return window.firstResponder is NSTextView
+  }
+  func setTextField(_ value: String, file: StaticString = #filePath, line: UInt = #line)
+    async throws
+  {
     await refresh()
-    let element = try XCTUnwrap(snapshot.first { $0.role == kAXTextFieldRole })
+    let fields = snapshot.filter { $0.role == kAXTextFieldRole }
+    let element = try XCTUnwrap(
+      fields.first { isEditing($0.reference) } ?? fields.first, file: file, line: line)
     let result = AXUIElementSetAttributeValue(
       element.reference, kAXValueAttribute as CFString, value as CFString
     ).rawValue
-    XCTAssertEqual(result, AXError.success.rawValue)
+    XCTAssertEqual(result, AXError.success.rawValue, file: file, line: line)
+    try await eventually(
+      {
+        var current: CFTypeRef?
+        AXUIElementCopyAttributeValue(element.reference, kAXValueAttribute as CFString, &current)
+        return current as? String == value
+      }, file: file, line: line)
+    await refresh()
   }
 }
 
@@ -224,5 +259,5 @@ struct ViewElement {
     if condition() { return }
     try await Task.sleep(for: .milliseconds(20))
   } while ContinuousClock.now < deadline
-  XCTAssertTrue(condition(), host.texts().joined(separator: " | "), file: file, line: line)
+  XCTAssertTrue(condition(), host.debugDump(), file: file, line: line)
 }
