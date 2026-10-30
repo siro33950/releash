@@ -109,11 +109,20 @@ pub(crate) mod tests {
         let repository =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
-        let scanner = Arc::new(DefaultRepositoryScanner::new(
-            repository,
-            code,
-            Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
-        ));
+        let config = Arc::new(
+            releashd::test_support::integration::settings::AppConfig::new(
+                Default::default(),
+                dir.path().join("releash.toml"),
+            ),
+        );
+        let settings = Arc::new(
+            releashd::test_support::integration::settings::RepositoryConfigUsecase::new(
+                config.clone(),
+                Arc::new(releashd::test_support::integration::repository::GitGateway::new(config)),
+                Default::default(),
+            ),
+        );
+        let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code, settings));
         let state = releashd::test_support::integration::platform::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
             true,

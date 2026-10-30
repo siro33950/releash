@@ -67,7 +67,38 @@ mod repo_paths_usecase_tests {
 
     #[test]
     fn test_起動時登録_cwdのrootを追加し非repositoryと読取失敗は一覧を変えない() {
-        todo!()
+        use crate::usecase::test_helpers::{usecase, FakeRepo};
+        for condition in ["repository", "not-repository", "unreadable"] {
+            // Given
+            let fake = Arc::new(FakeRepo {
+                no_main_repo_path: condition == "not-repository",
+                fail_main_repo_path: condition == "unreadable",
+                ..Default::default()
+            });
+            let (paths, mut changes) = usecase_with(Arc::new(FakeRepoPaths::default()));
+            // When
+            let result = paths.initialize_from_cwd(&usecase(fake.clone()));
+            // Then
+            assert_eq!(*fake.find_main_repo_path_calls.lock(), vec!["/cwd"]);
+            if condition == "unreadable" {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "main repo path is unavailable"
+                );
+            } else {
+                result.unwrap();
+            }
+            if condition == "repository" {
+                assert_eq!(paths.get(), vec!["/main"]);
+                assert_eq!(
+                    changes.try_recv().unwrap(),
+                    crate::usecase::state_subscription::StateChangeSource::Repositories
+                );
+            } else {
+                assert!(paths.get().is_empty());
+            }
+            assert!(changes.try_recv().is_err());
+        }
     }
 
     #[test]

@@ -99,3 +99,7 @@ impl RepositoryConfigUsecase {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "repository_config_usecase_test.rs"]
+mod repository_config_usecase_tests;

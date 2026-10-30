@@ -259,14 +259,24 @@ impl Fixture {
             publisher.clone(),
             config_mutation.clone(),
         ));
+        let repository_config = Arc::new(
+            releashd::test_support::integration::settings::RepositoryConfigUsecase::new(
+                config.clone(),
+                Arc::new(
+                    releashd::test_support::integration::repository::GitGateway::new(
+                        config.clone(),
+                    ),
+                ),
+                config_mutation.clone(),
+            )
+            .with_state_publisher(publisher.clone()),
+        );
         let repository_state = Arc::new(RepositoryStateService::new(
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
                 Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
-                Arc::new(
-                    releashd::test_support::integration::settings::repository_config_usecase(),
-                ),
+                repository_config.clone(),
             )),
             publisher.clone(),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
@@ -358,7 +368,7 @@ impl Fixture {
             ),
             repositories,
             repository,
-            repository_config: Arc::new(releashd::test_support::integration::settings::repository_config_usecase().with_state_publisher(publisher.clone())),
+            repository_config,
             workflow,
             workspaces,
             git_host,
