@@ -96,18 +96,7 @@ fn resolve_base_ref_oid(
 
 /// Provider TUI の `RELEASH_BASE_BRANCH` に渡す現在ブランチの実効 base 名を返す。
 /// detached / unborn / ref 不在 / merge-base 不成立は `None`。
-#[cfg(any(test, feature = "test-support"))]
-pub fn resolve_effective_base_branch(repo_path: &str) -> Result<Option<String>, GitError> {
-    let git = super::git::GitGateway::new(std::sync::Arc::new(
-        crate::adaptor::gateway::app_config::AppConfig::new(
-            Default::default(),
-            std::path::PathBuf::new(),
-        ),
-    ));
-    resolve_effective_base_branch_with_git(repo_path, &git)
-}
-
-pub(crate) fn resolve_effective_base_branch_with_git(
+pub fn resolve_effective_base_branch_with_git(
     repo_path: &str,
     git: &dyn GitService,
 ) -> Result<Option<String>, GitError> {
@@ -115,20 +104,13 @@ pub(crate) fn resolve_effective_base_branch_with_git(
     else {
         return Ok(None);
     };
-    let Some(head) = git_operation::optional(match git_operation::run(|| repo.head()) {
-        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
-        result => result,
-    })?
-    else {
-        return Ok(None);
-    };
-    if !head.is_branch() {
-        return Ok(None);
-    }
-    let Some(current_oid) = head.target() else {
-        return Ok(None);
-    };
     let Some(base_name) = git.resolve_current_base_branch(repo_path)? else {
+        return Ok(None);
+    };
+    let Some(head) = git_operation::optional(git_operation::run(|| repo.head()))? else {
+        return Ok(None);
+    };
+    let Some(current_oid) = head.target() else {
         return Ok(None);
     };
     let Some(base_oid) = resolve_base_ref_oid(&repo, &base_name)? else {
@@ -150,4 +132,46 @@ pub fn resolve_base_commit_oid(
 ) -> Result<Option<String>, GitError> {
     let repo = discover_repo(std::path::Path::new(path_hint))?;
     Ok(resolve_base_ref_oid(&repo, base_name)?.map(|oid| oid.to_string()))
+}
+
+pub(super) fn remove_branch_base_overrides(
+    repo_path: &str,
+    branches: &[String],
+) -> Result<(), GitError> {
+    if branches.is_empty() {
+        return Ok(());
+    }
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let mut config = git_operation::run(|| repo.config())?;
+    for branch in branches {
+        set_or_remove(&mut config, &format!("branch.{branch}.releash-base"), None)?;
+    }
+    Ok(())
+}
+
+type BaseSettings = (
+    Option<String>,
+    std::collections::HashMap<String, String>,
+    Option<String>,
+);
+
+pub(crate) fn read_base_settings(repo_path: &str) -> Result<BaseSettings, GitError> {
+    let repo = git_operation::run(|| client::open(repo_path))?;
+    let mut git_config = git_operation::run(|| repo.config())?;
+    let snapshot = git_operation::run(|| git_config.snapshot())?;
+    let base = git_operation::optional(git_operation::run(|| snapshot.get_string("releash.base")))?;
+    let mut overrides = std::collections::HashMap::new();
+    let mut entries = git_operation::run(|| snapshot.entries(Some(r"^branch\..*\.releash-base$")))?;
+    while let Some(entry) = git_operation::run(|| entries.next().transpose())? {
+        let name = git_operation::run(|| entry.name())?;
+        if let Some(branch) = name
+            .strip_prefix("branch.")
+            .and_then(|name| name.strip_suffix(".releash-base"))
+        {
+            let value = git_operation::run(|| snapshot.get_string(name))?;
+            overrides.insert(branch.to_owned(), value);
+        }
+    }
+    let default_branch = git_operation::detect_default_branch(&repo)?;
+    Ok((base, overrides, default_branch))
 }

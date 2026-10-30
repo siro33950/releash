@@ -1,6 +1,6 @@
 use releashd::test_support::integration::repository::get_releash_base;
 use releashd::test_support::integration::repository::resolve_base_commit_oid;
-use releashd::test_support::integration::repository::resolve_effective_base_branch;
+use releashd::test_support::integration::repository::resolve_effective_base_branch_with_git;
 use releashd::test_support::integration::repository::set_branch_base_override;
 use releashd::test_support::integration::repository::set_releash_base;
 use releashd::test_support::integration::repository::GitService;
@@ -146,7 +146,6 @@ pub(crate) mod git_config_gateway_tests {
     use super::*;
 
     use releashd::test_support::integration::repository::get_releash_base;
-    use releashd::test_support::integration::repository::resolve_effective_base_branch;
     use releashd::test_support::integration::repository::set_branch_base_override;
     use releashd::test_support::integration::repository::set_releash_base;
 
@@ -627,4 +626,10 @@ fn test_現在ブランチbase解決_注入されたentityと読み込みの失�
         let gateway = GitGateway::new(std::sync::Arc::new(Config(loaded)));
         assert_eq!(gateway.resolve_current_base_branch(path), expected);
     }
+}
+
+fn resolve_effective_base_branch(
+    path: &str,
+) -> Result<Option<String>, releashd::test_support::integration::repository::GitError> {
+    resolve_effective_base_branch_with_git(path, &git())
 }

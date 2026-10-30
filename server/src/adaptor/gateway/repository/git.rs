@@ -81,10 +81,7 @@ impl GitService for GitGateway {
         repo_path: &str,
         branches: &[String],
     ) -> Result<(), GitError> {
-        for branch in branches {
-            git_config::set_branch_base_override(repo_path, branch, None)?;
-        }
-        Ok(())
+        git_config::remove_branch_base_overrides(repo_path, branches)
     }
     fn resolve_current_base_branch(&self, path_hint: &str) -> Result<Option<String>, GitError> {
         use crate::adaptor::gateway::shared::git_operation;

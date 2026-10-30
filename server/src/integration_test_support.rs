@@ -513,7 +513,7 @@ pub mod repository {
     pub use crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway;
     pub use crate::adaptor::gateway::repository::git_config::get_releash_base;
     pub use crate::adaptor::gateway::repository::git_config::resolve_base_commit_oid;
-    pub use crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch;
+    pub use crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch_with_git;
     pub use crate::adaptor::gateway::repository::git_config::set_branch_base_override;
     pub use crate::adaptor::gateway::repository::git_config::set_releash_base;
     pub use crate::adaptor::gateway::repository::repo_paths::RepoPathsGateway;

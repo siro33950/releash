@@ -172,44 +172,23 @@ impl RepositoryConfigRepository for AppConfig {
         &self,
         repo_path: &str,
     ) -> Result<crate::domain::app_config::RepositoryConfig, AppConfigError> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| config_technical_error(error.to_string()))?;
-        let notion = config.notion.get(repo_path).cloned().map(notion_to_domain);
-        let read = || -> Result<_, crate::domain::git::GitError> {
-            use crate::adaptor::gateway::shared::git_operation;
-            use crate::infrastructure::git::client;
-
-            let repo = git_operation::run(|| client::open(repo_path))?;
-            let mut git_config = git_operation::run(|| repo.config())?;
-            let snapshot = git_operation::run(|| git_config.snapshot())?;
-            let base = git_operation::optional(git_operation::run(|| {
-                snapshot.get_string("releash.base")
-            }))?;
-            let mut overrides = std::collections::HashMap::new();
-            let mut entries =
-                git_operation::run(|| snapshot.entries(Some(r"^branch\..*\.releash-base$")))?;
-            while let Some(entry) = git_operation::run(|| entries.next().transpose())? {
-                let name = git_operation::run(|| entry.name())?;
-                if let Some(branch) = name
-                    .strip_prefix("branch.")
-                    .and_then(|name| name.strip_suffix(".releash-base"))
-                {
-                    let value = git_operation::run(|| snapshot.get_string(name))?;
-                    overrides.insert(branch.to_owned(), value);
-                }
-            }
-            let default_branch = git_operation::detect_default_branch(&repo)?;
-            Ok(crate::domain::app_config::RepositoryConfig::new(
-                repo_path.to_owned(),
-                base,
-                overrides,
-                default_branch,
-                notion,
-            ))
+        let notion = {
+            let config = self
+                .config
+                .lock()
+                .map_err(|error| config_technical_error(error.to_string()))?;
+            config.notion.get(repo_path).cloned().map(notion_to_domain)
         };
-        read().map_err(repository_config_error)
+        let (base, overrides, default_branch) =
+            crate::adaptor::gateway::repository::git_config::read_base_settings(repo_path)
+                .map_err(repository_config_error)?;
+        Ok(crate::domain::app_config::RepositoryConfig::new(
+            repo_path.to_owned(),
+            base,
+            overrides,
+            default_branch,
+            notion,
+        ))
     }
 
     fn save(

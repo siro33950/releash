@@ -2055,3 +2055,21 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     assert!(resolution.sessions.is_empty());
     assert_eq!(resolution.failures.len(), 1);
 }
+
+#[tokio::test]
+pub async fn test_状態読取_baseの保存と自動への復帰を購読値に反映する() {
+    // Given
+    let fixture = Fixture::new();
+    let target = SubscriptionTarget::ReleashBase(fixture.path.clone());
+    for base in [Some("selected-base"), None] {
+        // When
+        fixture
+            .reads
+            .repository_config
+            .set_releash_base(&fixture.path, base)
+            .unwrap();
+        let value = fixture.reads.read(&target).await.unwrap();
+        // Then
+        assert!(matches!(value, StateValue::ReleashBase(actual) if actual.as_deref() == base));
+    }
+}
