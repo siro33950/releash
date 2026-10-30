@@ -142,25 +142,11 @@ async fn test_生成client_各protocolで非圧縮とgzipの呼出しと購読�
     use connectrpc::client::{ClientConfig, HttpClient};
     use connectrpc::{CompressionPolicy, Protocol};
 
-    struct LongBranch(String);
-
-    impl BranchRepository for LongBranch {
-        fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
-            Ok(self.0.clone())
-        }
-
-        fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-            BranchGateway.list(repo_path)
-        }
-
-        fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-            BranchGateway.create(repo_path, branch_name)
-        }
-    }
-
     // Given: exceed the server's compression threshold for streaming responses too.
     let branch = "large-branch".repeat(128);
-    let fixture = Fixture::with_branch(Arc::new(LongBranch(branch.clone()))).await;
+    let response = branch.clone();
+    let fixture =
+        Fixture::with_branch(Arc::new(BranchStub(move |_: &str| Ok(response.clone())))).await;
     for (protocol, json) in [
         (Protocol::Connect, false),
         (Protocol::Connect, true),
@@ -196,20 +182,14 @@ async fn test_生成client_各protocolで非圧縮とgzipの呼出しと購読�
     }
 }
 
-struct PausedBranch {
-    started: Arc<tokio::sync::Notify>,
-    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
+struct BranchStub<F>(F);
 
-impl GitService for PausedBranch {
+impl<F> GitService for BranchStub<F>
+where
+    F: Fn(&str) -> Result<String, GitError> + Send + Sync,
+{
     fn current(&self, repo_path: &str) -> Result<String, GitError> {
-        self.started.notify_one();
-        self.resume
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        releashd::test_support::integration::repository::get_current_branch(repo_path)
+        (self.0)(repo_path)
     }
 
     fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, GitError> {
@@ -320,10 +300,16 @@ impl GitService for PausedBranch {
 async fn test_connect_defaultの枠と待ち行列を超える要求を拒否する() {
     let started = Arc::new(tokio::sync::Notify::new());
     let (resume, receiver) = std::sync::mpsc::channel();
-    let fixture = Fixture::with_branch(Arc::new(PausedBranch {
-        started: started.clone(),
-        resume: std::sync::Mutex::new(receiver),
-    }))
+    let receiver = std::sync::Mutex::new(receiver);
+    let fixture = Fixture::with_branch(Arc::new(BranchStub(move |repo_path: &str| {
+        started.notify_one();
+        receiver
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        releashd::test_support::integration::repository::get_current_branch(repo_path)
+    })))
     .await;
     let mut pending = tokio::task::JoinSet::new();
     for _ in 0..92 {
