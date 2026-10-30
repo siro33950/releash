@@ -60,6 +60,9 @@ final class SettingsRepositoriesTests: XCTestCase {
     XCTAssertTrue(http.requests("RemoveRepoPath").isEmpty)
     // When
     try await eventually { host.window.sheets.isEmpty }
+    try await eventuallyView(host) {
+      host.element("settings-remove-repository")?.actions.contains(kAXPressAction) == true
+    }
     try await host.press("settings-remove-repository")
     try await eventually { !host.window.sheets.isEmpty }
     try await host.pressAlertButton("削除")

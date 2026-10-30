@@ -183,7 +183,22 @@ struct ViewElement {
     }
     let views = ([window] + window.sheets).compactMap(\.contentView)
     let button = try XCTUnwrap(views.flatMap(buttons).first { $0.title == name })
+    let sheet = window.attachedSheet
     button.performClick(nil)
+    if let sheet {
+      try await eventually { !sheet.isVisible && self.window.attachedSheet !== sheet }
+      window.makeKeyAndOrderFront(nil)
+    }
+    await refresh()
+  }
+  func focusTextField(index: Int = 0) async throws {
+    await refresh()
+    let element = try XCTUnwrap(
+      snapshot.filter { $0.role == kAXTextFieldRole && $0.enabled }.dropFirst(index).first)
+    XCTAssertEqual(
+      AXUIElementSetAttributeValue(
+        element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success)
+    try await Task.sleep(for: .milliseconds(50))
     await refresh()
   }
   func setTextField(_ value: String) async throws {

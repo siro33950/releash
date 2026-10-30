@@ -282,14 +282,7 @@ final class SettingsProvidersTests: XCTestCase {
   }
 
   @MainActor private func focusExecutable(_ host: ViewHarness, index: Int = 0) async throws {
-    func fields(_ view: NSView) -> [NSTextField] {
-      (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
-    }
-    let field = try XCTUnwrap(
-      fields(try XCTUnwrap(host.window.contentView)).filter { $0.isEditable }.dropFirst(index).first
-    )
-    XCTAssertTrue(host.window.makeFirstResponder(field))
-    try await Task.sleep(for: .milliseconds(50))
+    try await host.focusTextField(index: index)
   }
 
   @MainActor private func submit(_ host: ViewHarness) throws {
