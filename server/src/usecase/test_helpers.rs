@@ -68,7 +68,10 @@ pub struct FakeRepo {
     /// `remove` が返す「削除した worktree のブランチ名」。
     pub removed_branch: Option<String>,
     pub set_branch_base_override_calls: Mutex<Vec<(String, Option<String>)>>,
+    pub removed_branch_base_overrides: Mutex<Vec<(String, Vec<String>)>>,
     pub fail_main_repo_path: bool,
+    pub no_main_repo_path: bool,
+    pub find_main_repo_path_calls: Mutex<Vec<String>>,
     pub listed_worktree_paths: Mutex<Vec<String>>,
     pub branches: Vec<Branch>,
 }
@@ -132,7 +135,12 @@ impl GitService for FakeRepo {
     }
 
     fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, GitError> {
-        self.main_repo_path(path).map(Some)
+        self.find_main_repo_path_calls.lock().push(path.into());
+        if self.no_main_repo_path {
+            Ok(None)
+        } else {
+            self.main_repo_path(path).map(Some)
+        }
     }
     fn main_repo_path(&self, _any_path: &str) -> Result<String, GitError> {
         if self.fail_main_repo_path {
@@ -239,10 +247,16 @@ impl GitService for FakeRepo {
     }
     fn remove_branch_base_overrides(
         &self,
-        _repo_path: &str,
-        _branches: &[String],
+        repo_path: &str,
+        branches: &[String],
     ) -> Result<(), GitError> {
-        todo!()
+        self.removed_branch_base_overrides
+            .lock()
+            .push((repo_path.into(), branches.to_vec()));
+        for branch in branches {
+            self.set_branch_base_override(repo_path, branch, None)?;
+        }
+        Ok(())
     }
     fn resolve_current_base_branch(&self, _path_hint: &str) -> Result<Option<String>, GitError> {
         Ok(self.branch_base.clone())
@@ -691,5 +705,28 @@ pub(crate) mod retry {
 /// repository 設定の操作を使うテストの入口。
 pub fn repository_config_usecase(
 ) -> crate::usecase::repository_config_usecase::RepositoryConfigUsecase {
-    todo!()
+    use crate::domain::app_config::{AppConfigError, RepositoryConfig, RepositoryConfigRepository};
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct Config(Mutex<HashMap<String, RepositoryConfig>>);
+
+    impl RepositoryConfigRepository for Config {
+        fn load(&self, repo_path: &str) -> Result<RepositoryConfig, AppConfigError> {
+            Ok(self.0.lock().get(repo_path).cloned().unwrap_or_else(|| {
+                RepositoryConfig::new(repo_path.into(), None, HashMap::new(), None, None)
+            }))
+        }
+
+        fn save(&self, config: RepositoryConfig) -> Result<(), AppConfigError> {
+            self.0.lock().insert(config.repo_path().into(), config);
+            Ok(())
+        }
+    }
+
+    crate::usecase::repository_config_usecase::RepositoryConfigUsecase::new(
+        Arc::new(Config::default()),
+        Arc::new(FakeRepo::default()),
+        Default::default(),
+    )
 }
