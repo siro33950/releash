@@ -713,13 +713,13 @@ mod driver_tests {
         }
 
         struct CapturingFiles {
-            on_change: Mutex<Option<crate::domain::repository::file_watcher::WatchChangeHandler>>,
+            on_change: Mutex<Option<crate::domain::git::file_watcher::WatchChangeHandler>>,
         }
-        impl crate::domain::repository::file_watcher::FileWatchGateway for CapturingFiles {
+        impl crate::domain::git::file_watcher::FileWatchGateway for CapturingFiles {
             fn start_tree(
                 &self,
                 _: &str,
-                on_change: crate::domain::repository::file_watcher::WatchChangeHandler,
+                on_change: crate::domain::git::file_watcher::WatchChangeHandler,
             ) -> Result<u64, String> {
                 *self.on_change.lock() = Some(on_change);
                 Ok(1)
@@ -1111,7 +1111,7 @@ mod driver_tests {
                     repositories: vec![WorkspaceListRepository {
                         path: "/repo".into(),
                         worktrees: Fetched::ready(vec![WorkspaceListWorktree {
-                            worktree: crate::domain::repository::Worktree {
+                            worktree: crate::domain::git::Worktree {
                                 name: "main".into(),
                                 path: "/repo".into(),
                                 branch: "main".into(),
@@ -1266,11 +1266,11 @@ mod driver_tests {
         struct DisconnectingFiles {
             usecase: StateSubscriptionUsecase,
         }
-        impl crate::domain::repository::file_watcher::FileWatchGateway for DisconnectingFiles {
+        impl crate::domain::git::file_watcher::FileWatchGateway for DisconnectingFiles {
             fn start_tree(
                 &self,
                 _: &str,
-                _: crate::domain::repository::file_watcher::WatchChangeHandler,
+                _: crate::domain::git::file_watcher::WatchChangeHandler,
             ) -> Result<u64, String> {
                 self.usecase.close_client("client");
                 Ok(1)

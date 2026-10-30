@@ -11,9 +11,7 @@ pub struct WorkspaceIdentity(String);
 
 impl WorkspaceIdentity {
     pub fn new(value: impl AsRef<str>) -> Self {
-        Self(crate::domain::repository::normalize_repo_path(
-            value.as_ref(),
-        ))
+        Self(crate::domain::git::normalize_repo_path(value.as_ref()))
     }
 
     pub fn as_str(&self) -> &str {

@@ -46,7 +46,7 @@ pub fn state_file(app_data_dir: &Path, key: &str) -> PathBuf {
 pub(super) fn repository_group_key(path: &str) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(
-        crate::domain::repository::normalize_repo_path(path).as_bytes(),
+        crate::domain::git::normalize_repo_path(path).as_bytes(),
     ))
 }
 

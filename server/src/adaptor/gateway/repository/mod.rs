@@ -5,6 +5,7 @@
 //! 置かない（[`crate::adaptor::controller::wiring`]）。
 
 pub(crate) mod branch;
+pub(crate) mod git;
 pub(crate) mod git_config;
 pub(crate) mod repo_paths;
 pub(crate) mod scanner;

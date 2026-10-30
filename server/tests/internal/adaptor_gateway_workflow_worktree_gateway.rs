@@ -326,10 +326,10 @@ pub fn test_隔離生成確認_validateの停止を後続のパス検証エラ�
 }
 pub(crate) mod tests {
 
-    use releashd::test_support::integration::platform::RepositoryUsecase;
+    use releashd::test_support::integration::platform::GitUsecase;
     use releashd::test_support::integration::workflow::canonicalize_managed_worktree_path_inner;
 
-    fn test_usecase() -> RepositoryUsecase {
+    fn test_usecase() -> GitUsecase {
         releashd::test_support::integration::platform::build_repository_usecase()
     }
 

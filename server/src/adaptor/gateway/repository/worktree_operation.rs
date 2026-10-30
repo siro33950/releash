@@ -3,10 +3,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::domain::repository::worktree_operation::{
-    WorktreeOperationLease, WorktreeOperationLocks,
-};
-use crate::domain::repository::{normalize_repo_path, RepositoryError};
+use crate::domain::git::worktree_operation::{WorktreeOperationLease, WorktreeOperationLocks};
+use crate::domain::git::{normalize_repo_path, GitError};
 
 #[derive(Clone)]
 pub struct FileWorktreeOperationLocks {
@@ -27,7 +25,7 @@ impl FileWorktreeOperationLocks {
         }
     }
 
-    pub fn open(&self, name: &str) -> Result<File, RepositoryError> {
+    pub fn open(&self, name: &str) -> Result<File, GitError> {
         Ok(OpenOptions::new()
             .read(true)
             .write(true)
@@ -36,14 +34,14 @@ impl FileWorktreeOperationLocks {
             .open(self.directory.join(name))?)
     }
 
-    pub fn registry_lock(&self) -> Result<File, RepositoryError> {
+    pub fn registry_lock(&self) -> Result<File, GitError> {
         std::fs::create_dir_all(&self.directory)?;
         let registry = self.open("registry")?;
         wait_lock(&registry)?;
         Ok(registry)
     }
 
-    pub fn lease(&self, identity: &str, deleting: bool) -> Result<FileLease, RepositoryError> {
+    pub fn lease(&self, identity: &str, deleting: bool) -> Result<FileLease, GitError> {
         let registry = self.registry_lock()?;
         self.lease_registered(identity, deleting, registry)
     }
@@ -53,7 +51,7 @@ impl FileWorktreeOperationLocks {
         identity: &str,
         deleting: bool,
         registry: File,
-    ) -> Result<FileLease, RepositoryError> {
+    ) -> Result<FileLease, GitError> {
         let identity = worktree_identity(identity)?;
         let key = hex::encode(Sha256::digest(identity.to_string_lossy().as_bytes()));
         let mut lease = FileLease {
@@ -79,14 +77,14 @@ impl FileWorktreeOperationLocks {
                 fs2::FileExt::try_lock_shared(&lease.files[1]).map_err(admission_error)?;
                 fs2::FileExt::unlock(&lease.files[0])?;
             }
-            Ok::<_, RepositoryError>(())
+            Ok::<_, GitError>(())
         })();
         drop(registry);
         result?;
         Ok(lease)
     }
 
-    fn remove_idle(&self, key: &str) -> Result<(), RepositoryError> {
+    fn remove_idle(&self, key: &str) -> Result<(), GitError> {
         let registry = self.open("registry")?;
         match fs2::FileExt::try_lock_exclusive(&registry) {
             Ok(()) => {}
@@ -111,7 +109,7 @@ impl FileWorktreeOperationLocks {
         self.remove_idle_registered(key, registry)
     }
 
-    fn remove_idle_registered(&self, key: &str, _registry: File) -> Result<(), RepositoryError> {
+    fn remove_idle_registered(&self, key: &str, _registry: File) -> Result<(), GitError> {
         let mut files = Vec::new();
         for suffix in ["admission", "active"] {
             let path = self.directory.join(format!("{key}.{suffix}"));
@@ -147,7 +145,7 @@ impl Drop for FileLease {
     }
 }
 
-pub fn worktree_identity(identity: &str) -> Result<PathBuf, RepositoryError> {
+pub fn worktree_identity(identity: &str) -> Result<PathBuf, GitError> {
     let path = PathBuf::from(normalize_repo_path(identity));
     for ancestor in path.ancestors() {
         match ancestor.canonicalize() {
@@ -166,9 +164,9 @@ pub fn worktree_identity(identity: &str) -> Result<PathBuf, RepositoryError> {
     Ok(path)
 }
 
-fn admission_error(error: std::io::Error) -> RepositoryError {
+fn admission_error(error: std::io::Error) -> GitError {
     if error.kind() == std::io::ErrorKind::WouldBlock {
-        RepositoryError::rule("worktree deletion is in progress")
+        GitError::rule("worktree deletion is in progress")
     } else {
         error.into()
     }
@@ -176,14 +174,11 @@ fn admission_error(error: std::io::Error) -> RepositoryError {
 
 #[async_trait::async_trait]
 impl WorktreeOperationLocks for FileWorktreeOperationLocks {
-    fn mutation(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
+    fn mutation(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError> {
         Ok(Box::new(self.lease(identity, false)?))
     }
 
-    async fn deletion(
-        &self,
-        identity: &str,
-    ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
+    async fn deletion(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError> {
         std::fs::create_dir_all(&self.directory)?;
         let registry = self.open("registry")?;
         crate::infrastructure::file_lock::exclusive_async(&registry)
@@ -197,10 +192,10 @@ impl WorktreeOperationLocks for FileWorktreeOperationLocks {
     }
 }
 
-fn wait_lock(file: &File) -> Result<(), RepositoryError> {
+fn wait_lock(file: &File) -> Result<(), GitError> {
     crate::infrastructure::file_lock::exclusive(file).map_err(lock_error)
 }
-fn lock_error(error: crate::infrastructure::file_lock::LockError) -> RepositoryError {
+fn lock_error(error: crate::infrastructure::file_lock::LockError) -> GitError {
     match error {
         crate::infrastructure::file_lock::LockError::Io(error) => error.into(),
         crate::infrastructure::file_lock::LockError::Stopped(error) => error.into(),

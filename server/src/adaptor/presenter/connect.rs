@@ -89,7 +89,7 @@ impl ConnectFailure for crate::domain::workspace_state::error::WorkspaceStateErr
     }
 }
 
-impl ConnectFailure for crate::domain::repository::error::RepositoryError {
+impl ConnectFailure for crate::domain::git::error::GitError {
     fn connect_code(&self) -> connectrpc::ErrorCode {
         match self {
             Self::Technical(error) => ConnectFailure::connect_code(error),

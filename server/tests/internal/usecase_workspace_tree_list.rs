@@ -131,7 +131,8 @@ impl Fixture {
                 releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
                     repository.clone(),
                     Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
-                ),
+Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
+),
             ),
             subscriptions.clone(),
             Arc::new(NoopRepositoryStateWatcher),

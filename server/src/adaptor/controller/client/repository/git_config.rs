@@ -7,7 +7,7 @@ pub(crate) async fn set_releash_base_shared(
     repo_path: String,
     base: Option<String>,
 ) -> Result<(), AppError> {
-    let uc = state.repository_usecase.clone();
+    let uc = state.repository_config_usecase.clone();
     run_blocking(move || uc.set_releash_base(&repo_path, base.as_deref())).await
 }
 
@@ -21,7 +21,7 @@ pub(crate) async fn set_branch_base_shared(
     branch_name: String,
     base: Option<String>,
 ) -> Result<(), AppError> {
-    let uc = state.repository_usecase.clone();
+    let uc = state.repository_config_usecase.clone();
     run_blocking(move || uc.set_branch_base_override(&repo_path, &branch_name, base.as_deref()))
         .await
 }

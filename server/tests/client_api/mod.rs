@@ -13,10 +13,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        Self::with_branch(Arc::new(BranchGateway)).await
+        todo!()
     }
 
-    async fn with_branch(branch: Arc<dyn BranchRepository>) -> Self {
+    async fn with_branch(branch: Arc<dyn GitService>) -> Self {
         let data = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let git = git2::Repository::init(repo.path()).unwrap();
@@ -162,23 +162,101 @@ struct PausedBranch {
     resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
-impl BranchRepository for PausedBranch {
-    fn current(&self, repo_path: &str) -> Result<String, RepositoryError> {
-        self.started.notify_one();
-        self.resume
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        BranchGateway.current(repo_path)
+impl GitService for PausedBranch {
+    fn current(&self, repo_path: &str) -> Result<String, GitError> {
+        let _ = (&self.started, &self.resume, repo_path);
+        todo!()
     }
 
-    fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-        BranchGateway.list(repo_path)
+    fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, GitError> {
+        let _ = repo_path;
+        todo!()
     }
 
-    fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-        BranchGateway.create(repo_path, branch_name)
+    fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), GitError> {
+        let _ = (repo_path, branch_name);
+        todo!()
+    }
+    fn status_scan(
+        &self,
+        repo_path: &str,
+    ) -> Result<releashd::test_support::integration::repository::RepositoryStatusScan, GitError>
+    {
+        let _ = repo_path;
+        todo!()
+    }
+    fn main_repo_path(&self, any_path: &str) -> Result<String, GitError> {
+        let _ = any_path;
+        todo!()
+    }
+    fn find_main_repo_path(&self, any_path: &str) -> Result<Option<String>, GitError> {
+        let _ = any_path;
+        todo!()
+    }
+    fn list_worktrees(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<releashd::test_support::integration::repository::Worktree>, GitError> {
+        let _ = repo_path;
+        todo!()
+    }
+    fn create_worktree(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        branch: &str,
+        create_branch: bool,
+        base_branch: Option<&str>,
+    ) -> Result<releashd::test_support::integration::repository::Worktree, GitError> {
+        let _ = (repo_path, worktree_path, branch, create_branch, base_branch);
+        todo!()
+    }
+    fn validate_removal(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Result<String, GitError> {
+        let _ = (repo_path, worktree_path, force);
+        todo!()
+    }
+    fn remove(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Result<Option<String>, GitError> {
+        let _ = (repo_path, worktree_path, force);
+        todo!()
+    }
+    fn set_branch_base_override(
+        &self,
+        repo_path: &str,
+        branch_name: &str,
+        base: Option<&str>,
+    ) -> Result<(), GitError> {
+        let _ = (repo_path, branch_name, base);
+        todo!()
+    }
+    fn remove_branch_base_overrides(
+        &self,
+        repo_path: &str,
+        branches: &[String],
+    ) -> Result<(), GitError> {
+        let _ = (repo_path, branches);
+        todo!()
+    }
+    fn resolve_current_base_branch(&self, path_hint: &str) -> Result<Option<String>, GitError> {
+        let _ = path_hint;
+        todo!()
+    }
+    fn resolve_base_commit_oid(
+        &self,
+        path_hint: &str,
+        base_name: &str,
+    ) -> Result<Option<String>, GitError> {
+        let _ = (path_hint, base_name);
+        todo!()
     }
 }
 

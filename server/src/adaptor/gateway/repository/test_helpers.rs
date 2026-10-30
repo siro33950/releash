@@ -55,7 +55,7 @@ impl RepositoryStateWorkerRuntime for InertRuntime {
         &self,
         _scanner: Arc<dyn RepositoryScanner>,
         _repo_path: String,
-    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+    ) -> Result<Vec<crate::domain::git::Worktree>, RepositoryStateError> {
         Err(RepositoryStateError::Watcher(
             "inert runtime does not scan".to_string(),
         ))

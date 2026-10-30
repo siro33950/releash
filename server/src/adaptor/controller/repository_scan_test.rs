@@ -48,7 +48,7 @@ impl RepositoryScanner for Scanner {
     fn scan_worktrees(
         &self,
         _: &str,
-    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+    ) -> Result<Vec<crate::domain::git::Worktree>, RepositoryStateError> {
         self.worktree_scans.fetch_add(1, Ordering::SeqCst);
         Ok(Vec::new())
     }

@@ -1,8 +1,8 @@
 use super::*;
 use crate::adaptor::presenter::client::from_message;
 use crate::domain::agent_session::aggregates::AgentSessionTreeLocation;
+use crate::domain::git::Worktree;
 use crate::domain::git_host::PrInfo;
-use crate::domain::repository::Worktree;
 use crate::domain::workflow::{ExecutionStatus, ExecutionTreeArchiveRecord, ExecutionTreeLaunch};
 use crate::domain::workspace_tree::{
     WorkspaceIdentity, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,

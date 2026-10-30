@@ -2,7 +2,7 @@ use releashd::test_support::integration::platform::Deadline;
 use releashd::test_support::integration::platform::OperationContext;
 use releashd::test_support::integration::platform::OperationStopped;
 use releashd::test_support::integration::repository::FileWorktreeOperationLocks;
-use releashd::test_support::integration::repository::RepositoryError;
+use releashd::test_support::integration::repository::GitError;
 use releashd::test_support::integration::repository::WorktreeOperationLocks;
 use std::sync::Arc;
 use std::time::Duration;
@@ -144,11 +144,11 @@ pub async fn test_worktree削除排他_保存先がファイルならioエラー
     // When / Then
     assert!(matches!(
         locks.mutation("/repo"),
-        Err(RepositoryError::External(_))
+        Err(GitError::External(_))
     ));
     assert!(matches!(
         locks.deletion("/repo").await,
-        Err(RepositoryError::External(_))
+        Err(GitError::External(_))
     ));
 }
 
@@ -183,7 +183,7 @@ pub async fn test_worktree削除排他_registryとactive待ちを期限と取消
                 .await
                 .unwrap();
             assert!(
-                matches!(result, Err(RepositoryError::Technical(error)) if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
+                matches!(result, Err(GitError::Technical(error)) if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
             );
             drop(registry);
             drop(mutation);
@@ -257,10 +257,8 @@ pub fn test_worktree変更排他_registry待ちを期限と取消で終了し再
         drop(registry);
         worker.join().unwrap();
         // Then
-        assert!(
-            matches!(stopped.unwrap(), Err(RepositoryError::Technical(error))
-            if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() })
-        );
+        assert!(matches!(stopped.unwrap(), Err(GitError::Technical(error))
+            if error == if expire { OperationStopped::Expired.into() } else { OperationStopped::Cancelled.into() }));
         drop(locks.mutation("/repo/worktree").unwrap());
         assert_eq!(
             std::fs::read_dir(&locks.test_directory()).unwrap().count(),

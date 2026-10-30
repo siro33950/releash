@@ -1,11 +1,11 @@
 //! branch 責務の gateway 実装。git2 によるブランチ操作を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
+use crate::domain::git::{Branch, GitError};
 use crate::infrastructure::git::client;
 use git2::BranchType;
 
-pub fn list_branches(repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
+pub fn list_branches(repo_path: &str) -> Result<Vec<Branch>, GitError> {
     let repo = git_operation::run(|| client::discover(repo_path))?;
 
     let mut result = Vec::new();
@@ -39,7 +39,7 @@ pub fn list_branches(repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
     Ok(result)
 }
 
-pub fn get_current_branch(repo_path: &str) -> Result<String, RepositoryError> {
+pub fn get_current_branch(repo_path: &str) -> Result<String, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
 
     let head = match git_operation::run(|| repo.head()) {
@@ -55,13 +55,13 @@ pub fn get_current_branch(repo_path: &str) -> Result<String, RepositoryError> {
     } else {
         let oid = head
             .target()
-            .ok_or_else(|| RepositoryError::rule("HEAD has no target"))?;
+            .ok_or_else(|| GitError::rule("HEAD has no target"))?;
         let short = &oid.to_string()[..7];
         Ok(format!("({short})"))
     }
 }
 
-pub fn git_create_branch(repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
+pub fn git_create_branch(repo_path: &str, branch_name: &str) -> Result<(), GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
 
     let head = git_operation::run(|| repo.head())?;
@@ -72,19 +72,4 @@ pub fn git_create_branch(repo_path: &str, branch_name: &str) -> Result<(), Repos
     git_operation::run(|| repo.checkout_head(Some(git_operation::checkout().safe())))?;
 
     Ok(())
-}
-
-/// `BranchRepository` の git2 実装。
-pub struct BranchGateway;
-
-impl BranchRepository for BranchGateway {
-    fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-        list_branches(repo_path)
-    }
-    fn current(&self, repo_path: &str) -> Result<String, RepositoryError> {
-        get_current_branch(repo_path)
-    }
-    fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-        git_create_branch(repo_path, branch_name)
-    }
 }

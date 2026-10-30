@@ -9,7 +9,7 @@ pub(crate) async fn create_worktree_shared(
     create_branch: bool,
     base_branch: Option<String>,
 ) -> Result<String, AppError> {
-    let uc = state.repository_usecase.clone();
+    let uc = state.git_usecase.clone();
     run_blocking(move || {
         uc.create_worktree(&repo_path, &branch, create_branch, base_branch.as_deref())
             .map(|entry| entry.path)
@@ -25,7 +25,7 @@ pub(crate) async fn remove_worktree_shared(
     force: bool,
 ) -> Result<(), AppError> {
     state
-        .repository_usecase
+        .git_usecase
         .remove_worktree(runtime.as_ref(), &repo_path, &worktree_path, force)
         .await
         .map_err(AppError::from)

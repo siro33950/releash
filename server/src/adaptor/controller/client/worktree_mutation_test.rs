@@ -1,6 +1,6 @@
 mod restored_memory_cases {
     use super::super::*;
-    use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+    use crate::usecase::git_usecase::WorktreeExecutionArchiver;
     use crate::usecase::workflow::WorkflowRuntimeUsecase;
     use std::sync::Arc;
 
@@ -42,7 +42,7 @@ mod restored_memory_cases {
 async fn test_複数worktree作成_リポジトリと各作成先を一度ずつ保護する() {
     // Given
     use super::*;
-    use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+    use crate::usecase::git_usecase::WorktreeExecutionArchiver;
     use std::sync::Arc;
     let runtime = WorkflowRuntimeUsecase::new(
         Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),
@@ -79,7 +79,7 @@ async fn test_複数worktree作成_リポジトリと各作成先を一度ずつ
 async fn test_ui状態保存_絶対pathキーの保存が終わるまでworktree削除を待つ() {
     // Given
     use super::*;
-    use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+    use crate::usecase::git_usecase::WorktreeExecutionArchiver;
     use std::sync::Arc;
     let runtime = WorkflowRuntimeUsecase::new(
         Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),
@@ -100,8 +100,8 @@ async fn test_ui状態保存_絶対pathキーの保存が終わるまでworktree
 async fn test_複数worktree作成_handler破棄後もblocking作成が終わるまで削除を待つ() {
     use super::*;
     use crate::usecase::create_worktrees::{create_worktrees, LaunchAfterCreation, WorktreeLaunch};
+    use crate::usecase::git_usecase::WorktreeExecutionArchiver;
     use crate::usecase::repository_error::UsecaseError;
-    use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
     use crate::usecase::test_helpers::{usecase, FakeRepo};
     use std::sync::Arc;
     struct Launcher;

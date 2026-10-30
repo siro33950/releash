@@ -22,15 +22,24 @@ pub(crate) fn run() -> i32 {
     ));
     let repository = Arc::new(super::wiring::build_repository_usecase_with_worktree_terminals(
         Arc::new(crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway),
-        app_config,
+        app_config.clone(),
         Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
             crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
         ))),
-        Default::default(),
     ));
+    let repository_config = Arc::new(
+        crate::usecase::repository_config_usecase::RepositoryConfigUsecase::new(
+            app_config.clone(),
+            Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(
+                app_config.clone(),
+            )),
+            Default::default(),
+        ),
+    );
     let scanner = crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
         repository,
-        Arc::new(super::wiring::build_code_usecase()),
+        Arc::new(super::wiring::build_code_usecase_with_gateways(app_config)),
+        repository_config,
     );
     match crate::adaptor::gateway::shared::background_worker::serve(&scanner) {
         Ok(()) => 0,

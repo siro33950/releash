@@ -30,7 +30,11 @@ pub(crate) mod tests {
         let repository =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
-        let scanner = DefaultRepositoryScanner::new(repository.clone(), code.clone());
+        let scanner = DefaultRepositoryScanner::new(
+            repository.clone(),
+            code.clone(),
+            Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
+        );
         let repo_path = dir.path().to_str().unwrap();
 
         releashd::test_support::integration::repository::reset_status_walk_count_for_tests();
@@ -105,7 +109,11 @@ pub(crate) mod tests {
         let repository =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
-        let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code));
+        let scanner = Arc::new(DefaultRepositoryScanner::new(
+            repository,
+            code,
+            Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
+        ));
         let state = releashd::test_support::integration::platform::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
             true,

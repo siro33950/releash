@@ -168,7 +168,7 @@ impl RepositoryStateWorkerRuntime for RepositoryScanWorkerRuntime {
         &self,
         scanner: Arc<dyn RepositoryScanner>,
         repo_path: String,
-    ) -> Result<Vec<crate::domain::repository::Worktree>, RepositoryStateError> {
+    ) -> Result<Vec<crate::domain::git::Worktree>, RepositoryStateError> {
         crate::common::operation_context::spawn_blocking(move || scanner.scan_worktrees(&repo_path))
             .await
             .map_err(|error| {

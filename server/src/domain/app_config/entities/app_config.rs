@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use crate::domain::agent_session::aggregates::ProviderExecutable;
 use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
 use crate::domain::app_config::{AppConfigError, ProviderConfigurationRevisionExhausted};
+use crate::domain::git::normalize_repo_path;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::repository::normalize_repo_path;
 
 /// アプリ全体の設定を所有し、その変更を受け付ける Entity。
 #[derive(Debug, Clone, PartialEq, Eq)]

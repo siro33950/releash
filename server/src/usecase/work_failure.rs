@@ -34,9 +34,9 @@ impl From<&crate::usecase::repository_error::UsecaseError> for Failure {
     }
 }
 
-impl From<&crate::domain::repository::error::RepositoryError> for Failure {
-    fn from(error: &crate::domain::repository::error::RepositoryError) -> Self {
-        use crate::domain::repository::error::RepositoryError as E;
+impl From<&crate::domain::git::error::GitError> for Failure {
+    fn from(error: &crate::domain::git::error::GitError) -> Self {
+        use crate::domain::git::error::GitError as E;
         match error {
             E::Technical(error) => Failure::from(error),
             E::External(_) => Failure::Technical(TechnicalFailureNature::Other),

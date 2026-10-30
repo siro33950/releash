@@ -22,11 +22,8 @@ use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache, 
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
-use crate::adaptor::gateway::repository::branch::BranchGateway;
-use crate::adaptor::gateway::repository::git_config::GitConfigGateway;
-use crate::adaptor::gateway::repository::status::StatusGateway;
+use crate::adaptor::gateway::repository::git::GitGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
-use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
 #[cfg(any(test, feature = "test-support"))]
@@ -43,8 +40,8 @@ use crate::adaptor::gateway::workflow::{
     NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
 use crate::domain::app_config::{AppConfigRepository, RepositoryConfigRepository};
+use crate::domain::git::WorktreeTerminalGateway;
 use crate::domain::git_host::{CacheTtl, IssueInfo};
-use crate::domain::repository::WorktreeTerminalGateway;
 use crate::domain::workflow::ManagedWorktreeGateway;
 use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
@@ -52,7 +49,7 @@ use crate::usecase::comment::{
     ReviewClock, ReviewCommentUsecase, ReviewEventStore, ReviewIdGenerator,
 };
 use crate::usecase::git_host::GitHostUsecase;
-use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::git_usecase::GitUsecase;
 #[cfg(any(test, feature = "test-support"))]
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
@@ -68,14 +65,13 @@ use crate::usecase::workspace_tree::WorkspaceQueryService;
 /// terminal runtime を持たない composition（standalone read-only・テスト）向けに、
 /// worktree terminal 停止は no-op とする。
 #[cfg(any(test, feature = "test-support"))]
-pub fn build_repository_usecase() -> RepositoryUsecase {
+pub fn build_repository_usecase() -> GitUsecase {
     build_repository_usecase_with_worktree_terminals(
         Arc::new(NoopWorktreeTerminalGateway),
         Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             Default::default(),
             std::path::PathBuf::new(),
         )),
-        Default::default(),
         Default::default(),
     )
 }
@@ -86,18 +82,12 @@ pub(crate) fn build_repository_usecase_with_worktree_terminals(
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
     repository_config: Arc<dyn RepositoryConfigRepository>,
     operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
-    config_mutation: Arc<parking_lot::Mutex<()>>,
-) -> RepositoryUsecase {
-    RepositoryUsecase::new(
-        Arc::new(BranchGateway),
-        Arc::new(StatusGateway),
-        Arc::new(WorktreeGateway),
-        Arc::new(GitConfigGateway),
-        repository_config,
+) -> GitUsecase {
+    GitUsecase::new(
+        Arc::new(GitGateway::new(repository_config)),
         Arc::new(RepoLocatorGateway),
         worktree_terminals,
         operations,
-        config_mutation,
     )
 }
 
@@ -113,13 +103,17 @@ pub fn build_git_host_usecase() -> GitHostUsecase {
 /// code usecase を既定の gateway 実装で構築する。
 /// staging（書き込み）は Command 側 Usecase が、ファイル内容参照・diff バッファ計算・
 /// branch diff（読み取り）は `CodeQueryService` が各 gateway へ委譲する。
-/// いずれの gateway もステートレスのため、起動時に 1 度だけ組み立てて Arc 共有する。
-fn build_code_usecase_with_gateways() -> CodeUsecase {
+/// repository の設定の読み取り先をベースブランチの参照に渡す。
+pub(crate) fn build_code_usecase_with_gateways(
+    repository_config: Arc<dyn RepositoryConfigRepository>,
+) -> CodeUsecase {
     let query = CodeQueryService::new(
         Arc::new(FileContentGateway),
         Arc::new(DiffComputerGateway),
         Arc::new(BranchDiffGateway),
-        Arc::new(BranchBaseResolverGateway::new(Arc::new(GitConfigGateway))),
+        Arc::new(BranchBaseResolverGateway::new(Arc::new(GitGateway::new(
+            repository_config,
+        )))),
     );
     CodeUsecase::new(
         Arc::new(StagingGateway),
@@ -128,8 +122,9 @@ fn build_code_usecase_with_gateways() -> CodeUsecase {
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn build_code_usecase() -> CodeUsecase {
-    build_code_usecase_with_gateways()
+    todo!()
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -154,7 +149,7 @@ pub fn build_review_comment_usecase() -> ReviewCommentUsecase {
 
 pub fn build_workspace_list_usecase(
     repositories: Arc<crate::usecase::repo_paths_usecase::RepoPathsUsecase>,
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
     repository_state: Arc<crate::usecase::repository_state::RepositoryStateService>,
     workflow: Arc<WorkflowUsecase>,
     git_host: Arc<GitHostUsecase>,
@@ -215,7 +210,7 @@ pub fn build_workflow_usecase_and_store(
 pub fn build_workflow_services_with_repository_worktrees(
     failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     data_dir: impl Into<std::path::PathBuf>,
-    repository_usecase: Arc<RepositoryUsecase>,
+    git_usecase: Arc<GitUsecase>,
     app_config: Arc<dyn AppConfigRepository>,
     local_event_store: Arc<LocalEventStore>,
     processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
@@ -229,7 +224,7 @@ pub fn build_workflow_services_with_repository_worktrees(
         failures,
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
-            repository_usecase,
+            git_usecase,
             app_config.clone(),
         )),
         Arc::new(WorkflowExternalEditorGateway::new(
@@ -328,13 +323,13 @@ pub fn build_workflow_runtime_usecase(
         runtime_resolver::{AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver},
         workflow_host::WorkflowRuntimeHost,
     };
-    let operations = deps.repository_usecase.worktree_operations();
+    let operations = deps.git_usecase.worktree_operations();
     let mut driver = WorkflowRuntimeHost::new_canonical(
         workflows_dir.clone(),
         retrying.clone(),
         Arc::new(DefaultWorkflowDefinitionResolver::new(workflows_dir)),
         Arc::new(AppConfigManagedWorktreeResolver::new(
-            deps.repository_usecase,
+            deps.git_usecase,
             deps.app_config,
         )),
         deps.workspace_query,

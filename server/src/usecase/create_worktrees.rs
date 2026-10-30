@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use crate::domain::git::GitError;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::repository::RepositoryError;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::usecase::agent_session::{AgentSessionLaunchRequest, AgentSessionLaunchUsecase};
+use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::repository_error::UsecaseError;
-use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::{command::StartExecutionCommand, WorkflowRuntimeUsecase};
 
 #[derive(Clone)]
@@ -95,14 +95,14 @@ impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
 }
 
 pub async fn create_worktrees(
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
     launcher: &dyn WorktreeLaunch,
     repo_path: String,
     branches: Vec<String>,
     base_branch: Option<String>,
     launch: LaunchAfterCreation,
 ) -> Result<Vec<String>, UsecaseError> {
-    crate::domain::repository::validate_worktree_branches(&branches)?;
+    crate::domain::git::validate_worktree_branches(&branches)?;
     let mut paths = Vec::with_capacity(branches.len());
     for branch in branches {
         let repository = repository.clone();
@@ -110,14 +110,13 @@ pub async fn create_worktrees(
         let base_branch = base_branch.clone();
         let path = crate::common::operation_context::spawn_blocking(move || {
             let existing = repository.list_branches_with_worktree(&repo_path)?;
-            let create_branch =
-                crate::domain::repository::Branch::needs_creation(&branch, &existing);
+            let create_branch = crate::domain::git::Branch::needs_creation(&branch, &existing);
             repository
                 .create_worktree(&repo_path, &branch, create_branch, base_branch.as_deref())
                 .map(|worktree| worktree.path)
         })
         .await
-        .map_err(|error| RepositoryError::Technical(error.into()))??;
+        .map_err(|error| GitError::Technical(error.into()))??;
         launcher.launch(&path, &launch).await?;
         paths.push(path);
     }
@@ -129,12 +128,12 @@ pub async fn create_worktrees(
 mod create_worktrees_tests;
 
 pub struct CreateWorktreesUsecase {
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
     launcher: WorktreeLauncher,
 }
 impl CreateWorktreesUsecase {
     pub fn new(
-        repository: Arc<RepositoryUsecase>,
+        repository: Arc<GitUsecase>,
         sessions: Arc<AgentSessionLaunchUsecase>,
         workflows: Arc<WorkflowRuntimeUsecase>,
     ) -> Self {

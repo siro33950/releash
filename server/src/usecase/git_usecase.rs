@@ -1,18 +1,17 @@
-//! repository ドメインの Command 側ユースケース（業務手順）と、読み取りの集約入口。
+//! Git の操作と状態の読み取りの入口。
 //!
 //! controller / watcher / workflow はこの Usecase だけを入口とする。
 //! 書き込み・複数集約のオーケストレーションに加え、Entity をそのまま返す読み取りも
-//! Repository へ委譲してここから提供する。
+//! ドメインサービスへ委譲してここから提供する。
 //! ドメイン抽象（trait）のみに依存し、具体的な外部リソース実装は知らない。
 
 use std::sync::Arc;
 
-use crate::domain::path::to_canonical_forward_slash;
-use crate::domain::repository::{
-    worktree_path as derive_worktree_path, Branch, BranchRepository, GitConfigRepository,
-    RepoLocator, RepositoryError, RepositoryStatusScan, StatusRepository, Worktree,
-    WorktreeRepository, WorktreeTerminalGateway,
+use crate::domain::git::{
+    worktree_path as derive_worktree_path, Branch, GitError, GitService, RepoLocator,
+    RepositoryStatusScan, Worktree, WorktreeTerminalGateway,
 };
+use crate::domain::path::to_canonical_forward_slash;
 
 use super::repository_dto::WorktreeEntryDto;
 use super::repository_error::UsecaseError;
@@ -33,21 +32,17 @@ pub trait WorktreeExecutionArchiver: Send + Sync {
     ) -> Result<(), crate::domain::workflow::WorkflowError>;
 }
 
+/// Git のブランチと worktree の操作を受け付ける。
 #[derive(Clone)]
-pub struct RepositoryUsecase {
-    config_mutation: Arc<parking_lot::Mutex<()>>,
+pub struct GitUsecase {
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
-    branch: Arc<dyn BranchRepository>,
-    status: Arc<dyn StatusRepository>,
-    worktree: Arc<dyn WorktreeRepository>,
-    git_config: Arc<dyn GitConfigRepository>,
-    repository_config: Arc<dyn crate::domain::app_config::RepositoryConfigRepository>,
+    git: Arc<dyn GitService>,
     locator: Arc<dyn RepoLocator>,
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
     worktree_operations: Arc<WorktreeOperations>,
 }
 
-impl RepositoryUsecase {
+impl GitUsecase {
     pub fn startup_worktree(
         &self,
     ) -> Result<Option<crate::usecase::repository_dto::StartupWorktree>, UsecaseError> {
@@ -82,25 +77,16 @@ impl RepositoryUsecase {
         self.worktree_operations.clone()
     }
 
+    /// Git と作業場所の参照先、worktree の操作を受け取る。
     pub fn new(
-        branch: Arc<dyn BranchRepository>,
-        status: Arc<dyn StatusRepository>,
-        worktree: Arc<dyn WorktreeRepository>,
-        git_config: Arc<dyn GitConfigRepository>,
-        repository_config: Arc<dyn crate::domain::app_config::RepositoryConfigRepository>,
+        git: Arc<dyn GitService>,
         locator: Arc<dyn RepoLocator>,
         worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
         worktree_operations: Arc<WorktreeOperations>,
-        config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
         Self {
-            config_mutation,
             state_publisher: None,
-            branch,
-            status,
-            worktree,
-            git_config,
-            repository_config,
+            git,
             locator,
             worktree_terminals,
             worktree_operations,
@@ -120,17 +106,17 @@ impl RepositoryUsecase {
     // ── branch（読み取り） ──
 
     pub fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, UsecaseError> {
-        Ok(self.branch.list(repo_path)?)
+        Ok(self.git.list_branches(repo_path)?)
     }
 
     pub fn get_current_branch(&self, repo_path: &str) -> Result<String, UsecaseError> {
-        Ok(self.branch.current(repo_path)?)
+        Ok(self.git.current(repo_path)?)
     }
 
     // ── branch（書き込み） ──
 
     pub fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), UsecaseError> {
-        self.branch.create(repo_path, branch_name)?;
+        self.git.create_branch(repo_path, branch_name)?;
         Ok(())
     }
 
@@ -138,22 +124,22 @@ impl RepositoryUsecase {
         &self,
         repo_path: &str,
     ) -> Result<RepositoryStatusScan, UsecaseError> {
-        Ok(self.status.status_scan(repo_path)?)
+        Ok(self.git.status_scan(repo_path)?)
     }
 
     // ── worktree（読み取り） ──
 
     pub fn get_main_repo_path(&self, any_path: &str) -> Result<String, UsecaseError> {
-        Ok(self.worktree.main_repo_path(any_path)?)
+        Ok(self.git.main_repo_path(any_path)?)
     }
 
     pub fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, UsecaseError> {
-        Ok(self.worktree.find_main_repo_path(path)?)
+        Ok(self.git.find_main_repo_path(path)?)
     }
 
     pub fn list_worktrees(&self, repo_path: &str) -> Result<Vec<WorktreeEntryDto>, UsecaseError> {
-        let repository_root = self.worktree.main_repo_path(repo_path)?;
-        let worktrees = self.worktree.list(repo_path)?;
+        let repository_root = self.git.main_repo_path(repo_path)?;
+        let worktrees = self.git.list_worktrees(repo_path)?;
         let mut entries = Vec::with_capacity(worktrees.len());
         for wt in worktrees {
             entries.push(WorktreeEntryDto {
@@ -170,8 +156,8 @@ impl RepositoryUsecase {
 
     /// Workspaces に並べる worktree。隔離 worktree は含めず、main を先頭にブランチ名順で返す。
     pub fn list_working_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, UsecaseError> {
-        let repository_root = self.worktree.main_repo_path(repo_path)?;
-        let mut worktrees = self.worktree.list(repo_path)?;
+        let repository_root = self.git.main_repo_path(repo_path)?;
+        let mut worktrees = self.git.list_worktrees(repo_path)?;
         worktrees
             .retain(|worktree| !is_isolated(&repository_root, &worktree.path, &worktree.branch));
         worktrees.sort_by(|left, right| {
@@ -220,16 +206,16 @@ impl RepositoryUsecase {
         &self,
         repo_path: &str,
     ) -> Result<Vec<(Branch, bool)>, UsecaseError> {
-        let repository_root = self.worktree.main_repo_path(repo_path)?;
+        let repository_root = self.git.main_repo_path(repo_path)?;
         let (isolated, working): (Vec<_>, Vec<_>) = self
-            .worktree
-            .list(repo_path)?
+            .git
+            .list_worktrees(repo_path)?
             .into_iter()
             .partition(|worktree| is_isolated(&repository_root, &worktree.path, &worktree.branch));
         let working = self.with_deleting_worktrees(&repository_root, working);
         let mut branches = self
-            .branch
-            .list(repo_path)?
+            .git
+            .list_branches(repo_path)?
             .into_iter()
             .filter(|branch| {
                 !branch.is_remote
@@ -265,7 +251,7 @@ impl RepositoryUsecase {
         base_branch: Option<&str>,
     ) -> Result<WorktreeEntryDto, UsecaseError> {
         let worktree_path = derive_worktree_path(repo_path, branch);
-        let wt = self.worktree.create(
+        let wt = self.git.create_worktree(
             repo_path,
             &worktree_path,
             branch,
@@ -275,7 +261,7 @@ impl RepositoryUsecase {
         // base 指定時は releash-base config を設定する（旧 gateway 内蔵処理を
         // usecase オーケストレーションへ引き上げ。set は旧実装どおり伝播する）。
         if let Some(base) = base_branch {
-            self.git_config
+            self.git
                 .set_branch_base_override(repo_path, branch, Some(base))?;
         }
         self.notify_repository_changed(repo_path);
@@ -297,19 +283,16 @@ impl RepositoryUsecase {
         worktree_path: &str,
         force: bool,
     ) -> Result<(), UsecaseError> {
-        let worktree_path = self
-            .worktree
-            .validate_removal(repo_path, worktree_path, force)?;
+        let worktree_path = self.git.validate_removal(repo_path, worktree_path, force)?;
         let worktree_path = worktree_path.as_str();
         let mut deletion = archives
             .begin_worktree_deletion(worktree_path)
             .await
             .map_err(UsecaseError::from)?;
-        self.worktree
-            .validate_removal(repo_path, worktree_path, force)?;
-        let repository_root = self.worktree.main_repo_path(worktree_path)?;
-        let branch = match self.branch.current(worktree_path) {
-            Err(error @ RepositoryError::Technical(_)) => return Err(error.into()),
+        self.git.validate_removal(repo_path, worktree_path, force)?;
+        let repository_root = self.git.main_repo_path(worktree_path)?;
+        let branch = match self.git.current(worktree_path) {
+            Err(error @ GitError::Technical(_)) => return Err(error.into()),
             result => result.ok(),
         };
         archives
@@ -321,7 +304,7 @@ impl RepositoryUsecase {
 
         let worktree_path = worktree_path.to_string();
         deletion.accept(
-            crate::domain::repository::worktree_operation::WorktreeDeletionTarget {
+            crate::domain::git::worktree_operation::WorktreeDeletionTarget {
                 repository_root,
                 path: worktree_path.clone(),
                 branch,
@@ -332,13 +315,9 @@ impl RepositoryUsecase {
         let repo_path = repo_path.to_string();
         let result = crate::common::operation_context::spawn_blocking(move || {
             let result = (|| {
-                if let Some(branch) =
+                if let Some(branch) = repository.git.remove(&repo_path, &worktree_path, force)? {
                     repository
-                        .worktree
-                        .remove(&repo_path, &worktree_path, force)?
-                {
-                    repository
-                        .git_config
+                        .git
                         .set_branch_base_override(&repo_path, &branch, None)?;
                 }
                 Ok::<_, UsecaseError>(())
@@ -349,64 +328,9 @@ impl RepositoryUsecase {
         })
         .await
         .map_err(|error| {
-            RepositoryError::Technical(crate::domain::failure::TechnicalFailure::from(error))
+            GitError::Technical(crate::domain::failure::TechnicalFailure::from(error))
         })?;
         result
-    }
-
-    // ── git_config（読み取り） ──
-
-    pub fn get_releash_base(&self, repo_path: &str) -> Result<Option<String>, UsecaseError> {
-        Ok(self.git_config.get_releash_base(repo_path)?)
-    }
-
-    pub fn get_branch_base(
-        &self,
-        repo_path: &str,
-        branch_name: &str,
-    ) -> Result<Option<String>, UsecaseError> {
-        Ok(self.git_config.get_branch_base(repo_path, branch_name)?)
-    }
-
-    // ── git_config（書き込み） ──
-
-    /// repository の base branch の変更を保存する。
-    pub fn set_releash_base(
-        &self,
-        repo_path: &str,
-        base: Option<&str>,
-    ) -> Result<(), UsecaseError> {
-        let guard = self.config_mutation.lock();
-        let mut config = self.repository_config.load(repo_path)?;
-        config.set_base_branch(base);
-        self.repository_config.save(config)?;
-        drop(guard);
-        self.notify_repository_changed(repo_path);
-        Ok(())
-    }
-
-    pub fn set_branch_base_override(
-        &self,
-        repo_path: &str,
-        branch_name: &str,
-        base: Option<&str>,
-    ) -> Result<(), UsecaseError> {
-        self.git_config
-            .set_branch_base_override(repo_path, branch_name, base)?;
-        self.notify_repository_changed(repo_path);
-        Ok(())
-    }
-
-    /// ブランチ一覧取得後の GC（現存しないブランチの `releash-base` 掃除）。
-    /// 読み取りクエリの副作用ではなく、明示的な Command として実行する。
-    pub fn prune_stale_branch_bases(
-        &self,
-        repo_path: &str,
-        existing_branches: &[String],
-    ) -> Result<(), UsecaseError> {
-        self.git_config
-            .prune_stale_branch_bases(repo_path, existing_branches)?;
-        Ok(())
     }
 
     // ── util / locator（読み取り） ──
@@ -422,12 +346,12 @@ fn is_isolated(repository_root: &str, worktree_path: &str, branch: &str) -> bool
 }
 
 #[cfg(test)]
-#[path = "repository_usecase_test.rs"]
-mod repository_usecase_tests;
+#[path = "git_usecase_test.rs"]
+mod git_usecase_tests;
 
 #[cfg(feature = "test-support")]
-impl RepositoryUsecase {
-    pub fn test_replace_worktree_repository(&mut self, worktree: Arc<dyn WorktreeRepository>) {
-        self.worktree = worktree;
+impl GitUsecase {
+    pub fn test_replace_worktree_repository(&mut self, git: Arc<dyn GitService>) {
+        self.git = git;
     }
 }

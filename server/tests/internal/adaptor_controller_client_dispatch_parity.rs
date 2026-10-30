@@ -386,13 +386,7 @@ pub async fn test_worktree変更_protoは実引数の成功とusecaseエラー�
     // Given
     let (_temp, path) = mutation_repository();
     let (app, dispatch) = parity_app();
-    let uc = app
-        .client
-        .app_state
-        .as_ref()
-        .unwrap()
-        .repository_usecase
-        .clone();
+    let uc = app.client.app_state.as_ref().unwrap().git_usecase.clone();
     let branch = "feature/parity";
     let expected = invoke_dispatch(&app, "create_worktree", json!({"repoPath": path.clone(),"branch": branch,"createBranch": true,"baseBranch": Some("base")}))
     .await

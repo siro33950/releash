@@ -699,7 +699,7 @@ pub(crate) mod tests {
         let config_repository: Arc<
             dyn releashd::test_support::integration::repository::AppConfigRepository,
         > = app_config.clone();
-        let repository_usecase =
+        let git_usecase =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let notion_usecase = Arc::new(
             releashd::test_support::integration::platform::NotionUsecase::new(
@@ -731,13 +731,16 @@ pub(crate) mod tests {
             Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let repository_scanner = Arc::new(
             releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
-                repository_usecase.clone(),
+                git_usecase.clone(),
                 code_usecase.clone(),
+                Arc::new(
+                    releashd::test_support::integration::settings::repository_config_usecase(),
+                ),
             ),
         );
         let repository_state_repository = Arc::new(
             releashd::test_support::integration::repository::RepositoryStateRepositoryGateway::new(
-                repository_usecase.clone(),
+                git_usecase.clone(),
             ),
         );
         let repository_state = Arc::new(
@@ -775,7 +778,7 @@ pub(crate) mod tests {
             releashd::test_support::integration::platform::build_workflow_services_with_repository_worktrees(
                 Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
                 data_dir.clone(),
-                repository_usecase.clone(),
+                git_usecase.clone(),
                 config_repository.clone(),
                 local_event_store.clone(),
                 Arc::new(
@@ -790,7 +793,7 @@ pub(crate) mod tests {
         let workspace_list = Arc::new(
             releashd::test_support::integration::platform::build_workspace_list_usecase(
                 repo_paths_usecase.clone(),
-                repository_usecase.clone(),
+                git_usecase.clone(),
                 repository_state.clone(),
                 workflow_usecase.clone(),
                 git_host_usecase.clone(),
@@ -798,7 +801,10 @@ pub(crate) mod tests {
         );
         let app_state = AppState {
             workspace_list,
-            repository_usecase: repository_usecase.clone(),
+            git_usecase: git_usecase.clone(),
+            repository_config_usecase: Arc::new(
+                releashd::test_support::integration::settings::repository_config_usecase(),
+            ),
             repo_paths_usecase,
             code_usecase,
             review_usecase,

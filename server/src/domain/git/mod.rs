@@ -1,19 +1,15 @@
 pub mod entities;
 pub mod error;
 pub mod gateway;
-// `docs/architecture/DOMAIN.md` 規約に従い永続化抽象は `repository.rs` に
-// 置く（module_inception はこの規約名を優先して許容）。
-#[allow(clippy::module_inception)]
 pub mod repository;
+pub mod service;
 pub mod value_objects;
 
 pub use entities::{Branch, FileDiffStat, FileStatus, RepositoryStatusScan, Worktree};
-pub use error::RepositoryError;
+pub use error::GitError;
 pub use gateway::WorktreeTerminalGateway;
-pub use repository::{
-    BranchRepository, GitConfigRepository, RepoLocator, RepoPathsRepository, StatusRepository,
-    WorktreeRepository,
-};
+pub use repository::{RepoLocator, RepoPathsRepository};
+pub use service::GitService;
 pub use value_objects::{
     normalize_repo_path, validate_worktree_branches, worktree_dir, worktree_path, BaseAncestry,
 };

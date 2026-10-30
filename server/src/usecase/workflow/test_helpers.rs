@@ -15,7 +15,7 @@ impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
         })
     }
     fn worktree_identity(&self, path: &str) -> Result<String, WorkflowError> {
-        Ok(crate::domain::repository::normalize_repo_path(path))
+        Ok(crate::domain::git::normalize_repo_path(path))
     }
     async fn record_repository_root(&self, _: &str, _: &str, _: f64) -> Result<(), WorkflowError> {
         unreachable!()

@@ -264,6 +264,9 @@ impl Fixture {
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
                 Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
+                Arc::new(
+                    releashd::test_support::integration::settings::repository_config_usecase(),
+                ),
             )),
             publisher.clone(),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
@@ -355,6 +358,7 @@ impl Fixture {
             ),
             repositories,
             repository,
+            repository_config: Arc::new(releashd::test_support::integration::settings::repository_config_usecase().with_state_publisher(publisher.clone())),
             workflow,
             workspaces,
             git_host,
@@ -451,7 +455,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     let r = &fixture.reads;
     let p = &fixture.path;
     let branch = r.repository.get_current_branch(p).unwrap();
-    r.repository
+    r.repository_config
         .set_branch_base_override(p, "feature", Some(&branch))
         .unwrap();
     let workspace = releashd::test_support::integration::platform::WorkspaceState {

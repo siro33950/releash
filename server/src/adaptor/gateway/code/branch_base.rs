@@ -1,28 +1,22 @@
-//! ベースブランチ名解決（`BranchBaseResolver` port）の gateway 実装。
-//!
-//! ベースブランチ名の解決ルール（`branch.<name>.releash-base` → `releash.base` →
-//! `detect_default_branch()`）と ref 実在検証は `repository` ドメインが所有する。本実装は
-//! `code` 側の port を repository の `GitConfigRepository` ポートへ橋渡しするだけで、解決
-//! ロジックを再実装しない（単一情報源を repository に保つ）。`RepositoryError` は文字列を
-//! 保持したまま `CodeError` へ畳み込み、エラー表現を移行前と等価に保つ。
+//! code が使うベースブランチ名とコミット OID を GitService から取得する。
 
 use std::sync::Arc;
 
 use crate::domain::code::{BranchBaseResolver, CodeError};
-use crate::domain::repository::{GitConfigRepository, RepositoryError};
+use crate::domain::git::{GitError, GitService};
 
-/// `RepositoryError` を `CodeError` へ畳み込む（メッセージ文字列を保持）。
-fn to_code_error(e: RepositoryError) -> CodeError {
+/// `GitError` を `CodeError` へ畳み込む（メッセージ文字列を保持）。
+fn to_code_error(e: GitError) -> CodeError {
     CodeError::External(e.to_string())
 }
 
-/// `BranchBaseResolver` の repository 委譲実装。
+/// code のベースブランチ参照を GitService へ接続する。
 pub struct BranchBaseResolverGateway {
-    git_config: Arc<dyn GitConfigRepository>,
+    git_config: Arc<dyn GitService>,
 }
 
 impl BranchBaseResolverGateway {
-    pub fn new(git_config: Arc<dyn GitConfigRepository>) -> Self {
+    pub fn new(git_config: Arc<dyn GitService>) -> Self {
         Self { git_config }
     }
 }

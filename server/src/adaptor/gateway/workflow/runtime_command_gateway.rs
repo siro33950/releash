@@ -5,7 +5,7 @@ use crate::domain::app_config::AppConfigRepository;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
-use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
     WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
@@ -27,7 +27,7 @@ pub struct WorkflowRuntimeCommandGateway {
 pub struct WorkflowRuntimeCommandGatewayDeps {
     pub node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
     pub isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
-    pub repository_usecase: Arc<RepositoryUsecase>,
+    pub git_usecase: Arc<GitUsecase>,
     pub app_config: Arc<dyn AppConfigRepository>,
     pub workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     pub agent_session_launch: Arc<crate::usecase::agent_session::AgentSessionLaunchUsecase>,

@@ -57,13 +57,10 @@ async fn test_worktree削除_lease解放中も一覧を読め排他終了で対�
     );
     #[async_trait::async_trait]
     impl WorktreeOperationLocks for Backend {
-        fn mutation(&self, _: &str) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
+        fn mutation(&self, _: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError> {
             Ok(Box::new(Lease))
         }
-        async fn deletion(
-            &self,
-            _: &str,
-        ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
+        async fn deletion(&self, _: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError> {
             Ok(Box::new(Locks {
                 releasing: self.0.clone(),
                 released: self.1.clone(),

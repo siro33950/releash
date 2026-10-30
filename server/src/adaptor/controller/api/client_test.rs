@@ -162,7 +162,7 @@ mod restored_memory_tests {
     }
 
     async fn assert_cancelled_blocking_mutation(deadline: bool, repository: bool) {
-        use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+        use crate::usecase::git_usecase::WorktreeExecutionArchiver;
         use axum::{
             body::{to_bytes, Body},
             http::Request,
@@ -461,7 +461,7 @@ mod restored_memory_tests {
 
     #[tokio::test]
     pub async fn test_単発rpc_変更処理の取り消しでhandlerとworktreeの枠を解放する() {
-        use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
+        use crate::usecase::git_usecase::WorktreeExecutionArchiver;
         // Given
         let runtime = Arc::new(crate::usecase::workflow::WorkflowRuntimeUsecase::new(
         Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),

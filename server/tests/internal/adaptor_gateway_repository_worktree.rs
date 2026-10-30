@@ -13,7 +13,7 @@ use releashd::test_support::integration::repository::path_to_worktree_identity;
 use releashd::test_support::integration::repository::prune_invalid_worktrees;
 use releashd::test_support::integration::repository::recorded_main_repo_path;
 use releashd::test_support::integration::repository::remove_worktree;
-use releashd::test_support::integration::repository::RepositoryError;
+use releashd::test_support::integration::repository::GitError;
 use std::path::Path;
 
 #[cfg(unix)]
@@ -230,8 +230,8 @@ pub fn test_worktree作成失敗_巻き戻しの停止を元のgitエラーへ�
         )
         .unwrap_err();
         match error {
-            RepositoryError::Technical(_) => Err(error),
-            RepositoryError::External(_) => {
+            GitError::Technical(_) => Err(error),
+            GitError::External(_) => {
                 assert!(repo.find_branch("rollback", BranchType::Local).is_err());
                 Ok(())
             }

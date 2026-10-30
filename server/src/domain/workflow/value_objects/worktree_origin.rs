@@ -1,4 +1,4 @@
-use crate::domain::repository::{normalize_repo_path, worktree_dir};
+use crate::domain::git::{normalize_repo_path, worktree_dir};
 
 const ISOLATED_BRANCH_PREFIX: &str = "releash/isolated/";
 const ISOLATED_DIRECTORY: &str = ".releash-isolated";

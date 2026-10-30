@@ -73,10 +73,10 @@ impl From<crate::adaptor::gateway::workflow::fact_log::FactReadError> for Storag
     }
 }
 
-impl From<crate::domain::repository::RepositoryError> for StorageFailure {
-    fn from(error: crate::domain::repository::RepositoryError) -> Self {
+impl From<crate::domain::git::GitError> for StorageFailure {
+    fn from(error: crate::domain::git::GitError) -> Self {
         let nature = match &error {
-            crate::domain::repository::RepositoryError::Technical(failure) => failure.nature,
+            crate::domain::git::GitError::Technical(failure) => failure.nature,
             _ => TechnicalFailureNature::Other,
         };
         Self {

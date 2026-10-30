@@ -5,7 +5,7 @@ use super::error::RepositoryStateError;
 use super::scanner::RepositoryScanner;
 use super::snapshot::RepositorySnapshotParts;
 use super::worker::InvalidateReason;
-use crate::domain::repository::Worktree;
+use crate::domain::git::Worktree;
 
 pub struct ScanWorker {
     pub state: Arc<super::worktree::WorktreeState>,

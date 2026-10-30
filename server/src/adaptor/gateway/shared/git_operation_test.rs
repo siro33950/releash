@@ -74,7 +74,7 @@ fn test_git操作_期限切れではステージもブランチ作成も実行�
         ));
         assert!(matches!(
             crate::adaptor::gateway::repository::branch::git_create_branch("/missing", "branch"),
-            Err(crate::domain::repository::RepositoryError::Technical(
+            Err(crate::domain::git::GitError::Technical(
                 crate::domain::failure::TechnicalFailure {
                     nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                     ..

@@ -172,17 +172,8 @@ impl RepositoryConfigRepository for AppConfig {
         &self,
         repo_path: &str,
     ) -> Result<crate::domain::app_config::RepositoryConfig, AppConfigError> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| config_technical_error(error.to_string()))?;
-        let base = get_releash_base(repo_path).map_err(repository_config_error)?;
-        let notion = config.notion.get(repo_path).cloned().map(notion_to_domain);
-        Ok(crate::domain::app_config::RepositoryConfig::new(
-            repo_path.to_owned(),
-            base,
-            notion,
-        ))
+        let _ = repo_path;
+        todo!()
     }
 
     fn save(
@@ -235,11 +226,9 @@ fn config_technical_error(message: String) -> AppConfigError {
     })
 }
 
-fn repository_config_error(error: crate::domain::repository::RepositoryError) -> AppConfigError {
+fn repository_config_error(error: crate::domain::git::GitError) -> AppConfigError {
     match error {
-        crate::domain::repository::RepositoryError::Technical(failure) => {
-            AppConfigError::Technical(failure)
-        }
+        crate::domain::git::GitError::Technical(failure) => AppConfigError::Technical(failure),
         error => config_technical_error(error.to_string()),
     }
 }

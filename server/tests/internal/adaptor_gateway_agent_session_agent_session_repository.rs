@@ -2257,7 +2257,7 @@ pub async fn test_agent_session_repository_所属repoの取得失敗では作成
     assert_eq!(
         result,
         Err(AgentSessionRepositoryError::Store(
-            releashd::test_support::integration::repository::RepositoryError::Rule(
+            releashd::test_support::integration::repository::GitError::Rule(
                 "bare repository".into()
             )
             .into()

@@ -1,6 +1,6 @@
 use crate::usecase::repository_state::worktree::RepositoryStateWatcher;
 
-use crate::domain::repository::Worktree;
+use crate::domain::git::Worktree;
 use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::error::RepositoryStateError;
 use crate::usecase::repository_state::scanner::RepositoryScanner;

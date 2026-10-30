@@ -411,6 +411,8 @@ pub mod platform {
 
     pub use crate::usecase::repository_state::error::RepositoryStateError;
 
+    pub use crate::usecase::git_usecase::GitUsecase;
+    pub use crate::usecase::git_usecase::WorktreeExecutionArchiver;
     pub use crate::usecase::repository_state::runtime::RepositoryStateWorkerRuntime;
     pub use crate::usecase::repository_state::runtime::WorktreePathNormalizer;
     pub use crate::usecase::repository_state::scanner::changes_diff_tree_entries;
@@ -425,8 +427,6 @@ pub mod platform {
     pub use crate::usecase::repository_state::worktree::RepositoryStateWatchSession;
     pub use crate::usecase::repository_state::worktree::RepositoryStateWatcher;
     pub use crate::usecase::repository_state::worktree::WorktreeState;
-    pub use crate::usecase::repository_usecase::RepositoryUsecase;
-    pub use crate::usecase::repository_usecase::WorktreeExecutionArchiver;
     pub use crate::usecase::review_usecase::ReviewUsecase;
     pub use crate::usecase::test_helpers::watcher::SubscriptionFiles;
     pub use crate::usecase::watcher::UsecaseError as watcher_UsecaseError;
@@ -504,18 +504,15 @@ pub mod providers {
     pub use crate::usecase::provider_lifecycle::ProviderLifecycleUsecase;
 }
 pub mod repository {
-    pub use crate::adaptor::gateway::repository::branch::BranchGateway;
-    pub use crate::domain::repository::BranchRepository;
+    pub use crate::adaptor::gateway::repository::git::GitGateway;
+    pub use crate::domain::git::{GitService, RepositoryStatusScan};
 
     pub use crate::adaptor::gateway::repository::branch::get_current_branch;
     pub use crate::adaptor::gateway::repository::branch::git_create_branch;
     pub use crate::adaptor::gateway::repository::branch::list_branches;
     pub use crate::adaptor::gateway::repository::file_watcher::FileWatcherGateway;
-    pub use crate::adaptor::gateway::repository::git_config::get_branch_base;
     pub use crate::adaptor::gateway::repository::git_config::get_releash_base;
-    pub use crate::adaptor::gateway::repository::git_config::prune_stale_branch_bases;
     pub use crate::adaptor::gateway::repository::git_config::resolve_base_commit_oid;
-    pub use crate::adaptor::gateway::repository::git_config::resolve_current_base_branch;
     pub use crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch;
     pub use crate::adaptor::gateway::repository::git_config::set_branch_base_override;
     pub use crate::adaptor::gateway::repository::git_config::set_releash_base;
@@ -532,7 +529,6 @@ pub mod repository {
     pub use crate::adaptor::gateway::repository::status::get_status_diff_stats;
     pub use crate::adaptor::gateway::repository::status::reset_status_walk_count_for_tests;
     pub use crate::adaptor::gateway::repository::status::status_walk_count_for_tests;
-    pub use crate::adaptor::gateway::repository::util::resolve_branch_base;
     pub use crate::adaptor::gateway::repository::watch::resolve_file_watch_paths;
     pub use crate::adaptor::gateway::repository::watch::resolve_worktree_git_dir;
     pub use crate::adaptor::gateway::repository::worktree::create_worktree;
@@ -547,12 +543,11 @@ pub mod repository {
     pub use crate::adaptor::gateway::repository::worktree::recorded_main_repo_path;
     pub use crate::adaptor::gateway::repository::worktree::registered_worktree_paths;
     pub use crate::adaptor::gateway::repository::worktree::remove_worktree;
-    pub use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
     pub use crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks;
     pub use crate::domain::code::repository::FileContentRepository;
     pub use crate::domain::code::repository::StagingRepository;
-    pub use crate::domain::repository::worktree_operation::WorktreeOperationLocks;
-    pub use crate::usecase::test_helpers::usecase as repository_usecase;
+    pub use crate::domain::git::worktree_operation::WorktreeOperationLocks;
+    pub use crate::usecase::test_helpers::usecase as git_usecase;
     pub use crate::usecase::test_helpers::FakeRepo;
 
     pub use crate::domain::app_config::repository::AppConfigRepository;
@@ -563,13 +558,13 @@ pub mod repository {
     pub use crate::domain::code::repository::ReviewSideMetadata;
     pub use crate::domain::local_event::repository::LocalEventTransactionRepository;
 
-    pub use crate::domain::repository::entities::worktree::Worktree;
-    pub use crate::domain::repository::error::RepositoryError;
-    pub use crate::domain::repository::file_watcher::FileWatchGateway;
+    pub use crate::domain::git::entities::worktree::Worktree;
+    pub use crate::domain::git::error::GitError;
+    pub use crate::domain::git::file_watcher::FileWatchGateway;
 
-    pub use crate::domain::repository::repository::RepoPathsRepository;
+    pub use crate::domain::git::repository::RepoPathsRepository;
 
-    pub use crate::domain::repository::worktree_operation::WorktreeDeletionTarget;
+    pub use crate::domain::git::worktree_operation::WorktreeDeletionTarget;
     pub use crate::domain::workspace_state::repository::WorkspaceStateRepository;
 }
 pub mod review {
@@ -713,6 +708,8 @@ pub mod settings {
     pub use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
     pub use crate::usecase::app_config::usecase::AppConfigUsecase;
     pub use crate::usecase::app_config::usecase::WorkflowConfigInput;
+    pub use crate::usecase::repository_config_usecase::RepositoryConfigUsecase;
+    pub use crate::usecase::test_helpers::repository_config_usecase;
 }
 pub mod subscriptions {
     pub use crate::test_support::state_subscription::test_subscriptions;

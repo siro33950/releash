@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::domain::repository::Worktree;
+use crate::domain::git::Worktree;
 use crate::usecase::fetched::Fetched;
 
 use super::error::RepositoryStateError;

@@ -34,7 +34,7 @@ pub enum StorageFailureSource {
     Query(crate::domain::local_event::LocalEventQueryError),
     Technical(TechnicalFailure),
     Workflow(Box<crate::domain::workflow::WorkflowError>),
-    Repository(crate::domain::repository::RepositoryError),
+    Repository(crate::domain::git::GitError),
     AgentSession(Box<crate::domain::agent_session::repository::AgentSessionRepositoryError>),
 }
 

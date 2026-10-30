@@ -1,10 +1,10 @@
 //! repository ユースケースのエラー型。
 //!
-//! ドメインエラー（`RepositoryError`）から `#[from]` で変換し、adaptor 層で
+//! ドメインエラー（`GitError`）から `#[from]` で変換し、adaptor 層で
 //! `AppError` に集約される（`UsecaseError → AppError` 変換は adaptor 層に置く）。
 //! `#[error(transparent)]` により serialize 表現（文字列）を移行前と等価に保つ。
 
-use crate::domain::repository::RepositoryError;
+use crate::domain::git::GitError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum UsecaseError {
@@ -15,10 +15,10 @@ pub enum UsecaseError {
     #[error(transparent)]
     Workflow(#[from] crate::domain::workflow::WorkflowError),
     #[error(transparent)]
-    Repository(#[from] RepositoryError),
+    Repository(#[from] GitError),
     /// ユースケースの業務ルール違反（削除拒否ポリシー等）。
     /// `#[error("{0}")]` によりメッセージ文字列をそのまま serialize し、
-    /// 移行前（gateway が返していた `RepositoryError::rule`）と等価に保つ。
+    /// 移行前（gateway が返していた `GitError::rule`）と等価に保つ。
     #[error("{0}")]
     Rule(String),
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::repository::file_watcher::WatchChangeHandler;
+use crate::domain::git::file_watcher::WatchChangeHandler;
 use crate::usecase::test_helpers::Files;
 
 fn ignore() -> WatchChangeHandler {
@@ -34,9 +34,7 @@ fn test_監視_repositoryの再走査競合と下位エラーの分類を保持�
     // Given
     for source in [
         RepositoryStateError::ScanInvalidated,
-        RepositoryStateError::Repository(
-            crate::domain::repository::RepositoryError::rule("state").into(),
-        ),
+        RepositoryStateError::Repository(crate::domain::git::GitError::rule("state").into()),
         RepositoryStateError::Code(
             crate::domain::code::CodeError::StaleReviewGroupTarget {
                 group_id: "g".into(),

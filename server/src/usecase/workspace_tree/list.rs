@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use crate::domain::git::Worktree;
 use crate::domain::git_host::{PrInfo, PrStatus};
-use crate::domain::repository::Worktree;
 use crate::domain::workspace_tree::WorkspaceTree;
 use crate::usecase::{
-    fetched::Fetched, git_host::GitHostUsecase, repo_paths_usecase::RepoPathsUsecase,
-    repository_state::RepositoryStateService, repository_usecase::RepositoryUsecase,
+    fetched::Fetched, git_host::GitHostUsecase, git_usecase::GitUsecase,
+    repo_paths_usecase::RepoPathsUsecase, repository_state::RepositoryStateService,
     workflow::WorkflowUsecase,
 };
 
@@ -52,7 +52,7 @@ struct WorktreeValues {
 #[derive(Clone)]
 pub struct WorkspaceListUsecase {
     repositories: Arc<RepoPathsUsecase>,
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
     repository_state: Arc<RepositoryStateService>,
     workflow: Arc<WorkflowUsecase>,
     git_host: Arc<GitHostUsecase>,
@@ -61,7 +61,7 @@ pub struct WorkspaceListUsecase {
 impl WorkspaceListUsecase {
     pub fn new(
         repositories: Arc<RepoPathsUsecase>,
-        repository: Arc<RepositoryUsecase>,
+        repository: Arc<GitUsecase>,
         repository_state: Arc<RepositoryStateService>,
         workflow: Arc<WorkflowUsecase>,
         git_host: Arc<GitHostUsecase>,

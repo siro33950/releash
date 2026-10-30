@@ -5,6 +5,7 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 
+use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::repository_state::runtime::WorktreePathNormalizer;
 use crate::usecase::repository_state::service::RepositoryStateRepository;
 use crate::usecase::repository_state::worker::InvalidateReason;
@@ -12,7 +13,6 @@ use crate::usecase::repository_state::worktree::{
     RepositoryStateWatchSession, RepositoryStateWatcher, WorktreeState,
 };
 use crate::usecase::repository_state::RepositoryStateError;
-use crate::usecase::repository_usecase::RepositoryUsecase;
 
 use super::watch::{
     classify_git_dir_events, generate_watcher_id, resolve_file_watch_paths,
@@ -23,11 +23,11 @@ type RecommendedDebouncer =
     notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>;
 
 pub struct RepositoryStateRepositoryGateway {
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
 }
 
 impl RepositoryStateRepositoryGateway {
-    pub fn new(repository: Arc<RepositoryUsecase>) -> Self {
+    pub fn new(repository: Arc<GitUsecase>) -> Self {
         Self { repository }
     }
 }
@@ -59,11 +59,11 @@ impl Drop for RepositoryStateWatcherHandles {
 }
 
 pub struct NotifyRepositoryStateWatcher {
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
 }
 
 impl NotifyRepositoryStateWatcher {
-    pub fn new(repository: Arc<RepositoryUsecase>) -> Self {
+    pub fn new(repository: Arc<GitUsecase>) -> Self {
         Self { repository }
     }
 }
@@ -88,7 +88,7 @@ impl RepositoryStateWatcher for NotifyRepositoryStateWatcher {
 
 fn start_file_watcher(
     state: Arc<WorktreeState>,
-    repository: &RepositoryUsecase,
+    repository: &GitUsecase,
 ) -> Result<RecommendedDebouncer, RepositoryStateError> {
     let watch_paths = resolve_file_watch_paths(repository, state.worktree_path());
     let debouncer = new_debouncer(

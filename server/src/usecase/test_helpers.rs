@@ -1,15 +1,11 @@
-use crate::domain::app_config::{AppConfigError, RepositoryConfig, RepositoryConfigRepository};
-use crate::domain::repository::file_watcher::FileWatchGateway;
-use crate::domain::repository::GitConfigRepository;
-use crate::domain::repository::RepoLocator;
-use crate::domain::repository::StatusRepository;
-use crate::domain::repository::WorktreeRepository;
-use crate::domain::repository::WorktreeTerminalGateway;
+use crate::domain::git::file_watcher::FileWatchGateway;
+use crate::domain::git::GitService;
+use crate::domain::git::RepoLocator;
+use crate::domain::git::WorktreeTerminalGateway;
 use crate::test_support::client_api_acceptance::Branch;
-use crate::test_support::client_api_acceptance::BranchRepository;
 use std::sync::Arc;
 
-use crate::domain::repository::file_watcher::WatchChangeHandler;
+use crate::domain::git::file_watcher::WatchChangeHandler;
 use std::sync::Mutex as StdMutex;
 
 #[derive(Default)]
@@ -33,8 +29,8 @@ impl FileWatchGateway for Files {
     }
 }
 
-use crate::domain::repository::{RepositoryError, RepositoryStatusScan, Worktree};
-use crate::usecase::repository_usecase::*;
+use crate::domain::git::{GitError, RepositoryStatusScan, Worktree};
+use crate::usecase::git_usecase::*;
 use parking_lot::Mutex;
 
 pub type WorktreeCreation = (String, String, bool, Option<String>);
@@ -72,8 +68,6 @@ pub struct FakeRepo {
     /// `remove` が返す「削除した worktree のブランチ名」。
     pub removed_branch: Option<String>,
     pub set_branch_base_override_calls: Mutex<Vec<(String, Option<String>)>>,
-    pub set_releash_base_calls: Mutex<Vec<Option<String>>>,
-    pub prune_calls: Mutex<Vec<Vec<String>>>,
     pub fail_main_repo_path: bool,
     pub listed_worktree_paths: Mutex<Vec<String>>,
     pub branches: Vec<Branch>,
@@ -111,64 +105,60 @@ impl WorktreeExecutionArchiver for FakeRepo {
     }
 }
 
-impl BranchRepository for FakeRepo {
-    fn list(&self, _repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
+impl GitService for FakeRepo {
+    fn list_branches(&self, _repo_path: &str) -> Result<Vec<Branch>, GitError> {
         Ok(self.branches.clone())
     }
-    fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
+    fn current(&self, _repo_path: &str) -> Result<String, GitError> {
         if let Some(stopped) = self.stop_current_branch {
             return Err(stopped.into());
         }
         if self.fail_current_branch {
-            return Err(RepositoryError::External("branch unavailable".into()));
+            return Err(GitError::External("branch unavailable".into()));
         }
         Ok(self.current_branch.clone())
     }
-    fn create(&self, _repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
+    fn create_branch(&self, _repo_path: &str, branch_name: &str) -> Result<(), GitError> {
         self.created_branches.lock().push(branch_name.to_string());
         Ok(())
     }
-}
 
-impl StatusRepository for FakeRepo {
-    fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
+    fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
         Ok(RepositoryStatusScan {
             status: Vec::new(),
             diff_stats: Vec::new(),
             dirty_count: 0,
         })
     }
-}
 
-impl WorktreeRepository for FakeRepo {
-    fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, RepositoryError> {
+    fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, GitError> {
         self.main_repo_path(path).map(Some)
     }
-    fn main_repo_path(&self, _any_path: &str) -> Result<String, RepositoryError> {
+    fn main_repo_path(&self, _any_path: &str) -> Result<String, GitError> {
         if self.fail_main_repo_path {
-            return Err(RepositoryError::External(
+            return Err(GitError::External(
                 "main repo path is unavailable".to_string(),
             ));
         }
         Ok("/main".to_string())
     }
-    fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
+    fn list_worktrees(&self, repo_path: &str) -> Result<Vec<Worktree>, GitError> {
         self.listed_worktree_paths
             .lock()
             .push(repo_path.to_string());
         if self.fail_list_worktrees {
-            return Err(RepositoryError::rule("worktrees unavailable"));
+            return Err(GitError::rule("worktrees unavailable"));
         }
         Ok(self.worktrees.clone())
     }
-    fn create(
+    fn create_worktree(
         &self,
         _repo_path: &str,
         worktree_path: &str,
         branch: &str,
         create_branch: bool,
         base_branch: Option<&str>,
-    ) -> Result<Worktree, RepositoryError> {
+    ) -> Result<Worktree, GitError> {
         self.worktree_creations.lock().push((
             worktree_path.into(),
             branch.into(),
@@ -180,7 +170,7 @@ impl WorktreeRepository for FakeRepo {
             receiver.lock().recv().unwrap();
         }
         if self.fail_create_worktree {
-            return Err(RepositoryError::External("boom".to_string()));
+            return Err(GitError::External("boom".to_string()));
         }
         Ok(Worktree {
             name: "wt".to_string(),
@@ -191,14 +181,9 @@ impl WorktreeRepository for FakeRepo {
             is_merged: false,
         })
     }
-    fn validate_removal(
-        &self,
-        _: &str,
-        path: &str,
-        force: bool,
-    ) -> Result<String, RepositoryError> {
+    fn validate_removal(&self, _: &str, path: &str, force: bool) -> Result<String, GitError> {
         if self.fail_validate_removal {
-            return Err(RepositoryError::rule("worktree not found"));
+            return Err(GitError::rule("worktree not found"));
         }
         let worktree = self
             .worktrees
@@ -214,7 +199,7 @@ impl WorktreeRepository for FakeRepo {
         _repo_path: &str,
         worktree_path: &str,
         force: bool,
-    ) -> Result<Option<String>, RepositoryError> {
+    ) -> Result<Option<String>, GitError> {
         self.remove_started.notify_one();
         if let Some(receiver) = &self.remove_continue {
             receiver
@@ -223,34 +208,22 @@ impl WorktreeRepository for FakeRepo {
                 .unwrap();
         }
         if self.fail_remove_worktree {
-            return Err(RepositoryError::External("remove failed".to_string()));
+            return Err(GitError::External("remove failed".to_string()));
         }
         self.removed_worktrees
             .lock()
             .push((worktree_path.to_string(), force));
         Ok(self.removed_branch.clone())
     }
-}
 
-impl GitConfigRepository for FakeRepo {
-    fn get_releash_base(&self, _repo_path: &str) -> Result<Option<String>, RepositoryError> {
-        Ok(None)
-    }
-    fn get_branch_base(
-        &self,
-        _repo_path: &str,
-        _branch_name: &str,
-    ) -> Result<Option<String>, RepositoryError> {
-        Ok(self.branch_base.clone())
-    }
     fn set_branch_base_override(
         &self,
         _repo_path: &str,
         branch_name: &str,
         base: Option<&str>,
-    ) -> Result<(), RepositoryError> {
+    ) -> Result<(), GitError> {
         if self.fail_cleanup {
-            return Err(RepositoryError::External("cleanup failed".into()));
+            return Err(GitError::External("cleanup failed".into()));
         }
         self.cleanup_started.notify_one();
         if let Some(receiver) = &self.cleanup_continue {
@@ -264,44 +237,27 @@ impl GitConfigRepository for FakeRepo {
             .push((branch_name.to_string(), base.map(|s| s.to_string())));
         Ok(())
     }
-    fn prune_stale_branch_bases(
+    fn remove_branch_base_overrides(
         &self,
         _repo_path: &str,
-        existing_branches: &[String],
-    ) -> Result<(), RepositoryError> {
-        self.prune_calls.lock().push(existing_branches.to_vec());
-        Ok(())
+        _branches: &[String],
+    ) -> Result<(), GitError> {
+        todo!()
     }
-    fn resolve_current_base_branch(
-        &self,
-        _path_hint: &str,
-    ) -> Result<Option<String>, RepositoryError> {
+    fn resolve_current_base_branch(&self, _path_hint: &str) -> Result<Option<String>, GitError> {
         Ok(self.branch_base.clone())
     }
     fn resolve_base_commit_oid(
         &self,
         _path_hint: &str,
         _base_name: &str,
-    ) -> Result<Option<String>, RepositoryError> {
+    ) -> Result<Option<String>, GitError> {
         Ok(None)
     }
 }
 
-impl RepositoryConfigRepository for FakeRepo {
-    fn load(&self, repo_path: &str) -> Result<RepositoryConfig, AppConfigError> {
-        Ok(RepositoryConfig::new(repo_path.to_string(), None, None))
-    }
-
-    fn save(&self, config: RepositoryConfig) -> Result<(), AppConfigError> {
-        self.set_releash_base_calls
-            .lock()
-            .push(config.base_branch().map(str::to_owned));
-        Ok(())
-    }
-}
-
 impl RepoLocator for FakeRepo {
-    fn cwd(&self) -> Result<String, RepositoryError> {
+    fn cwd(&self) -> Result<String, GitError> {
         Ok("/cwd".to_string())
     }
 }
@@ -315,17 +271,12 @@ impl WorktreeTerminalGateway for FakeRepo {
     }
 }
 
-pub fn usecase(fake: Arc<FakeRepo>) -> RepositoryUsecase {
-    RepositoryUsecase::new(
-        fake.clone(),
-        fake.clone(),
-        fake.clone(),
-        fake.clone(),
+pub fn usecase(fake: Arc<FakeRepo>) -> GitUsecase {
+    GitUsecase::new(
         fake.clone(),
         fake.clone(),
         fake.clone(),
         fake.operations.clone(),
-        Default::default(),
     )
 }
 
@@ -352,7 +303,7 @@ impl FakeRepo {
     }
 }
 #[cfg(test)]
-pub fn deleting_rows(repository: &RepositoryUsecase) -> Vec<(Worktree, bool)> {
+pub fn deleting_rows(repository: &GitUsecase) -> Vec<(Worktree, bool)> {
     repository.with_deleting_worktrees("/main", Vec::new())
 }
 
@@ -611,7 +562,7 @@ pub(crate) mod state_subscription {
 }
 
 pub(crate) mod watcher {
-    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use crate::domain::git::file_watcher::{FileWatchGateway, WatchChangeHandler};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -735,4 +686,10 @@ pub(crate) mod retry {
     pub(crate) fn test_retrying() -> Arc<Retrying> {
         test_retrying_with_store().0
     }
+}
+
+/// repository 設定の操作を使うテストの入口。
+pub fn repository_config_usecase(
+) -> crate::usecase::repository_config_usecase::RepositoryConfigUsecase {
+    todo!()
 }

@@ -1,9 +1,7 @@
 //! status 責務の gateway 実装。git2 による作業ツリー状態取得を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::domain::repository::{
-    FileDiffStat, FileStatus, RepositoryError, RepositoryStatusScan, StatusRepository,
-};
+use crate::domain::git::{FileDiffStat, FileStatus, GitError, RepositoryStatusScan};
 use crate::infrastructure::git::client;
 use git2::{ErrorCode, Repository, StatusOptions};
 use std::collections::HashMap;
@@ -62,11 +60,11 @@ fn worktree_status_from_flags(status: git2::Status) -> &'static str {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn get_git_status(repo_path: &str) -> Result<Vec<FileStatus>, RepositoryError> {
+pub fn get_git_status(repo_path: &str) -> Result<Vec<FileStatus>, GitError> {
     collect_git_status(&git_operation::run(|| client::open(repo_path))?)
 }
 
-fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, RepositoryError> {
+fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, GitError> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
 
@@ -96,7 +94,7 @@ fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, RepositoryEr
     Ok(result)
 }
 
-fn count_patch_lines(diff: &git2::Diff, idx: usize) -> Result<(u32, u32), RepositoryError> {
+fn count_patch_lines(diff: &git2::Diff, idx: usize) -> Result<(u32, u32), GitError> {
     let patch =
         match git_operation::optional(git_operation::run(|| git2::Patch::from_diff(diff, idx)))? {
             Some(Some(p)) => p,
@@ -125,7 +123,7 @@ fn count_patch_lines(diff: &git2::Diff, idx: usize) -> Result<(u32, u32), Reposi
     Ok((adds, dels))
 }
 
-fn collect_diff_stats(diff: &git2::Diff) -> Result<HashMap<String, (u32, u32)>, RepositoryError> {
+fn collect_diff_stats(diff: &git2::Diff) -> Result<HashMap<String, (u32, u32)>, GitError> {
     let mut map = HashMap::new();
     let num_deltas = diff.deltas().len();
     for i in 0..num_deltas {
@@ -148,7 +146,7 @@ fn collect_diff_stats(diff: &git2::Diff) -> Result<HashMap<String, (u32, u32)>, 
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
+pub fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, GitError> {
     crate::infrastructure::telemetry::metrics::measure_result(
         crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
         || get_status_diff_stats_inner(repo_path),
@@ -156,12 +154,12 @@ pub fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, Repos
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStat>, RepositoryError> {
+fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStat>, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     collect_status_diff_stats(&repo)
 }
 
-fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, RepositoryError> {
+fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, GitError> {
     // HEAD tree (may not exist for unborn branch)
     let head_tree = match git_operation::run(|| repo.head()) {
         Ok(head) => Some(git_operation::run(|| head.peel_to_tree())?),
@@ -210,9 +208,7 @@ fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, Rep
     Ok(result)
 }
 
-pub fn get_repository_status_scan(
-    repo_path: &str,
-) -> Result<RepositoryStatusScan, RepositoryError> {
+pub fn get_repository_status_scan(repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
     crate::common::telemetry::observe_result(
         || {
             crate::infrastructure::telemetry::metrics::measure_result(
@@ -228,9 +224,7 @@ pub fn get_repository_status_scan(
     )
 }
 
-fn get_repository_status_scan_inner(
-    repo_path: &str,
-) -> Result<RepositoryStatusScan, RepositoryError> {
+fn get_repository_status_scan_inner(repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let status = collect_git_status(&repo)?;
     let dirty_count = status
@@ -247,13 +241,4 @@ fn get_repository_status_scan_inner(
         diff_stats,
         dirty_count,
     })
-}
-
-/// `StatusRepository` の git2 実装。
-pub struct StatusGateway;
-
-impl StatusRepository for StatusGateway {
-    fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, RepositoryError> {
-        get_repository_status_scan(repo_path)
-    }
 }

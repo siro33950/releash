@@ -185,7 +185,7 @@ pub(crate) mod tests {
 
     use releashd::test_support::integration::providers::ProviderKind;
     use releashd::test_support::integration::repository::{
-        AppConfigRepository, RepositoryConfig, RepositoryConfigRepository,
+        AppConfigRepository, RepositoryConfigRepository,
     };
     use releashd::test_support::integration::sessions::ProviderExecutable;
     use releashd::test_support::integration::settings::load_or_create_config;

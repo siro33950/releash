@@ -32,7 +32,7 @@ pub enum StateValue {
     Branches(Vec<BranchDto>),
     BranchBase(Option<String>),
     /// ブランチと、その worktree があるか。
-    BranchStatus(Vec<(crate::domain::repository::Branch, bool)>),
+    BranchStatus(Vec<(crate::domain::git::Branch, bool)>),
     CurrentBranch(String),
     Issues(
         crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,

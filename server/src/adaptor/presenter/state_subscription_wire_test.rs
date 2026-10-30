@@ -438,7 +438,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::BranchStatus(vec![(
-                crate::domain::repository::Branch::local("main"),
+                crate::domain::git::Branch::local("main"),
                 true,
             )]),
             W::BranchStatus(wire::ListBranchStatus {

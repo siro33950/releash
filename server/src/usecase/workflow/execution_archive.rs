@@ -19,7 +19,7 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, WorkflowError> {
         Ok(vec![
             self.begin_worktree_mutation(repo)?,
-            self.begin_worktree_mutation(&crate::domain::repository::worktree_path(repo, branch))?,
+            self.begin_worktree_mutation(&crate::domain::git::worktree_path(repo, branch))?,
         ])
     }
 
@@ -30,9 +30,9 @@ impl WorkflowRuntimeUsecase {
     ) -> Result<Vec<crate::usecase::worktree_operation::WorktreeMutationGuard>, WorkflowError> {
         let mut guards = vec![self.begin_worktree_mutation(repo)?];
         for branch in branches {
-            guards.push(self.begin_worktree_mutation(
-                &crate::domain::repository::worktree_path(repo, branch),
-            )?);
+            guards.push(
+                self.begin_worktree_mutation(&crate::domain::git::worktree_path(repo, branch))?,
+            );
         }
         Ok(guards)
     }
@@ -229,7 +229,7 @@ impl WorkflowRuntimeUsecase {
 }
 
 #[async_trait::async_trait]
-impl crate::usecase::repository_usecase::WorktreeExecutionArchiver for WorkflowRuntimeUsecase {
+impl crate::usecase::git_usecase::WorktreeExecutionArchiver for WorkflowRuntimeUsecase {
     async fn begin_worktree_deletion(
         &self,
         path: &str,
@@ -281,19 +281,13 @@ impl crate::usecase::app_data_gc::ExecutionTreeGc for WorkflowRuntimeUsecase {
     }
 }
 
-fn map_worktree_operation_error(
-    error: crate::domain::repository::RepositoryError,
-) -> WorkflowError {
+fn map_worktree_operation_error(error: crate::domain::git::GitError) -> WorkflowError {
     match error {
-        crate::domain::repository::RepositoryError::Technical(error) => {
+        crate::domain::git::GitError::Technical(error) => {
             let message = error.to_string();
             WorkflowError::storage(error, message)
         }
-        crate::domain::repository::RepositoryError::Rule(message) => {
-            WorkflowError::Conflict(message)
-        }
-        crate::domain::repository::RepositoryError::External(message) => {
-            WorkflowError::external(message)
-        }
+        crate::domain::git::GitError::Rule(message) => WorkflowError::Conflict(message),
+        crate::domain::git::GitError::External(message) => WorkflowError::external(message),
     }
 }

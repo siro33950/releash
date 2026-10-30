@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::domain::app_config::AppConfigRepository;
-use crate::domain::repository::RepoPathsRepository;
+use crate::domain::git::RepoPathsRepository;
 
 use super::repository_error::UsecaseError;
 
@@ -39,7 +39,7 @@ impl RepoPathsUsecase {
 
     pub(crate) fn initialize_from_cwd(
         &self,
-        repository: &crate::usecase::repository_usecase::RepositoryUsecase,
+        repository: &crate::usecase::git_usecase::GitUsecase,
     ) -> Result<(), UsecaseError> {
         if let Some(root) = repository.find_main_repo_path(&repository.get_cwd()?)? {
             self.add(&root)?;

@@ -17,25 +17,14 @@ struct FakeNotionConfigRepository {
 }
 
 impl FakeNotionConfigRepository {
-    fn with_config(repo_path: &str, config: app_config_vo::NotionRepoConfig) -> Self {
-        Self {
-            configs: Mutex::new(HashMap::from([(
-                repo_path.to_string(),
-                RepositoryConfig::new(repo_path.to_string(), None, Some(config)),
-            )])),
-        }
+    fn with_config(_repo_path: &str, _config: app_config_vo::NotionRepoConfig) -> Self {
+        todo!()
     }
 }
 
 impl RepositoryConfigRepository for FakeNotionConfigRepository {
-    fn load(&self, repo_path: &str) -> Result<RepositoryConfig, AppConfigError> {
-        Ok(self
-            .configs
-            .lock()
-            .unwrap()
-            .get(repo_path)
-            .cloned()
-            .unwrap_or_else(|| RepositoryConfig::new(repo_path.to_string(), None, None)))
+    fn load(&self, _repo_path: &str) -> Result<RepositoryConfig, AppConfigError> {
+        todo!()
     }
     fn save(&self, config: RepositoryConfig) -> Result<(), AppConfigError> {
         self.configs

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::domain::app_config::{AppConfig, AppConfigError, AppConfigRepository};
-use crate::domain::repository::RepoPathsRepository;
+use crate::domain::git::RepoPathsRepository;
 
 /// 登録済みリポジトリパス一覧のメモリ共有リスト。
 pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;

@@ -396,7 +396,7 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
             };
             let fake = std::sync::Arc::new(crate::usecase::test_helpers::FakeRepo {
                 fail_list_worktrees: unresolved,
-                worktrees: vec![crate::domain::repository::Worktree {
+                worktrees: vec![crate::domain::git::Worktree {
                     name: "a".into(),
                     path: "/repo/a".into(),
                     branch: "a".into(),

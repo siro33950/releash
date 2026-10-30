@@ -286,7 +286,7 @@ mod connect_mapping_tests {
                 (
                     crate::usecase::repository_state::error::RepositoryStateError::Repository(
                         crate::usecase::repository_error::UsecaseError::Repository(
-                            crate::domain::repository::RepositoryError::External("io".into()),
+                            crate::domain::git::GitError::External("io".into()),
                         ),
                     ),
                     F::Internal,
@@ -1998,13 +1998,13 @@ mod connect_mapping_tests {
             let cases = [
                 (
                     crate::usecase::repository_error::UsecaseError::Repository(
-                        crate::domain::repository::RepositoryError::External("io".into()),
+                        crate::domain::git::GitError::External("io".into()),
                     ),
                     F::Internal,
                 ),
                 (
                     crate::usecase::repository_error::UsecaseError::Repository(
-                        crate::domain::repository::RepositoryError::Rule("state".into()),
+                        crate::domain::git::GitError::Rule("state".into()),
                     ),
                     F::FailedPrecondition,
                 ),
@@ -2740,7 +2740,7 @@ mod connect_mapping_tests {
             // Given
             let cases = [
                 (
-                    crate::domain::repository::error::RepositoryError::Technical(
+                    crate::domain::git::error::GitError::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
                             message: "Operation deadline exceeded".into(),
@@ -2749,7 +2749,7 @@ mod connect_mapping_tests {
                     F::DeadlineExceeded,
                 ),
                 (
-                    crate::domain::repository::error::RepositoryError::Technical(
+                    crate::domain::git::error::GitError::Technical(
                         crate::domain::failure::TechnicalFailure {
                             nature: crate::domain::failure::TechnicalFailureNature::Cancelled,
                             message: "Operation cancelled".into(),
@@ -2758,11 +2758,11 @@ mod connect_mapping_tests {
                     F::Canceled,
                 ),
                 (
-                    crate::domain::repository::error::RepositoryError::External("io".into()),
+                    crate::domain::git::error::GitError::External("io".into()),
                     F::Internal,
                 ),
                 (
-                    crate::domain::repository::error::RepositoryError::Rule("rule".into()),
+                    crate::domain::git::error::GitError::Rule("rule".into()),
                     F::FailedPrecondition,
                 ),
             ];

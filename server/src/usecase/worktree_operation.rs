@@ -4,10 +4,10 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
-use crate::domain::repository::worktree_operation::{
+use crate::domain::git::worktree_operation::{
     WorktreeDeletionTarget, WorktreeOperationLease, WorktreeOperationLocks, WorktreeOperationState,
 };
-use crate::domain::repository::RepositoryError;
+use crate::domain::git::GitError;
 
 pub struct WorktreeOperations {
     worktrees: Mutex<HashMap<String, Weak<OperationSlot>>>,
@@ -30,7 +30,7 @@ pub struct WorktreeDeletionGuard(
 );
 
 impl WorktreeDeletionGuard {
-    pub fn accept(&mut self, target: WorktreeDeletionTarget) -> Result<(), RepositoryError> {
+    pub fn accept(&mut self, target: WorktreeDeletionTarget) -> Result<(), GitError> {
         self.0[0].state.lock().accept_deletion(target)
     }
 }
@@ -65,7 +65,7 @@ impl WorktreeOperations {
         slot
     }
 
-    pub fn mutate(&self, identity: &str) -> Result<WorktreeMutationGuard, RepositoryError> {
+    pub fn mutate(&self, identity: &str) -> Result<WorktreeMutationGuard, GitError> {
         let lease = self.locks.mutation(identity)?;
         let slot = self.slot(identity);
         slot.state.lock().begin_mutation()?;
@@ -76,14 +76,14 @@ impl WorktreeOperations {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn delete(&self, identity: &str) -> Result<WorktreeDeletionGuard, RepositoryError> {
+    pub async fn delete(&self, identity: &str) -> Result<WorktreeDeletionGuard, GitError> {
         self.delete_many(&[identity.to_string()]).await
     }
 
     pub(crate) async fn delete_many(
         &self,
         identities: &[String],
-    ) -> Result<WorktreeDeletionGuard, RepositoryError> {
+    ) -> Result<WorktreeDeletionGuard, GitError> {
         let mut guard = WorktreeDeletionGuard(Vec::new(), Vec::new());
         for identity in identities {
             let slot = self.slot(identity);
@@ -134,16 +134,10 @@ impl Default for WorktreeOperations {
         impl WorktreeOperationLease for Locks {}
         #[async_trait::async_trait]
         impl WorktreeOperationLocks for Locks {
-            fn mutation(
-                &self,
-                _: &str,
-            ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
+            fn mutation(&self, _: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError> {
                 Ok(Box::new(Locks))
             }
-            async fn deletion(
-                &self,
-                _: &str,
-            ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError> {
+            async fn deletion(&self, _: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError> {
                 Ok(Box::new(Locks))
             }
         }

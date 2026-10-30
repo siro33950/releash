@@ -109,7 +109,7 @@ pub(crate) fn repository_for_worktree<'a>(
     repositories
         .iter()
         .find(|repository| {
-            let directory = crate::domain::repository::worktree_dir(repository);
+            let directory = crate::domain::git::worktree_dir(repository);
             [workspace, worktree].iter().any(|path| {
                 *path == repository.as_str()
                     || path

@@ -86,7 +86,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         },
         WorkflowRuntimeCommandGatewayDeps {
             node_processes: processes,
-            repository_usecase: repository.clone(),
+            git_usecase: repository.clone(),
             app_config: config,
             workspace_query,
             agent_session_launch: sessions.launch,
@@ -342,7 +342,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         },
         WorkflowRuntimeCommandGatewayDeps {
             node_processes: processes,
-            repository_usecase: repository.clone(),
+            git_usecase: repository.clone(),
             app_config: config,
             workspace_query: workspace_query.clone(),
             agent_session_launch: sessions.launch.clone(),
