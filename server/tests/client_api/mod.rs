@@ -13,10 +13,12 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        Self::with_branch(Arc::new(BranchGateway)).await
+        use releashd::test_support::integration::settings::{AppConfig, ReleashConfig};
+        let config = Arc::new(AppConfig::new(ReleashConfig::default(), Default::default()));
+        Self::with_branch(Arc::new(GitGateway::new(config))).await
     }
 
-    async fn with_branch(branch: Arc<dyn BranchRepository>) -> Self {
+    async fn with_branch(branch: Arc<dyn GitService>) -> Self {
         let data = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let git = git2::Repository::init(repo.path()).unwrap();
@@ -140,25 +142,11 @@ async fn test_生成client_各protocolで非圧縮とgzipの呼出しと購読�
     use connectrpc::client::{ClientConfig, HttpClient};
     use connectrpc::{CompressionPolicy, Protocol};
 
-    struct LongBranch(String);
-
-    impl BranchRepository for LongBranch {
-        fn current(&self, _repo_path: &str) -> Result<String, RepositoryError> {
-            Ok(self.0.clone())
-        }
-
-        fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-            BranchGateway.list(repo_path)
-        }
-
-        fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-            BranchGateway.create(repo_path, branch_name)
-        }
-    }
-
     // Given: exceed the server's compression threshold for streaming responses too.
     let branch = "large-branch".repeat(128);
-    let fixture = Fixture::with_branch(Arc::new(LongBranch(branch.clone()))).await;
+    let response = branch.clone();
+    let fixture =
+        Fixture::with_branch(Arc::new(BranchStub(move |_: &str| Ok(response.clone())))).await;
     for (protocol, json) in [
         (Protocol::Connect, false),
         (Protocol::Connect, true),
@@ -194,28 +182,117 @@ async fn test_生成client_各protocolで非圧縮とgzipの呼出しと購読�
     }
 }
 
-struct PausedBranch {
-    started: Arc<tokio::sync::Notify>,
-    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
+struct BranchStub<F>(F);
 
-impl BranchRepository for PausedBranch {
-    fn current(&self, repo_path: &str) -> Result<String, RepositoryError> {
-        self.started.notify_one();
-        self.resume
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        BranchGateway.current(repo_path)
+impl<F> GitService for BranchStub<F>
+where
+    F: Fn(&str) -> Result<String, GitError> + Send + Sync,
+{
+    fn current(&self, repo_path: &str) -> Result<String, GitError> {
+        (self.0)(repo_path)
     }
 
-    fn list(&self, repo_path: &str) -> Result<Vec<Branch>, RepositoryError> {
-        BranchGateway.list(repo_path)
+    fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, GitError> {
+        let _ = repo_path;
+        Ok(Vec::new())
     }
 
-    fn create(&self, repo_path: &str, branch_name: &str) -> Result<(), RepositoryError> {
-        BranchGateway.create(repo_path, branch_name)
+    fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), GitError> {
+        let _ = (repo_path, branch_name);
+        Ok(())
+    }
+    fn status_scan(
+        &self,
+        repo_path: &str,
+    ) -> Result<releashd::test_support::integration::repository::RepositoryStatusScan, GitError>
+    {
+        let _ = repo_path;
+        Ok(
+            releashd::test_support::integration::repository::RepositoryStatusScan {
+                status: Vec::new(),
+                diff_stats: Vec::new(),
+                dirty_count: 0,
+            },
+        )
+    }
+    fn main_repo_path(&self, any_path: &str) -> Result<String, GitError> {
+        Ok(any_path.into())
+    }
+    fn find_main_repo_path(&self, any_path: &str) -> Result<Option<String>, GitError> {
+        let _ = any_path;
+        Ok(None)
+    }
+    fn list_worktrees(
+        &self,
+        repo_path: &str,
+    ) -> Result<Vec<releashd::test_support::integration::repository::Worktree>, GitError> {
+        let _ = repo_path;
+        Ok(Vec::new())
+    }
+    fn create_worktree(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        branch: &str,
+        create_branch: bool,
+        base_branch: Option<&str>,
+    ) -> Result<releashd::test_support::integration::repository::Worktree, GitError> {
+        let _ = (repo_path, create_branch, base_branch);
+        Ok(releashd::test_support::integration::repository::Worktree {
+            name: branch.into(),
+            path: worktree_path.into(),
+            branch: branch.into(),
+            is_main: false,
+            is_locked: false,
+            is_merged: false,
+        })
+    }
+    fn validate_removal(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Result<String, GitError> {
+        let _ = (repo_path, force);
+        Ok(worktree_path.into())
+    }
+    fn remove(
+        &self,
+        repo_path: &str,
+        worktree_path: &str,
+        force: bool,
+    ) -> Result<Option<String>, GitError> {
+        let _ = (repo_path, worktree_path, force);
+        Ok(None)
+    }
+    fn set_branch_base_override(
+        &self,
+        repo_path: &str,
+        branch_name: &str,
+        base: Option<&str>,
+    ) -> Result<(), GitError> {
+        let _ = (repo_path, branch_name, base);
+        Ok(())
+    }
+    fn remove_branch_base_overrides(
+        &self,
+        repo_path: &str,
+        branches: &[String],
+    ) -> Result<(), GitError> {
+        let _ = (repo_path, branches);
+        Ok(())
+    }
+    fn resolve_current_base_branch(&self, path_hint: &str) -> Result<Option<String>, GitError> {
+        let _ = path_hint;
+        Ok(None)
+    }
+    fn resolve_base_commit_oid(
+        &self,
+        path_hint: &str,
+        base_name: &str,
+    ) -> Result<Option<String>, GitError> {
+        let _ = (path_hint, base_name);
+        Ok(None)
     }
 }
 
@@ -223,10 +300,16 @@ impl BranchRepository for PausedBranch {
 async fn test_connect_defaultの枠と待ち行列を超える要求を拒否する() {
     let started = Arc::new(tokio::sync::Notify::new());
     let (resume, receiver) = std::sync::mpsc::channel();
-    let fixture = Fixture::with_branch(Arc::new(PausedBranch {
-        started: started.clone(),
-        resume: std::sync::Mutex::new(receiver),
-    }))
+    let receiver = std::sync::Mutex::new(receiver);
+    let fixture = Fixture::with_branch(Arc::new(BranchStub(move |repo_path: &str| {
+        started.notify_one();
+        receiver
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        releashd::test_support::integration::repository::get_current_branch(repo_path)
+    })))
     .await;
     let mut pending = tokio::task::JoinSet::new();
     for _ in 0..92 {

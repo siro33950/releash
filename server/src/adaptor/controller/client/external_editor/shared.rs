@@ -10,11 +10,13 @@ pub(crate) fn register_shared(
 ) {
     {
         let state = deps.config_repository.clone();
+        let config_mutation = deps.config_mutation.clone();
         let publisher = router.publisher.clone();
         router.register_domain(
             &["update_external_editor"],
             Box::new(move |command| {
                 let state = state.clone();
+                let config_mutation = config_mutation.clone();
                 let publisher = publisher.clone();
                 Box::pin(async move {
                     let wire::command_request::Command::UpdateExternalEditor(args) = command else {
@@ -28,6 +30,7 @@ pub(crate) fn register_shared(
                                 &state,
                                 publisher,
                                 convert(required(args.editor, "editor")?)?,
+                                config_mutation,
                             )
                             .await,
                         )

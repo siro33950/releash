@@ -1,4 +1,91 @@
 use super::*;
+
+#[test]
+fn test_desktop設定の受信_全項目をwatchへ送りfalseも保持する() {
+    for enabled in [false, true] {
+        // Given
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        let payload = wire::StatePayload {
+            value: Some(wire::state_payload::Value::DesktopSettings(
+                wire::DesktopSettings {
+                    start_minimized: Some(enabled),
+                    crash_reporting: Some(!enabled),
+                    performance_telemetry: Some(enabled),
+                    auto_launch: Some(!enabled),
+                },
+            )),
+        };
+
+        // When
+        apply_settings(payload, &sender);
+
+        // Then
+        assert!(receiver.has_changed().unwrap());
+        assert_eq!(
+            *receiver.borrow_and_update(),
+            Some(DesktopSettingsDto {
+                start_minimized: enabled,
+                crash_reporting: !enabled,
+                performance_telemetry: enabled,
+                auto_launch: !enabled,
+            })
+        );
+    }
+}
+
+#[test]
+fn test_desktop設定の受信_必須項目が欠けた通知と別の通知は既存値を変えない() {
+    // Given
+    let original = DesktopSettingsDto {
+        start_minimized: false,
+        crash_reporting: false,
+        performance_telemetry: false,
+        auto_launch: false,
+    };
+    let (sender, receiver) = tokio::sync::watch::channel(Some(original));
+    for field in 0..4 {
+        let mut value = wire::DesktopSettings {
+            start_minimized: Some(true),
+            crash_reporting: Some(true),
+            performance_telemetry: Some(true),
+            auto_launch: Some(true),
+        };
+        [
+            &mut value.start_minimized,
+            &mut value.crash_reporting,
+            &mut value.performance_telemetry,
+            &mut value.auto_launch,
+        ][field]
+            .take();
+
+        // When
+        apply_settings(
+            wire::StatePayload {
+                value: Some(wire::state_payload::Value::DesktopSettings(value)),
+            },
+            &sender,
+        );
+
+        // Then
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(*receiver.borrow(), Some(original));
+    }
+    // When
+    apply_settings(wire::StatePayload::default(), &sender);
+    apply_settings(
+        wire::StatePayload {
+            value: Some(wire::state_payload::Value::TerminalStartupCommand(
+                Default::default(),
+            )),
+        },
+        &sender,
+    );
+
+    // Then
+    assert!(!receiver.has_changed().unwrap());
+    assert_eq!(*receiver.borrow(), Some(original));
+}
+
 #[test]
 fn test_購読開始_重複したreadyで開始要求が増えない() {
     // Given

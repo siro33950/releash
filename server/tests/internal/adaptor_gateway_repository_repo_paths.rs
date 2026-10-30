@@ -1,6 +1,6 @@
 pub(crate) mod repo_paths_gateway_tests {
 
-    use releashd::test_support::integration::repository::ConfigRepository;
+    use releashd::test_support::integration::repository::AppConfigRepository;
     use releashd::test_support::integration::repository::RepoPathsGateway;
     use releashd::test_support::integration::repository::RepoPathsRepository;
     use releashd::test_support::integration::repository::SharedRepoPaths;
@@ -13,93 +13,77 @@ pub(crate) mod repo_paths_gateway_tests {
         let shared: SharedRepoPaths = Arc::new(parking_lot::RwLock::new(Vec::new()));
         let path = dir.path().join("releash.toml");
         let config = ReleashConfig::default();
-        let app_config: Arc<dyn ConfigRepository> = Arc::new(AppConfig::new(config, path));
+        let app_config: Arc<dyn AppConfigRepository> = Arc::new(AppConfig::new(config, path));
         RepoPathsGateway::new(shared, app_config)
     }
 
     #[test]
-    pub fn test_追加_新規パス() {
-        let dir = TempDir::new().unwrap();
-        let gw = make_gateway(&dir);
-
-        let added = gw.add("/repo/a").unwrap();
-        assert!(added);
-        assert_eq!(gw.get(), vec!["/repo/a"]);
-    }
-
-    #[test]
-    pub fn test_追加_重複はfalse() {
-        let dir = TempDir::new().unwrap();
-        let gw = make_gateway(&dir);
-
-        gw.add("/repo/a").unwrap();
-        let added = gw.add("/repo/a").unwrap();
-        assert!(!added);
-        assert_eq!(gw.get().len(), 1);
-    }
-
-    #[test]
-    pub fn test_追加_正規化してから重複判定() {
-        let dir = TempDir::new().unwrap();
-        let gw = make_gateway(&dir);
-
-        gw.add("/repo/a/").unwrap();
-        let added = gw.add("/repo/a").unwrap();
-        assert!(!added);
-    }
-
-    #[test]
-    pub fn test_追加_空パスはfalse() {
-        let dir = TempDir::new().unwrap();
-        let gw = make_gateway(&dir);
-
-        let added = gw.add("").unwrap();
-        assert!(!added);
-        assert!(gw.get().is_empty());
-    }
-
-    #[test]
-    pub fn test_削除_既存() {
-        let dir = TempDir::new().unwrap();
-        let gw = make_gateway(&dir);
-
-        gw.add("/repo/a").unwrap();
-        let removed = gw.remove("/repo/a").unwrap();
-        assert!(removed);
-        assert!(gw.get().is_empty());
-    }
-
-    #[test]
-    pub fn test_削除_未存在はfalse() {
-        let dir = TempDir::new().unwrap();
-        let gw = make_gateway(&dir);
-
-        let removed = gw.remove("/repo/a").unwrap();
-        assert!(!removed);
-    }
-
-    #[test]
     pub fn test_追加_設定へ永続化() {
+        // Given
         let dir = TempDir::new().unwrap();
         let gw = make_gateway(&dir);
+        let mut config = gw.load().unwrap();
+        config.add_repo_path("/repo/a");
+        config.add_repo_path("/repo/b");
 
-        gw.add("/repo/a").unwrap();
-        gw.add("/repo/b").unwrap();
+        // When
+        gw.save(config).unwrap();
 
-        let cfg = gw.test_app_config().load().unwrap();
-        assert_eq!(cfg.app.last_repo_paths, vec!["/repo/a", "/repo/b"]);
+        // Then
+        assert_eq!(gw.get(), vec!["/repo/a", "/repo/b"]);
+        assert_eq!(gw.test_app_config().load().unwrap().repo_paths(), gw.get());
+        let saved = releashd::test_support::integration::settings::load_or_create_config(
+            &dir.path().join("releash.toml"),
+        )
+        .unwrap();
+        assert_eq!(saved.app.last_repo_paths, gw.get());
     }
 
     #[test]
     pub fn test_削除_設定へ永続化() {
+        // Given
         let dir = TempDir::new().unwrap();
         let gw = make_gateway(&dir);
+        let mut config = gw.load().unwrap();
+        config.add_repo_path("/repo/a");
+        config.add_repo_path("/repo/b");
+        gw.save(config).unwrap();
+        let mut config = gw.load().unwrap();
+        config.remove_repo_path("/repo/a");
 
-        gw.add("/repo/a").unwrap();
-        gw.add("/repo/b").unwrap();
-        gw.remove("/repo/a").unwrap();
+        // When
+        gw.save(config).unwrap();
 
-        let cfg = gw.test_app_config().load().unwrap();
-        assert_eq!(cfg.app.last_repo_paths, vec!["/repo/b"]);
+        // Then
+        assert_eq!(gw.get(), vec!["/repo/b"]);
+        assert_eq!(gw.test_app_config().load().unwrap().repo_paths(), gw.get());
+        let saved = releashd::test_support::integration::settings::load_or_create_config(
+            &dir.path().join("releash.toml"),
+        )
+        .unwrap();
+        assert_eq!(saved.app.last_repo_paths, gw.get());
+    }
+
+    #[test]
+    pub fn test_保存失敗_共有パスと設定を保持する() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let gw = make_gateway(&dir);
+        let mut config = gw.load().unwrap();
+        config.add_repo_path("/repo/a");
+        gw.save(config).unwrap();
+        let path = dir.path().join("releash.toml");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        // When
+        let mut config = gw.load().unwrap();
+        config.remove_repo_path("/repo/a");
+        let result = gw.save(config);
+
+        // Then
+        assert!(result.is_err());
+        assert_eq!(gw.get(), vec!["/repo/a"]);
+        assert_eq!(gw.test_app_config().load().unwrap().repo_paths(), gw.get());
     }
 }

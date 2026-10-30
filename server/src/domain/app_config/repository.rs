@@ -1,21 +1,22 @@
 use crate::domain::app_config::error::AppConfigError;
-use crate::domain::app_config::value_objects::{AppConfigDocument, NotionRepoConfig};
+use crate::domain::app_config::{AppConfig, RepositoryConfig};
 
-pub type ConfigUpdate =
-    Box<dyn FnOnce(&mut AppConfigDocument) -> Result<(), AppConfigError> + Send>;
-
-pub trait ConfigRepository: Send + Sync {
-    fn load(&self) -> Result<AppConfigDocument, AppConfigError>;
-    fn save(&self, config: AppConfigDocument) -> Result<(), AppConfigError>;
-    fn update(&self, f: ConfigUpdate) -> Result<(), AppConfigError>;
+/// アプリ全体の設定を取得・保存する Repository。
+pub trait AppConfigRepository: Send + Sync {
+    /// 保存されているアプリ全体の設定を、その設定の版とともに取得する。
+    fn load(&self) -> Result<AppConfig, AppConfigError>;
+    /// アプリ全体の設定を保存する。失敗時は保存済みの設定と版を保つ。
+    fn save(&self, config: AppConfig) -> Result<(), AppConfigError>;
 }
 
 pub trait ConfigSecretRepository: Send + Sync {
     fn configured_secret_values(&self) -> Result<Vec<String>, AppConfigError>;
 }
 
-pub trait NotionConfigRepository: Send + Sync {
-    fn get(&self, repo_path: &str) -> Result<Option<NotionRepoConfig>, AppConfigError>;
-    fn upsert(&self, repo_path: String, config: NotionRepoConfig) -> Result<(), AppConfigError>;
-    fn remove(&self, repo_path: &str) -> Result<(), AppConfigError>;
+/// repository ごとの設定を取得・保存する Repository。
+pub trait RepositoryConfigRepository: Send + Sync {
+    /// 指定した repository の設定を取得する。
+    fn load(&self, repo_path: &str) -> Result<RepositoryConfig, AppConfigError>;
+    /// Entity が属する repository の設定を保存する。失敗時は保存済みの値を保つ。
+    fn save(&self, config: RepositoryConfig) -> Result<(), AppConfigError>;
 }

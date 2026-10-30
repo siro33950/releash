@@ -1,19 +1,16 @@
 use crate::test_support_git::{create_initial_commit, create_test_repo};
 pub(crate) mod repository_usecase_tests {
     use super::*;
+    use releashd::test_support::integration::repository::GitGateway;
 
-    use releashd::test_support::integration::repository::WorktreeGateway;
-
+    use releashd::test_support::integration::settings::{AppConfig, ReleashConfig};
     use std::sync::Arc;
 
-    use releashd::test_support::integration::repository::{
-        repository_usecase as usecase, FakeRepo,
-    };
+    use releashd::test_support::integration::repository::{git_usecase as usecase, FakeRepo};
     #[tokio::test]
     pub async fn test_worktree削除_実gitの拒否条件では実行木を変更しない() {
         use crate::test_support_git::create_initial_commit;
         use crate::test_support_git::create_test_repo;
-        use releashd::test_support::integration::repository::WorktreeGateway;
         for condition in ["wrong-repo", "locked", "dirty", "valid", "archive-failure"] {
             // Given
             let (repo_dir, repo) = create_test_repo();
@@ -33,7 +30,12 @@ pub(crate) mod repository_usecase_tests {
                 ..Default::default()
             });
             let mut usecase = usecase(fake.clone());
-            usecase.test_replace_worktree_repository(Arc::new(WorktreeGateway));
+            usecase.test_replace_worktree_repository(Arc::new(GitGateway::new(Arc::new(
+                AppConfig::new(
+                    ReleashConfig::default(),
+                    repo_dir.path().join("releash.toml"),
+                ),
+            ))));
             let root = if condition == "wrong-repo" {
                 other_dir.path()
             } else {
@@ -76,7 +78,12 @@ pub(crate) mod repository_usecase_tests {
                 ..Default::default()
             });
             let mut repository = usecase(fake.clone());
-            repository.test_replace_worktree_repository(Arc::new(WorktreeGateway));
+            repository.test_replace_worktree_repository(Arc::new(GitGateway::new(Arc::new(
+                AppConfig::new(
+                    ReleashConfig::default(),
+                    repo_dir.path().join("releash.toml"),
+                ),
+            ))));
             let mutation = fake.operations.mutate(path_str).unwrap();
             let force = condition == "force-dirty";
             let deletion = repository.remove_worktree(fake.as_ref(), root, path_str, force);

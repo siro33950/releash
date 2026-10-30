@@ -5,9 +5,9 @@ use crate::domain::agent_session::aggregates::{
     ProviderAvailability, ProviderExecutable, ProviderUnavailableReason, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::{
-    ProviderAvailabilityReader, ProviderExecutableConfigRepository, ProviderExecutableProbeGateway,
-    ProviderExecutableProbeGatewayError,
+    ProviderAvailabilityReader, ProviderExecutableProbeGateway, ProviderExecutableProbeGatewayError,
 };
+use crate::domain::app_config::AppConfigRepository;
 use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::{ProviderAvailabilityUsecase, ProviderAvailabilityUsecaseError};
@@ -27,6 +27,7 @@ fn test_provider利用可否_初期化時にconfigとprobeから全providerのsn
     let availability = ProviderAvailabilityUsecase::initialize(
         config,
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap();
     let snapshot = availability.snapshot().unwrap();
@@ -65,6 +66,7 @@ fn test_provider利用可否_購読用出力にproviderと利用不可理由を�
             "missing-codex",
         )),
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap();
 
@@ -99,6 +101,7 @@ fn test_provider_availability_利用可能候補とlaunch実行fileを同じsnap
             "missing-codex",
         )),
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap();
 
@@ -125,6 +128,7 @@ fn test_provider利用可否_updateは正規化した設定と保存revisionを�
     let availability = ProviderAvailabilityUsecase::initialize(
         config.clone(),
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap();
 
@@ -150,8 +154,9 @@ fn test_provider利用可否_updateは正規化した設定と保存revisionを�
     assert_eq!(after.providers[1], before.providers[1]);
     assert_eq!(
         config
-            .configured_executable(ProviderKind::Claude)
+            .load()
             .unwrap()
+            .provider_executable(ProviderKind::Claude)
             .unwrap()
             .as_str(),
         "/custom/claude"
@@ -165,6 +170,7 @@ fn test_provider利用可否_updateは保存後に対象を再判定しresetでd
     let availability = ProviderAvailabilityUsecase::initialize(
         config.clone(),
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap();
 
@@ -183,8 +189,9 @@ fn test_provider利用可否_updateは保存後に対象を再判定しresetでd
     );
     assert_eq!(
         config
-            .configured_executable(ProviderKind::Claude)
+            .load()
             .unwrap()
+            .provider_executable(ProviderKind::Claude)
             .unwrap()
             .as_str(),
         "/custom/claude"
@@ -215,6 +222,7 @@ fn test_provider_availability_保存失敗時はregistryを変更しない() {
     let availability = ProviderAvailabilityUsecase::initialize(
         config.clone(),
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap();
     let before = availability.snapshot().unwrap();
@@ -225,7 +233,7 @@ fn test_provider_availability_保存失敗時はregistryを変更しない() {
             .update_configured_executable(ProviderKind::Codex, "/custom/codex")
             .unwrap_err(),
         ProviderAvailabilityUsecaseError::Config(
-            crate::domain::agent_session::ProviderExecutableConfigRepositoryError::Technical(
+            crate::domain::app_config::AppConfigError::Technical(
                 crate::domain::failure::TechnicalFailure {
                     nature: crate::domain::failure::TechnicalFailureNature::Transient,
                     message: "unavailable".into()
@@ -243,6 +251,7 @@ fn test_provider利用可否_refreshは探索環境更新後に全providerを一
     let availability = ProviderAvailabilityUsecase::initialize(
         Arc::new(FakeProviderExecutableConfigRepository::default()),
         probe.clone(),
+        Default::default(),
     )
     .unwrap();
     assert_eq!(availability.available_providers().unwrap().len(), 2);
@@ -309,6 +318,7 @@ fn test_provider利用可否_refresh中のreadへ部分更新snapshotを公開�
         ProviderAvailabilityUsecase::initialize(
             Arc::new(FakeProviderExecutableConfigRepository::default()),
             probe.clone(),
+            Default::default(),
         )
         .unwrap(),
     );
@@ -342,6 +352,7 @@ fn test_provider設定_更新とresetとrefresh成功時だけ購読へ通知す
     let usecase = ProviderAvailabilityUsecase::initialize(
         config.clone(),
         Arc::new(FakeProviderExecutableProbeGateway::default()),
+        Default::default(),
     )
     .unwrap()
     .with_state_publisher(publisher);
@@ -418,12 +429,15 @@ fn test_provider利用可否_四種類の利用不可理由を出力へ写す() 
 #[test]
 fn test_provider設定失敗_全変種から技術的な失敗だけを参照する() {
     use super::ProviderAvailabilityUsecaseError as E;
-    use crate::domain::agent_session::{
-        ProviderExecutableConfigRepositoryError as C, ProviderExecutableProbeGatewayError as P,
-    };
+    use crate::domain::agent_session::ProviderExecutableProbeGatewayError as P;
+    use crate::domain::app_config::AppConfigError as C;
     use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
     // Given / When / Then
-    for error in [E::InvalidInput, E::Corrupt, E::Config(C::InvalidInput)] {
+    for error in [
+        E::InvalidInput,
+        E::Corrupt,
+        E::Config(C::InvalidInput("invalid executable".into())),
+    ] {
         assert_eq!(error.technical_failure(), None);
     }
     for nature in [

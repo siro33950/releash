@@ -115,7 +115,6 @@ describe("App", () => {
 				if (target === "desktop-settings") {
 					received();
 					receive({
-						closeToTray: true,
 						startMinimized: false,
 						crashReporting: true,
 						performanceTelemetry: false,

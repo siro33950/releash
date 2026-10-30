@@ -12,7 +12,7 @@ impl WorktreeLaunch for Launcher {
     async fn launch(&self, path: &str, _: &LaunchAfterCreation) -> Result<(), UsecaseError> {
         self.paths.lock().push(path.into());
         if self.fail {
-            return Err(RepositoryError::rule("launch failed").into());
+            return Err(GitError::rule("launch failed").into());
         }
         Ok(())
     }
@@ -135,7 +135,7 @@ async fn test_複数作成_実launcherが新規と既存の起動引数を渡す
         },
     ] {
         let fake = Arc::new(FakeRepo {
-            branches: vec![crate::domain::repository::Branch::local("existing")],
+            branches: vec![crate::domain::git::Branch::local("existing")],
             ..Default::default()
         });
         let requests = Arc::new(LaunchRequests::default());

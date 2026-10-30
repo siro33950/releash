@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use crate::domain::app_config::ConfigRepository;
-use crate::domain::repository::{normalize_repo_path, RepoPathsRepository, RepositoryError};
+use crate::domain::app_config::{AppConfig, AppConfigError, AppConfigRepository};
+use crate::domain::git::RepoPathsRepository;
 
 /// 登録済みリポジトリパス一覧のメモリ共有リスト。
 pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;
@@ -16,21 +16,12 @@ pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;
 /// `RepoPathsRepository` の実装。
 pub struct RepoPathsGateway {
     shared: SharedRepoPaths,
-    app_config: Arc<dyn ConfigRepository>,
+    app_config: Arc<dyn AppConfigRepository>,
 }
 
 impl RepoPathsGateway {
-    pub fn new(shared: SharedRepoPaths, app_config: Arc<dyn ConfigRepository>) -> Self {
+    pub fn new(shared: SharedRepoPaths, app_config: Arc<dyn AppConfigRepository>) -> Self {
         Self { shared, app_config }
-    }
-
-    fn save_paths(&self, paths: Vec<String>) -> Result<(), RepositoryError> {
-        self.app_config
-            .update(Box::new(move |config| {
-                config.app.last_repo_paths = paths;
-                Ok(())
-            }))
-            .map_err(|e| RepositoryError::External(e.to_string()))
     }
 }
 
@@ -38,50 +29,25 @@ impl RepoPathsRepository for RepoPathsGateway {
     fn get(&self) -> Vec<String> {
         self.shared.read().clone()
     }
+}
 
-    fn add(&self, path: &str) -> Result<bool, RepositoryError> {
-        let normalized = normalize_repo_path(path);
-        if normalized.is_empty() {
-            return Ok(false);
-        }
-
-        let mut paths = self.shared.write();
-        if paths.iter().any(|p| p == &normalized) {
-            return Ok(false);
-        }
-
-        let mut new_paths = paths.clone();
-        new_paths.push(normalized);
-
-        self.save_paths(new_paths.clone())?;
-
-        *paths = new_paths;
-        Ok(true)
+impl AppConfigRepository for RepoPathsGateway {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
+        self.app_config.load()
     }
 
-    fn remove(&self, path: &str) -> Result<bool, RepositoryError> {
-        let normalized = normalize_repo_path(path);
-
+    fn save(&self, config: AppConfig) -> Result<(), AppConfigError> {
         let mut paths = self.shared.write();
-        let new_paths: Vec<String> = paths
-            .iter()
-            .filter(|p| *p != &normalized)
-            .cloned()
-            .collect();
-        if new_paths.len() == paths.len() {
-            return Ok(false);
-        }
-
-        self.save_paths(new_paths.clone())?;
-
+        let new_paths = config.repo_paths().to_vec();
+        self.app_config.save(config)?;
         *paths = new_paths;
-        Ok(true)
+        Ok(())
     }
 }
 
 #[cfg(feature = "test-support")]
 impl RepoPathsGateway {
-    pub fn test_app_config(&self) -> Arc<dyn ConfigRepository> {
+    pub fn test_app_config(&self) -> Arc<dyn AppConfigRepository> {
         self.app_config.clone()
     }
 }

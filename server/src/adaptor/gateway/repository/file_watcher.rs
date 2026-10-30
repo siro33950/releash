@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::adaptor::gateway::repository::watch::generate_watcher_id;
-use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+use crate::domain::git::file_watcher::{FileWatchGateway, WatchChangeHandler};
 use crate::infrastructure::file_watcher::FileWatcherManager;
 
 pub struct FileWatcherGateway {

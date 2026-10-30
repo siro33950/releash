@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::domain::app_config::value_objects as app_config_vo;
-use crate::domain::app_config::NotionConfigRepository;
+use crate::domain::app_config::RepositoryConfigRepository;
 use crate::domain::notion::{
     NotionApiGateway, NotionLabelOption, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
 };
@@ -52,7 +52,8 @@ pub struct NotionLabelPropertyDto {
 }
 
 pub struct NotionUsecase {
-    repository: Arc<dyn NotionConfigRepository>,
+    config_mutation: Arc<parking_lot::Mutex<()>>,
+    repository: Arc<dyn RepositoryConfigRepository>,
     config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
     api: Arc<dyn NotionApiGateway>,
     result_generation: std::sync::atomic::AtomicU64,
@@ -63,11 +64,13 @@ pub struct NotionUsecase {
 
 impl NotionUsecase {
     pub fn new(
-        repository: Arc<dyn NotionConfigRepository>,
+        repository: Arc<dyn RepositoryConfigRepository>,
         config_query: Arc<dyn super::query_service::NotionConfigQueryService>,
         api: Arc<dyn NotionApiGateway>,
+        config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
         Self {
+            config_mutation,
             repository,
             config_query,
             api,
@@ -159,12 +162,17 @@ impl NotionUsecase {
         self.label_results.lock().remove(path);
     }
 
+    /// repository の Notion 設定を保存し、設定の変更を通知する。
     pub fn save_config(
         &self,
         repo_path: String,
         config: app_config_vo::NotionRepoConfig,
     ) -> Result<(), NotionUsecaseError> {
-        save_config(self.repository.as_ref(), repo_path.clone(), config)?;
+        let guard = self.config_mutation.lock();
+        let mut repository_config = self.repository.load(&repo_path)?;
+        repository_config.set_notion(Some(config));
+        self.repository.save(repository_config)?;
+        drop(guard);
         self.config_changed(&repo_path);
         Ok(())
     }
@@ -176,8 +184,13 @@ impl NotionUsecase {
         Ok(self.config_query.get_config(repo_path)?)
     }
 
+    /// repository の Notion 設定を削除し、設定の変更を通知する。
     pub(crate) fn delete_config(&self, repo_path: &str) -> Result<(), NotionUsecaseError> {
-        delete_config(self.repository.as_ref(), repo_path)?;
+        let guard = self.config_mutation.lock();
+        let mut repository_config = self.repository.load(repo_path)?;
+        repository_config.set_notion(None);
+        self.repository.save(repository_config)?;
+        drop(guard);
         self.config_changed(repo_path);
         Ok(())
     }
@@ -219,7 +232,7 @@ async fn refresh_result<K: Eq + std::hash::Hash, T>(
 }
 
 async fn query_task_list(
-    repository: &dyn NotionConfigRepository,
+    repository: &dyn RepositoryConfigRepository,
     api: &dyn NotionApiGateway,
     repo_path: &str,
     count: usize,
@@ -262,27 +275,12 @@ async fn query_task_list(
 }
 
 async fn fetch_label_options(
-    repository: &dyn NotionConfigRepository,
+    repository: &dyn RepositoryConfigRepository,
     api: &dyn NotionApiGateway,
     repo_path: &str,
 ) -> Result<Vec<NotionLabelOption>, NotionUsecaseError> {
     let config = resolve_config(repository, repo_path)?;
     api.fetch_label_options(&config).await.map_err(Into::into)
-}
-
-fn save_config(
-    repository: &dyn NotionConfigRepository,
-    repo_path: String,
-    config: app_config_vo::NotionRepoConfig,
-) -> Result<(), NotionUsecaseError> {
-    repository.upsert(repo_path, config).map_err(Into::into)
-}
-
-fn delete_config(
-    repository: &dyn NotionConfigRepository,
-    repo_path: &str,
-) -> Result<(), NotionUsecaseError> {
-    repository.remove(repo_path).map_err(Into::into)
 }
 
 async fn validate_config(
@@ -301,13 +299,15 @@ async fn validate_config(
     api.validate(&config).await.map_err(Into::into)
 }
 
+/// repository で利用できる Notion 設定を取得する。
 fn resolve_config(
-    repository: &dyn NotionConfigRepository,
+    repository: &dyn RepositoryConfigRepository,
     repo_path: &str,
 ) -> Result<app_config_vo::NotionRepoConfig, NotionUsecaseError> {
     repository
-        .get(repo_path)?
-        .filter(app_config_vo::NotionRepoConfig::is_configured)
+        .load(repo_path)?
+        .configured_notion()
+        .cloned()
         .ok_or(NotionUsecaseError::ConfigNotFound)
 }
 

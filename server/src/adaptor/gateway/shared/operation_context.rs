@@ -24,7 +24,7 @@ impl From<OperationStopped> for crate::domain::code::CodeError {
         Self::Technical(error.into())
     }
 }
-impl From<OperationStopped> for crate::domain::repository::RepositoryError {
+impl From<OperationStopped> for crate::domain::git::GitError {
     fn from(error: OperationStopped) -> Self {
         Self::Technical(error.into())
     }

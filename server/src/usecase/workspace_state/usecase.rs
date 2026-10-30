@@ -147,7 +147,7 @@ pub struct WorkspaceStateMigrationResult {
 pub async fn migrate_workspace_states(
     repository: &dyn WorkspaceStateRepository,
     repositories: &[String],
-    worktree_repository: &crate::usecase::repository_usecase::RepositoryUsecase,
+    worktree_repository: &crate::usecase::git_usecase::GitUsecase,
 ) -> WorkspaceStateMigrationResult {
     let mut unresolved_repositories = Vec::new();
     let inventories = repositories

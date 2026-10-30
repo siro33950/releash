@@ -4,19 +4,16 @@ use crate::domain::{
 };
 use crate::infrastructure::platform::{
     desktop_runtime::{self, ConfirmationReply, DesktopRuntime},
-    window_lifecycle::{WindowPreferences, NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL},
+    window_lifecycle::{NORMAL_WINDOW_LABEL, STARTUP_FAILURE_WINDOW_LABEL},
 };
-use releashd::desktop_api::DesktopSettingsDto;
+use crate::usecase::daemon_connection_query::DesktopSettingsDto;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 pub struct TauriDesktopLifecycle<R: tauri::Runtime>(pub Arc<DesktopRuntime<R>>);
 impl<R: tauri::Runtime> TauriDesktopLifecycle<R> {
     pub fn apply_settings(&self, settings: DesktopSettingsDto) {
-        self.0.apply_settings(
-            preferences(settings),
-            settings.crash_reporting,
-            settings.performance_telemetry,
-        );
+        self.0
+            .apply_settings(settings.crash_reporting, settings.performance_telemetry);
     }
     pub fn failure_window(&self) -> bool {
         self.0.has_window(STARTUP_FAILURE_WINDOW_LABEL)
@@ -64,22 +61,9 @@ impl<R: tauri::Runtime> TauriDesktopLifecycle<R> {
         );
     }
 }
-fn preferences(settings: DesktopSettingsDto) -> WindowPreferences {
-    WindowPreferences {
-        close_to_tray: settings.close_to_tray,
-    }
-}
 #[cfg(any(test, feature = "test-support"))]
-pub fn apply_desktop_settings<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    settings: DesktopSettingsDto,
-) {
-    desktop_runtime::apply_preferences(
-        app,
-        preferences(settings),
-        settings.crash_reporting,
-        settings.performance_telemetry,
-    );
+pub fn apply_desktop_settings(settings: DesktopSettingsDto) {
+    desktop_runtime::apply_preferences(settings.crash_reporting, settings.performance_telemetry);
 }
 fn confirm_stop_with(
     confirm: impl FnOnce(&str, ConfirmationReply),

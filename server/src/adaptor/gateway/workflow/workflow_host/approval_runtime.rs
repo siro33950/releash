@@ -24,7 +24,7 @@ pub(crate) fn workflow_approval_auto_approve_enabled(app: &WorkflowRuntimeDepend
     app.config
         .as_ref()
         .and_then(|config| config.load().ok())
-        .is_some_and(|cfg| cfg.workflow.approval_auto_approve)
+        .is_some_and(|cfg| cfg.workflow().approval_auto_approve)
 }
 
 #[cfg(test)]

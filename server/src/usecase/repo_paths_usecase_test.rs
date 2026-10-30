@@ -1,6 +1,7 @@
 mod repo_paths_usecase_tests {
     use super::super::*;
-    use crate::domain::repository::RepositoryError;
+    use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
+    use crate::domain::app_config::{AppConfig, AppConfigError};
     use parking_lot::RwLock;
 
     /// ドメイン抽象のみに依存することを検証するための手書き fake。
@@ -14,22 +15,39 @@ mod repo_paths_usecase_tests {
         fn get(&self) -> Vec<String> {
             self.paths.read().clone()
         }
-        fn add(&self, path: &str) -> Result<bool, RepositoryError> {
-            if self.fail {
-                return Err(RepositoryError::External("boom".to_string()));
-            }
-            let mut p = self.paths.write();
-            if p.iter().any(|x| x == path) {
-                return Ok(false);
-            }
-            p.push(path.to_string());
-            Ok(true)
+    }
+
+    impl AppConfigRepository for FakeRepoPaths {
+        fn load(&self) -> Result<AppConfig, AppConfigError> {
+            Ok(AppConfig::new(
+                false,
+                false,
+                self.paths.read().clone(),
+                String::new(),
+                String::new(),
+                TelemetryConfig {
+                    crash_reporting: false,
+                    performance_telemetry: false,
+                },
+                WorkflowConfig {
+                    approval_auto_approve: false,
+                },
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+            ))
         }
-        fn remove(&self, path: &str) -> Result<bool, RepositoryError> {
-            let mut p = self.paths.write();
-            let before = p.len();
-            p.retain(|x| x != path);
-            Ok(p.len() != before)
+
+        fn save(&self, config: AppConfig) -> Result<(), AppConfigError> {
+            if self.fail {
+                return Err(AppConfigError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "boom".into(),
+                    },
+                ));
+            }
+            *self.paths.write() = config.repo_paths().to_vec();
+            Ok(())
         }
     }
 
@@ -41,96 +59,45 @@ mod repo_paths_usecase_tests {
     ) {
         let subscriptions = crate::test_support::state_subscription::test_subscriptions();
         let changes = subscriptions.changes();
-        (RepoPathsUsecase::new(repo, subscriptions), changes)
+        (
+            RepoPathsUsecase::new(repo.clone(), repo, subscriptions, Default::default()),
+            changes,
+        )
     }
 
     #[test]
     fn test_起動時登録_cwdのrootを追加し非repositoryと読取失敗は一覧を変えない() {
-        use crate::domain::repository::{RepoLocator, Worktree, WorktreeRepository};
-        use crate::usecase::test_helpers::FakeRepo;
-        struct Cwd;
-        impl RepoLocator for Cwd {
-            fn cwd(&self) -> Result<String, RepositoryError> {
-                Ok("/repo/subdir".into())
-            }
-        }
-        struct Roots(Result<Option<String>, RepositoryError>);
-        impl WorktreeRepository for Roots {
-            fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, RepositoryError> {
-                assert_eq!(path, "/repo/subdir");
-                self.0.clone()
-            }
-            fn main_repo_path(&self, _: &str) -> Result<String, RepositoryError> {
-                unreachable!()
-            }
-            fn list(&self, _: &str) -> Result<Vec<Worktree>, RepositoryError> {
-                unreachable!()
-            }
-            fn create(
-                &self,
-                _: &str,
-                _: &str,
-                _: &str,
-                _: bool,
-                _: Option<&str>,
-            ) -> Result<Worktree, RepositoryError> {
-                unreachable!()
-            }
-            fn validate_removal(
-                &self,
-                _: &str,
-                _: &str,
-                _: bool,
-            ) -> Result<String, RepositoryError> {
-                unreachable!()
-            }
-            fn remove(&self, _: &str, _: &str, _: bool) -> Result<Option<String>, RepositoryError> {
-                unreachable!()
-            }
-        }
-        struct Terminals;
-        impl crate::domain::repository::WorktreeTerminalGateway for Terminals {
-            fn kill_by_worktree(&self, _: &str) {}
-        }
-        // Given
-        for root in [
-            Ok(Some("/repo".into())),
-            Ok(None),
-            Err(RepositoryError::External("root unreadable".into())),
-        ] {
-            let (usecase, mut changes) = usecase_with(Arc::new(FakeRepoPaths::default()));
-            let repository = crate::usecase::repository_usecase::RepositoryUsecase::new(
-                Arc::new(FakeRepo::default()),
-                Arc::new(FakeRepo::default()),
-                Arc::new(Roots(root.clone())),
-                Arc::new(FakeRepo::default()),
-                Arc::new(Cwd),
-                Arc::new(Terminals),
-                Default::default(),
-            );
+        use crate::usecase::test_helpers::{usecase, FakeRepo};
+        for condition in ["repository", "not-repository", "unreadable"] {
+            // Given
+            let fake = Arc::new(FakeRepo {
+                no_main_repo_path: condition == "not-repository",
+                fail_main_repo_path: condition == "unreadable",
+                ..Default::default()
+            });
+            let (paths, mut changes) = usecase_with(Arc::new(FakeRepoPaths::default()));
             // When
-            let result = usecase.initialize_from_cwd(&repository);
+            let result = paths.initialize_from_cwd(&usecase(fake.clone()));
             // Then
-            match root {
-                Ok(Some(root)) => {
-                    result.unwrap();
-                    assert_eq!(usecase.get(), vec![root]);
-                    assert_eq!(
-                        changes.try_recv().unwrap(),
-                        crate::usecase::state_subscription::StateChangeSource::Repositories
-                    );
-                }
-                Ok(None) => {
-                    result.unwrap();
-                    assert!(usecase.get().is_empty());
-                    assert!(changes.try_recv().is_err());
-                }
-                Err(error) => {
-                    assert_eq!(result.unwrap_err().to_string(), error.to_string());
-                    assert!(usecase.get().is_empty());
-                    assert!(changes.try_recv().is_err());
-                }
+            assert_eq!(*fake.find_main_repo_path_calls.lock(), vec!["/cwd"]);
+            if condition == "unreadable" {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "main repo path is unavailable"
+                );
+            } else {
+                result.unwrap();
             }
+            if condition == "repository" {
+                assert_eq!(paths.get(), vec!["/main"]);
+                assert_eq!(
+                    changes.try_recv().unwrap(),
+                    crate::usecase::state_subscription::StateChangeSource::Repositories
+                );
+            } else {
+                assert!(paths.get().is_empty());
+            }
+            assert!(changes.try_recv().is_err());
         }
     }
 
@@ -216,7 +183,7 @@ mod repo_paths_usecase_tests {
         ));
 
         // When
-        let usecase = RepoPathsUsecase::new(repo, subscriptions);
+        let usecase = RepoPathsUsecase::new(repo.clone(), repo, subscriptions, Default::default());
         tokio::task::spawn_blocking(move || {
             assert!(usecase.add("/repo").unwrap());
             assert!(usecase.remove("/repo").unwrap());
@@ -277,7 +244,7 @@ mod repo_paths_usecase_tests {
             stream.next().await,
             Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
         ));
-        let usecase = RepoPathsUsecase::new(repo, subscriptions);
+        let usecase = RepoPathsUsecase::new(repo.clone(), repo, subscriptions, Default::default());
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let add = tokio::task::spawn_blocking({
             let usecase = usecase.clone();

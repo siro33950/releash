@@ -14,13 +14,11 @@ vi.mock("@/lib/client", async (importOriginal) => ({
 }));
 
 const settings = {
-	close_to_tray: true,
 	auto_launch: false,
 	start_minimized: true,
 };
 
 const desktopSettings = {
-	closeToTray: true,
 	startMinimized: true,
 	crashReporting: false,
 	performanceTelemetry: false,
@@ -55,10 +53,10 @@ describe("window preferences", () => {
 				.mocked(invokeTauri)
 				.mock.calls.every(([command]) => command === "get_login_item_status"),
 		).toBe(true);
-		act(() => result.current.setDraft({ ...settings, close_to_tray: false }));
+		act(() => result.current.setDraft({ ...settings, start_minimized: false }));
 		await act(() => result.current.save());
 		expect(invokeClient).toHaveBeenCalledWith("update_app_settings", {
-			app: { close_to_tray: false, start_minimized: true },
+			app: { start_minimized: false },
 		});
 		expect(
 			vi
@@ -86,7 +84,7 @@ describe("window preferences", () => {
 		const { result } = renderHook(() => useBackgroundConfig());
 		await waitFor(() => expect(result.current.loading).toBe(false));
 		vi.mocked(invokeClient).mockRejectedValueOnce(new Error("save failed"));
-		act(() => result.current.setDraft({ ...settings, close_to_tray: false }));
+		act(() => result.current.setDraft({ ...settings, start_minimized: false }));
 		await act(async () => {
 			await expect(result.current.save()).rejects.toThrow("save failed");
 		});
@@ -111,7 +109,7 @@ describe("window preferences", () => {
 				act(() => states.fail("desktop-settings", new Error("load failed")));
 			await waitFor(() => expect(result.current.loading).toBe(false));
 			expect(result.current.error).toBe("load failed");
-			const draft = { ...settings, close_to_tray: false };
+			const draft = { ...settings, start_minimized: true };
 			act(() => result.current.setDraft(draft));
 			vi.clearAllMocks();
 
@@ -137,7 +135,7 @@ describe("window preferences", () => {
 		act(() =>
 			states.publish("desktop-settings", {
 				...desktopSettings,
-				closeToTray: false,
+				autoLaunch: true,
 			}),
 		);
 		expect(result.current.draft).toEqual({
@@ -153,10 +151,10 @@ describe("window preferences", () => {
 		act(() =>
 			states.publish("desktop-settings", {
 				...desktopSettings,
-				closeToTray: false,
+				startMinimized: false,
 			}),
 		);
-		expect(result.current.draft.close_to_tray).toBe(false);
+		expect(result.current.draft.start_minimized).toBe(false);
 		expect(result.current.isDirty).toBe(false);
 	});
 
@@ -248,7 +246,7 @@ it("承認待ちの間に別項目を保存してもログイン登録の希望�
 	);
 	await act(() => result.current.save());
 	expect(invokeClient).toHaveBeenCalledWith("update_app_settings", {
-		app: { close_to_tray: true, start_minimized: false },
+		app: { start_minimized: false },
 	});
 	expect(result.current.draft.auto_launch).toBe(false);
 	expect(invokeTauri).not.toHaveBeenCalledWith(

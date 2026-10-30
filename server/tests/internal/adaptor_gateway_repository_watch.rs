@@ -1,12 +1,12 @@
 pub(crate) mod tests {
 
     use crate::test_support_git::*;
-    use releashd::test_support::integration::platform::RepositoryUsecase;
+    use releashd::test_support::integration::platform::GitUsecase;
     use releashd::test_support::integration::repository::resolve_file_watch_paths;
     use releashd::test_support::integration::repository::resolve_worktree_git_dir;
     use std::path::PathBuf;
 
-    fn test_usecase() -> RepositoryUsecase {
+    fn test_usecase() -> GitUsecase {
         releashd::test_support::integration::platform::build_repository_usecase()
     }
 

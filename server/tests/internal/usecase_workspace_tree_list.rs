@@ -18,7 +18,10 @@ use crate::usecase_repository_state_test_helpers_runtime::CanonicalWorktreePathN
 use releashd::test_support::integration::platform::NoopRepositoryStateWatcher;
 use releashd::test_support::integration::platform::TestRepositoryStateWorkerRuntime;
 use releashd::test_support::integration::repository::RepoPathsRepository;
-use releashd::test_support::integration::repository::RepositoryError;
+use releashd::test_support::integration::repository::{AppConfig, AppConfigRepository};
+use releashd::test_support::integration::settings::{
+    AppConfigError, TelemetryConfig, WorkflowConfig,
+};
 use releashd::test_support::integration::subscriptions::StateChangeSource;
 use std::time::Duration;
 
@@ -29,13 +32,31 @@ impl RepoPathsRepository for Paths {
     fn get(&self) -> Vec<String> {
         self.0.read().clone()
     }
-    fn add(&self, path: &str) -> Result<bool, RepositoryError> {
-        self.0.write().push(path.to_string());
-        Ok(true)
+}
+
+impl AppConfigRepository for Paths {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
+        Ok(AppConfig::new(
+            false,
+            false,
+            self.0.read().clone(),
+            String::new(),
+            String::new(),
+            TelemetryConfig {
+                crash_reporting: false,
+                performance_telemetry: false,
+            },
+            WorkflowConfig {
+                approval_auto_approve: false,
+            },
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        ))
     }
-    fn remove(&self, path: &str) -> Result<bool, RepositoryError> {
-        self.0.write().retain(|registered| registered != path);
-        Ok(true)
+
+    fn save(&self, config: AppConfig) -> Result<(), AppConfigError> {
+        *self.0.write() = config.repo_paths().to_vec();
+        Ok(())
     }
 }
 
@@ -93,9 +114,12 @@ impl Fixture {
             releashd::test_support::integration::subscriptions::test_subscriptions();
         let repository =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
+        let paths = Arc::new(Paths(parking_lot::RwLock::new(vec![path.clone()])));
         let repositories = Arc::new(RepoPathsUsecase::new(
-            Arc::new(Paths(parking_lot::RwLock::new(vec![path.clone()]))),
+            paths.clone(),
+            paths,
             subscriptions.clone(),
+            Default::default(),
         ));
         let repository_state = Arc::new(RepositoryStateService::new(
             Arc::new(
@@ -107,7 +131,8 @@ impl Fixture {
                 releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
                     repository.clone(),
                     Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
-                ),
+Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
+),
             ),
             subscriptions.clone(),
             Arc::new(NoopRepositoryStateWatcher),
@@ -378,10 +403,12 @@ pub async fn test_一覧の読取_収集処理の失敗を空の一覧に変え�
         fn get(&self) -> Vec<String> {
             panic!("repository collection failed")
         }
-        fn add(&self, _: &str) -> Result<bool, RepositoryError> {
+    }
+    impl AppConfigRepository for PanickingPaths {
+        fn load(&self) -> Result<AppConfig, AppConfigError> {
             unreachable!()
         }
-        fn remove(&self, _: &str) -> Result<bool, RepositoryError> {
+        fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
             unreachable!()
         }
     }
@@ -393,7 +420,9 @@ pub async fn test_一覧の読取_収集処理の失敗を空の一覧に変え�
         .usecase
         .test_replace_repositories(Arc::new(RepoPathsUsecase::new(
             Arc::new(PanickingPaths),
+            Arc::new(PanickingPaths),
             fixture.subscriptions.clone(),
+            Default::default(),
         )));
     // When
     let error = fixture.usecase.read().await.unwrap_err();

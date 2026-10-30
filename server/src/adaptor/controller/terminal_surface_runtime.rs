@@ -42,7 +42,7 @@ impl TerminalSurfaceRuntime {
     pub fn new(
         work: Arc<BackgroundWork>,
         data_dir: PathBuf,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> Self {
         Self::compose(work, data_dir, config)
     }
@@ -52,7 +52,7 @@ impl TerminalSurfaceRuntime {
     pub fn new_with_data_dir_and_event_faults(
         work: Arc<BackgroundWork>,
         data_dir: PathBuf,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> (Self, TerminalSurfaceEventFaultController) {
         let event_hub =
             Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
@@ -70,7 +70,7 @@ impl TerminalSurfaceRuntime {
     fn compose(
         work: Arc<BackgroundWork>,
         data_dir: PathBuf,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> Self {
         let event_hub =
             Arc::new(crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new());
@@ -83,7 +83,7 @@ impl TerminalSurfaceRuntime {
         data_dir: PathBuf,
         event_hub: Arc<crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub>,
         event_sink: Arc<dyn TerminalSurfaceEventSink>,
-        config: Arc<dyn crate::domain::app_config::ConfigRepository>,
+        config: Arc<dyn crate::domain::app_config::AppConfigRepository>,
     ) -> Self {
         let journal_enabled = true;
         let (dirty, dirty_receiver) = super::terminal_checkpoint::dirty_channel();

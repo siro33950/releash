@@ -5,22 +5,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::domain::agent_session::aggregates::ProviderExecutable;
-use crate::domain::agent_session::{
-    ProviderExecutableConfigRepository, ProviderExecutableConfigRepositoryError,
-};
 use crate::domain::app_config::error::AppConfigError;
 use crate::domain::app_config::repository::{
-    ConfigRepository, ConfigSecretRepository, ConfigUpdate, NotionConfigRepository,
+    AppConfigRepository, ConfigSecretRepository, RepositoryConfigRepository,
 };
-use crate::domain::app_config::value_objects as domain_vo;
-use crate::domain::provider_lifecycle::ProviderKind;
-use crate::usecase::app_config::query_service::{WorkflowConfigDto, WorkflowConfigQueryService};
+use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 
 use super::config_models::{
-    apply_domain_to_config, config_to_domain, NotionLabelPropertyModel, NotionPropertyMappingModel,
-    NotionRepoConfigModel, ReleashConfig,
+    apply_domain_to_config, try_config_to_domain, NotionLabelPropertyModel,
+    NotionPropertyMappingModel, NotionRepoConfigModel, ReleashConfig,
 };
+use crate::adaptor::gateway::repository::git_config::{get_releash_base, set_releash_base};
+use crate::domain::app_config::value_objects as domain_vo;
 
 static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -53,8 +49,10 @@ impl AppConfig {
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        let result = f(&mut config)?;
-        write_config(&self.config_path, &config)?;
+        let mut next = config.clone();
+        let result = f(&mut next)?;
+        write_config(&self.config_path, &next)?;
+        *config = next;
         Ok(result)
     }
 
@@ -63,13 +61,18 @@ impl AppConfig {
             Ok(content) => content,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
-                return Err(AppConfigError::Repository(format!(
-                    "設定ファイル読み込み失敗: {error}"
-                )))
+                return Err(AppConfigError::Technical(TechnicalFailure {
+                    nature: TechnicalFailureNature::Other,
+                    message: format!("設定ファイル読み込み失敗: {error}"),
+                }))
             }
         };
-        let legacy = toml::from_str::<toml::Value>(&content)
-            .map_err(|_| AppConfigError::Repository("秘匿対象の旧設定のパース失敗".to_string()))?;
+        let legacy = toml::from_str::<toml::Value>(&content).map_err(|_| {
+            AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message: "秘匿対象の旧設定のパース失敗".to_string(),
+            })
+        })?;
         Ok(legacy
             .get("server")
             .and_then(|server| server.get("token"))
@@ -79,51 +82,27 @@ impl AppConfig {
     }
 }
 
-impl ConfigRepository for AppConfig {
-    fn load(&self) -> Result<domain_vo::AppConfigDocument, AppConfigError> {
-        self.get_config()
-            .map(|config| config_to_domain(&config))
-            .map_err(AppConfigError::Repository)
+impl AppConfigRepository for AppConfig {
+    fn load(&self) -> Result<crate::domain::app_config::AppConfig, AppConfigError> {
+        let config = self.get_config().map_err(|message| {
+            AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message,
+            })
+        })?;
+        try_config_to_domain(&config)
     }
 
-    fn save(&self, config: domain_vo::AppConfigDocument) -> Result<(), AppConfigError> {
+    fn save(&self, config: crate::domain::app_config::AppConfig) -> Result<(), AppConfigError> {
         self.with_config_mut(|current| {
             apply_domain_to_config(current, config);
             Ok(())
         })
-        .map_err(AppConfigError::Repository)
-    }
-
-    fn update(&self, f: ConfigUpdate) -> Result<(), AppConfigError> {
-        let mut config = self
-            .config
-            .lock()
-            .map_err(|e| AppConfigError::Repository(format!("ロック取得失敗: {e}")))?;
-        let mut domain = config_to_domain(&config);
-        f(&mut domain)?;
-        apply_domain_to_config(&mut config, domain);
-        write_config(&self.config_path, &config).map_err(AppConfigError::Repository)
-    }
-}
-
-impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for AppConfig {
-    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
-        Ok(config.app.terminal_startup_command.clone())
-    }
-}
-
-impl WorkflowConfigQueryService for AppConfig {
-    fn get_workflow_config(&self) -> Result<WorkflowConfigDto, AppConfigError> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
-        Ok(WorkflowConfigDto {
-            approval_auto_approve: config.workflow.approval_auto_approve,
+        .map_err(|message| {
+            AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message,
+            })
         })
     }
 }
@@ -136,10 +115,12 @@ impl crate::usecase::notion::query_service::NotionConfigQueryService for AppConf
         use crate::usecase::notion::usecase::{
             NotionLabelPropertyDto, NotionPropertyMappingDto, NotionRepoConfigDto,
         };
-        let config = self
-            .config
-            .lock()
-            .map_err(|error| AppConfigError::Repository(format!("ロック取得失敗: {error}")))?;
+        let config = self.config.lock().map_err(|error| {
+            AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message: format!("ロック取得失敗: {error}"),
+            })
+        })?;
         Ok(config
             .notion
             .get(repo_path)
@@ -164,58 +145,14 @@ impl crate::usecase::notion::query_service::NotionConfigQueryService for AppConf
     }
 }
 
-impl ProviderExecutableConfigRepository for AppConfig {
-    fn configured_executable(
-        &self,
-        provider: ProviderKind,
-    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
-        let config = self.get_config().map_err(|error| {
-            ProviderExecutableConfigRepositoryError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                },
-            )
-        })?;
-        let value = match provider {
-            ProviderKind::Claude => config.agents.claude.cli_path,
-            ProviderKind::Codex => config.agents.codex.cli_path,
-        };
-        value
-            .map(ProviderExecutable::new)
-            .transpose()
-            .map_err(|_| ProviderExecutableConfigRepositoryError::InvalidInput)
-    }
-
-    fn save_configured_executable(
-        &self,
-        provider: ProviderKind,
-        executable: Option<&ProviderExecutable>,
-    ) -> Result<(), ProviderExecutableConfigRepositoryError> {
-        let mut config = self.config.lock().map_err(|error| {
-            ProviderExecutableConfigRepositoryError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                },
-            )
-        })?;
-        let mut next = config.clone();
-        let value = executable.map(|executable| executable.as_str().to_string());
-        match provider {
-            ProviderKind::Claude => next.agents.claude.cli_path = value,
-            ProviderKind::Codex => next.agents.codex.cli_path = value,
-        }
-        write_config_typed(&self.config_path, &next)
-            .map_err(ProviderExecutableConfigRepositoryError::Technical)?;
-        *config = next;
-        Ok(())
-    }
-}
-
 impl ConfigSecretRepository for AppConfig {
     fn configured_secret_values(&self) -> Result<Vec<String>, AppConfigError> {
-        let config = self.get_config().map_err(AppConfigError::Repository)?;
+        let config = self.get_config().map_err(|message| {
+            AppConfigError::Technical(TechnicalFailure {
+                nature: TechnicalFailureNature::Other,
+                message,
+            })
+        })?;
         let mut values = Vec::new();
         for notion in config.notion.into_values() {
             if notion.api_token.len() >= 8 {
@@ -230,31 +167,84 @@ impl ConfigSecretRepository for AppConfig {
     }
 }
 
-impl NotionConfigRepository for AppConfig {
-    fn get(&self, repo_path: &str) -> Result<Option<domain_vo::NotionRepoConfig>, AppConfigError> {
-        self.get_config()
-            .map(|config| config.notion.get(repo_path).cloned().map(notion_to_domain))
-            .map_err(AppConfigError::Repository)
-    }
-
-    fn upsert(
+impl RepositoryConfigRepository for AppConfig {
+    fn load(
         &self,
-        repo_path: String,
-        config: domain_vo::NotionRepoConfig,
-    ) -> Result<(), AppConfigError> {
-        self.with_config_mut(|current| {
-            current.notion.insert(repo_path, notion_to_model(config));
-            Ok(())
-        })
-        .map_err(AppConfigError::Repository)
+        repo_path: &str,
+    ) -> Result<crate::domain::app_config::RepositoryConfig, AppConfigError> {
+        let notion = {
+            let config = self
+                .config
+                .lock()
+                .map_err(|error| config_technical_error(error.to_string()))?;
+            config.notion.get(repo_path).cloned().map(notion_to_domain)
+        };
+        let (base, overrides, default_branch) =
+            crate::adaptor::gateway::repository::git_config::read_base_settings(repo_path)
+                .map_err(repository_config_error)?;
+        Ok(crate::domain::app_config::RepositoryConfig::new(
+            repo_path.to_owned(),
+            base,
+            overrides,
+            default_branch,
+            notion,
+        ))
     }
 
-    fn remove(&self, repo_path: &str) -> Result<(), AppConfigError> {
-        self.with_config_mut(|current| {
-            current.notion.remove(repo_path);
-            Ok(())
-        })
-        .map_err(AppConfigError::Repository)
+    fn save(
+        &self,
+        config: crate::domain::app_config::RepositoryConfig,
+    ) -> Result<(), AppConfigError> {
+        let mut current = self
+            .config
+            .lock()
+            .map_err(|error| config_technical_error(error.to_string()))?;
+        let repo_path = config.repo_path();
+        let previous_base = get_releash_base(repo_path).map_err(repository_config_error)?;
+        let base_changed = previous_base.as_deref() != config.base_branch();
+        let previous_notion = current.notion.get(repo_path).cloned().map(notion_to_domain);
+        let notion_changed = previous_notion.as_ref() != config.notion();
+        let mut next = current.clone();
+        match config.notion() {
+            Some(notion) => {
+                next.notion
+                    .insert(repo_path.to_owned(), notion_to_model(notion.clone()));
+            }
+            None => {
+                next.notion.remove(repo_path);
+            }
+        }
+        if base_changed {
+            set_releash_base(repo_path, config.base_branch()).map_err(repository_config_error)?;
+        }
+        if notion_changed {
+            if let Err(error) = write_config_typed(&self.config_path, &next) {
+                if base_changed {
+                    set_releash_base(repo_path, previous_base.as_deref()).map_err(|rollback| {
+                        config_technical_error(format!(
+                            "{error}; base branch の復元失敗: {rollback}"
+                        ))
+                    })?;
+                }
+                return Err(AppConfigError::Technical(error));
+            }
+            *current = next;
+        }
+        Ok(())
+    }
+}
+
+fn config_technical_error(message: String) -> AppConfigError {
+    AppConfigError::Technical(TechnicalFailure {
+        nature: TechnicalFailureNature::Other,
+        message,
+    })
+}
+
+fn repository_config_error(error: crate::domain::git::GitError) -> AppConfigError {
+    match error {
+        crate::domain::git::GitError::Technical(failure) => AppConfigError::Technical(failure),
+        error => config_technical_error(error.to_string()),
     }
 }
 
@@ -403,13 +393,6 @@ fn write_config_typed(
         return Err(config_io_failure(e, "ファイルのリネーム失敗"));
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| config_io_failure(error, "パーミッション設定失敗"))?;
-    }
-
     Ok(())
 }
 
@@ -440,6 +423,12 @@ pub fn write_config_tmp_file(
     let mut file = options
         .open(tmp_path)
         .map_err(|error| config_io_failure(error, "一時ファイル作成失敗"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| config_io_failure(error, "パーミッション設定失敗"))?;
+    }
     file.write_all(content.as_bytes())
         .map_err(|error| config_io_failure(error, "一時ファイル書き込み失敗"))?;
     Ok(())

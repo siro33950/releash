@@ -2267,7 +2267,7 @@ message UpdateAppSettingsRequest {
 }
 
 message WindowSettings {
-  optional bool close_to_tray = 1 [json_name = "close_to_tray", (json_required) = true];
+  reserved 1;
   optional bool start_minimized = 3 [json_name = "start_minimized", (json_required) = true];
 }
 
@@ -2635,7 +2635,7 @@ message WorkflowNumber {
 }
 
 message DesktopSettings {
-  optional bool close_to_tray = 1 [json_name = "closeToTray", (json_required) = true];
+  reserved 1;
   optional bool start_minimized = 2 [json_name = "startMinimized", (json_required) = true];
   optional bool crash_reporting = 3 [json_name = "crashReporting", (json_required) = true];
   optional bool performance_telemetry = 4 [json_name = "performanceTelemetry", (json_required) = true];

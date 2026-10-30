@@ -34,8 +34,7 @@ pub async fn test_workflow設定_転送要求の保存を購読の読み取り�
     let (_app, controller) = workflow_config_controller(Some(std::sync::Arc::new(
         releashd::test_support::integration::settings::AppConfigUsecase::new(
             fixture.config.clone(),
-            fixture.config.clone(),
-            fixture.config.clone(),
+            Default::default(),
         ),
     )));
 

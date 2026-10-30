@@ -2,20 +2,10 @@ use crate::adaptor::gateway::shared::git_operation;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
-use crate::domain::app_config::value_objects::AppSettings;
-use crate::domain::app_config::ConfigRepository;
-use crate::domain::repository::{RepositoryError, WorktreeRepository};
+use crate::domain::app_config::AppConfigRepository;
+use crate::domain::git::GitError;
 use crate::domain::workflow::{ManagedWorktreeGateway, WorkflowError};
-use crate::usecase::repository_usecase::RepositoryUsecase;
-
-fn configured_repo_paths(app: &AppSettings) -> Vec<String> {
-    let mut paths = app.last_repo_paths.clone();
-    if !app.last_root_path.is_empty() && !paths.contains(&app.last_root_path) {
-        paths.push(app.last_root_path.clone());
-    }
-    paths
-}
+use crate::usecase::git_usecase::GitUsecase;
 
 /// [05] API / CLI 共有 helper: `worktree_path` filter input を OS レベルで canonicalize し、
 /// 末尾 `/` を除去した正規化済み文字列を返す。
@@ -30,7 +20,7 @@ pub fn normalize_worktree_filter_path(worktree_path: &str) -> Result<String, Str
 }
 
 pub fn canonicalize_managed_worktree_path_inner(
-    usecase: &RepositoryUsecase,
+    usecase: &GitUsecase,
     repo_paths: Vec<String>,
     worktree_path: String,
 ) -> Result<String, WorkflowError> {
@@ -48,7 +38,7 @@ pub fn canonicalize_managed_worktree_path_inner(
         let worktrees = match usecase.list_working_worktrees(&repo_path_str) {
             Ok(worktrees) => worktrees,
             Err(crate::usecase::repository_error::UsecaseError::Repository(
-                RepositoryError::Technical(stopped),
+                GitError::Technical(stopped),
             )) => return Err(WorkflowError::Technical(stopped)),
             Err(_) => continue,
         };
@@ -67,16 +57,15 @@ pub fn canonicalize_managed_worktree_path_inner(
 }
 
 pub(crate) async fn canonicalize_managed_worktree_path(
-    usecase: Arc<RepositoryUsecase>,
-    config: Arc<dyn ConfigRepository>,
+    usecase: Arc<GitUsecase>,
+    config: Arc<dyn AppConfigRepository>,
     worktree_path: String,
 ) -> Result<String, WorkflowError> {
-    let repo_paths = configured_repo_paths(
-        &config
-            .load()
-            .map_err(|e| WorkflowError::external(e.to_string()))?
-            .app,
-    );
+    let repo_paths = config
+        .load()
+        .map_err(|e| WorkflowError::external(e.to_string()))?
+        .repo_paths()
+        .to_vec();
     crate::common::operation_context::spawn_blocking(move || {
         canonicalize_managed_worktree_path_inner(&usecase, repo_paths, worktree_path)
     })
@@ -86,15 +75,12 @@ pub(crate) async fn canonicalize_managed_worktree_path(
 
 #[derive(Clone)]
 pub(crate) struct RepositoryManagedWorktreeGateway {
-    repository: Arc<RepositoryUsecase>,
-    config: Arc<dyn ConfigRepository>,
+    repository: Arc<GitUsecase>,
+    config: Arc<dyn AppConfigRepository>,
 }
 
 impl RepositoryManagedWorktreeGateway {
-    pub(crate) fn new(
-        repository: Arc<RepositoryUsecase>,
-        config: Arc<dyn ConfigRepository>,
-    ) -> Self {
+    pub(crate) fn new(repository: Arc<GitUsecase>, config: Arc<dyn AppConfigRepository>) -> Self {
         Self { repository, config }
     }
 }
@@ -105,10 +91,9 @@ impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
             .config
             .load()
             .map_err(|e| WorkflowError::external(e.to_string()))?;
-        let repo_paths = configured_repo_paths(&config.app);
         canonicalize_managed_worktree_path_inner(
             &self.repository,
-            repo_paths,
+            config.repo_paths().to_vec(),
             worktree_path.to_string(),
         )
     }
@@ -117,17 +102,16 @@ impl ManagedWorktreeGateway for RepositoryManagedWorktreeGateway {
 #[derive(Clone)]
 pub struct RepositoryIsolatedWorktreeGateway;
 
-fn isolated_worktree_error(error: RepositoryError) -> WorkflowError {
+fn isolated_worktree_error(error: GitError) -> WorkflowError {
     match error {
-        RepositoryError::Technical(stopped) => WorkflowError::Technical(stopped),
+        GitError::Technical(stopped) => WorkflowError::Technical(stopped),
         error => WorkflowError::external(error.to_string()),
     }
 }
 
 impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWorktreeGateway {
     fn repository_root(&self, worktree_path: &str) -> Result<String, WorkflowError> {
-        WorktreeGateway
-            .main_repo_path(worktree_path)
+        crate::adaptor::gateway::repository::worktree::get_main_repo_path(worktree_path)
             .map_err(isolated_worktree_error)
     }
 
@@ -136,13 +120,13 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
         parent_worktree_path: &str,
         worktree: &crate::domain::workflow::IsolatedWorktree,
     ) -> Result<bool, WorkflowError> {
-        let inspect = || -> Result<bool, RepositoryError> {
+        let inspect = || -> Result<bool, GitError> {
             let repo = git_operation::run(|| git2::Repository::open(parent_worktree_path))?;
             let path = std::path::Path::new(&worktree.path);
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| RepositoryError::rule("invalid isolated worktree path"))?;
+                .ok_or_else(|| GitError::rule("invalid isolated worktree path"))?;
             let existing = match git_operation::run(|| repo.find_worktree(name)) {
                 Ok(existing) => existing,
                 Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
@@ -150,7 +134,7 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
             };
             git_operation::run(|| existing.validate())?;
             if existing.path().canonicalize()? != path.canonicalize()? {
-                return Err(RepositoryError::rule(
+                return Err(GitError::rule(
                     "isolated worktree path does not match its registration",
                 ));
             }
@@ -159,7 +143,7 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
                 || git_operation::run(|| isolated.head())?.name()?
                     != format!("refs/heads/{}", worktree.branch)
             {
-                return Err(RepositoryError::rule(
+                return Err(GitError::rule(
                     "isolated worktree repository or branch does not match",
                 ));
             }
@@ -173,7 +157,7 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
         parent_worktree_path: &str,
         worktree: &crate::domain::workflow::IsolatedWorktree,
     ) -> Result<(), WorkflowError> {
-        let create = || -> Result<(), RepositoryError> {
+        let create = || -> Result<(), GitError> {
             let repo = git_operation::run(|| git2::Repository::open(parent_worktree_path))?;
             let head = git_operation::run(|| repo.head())?;
             let commit = git_operation::run(|| head.peel_to_commit())?;
@@ -183,7 +167,7 @@ impl crate::domain::workflow::IsolatedWorktreeGateway for RepositoryIsolatedWork
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| RepositoryError::rule("invalid isolated worktree path"))?;
+                .ok_or_else(|| GitError::rule("invalid isolated worktree path"))?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }

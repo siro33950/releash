@@ -18,22 +18,3 @@ pub trait ProviderExecutableProbeGateway: Send + Sync {
 pub enum ProviderExecutableProbeGatewayError {
     Technical(crate::domain::failure::TechnicalFailure),
 }
-
-pub trait ProviderExecutableConfigRepository: Send + Sync {
-    fn configured_executable(
-        &self,
-        provider: ProviderKind,
-    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError>;
-
-    fn save_configured_executable(
-        &self,
-        provider: ProviderKind,
-        executable: Option<&ProviderExecutable>,
-    ) -> Result<(), ProviderExecutableConfigRepositoryError>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProviderExecutableConfigRepositoryError {
-    InvalidInput,
-    Technical(crate::domain::failure::TechnicalFailure),
-}

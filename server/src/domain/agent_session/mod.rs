@@ -17,9 +17,7 @@ pub(crate) use display_name::{AgentSessionDisplayName, AgentSessionDisplayNameEr
 pub(crate) use launch_identity::launch_resource_id;
 
 pub(crate) use provider_availability_gateway::{
-    ProviderAvailabilityReader, ProviderExecutableConfigRepository,
-    ProviderExecutableConfigRepositoryError, ProviderExecutableProbeGateway,
-    ProviderExecutableProbeGatewayError,
+    ProviderAvailabilityReader, ProviderExecutableProbeGateway, ProviderExecutableProbeGatewayError,
 };
 pub(crate) use provider_history_gateway::{
     AgentSessionHistoryGateway, AgentSessionHistoryGatewayError, AgentSessionHistoryMetadata,

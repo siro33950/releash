@@ -47,8 +47,7 @@ pub(crate) fn register_shared(
                         state.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
                     let path = required(args.path, "path")?;
                     let result =
-                        run_blocking(move || state.repository_usecase.find_main_repo_path(&path))
-                            .await;
+                        run_blocking(move || state.git_usecase.find_main_repo_path(&path)).await;
                     Ok(wire::command_result::Command::FindRepositoryRoot(outcome(
                         result,
                     )?))

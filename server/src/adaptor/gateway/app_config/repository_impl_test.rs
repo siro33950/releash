@@ -1,19 +1,23 @@
 use super::*;
 use crate::adaptor::gateway::app_config::config_models::{
-    AgentsSection, AppSection, WorkflowSection,
+    AgentsSection, AppSection, NotionLabelPropertyModel, NotionPropertyMappingModel,
+    NotionRepoConfigModel, WorkflowSection,
 };
 
 #[test]
 fn test_workflow設定の読み取り_設定モデルから出力値を返す() {
-    // Given
-    let mut config = ReleashConfig::default();
-    config.workflow.approval_auto_approve = true;
-    let gateway = AppConfig::new(config, std::path::PathBuf::new());
+    for enabled in [false, true] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.workflow.approval_auto_approve = enabled;
+        let gateway = AppConfig::new(config, PathBuf::new());
 
-    // When
-    let output = gateway.get_workflow_config().unwrap();
-    // Then
-    assert!(output.approval_auto_approve);
+        // When
+        let config = AppConfigRepository::load(&gateway).unwrap();
+
+        // Then
+        assert_eq!(config.workflow().approval_auto_approve, enabled);
+    }
 }
 
 #[test]
@@ -99,10 +103,8 @@ fn workflow_section_defaults_to_manual_approval() {
 #[test]
 fn app_section_defaults() {
     let app = AppSection::default();
-    assert!(app.close_to_tray);
     assert!(!app.auto_launch);
     assert!(!app.start_minimized);
-    assert!(app.last_root_path.is_empty());
     assert!(app.last_repo_paths.is_empty());
     assert!(app.external_editor.is_empty());
 }
@@ -161,12 +163,60 @@ fn agents_section_defaults() {
 }
 
 #[test]
-fn test_workflow設定の読み取り_ロック破損を失敗として返す() {
+fn test_設定読み込み_ロック破損を技術的な失敗として返す() {
     // Given
-    let gateway = std::sync::Arc::new(AppConfig::new(
-        ReleashConfig::default(),
-        std::path::PathBuf::new(),
-    ));
+    let _crash_guard = crate::test_support::lock_crash_telemetry();
+    let gateway = AppConfig::new(ReleashConfig::default(), PathBuf::new());
+    let _ = std::panic::catch_unwind(|| {
+        let _lock = gateway.config.lock().unwrap();
+        panic!("poison config lock");
+    });
+
+    // When
+    let result = AppConfigRepository::load(&gateway);
+
+    // Then
+    assert!(matches!(result, Err(AppConfigError::Technical(failure))
+        if failure.nature == TechnicalFailureNature::Other && failure.message.contains("ロック取得失敗")));
+}
+
+#[test]
+fn test_terminal起動設定の読み取り_保存モデルから値を返す() {
+    for command in ["", "printf '準備完了\\n'"] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.app.terminal_startup_command = command.into();
+        let gateway = AppConfig::new(config, PathBuf::new());
+
+        // When
+        let config = AppConfigRepository::load(&gateway).unwrap();
+
+        // Then
+        assert_eq!(config.terminal_startup_command(), command);
+    }
+}
+
+#[test]
+fn test_設定読み込み_不正なprovider実行ファイルを入力エラーとして返す() {
+    for path in ["", " \t ", "invalid\0path"] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.agents.codex.cli_path = Some(path.into());
+        let gateway = AppConfig::new(config, PathBuf::new());
+
+        // When
+        let result = AppConfigRepository::load(&gateway);
+
+        // Then
+        assert!(matches!(result, Err(AppConfigError::InvalidInput(_))));
+    }
+}
+
+#[test]
+fn test_repository設定_ロック破損を読み込みと保存の失敗として返す() {
+    // Given
+    let _crash_guard = crate::test_support::lock_crash_telemetry();
+    let gateway = std::sync::Arc::new(AppConfig::new(ReleashConfig::default(), PathBuf::new()));
     let poisoned = gateway.clone();
     let _ = std::thread::spawn(move || {
         let _lock = poisoned.config.lock().unwrap();
@@ -174,21 +224,58 @@ fn test_workflow設定の読み取り_ロック破損を失敗として返す() 
     })
     .join();
 
-    // When
-    let result = gateway.get_workflow_config();
-
-    // Then
-    assert!(matches!(result, Err(AppConfigError::Repository(_))));
+    // When / Then
+    assert!(matches!(
+        RepositoryConfigRepository::load(&*gateway, "/repo"),
+        Err(AppConfigError::Technical(_))
+    ));
+    let config = crate::domain::app_config::RepositoryConfig::new(
+        "/repo".into(),
+        None,
+        Default::default(),
+        None,
+        None,
+    );
+    assert!(matches!(
+        RepositoryConfigRepository::save(&*gateway, config),
+        Err(AppConfigError::Technical(_))
+    ));
 }
 
 #[test]
-fn test_terminal起動設定の読み取り_保存モデルから値を返す() {
+fn test_設定変更_変更処理失敗時はmemoryを進めない() {
     // Given
-    let mut config = ReleashConfig::default();
-    config.app.terminal_startup_command = "echo startup".into();
-    let gateway = AppConfig::new(config, std::path::PathBuf::new());
+    let gateway = AppConfig::new(ReleashConfig::default(), PathBuf::new());
+
     // When
-    let command = crate::usecase::app_config::query_service::TerminalStartupCommandQueryService::terminal_startup_command(&gateway).unwrap();
+    let result: Result<(), String> = gateway.with_config_mut(|config| {
+        config.app.auto_launch = true;
+        Err("変更失敗".into())
+    });
+
     // Then
-    assert_eq!(command, "echo startup");
+    assert_eq!(result, Err("変更失敗".into()));
+    assert!(!gateway.get_config().unwrap().app.auto_launch);
+}
+
+#[test]
+fn test_desktop設定の読み取り_保存モデルの値をentityに写す() {
+    for enabled in [false, true] {
+        // Given
+        let mut config = ReleashConfig::default();
+        config.app.start_minimized = enabled;
+        config.app.auto_launch = !enabled;
+        config.telemetry.crash_reporting = enabled;
+        config.telemetry.performance_telemetry = !enabled;
+        let gateway = AppConfig::new(config, PathBuf::new());
+
+        // When
+        let config = AppConfigRepository::load(&gateway).unwrap();
+
+        // Then
+        assert_eq!(config.start_minimized(), enabled);
+        assert_eq!(config.auto_launch(), !enabled);
+        assert_eq!(config.telemetry().crash_reporting, enabled);
+        assert_eq!(config.telemetry().performance_telemetry, !enabled);
+    }
 }

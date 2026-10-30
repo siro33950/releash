@@ -239,7 +239,7 @@ async fn multiple_worktrees_are_independent_entries() {
 }
 
 mod rescan_tests {
-    use crate::domain::repository::entities::worktree::Worktree;
+    use crate::domain::git::entities::worktree::Worktree;
     use crate::usecase::repository_dto::FileDiffStatDto;
     use crate::usecase::repository_dto::FileStatusDto;
     use crate::usecase::repository_state::error::RepositoryStateError;

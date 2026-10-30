@@ -1,32 +1,17 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppConfigDocument {
-    pub telemetry: TelemetryConfig,
-    pub app: AppSettings,
-    pub workflow: WorkflowConfig,
-}
-
+/// telemetry の有効・無効を表す設定値。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetryConfig {
     pub crash_reporting: bool,
     pub performance_telemetry: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppSettings {
-    pub close_to_tray: bool,
-    pub auto_launch: bool,
-    pub start_minimized: bool,
-    pub last_root_path: String,
-    pub last_repo_paths: Vec<String>,
-    pub external_editor: String,
-    pub terminal_startup_command: String,
-}
-
+/// workflow の承認方針を表す設定値。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowConfig {
     pub approval_auto_approve: bool,
 }
 
+/// Notion の接続情報と property の対応を表す設定値。
 #[derive(Clone, PartialEq, Eq)]
 pub struct NotionRepoConfig {
     pub api_token: String,
@@ -76,20 +61,5 @@ pub struct NotionLabelProperty {
 }
 
 #[cfg(test)]
-#[path = "mod_test.rs"]
-mod mod_tests;
-
-impl AppSettings {
-    pub fn update_terminal_startup_command(
-        &mut self,
-        command: String,
-    ) -> Result<(), super::AppConfigError> {
-        if command.contains('\0') {
-            return Err(super::AppConfigError::InvalidInput(
-                "Terminal startup command contains NUL".into(),
-            ));
-        }
-        self.terminal_startup_command = command;
-        Ok(())
-    }
-}
+#[path = "value_objects_test.rs"]
+mod value_objects_tests;

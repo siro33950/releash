@@ -6,13 +6,13 @@ use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::infrastructure::local_api::LocalApiServer;
-use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::git_usecase::GitUsecase;
 
-pub use crate::adaptor::gateway::repository::branch::BranchGateway;
+pub use crate::adaptor::gateway::repository::git::GitGateway;
 pub use crate::adaptor::presenter::workflow_wire::{
     DiagnosticReport, DiagnosticSpan, DiagnosticStage, Severity,
 };
-pub use crate::domain::repository::{Branch, BranchRepository, RepositoryError};
+pub use crate::domain::git::{Branch, GitError, GitService};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,17 +27,21 @@ pub struct ClientApiAcceptanceHost {
 }
 
 impl ClientApiAcceptanceHost {
-    pub fn start(data_dir: &Path, branch: Arc<dyn BranchRepository>) -> Self {
+    pub fn start(data_dir: &Path, branch: Arc<dyn GitService>) -> Self {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
         use crate::adaptor::gateway::repository;
         let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
             Arc::new(repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir)),
         ));
-        let repository = RepositoryUsecase::new(
+        let config_path = data_dir.join("releash.toml");
+        let config =
+            crate::adaptor::gateway::app_config::load_or_create_config(&config_path).unwrap();
+        let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
+            config,
+            config_path,
+        ));
+        let repository = GitUsecase::new(
             branch,
-            Arc::new(repository::status::StatusGateway),
-            Arc::new(repository::worktree::WorktreeGateway),
-            Arc::new(repository::git_config::GitConfigGateway),
             Arc::new(repository::util::RepoLocatorGateway),
             Arc::new(repository::worktree_terminal::NoopWorktreeTerminalGateway),
             operations.clone(),
@@ -89,11 +93,8 @@ impl ClientApiAcceptanceHost {
         let dispatch = Arc::new(dispatch);
         let binding =
             crate::infrastructure::local_api::test_binding(data_dir.to_path_buf()).unwrap();
-        let terminal = TerminalSurfaceRuntime::new(
-            work.clone(),
-            data_dir.to_path_buf(),
-            crate::test_support::terminal_config(""),
-        );
+        let terminal =
+            TerminalSurfaceRuntime::new(work.clone(), data_dir.to_path_buf(), app_config);
         let output = Arc::new(
             crate::adaptor::presenter::terminal_subscription::TerminalSubscriptionPresenter::new(
                 &state_presenter,
@@ -285,7 +286,7 @@ impl Drop for ClientRecoveryAcceptanceHost {
     }
 }
 
-struct AcceptanceStateReads(Arc<RepositoryUsecase>);
+struct AcceptanceStateReads(Arc<GitUsecase>);
 #[async_trait::async_trait]
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceStateReads {
     async fn read(

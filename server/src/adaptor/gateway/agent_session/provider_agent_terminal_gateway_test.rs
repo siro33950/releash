@@ -161,7 +161,12 @@ fn test_provider_agent_terminal_spawn_error_残る分類とpayloadを保持す�
     let cases = [
         (
             crate::usecase::terminal_surface::error::UsecaseError::AppConfig(
-                crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
+                crate::domain::app_config::AppConfigError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "config unavailable".into(),
+                    },
+                ),
             ),
             ProviderAgentTerminalGatewayError::Technical(
                 crate::domain::failure::TechnicalFailure {

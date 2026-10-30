@@ -151,7 +151,6 @@ async fn test_単発呼び出し_期限指定が無ければprotoの既定期限
 async fn test_設定受信_生存確認と同じstreamで受け取る() {
     // Given
     let settings = wire::DesktopSettings {
-        close_to_tray: Some(true),
         start_minimized: Some(false),
         crash_reporting: Some(false),
         performance_telemetry: Some(false),
@@ -187,7 +186,7 @@ async fn test_設定受信_生存確認と同じstreamで受け取る() {
         client.subscription(),
         releash_desktop::test_support::integration::daemon_connection::DaemonSubscription(1)
     );
-    assert!(received.close_to_tray);
+    assert!(received.auto_launch);
     assert_eq!(opens.load(Ordering::SeqCst), 1);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert!(client.failure().is_none());

@@ -88,7 +88,7 @@ pub fn stream_client(
     ))
 }
 
-type DesktopSettingsDto = releashd::desktop_api::DesktopSettingsDto;
+type DesktopSettingsDto = crate::usecase::daemon_connection_query::DesktopSettingsDto;
 
 pub struct DesktopClient {
     subscription: DaemonSubscription,
@@ -272,6 +272,22 @@ impl<'a> SettingsSubscription<'a> {
         let result = self.pending.as_mut().expect("pending subscription").await;
         self.pending = None;
         subscription_result(result, rejected)
+    }
+}
+
+impl TryFrom<wire::DesktopSettings> for DesktopSettingsDto {
+    type Error = String;
+
+    fn try_from(value: wire::DesktopSettings) -> Result<Self, String> {
+        let field = |value: Option<bool>, name: &str| {
+            value.ok_or_else(|| format!("Missing DesktopSettings.{name}"))
+        };
+        Ok(Self {
+            start_minimized: field(value.start_minimized, "start_minimized")?,
+            crash_reporting: field(value.crash_reporting, "crash_reporting")?,
+            performance_telemetry: field(value.performance_telemetry, "performance_telemetry")?,
+            auto_launch: field(value.auto_launch, "auto_launch")?,
+        })
     }
 }
 

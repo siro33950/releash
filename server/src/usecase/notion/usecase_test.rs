@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::domain::app_config::error::AppConfigError;
+use crate::domain::app_config::RepositoryConfig;
 use crate::domain::notion::{
     NotionConfigStatus, NotionError, NotionLabelOption, NotionPropertyInfo, NotionTask,
 };
@@ -12,36 +13,43 @@ use super::*;
 
 #[derive(Default)]
 struct FakeNotionConfigRepository {
-    configs: Mutex<HashMap<String, app_config_vo::NotionRepoConfig>>,
+    configs: Mutex<HashMap<String, RepositoryConfig>>,
 }
 
 impl FakeNotionConfigRepository {
     fn with_config(repo_path: &str, config: app_config_vo::NotionRepoConfig) -> Self {
         Self {
-            configs: Mutex::new(HashMap::from([(repo_path.to_string(), config)])),
+            configs: Mutex::new(HashMap::from([(
+                repo_path.to_owned(),
+                RepositoryConfig::new(
+                    repo_path.to_owned(),
+                    None,
+                    HashMap::new(),
+                    None,
+                    Some(config),
+                ),
+            )])),
         }
     }
 }
 
-impl NotionConfigRepository for FakeNotionConfigRepository {
-    fn get(
-        &self,
-        repo_path: &str,
-    ) -> Result<Option<app_config_vo::NotionRepoConfig>, AppConfigError> {
-        Ok(self.configs.lock().unwrap().get(repo_path).cloned())
+impl RepositoryConfigRepository for FakeNotionConfigRepository {
+    fn load(&self, repo_path: &str) -> Result<RepositoryConfig, AppConfigError> {
+        Ok(self
+            .configs
+            .lock()
+            .unwrap()
+            .get(repo_path)
+            .cloned()
+            .unwrap_or_else(|| {
+                RepositoryConfig::new(repo_path.to_owned(), None, HashMap::new(), None, None)
+            }))
     }
-
-    fn upsert(
-        &self,
-        repo_path: String,
-        config: app_config_vo::NotionRepoConfig,
-    ) -> Result<(), AppConfigError> {
-        self.configs.lock().unwrap().insert(repo_path, config);
-        Ok(())
-    }
-
-    fn remove(&self, repo_path: &str) -> Result<(), AppConfigError> {
-        self.configs.lock().unwrap().remove(repo_path);
+    fn save(&self, config: RepositoryConfig) -> Result<(), AppConfigError> {
+        self.configs
+            .lock()
+            .unwrap()
+            .insert(config.repo_path().to_string(), config);
         Ok(())
     }
 }
@@ -286,18 +294,24 @@ async fn test_label_fetch_configが空文字ならapiを呼ばず未設定エラ
 async fn test_notion設定の保存と削除_repositoryに反映される() {
     // Given
     let repo = Arc::new(FakeNotionConfigRepository::default());
+    let notion = NotionUsecase::new(
+        repo.clone(),
+        Arc::new(ConfigQuery),
+        Arc::new(FakeNotionApiGateway::default()),
+        Default::default(),
+    );
 
     // When
-    save_config(repo.as_ref(), "/repo".to_string(), config()).unwrap();
-    let saved = repo.get("/repo").unwrap().unwrap();
+    notion.save_config("/repo".to_string(), config()).unwrap();
+    let saved = repo.load("/repo").unwrap();
     // Then
-    assert_eq!(saved.database_id, "db-1");
+    assert_eq!(saved.notion().unwrap().database_id, "db-1");
 
     // When
-    delete_config(repo.as_ref(), "/repo").unwrap();
-    let deleted = repo.get("/repo").unwrap();
+    notion.delete_config("/repo").unwrap();
+    let deleted = repo.load("/repo").unwrap();
     // Then
-    assert!(deleted.is_none());
+    assert!(deleted.notion().is_none());
 }
 
 #[tokio::test]
@@ -517,7 +531,7 @@ fn notion_fixture() -> (NotionUsecase, Arc<FakeNotionApiGateway>) {
         None,
     ))));
     *api.label_result.lock().unwrap() = Some(Ok(label_options()));
-    let notion = NotionUsecase::new(repo, Arc::new(ConfigQuery), api.clone());
+    let notion = NotionUsecase::new(repo, Arc::new(ConfigQuery), api.clone(), Default::default());
     notion.acquire_tasks(&task_request());
     notion.acquire_label_options("/repo");
     (notion, api)

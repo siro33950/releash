@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
+use crate::domain::git::normalize_repo_path;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::repository::normalize_repo_path;
 use crate::domain::terminal_surface::TerminalSurfaceOwner;
 use crate::domain::workflow::{AgentSessionActivity, ExecutionTreeLaunch, ProcessExitedFact};
 use crate::domain::workspace_tree::WorkspaceIdentity;

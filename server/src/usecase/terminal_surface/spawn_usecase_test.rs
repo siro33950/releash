@@ -1069,30 +1069,27 @@ fn test_checkpoint取得_terminal_idが違えば別のkeyを使う() {
 #[test]
 fn test_terminal起動設定_読み込み失敗時は予約を戻しshellを起こさない() {
     struct FailedConfig(crate::domain::app_config::AppConfigError);
-    impl crate::domain::app_config::ConfigRepository for FailedConfig {
+    impl crate::domain::app_config::AppConfigRepository for FailedConfig {
         fn load(
             &self,
-        ) -> Result<
-            crate::domain::app_config::value_objects::AppConfigDocument,
-            crate::domain::app_config::AppConfigError,
-        > {
+        ) -> Result<crate::domain::app_config::AppConfig, crate::domain::app_config::AppConfigError>
+        {
             Err(self.0.clone())
         }
         fn save(
             &self,
-            _: crate::domain::app_config::value_objects::AppConfigDocument,
-        ) -> Result<(), crate::domain::app_config::AppConfigError> {
-            unreachable!()
-        }
-        fn update(
-            &self,
-            _: crate::domain::app_config::repository::ConfigUpdate,
+            _: crate::domain::app_config::AppConfig,
         ) -> Result<(), crate::domain::app_config::AppConfigError> {
             unreachable!()
         }
     }
     for source in [
-        crate::domain::app_config::AppConfigError::Repository("config unavailable".into()),
+        crate::domain::app_config::AppConfigError::Technical(
+            crate::domain::failure::TechnicalFailure {
+                nature: crate::domain::failure::TechnicalFailureNature::Other,
+                message: "config unavailable".into(),
+            },
+        ),
         crate::domain::app_config::AppConfigError::InvalidInput("invalid config".into()),
     ] {
         // Given

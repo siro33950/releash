@@ -214,35 +214,6 @@ fn test_worktree作成エラーをusecaseエラーへ変換する() {
 }
 
 #[test]
-fn test_gcを委譲する() {
-    let fake = Arc::new(<FakeRepo as Default>::default());
-    usecase(fake.clone())
-        .prune_stale_branch_bases("/r", &["a".to_string(), "b".to_string()])
-        .unwrap();
-    assert_eq!(
-        *fake.prune_calls.lock(),
-        vec![vec!["a".to_string(), "b".to_string()]]
-    );
-}
-
-#[test]
-fn test_config設定系を委譲する() {
-    let fake = Arc::new(<FakeRepo as Default>::default());
-    let uc = usecase(fake.clone());
-    uc.set_releash_base("/r", Some("dev")).unwrap();
-    uc.set_branch_base_override("/r", "feat", Some("main"))
-        .unwrap();
-    assert_eq!(
-        *fake.set_releash_base_calls.lock(),
-        vec![Some("dev".to_string())]
-    );
-    assert_eq!(
-        *fake.set_branch_base_override_calls.lock(),
-        vec![("feat".to_string(), Some("main".to_string()))]
-    );
-}
-
-#[test]
 fn test_起動worktree_一件だけのときpathと表示名を返す() {
     for count in [0, 1, 2] {
         let fake = Arc::new(FakeRepo {
@@ -299,7 +270,7 @@ pub async fn test_削除中worktree_管理情報が消えても対象だけ残�
         .unwrap();
     deletion
         .accept(
-            crate::domain::repository::worktree_operation::WorktreeDeletionTarget {
+            crate::domain::git::worktree_operation::WorktreeDeletionTarget {
                 repository_root: "/main".into(),
                 path: "/main-worktrees/feature".into(),
                 branch: Some("feature".into()),
@@ -339,7 +310,7 @@ pub async fn test_削除中worktree_ブランチ名が不明でもパスごと�
         let mut deletion = fake.operations.delete(path).await.unwrap();
         deletion
             .accept(
-                crate::domain::repository::worktree_operation::WorktreeDeletionTarget {
+                crate::domain::git::worktree_operation::WorktreeDeletionTarget {
                     repository_root: "/main".into(),
                     path: path.into(),
                     branch: None,
@@ -641,7 +612,7 @@ pub async fn test_worktree削除_ブランチ取得の停止を保持し後続�
                 .unwrap_err();
             // Then
             assert!(
-                matches!(error, UsecaseError::Repository(crate::domain::repository::error::RepositoryError::Technical(ref actual)) if *actual == stopped.into())
+                matches!(error, UsecaseError::Repository(crate::domain::git::error::GitError::Technical(ref actual)) if *actual == stopped.into())
             );
             assert!(fake.archived_worktrees.lock().is_empty());
             assert!(fake.killed_worktree_terminals.lock().is_empty());
@@ -716,53 +687,53 @@ pub async fn test_worktree削除_リポジトリ識別情報を取得できな�
 }
 #[tokio::test]
 pub async fn test_repository更新_操作成功後だけ購読へ通知する() {
-    use crate::usecase::state_subscription::target::StateChangeSource;
+    use crate::usecase::state_subscription::StateChangeSource;
     // Given
-    let fake = Arc::new(<FakeRepo as Default>::default());
+    let fake = Arc::new(FakeRepo::default());
     let publisher = crate::test_support::state_subscription::test_subscriptions();
-    let mut changes = crate::test_support::state_subscription::changes(&publisher);
-    let uc = usecase(fake.clone()).with_state_publisher(publisher.clone());
-    // When / Then
-    uc.create_worktree("/repo", "feature", true, None).unwrap();
-    assert_eq!(
-        changes.try_recv().unwrap(),
-        StateChangeSource::Repository(vec!["/repo".into()])
-    );
-    uc.set_releash_base("/repo", Some("main")).unwrap();
-    assert_eq!(
-        changes.try_recv().unwrap(),
-        StateChangeSource::Repository(vec!["/repo".into()])
-    );
-    uc.set_branch_base_override("/repo", "feature", Some("main"))
+    let mut changes = publisher.changes();
+    let repository = usecase(fake.clone()).with_state_publisher(publisher.clone());
+    // When
+    repository
+        .create_worktree("/repo", "feature", true, None)
         .unwrap();
+    // Then
     assert_eq!(
         changes.try_recv().unwrap(),
         StateChangeSource::Repository(vec!["/repo".into()])
     );
-    uc.remove_worktree(fake.as_ref(), "/repo", "/wt", false)
+    assert!(changes.try_recv().is_err());
+
+    // When
+    repository
+        .remove_worktree(fake.as_ref(), "/repo", "/wt", false)
         .await
         .unwrap();
-    assert_eq!(
-        changes.try_recv().unwrap(),
-        StateChangeSource::Repository(vec!["/repo".into()])
-    );
     fake.wait_for_deletion("/wt").await;
-    assert_eq!(
-        changes.try_recv().unwrap(),
-        StateChangeSource::Repository(vec!["/repo".into()])
-    );
+    // Then
+    for _ in 0..2 {
+        assert_eq!(
+            changes.try_recv().unwrap(),
+            StateChangeSource::Repository(vec!["/repo".into()])
+        );
+    }
+    assert!(changes.try_recv().is_err());
+
+    // Given
     let failed = Arc::new(FakeRepo {
         fail_create_worktree: true,
         fail_validate_removal: true,
         ..Default::default()
     });
-    let failed_uc = usecase(failed.clone()).with_state_publisher(publisher);
-    assert!(failed_uc
+    let repository = usecase(failed.clone()).with_state_publisher(publisher);
+    // When
+    assert!(repository
         .create_worktree("/repo", "feature", true, None)
         .is_err());
-    assert!(failed_uc
+    assert!(repository
         .remove_worktree(failed.as_ref(), "/repo", "/wt", false)
         .await
         .is_err());
+    // Then
     assert!(changes.try_recv().is_err());
 }

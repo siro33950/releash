@@ -1,23 +1,32 @@
 use std::sync::Arc;
 
-use crate::domain::repository::Worktree;
+use crate::domain::git::Worktree;
 use crate::usecase::code_usecase::CodeUsecase;
+use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 use crate::usecase::repository_state::scanner::{
     changes_diff_tree_entries, diff_tree_entries, staged_diff_tree_entries, RepositoryScanner,
 };
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use crate::usecase::repository_state::RepositoryStateError;
-use crate::usecase::repository_usecase::RepositoryUsecase;
 
 pub struct DefaultRepositoryScanner {
-    repository: Arc<RepositoryUsecase>,
+    repository: Arc<GitUsecase>,
     code: Arc<CodeUsecase>,
+    repository_config: Arc<crate::usecase::repository_config_usecase::RepositoryConfigUsecase>,
 }
 
 impl DefaultRepositoryScanner {
-    pub fn new(repository: Arc<RepositoryUsecase>, code: Arc<CodeUsecase>) -> Self {
-        Self { repository, code }
+    pub fn new(
+        repository: Arc<GitUsecase>,
+        code: Arc<CodeUsecase>,
+        repository_config: Arc<crate::usecase::repository_config_usecase::RepositoryConfigUsecase>,
+    ) -> Self {
+        Self {
+            repository,
+            code,
+            repository_config,
+        }
     }
 }
 
@@ -77,7 +86,7 @@ impl RepositoryScanner for DefaultRepositoryScanner {
             .map(|branch| branch.name)
             .collect::<Vec<_>>();
         Ok(self
-            .repository
+            .repository_config
             .prune_stale_branch_bases(repo_path, &existing_branches)?)
     }
 }

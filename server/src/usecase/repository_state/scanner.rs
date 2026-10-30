@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::domain::code::DiffFileEntry;
-use crate::domain::repository::Worktree;
+use crate::domain::git::Worktree;
 use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
 
 use super::error::RepositoryStateError;

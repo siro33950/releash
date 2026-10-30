@@ -244,22 +244,39 @@ impl Fixture {
             releashd::test_support::integration::platform::build_repository_usecase()
                 .with_state_publisher(publisher.clone()),
         );
+        let config_mutation = Arc::new(parking_lot::Mutex::new(()));
         let config = Arc::new(AppConfig::new(
             ReleashConfig::default(),
             root.join("config.toml"),
         ));
-        let repositories = Arc::new(RepoPathsUsecase::new(
-            Arc::new(RepoPathsGateway::new(
-                Arc::new(parking_lot::RwLock::new(vec![path.clone()])),
-                config.clone(),
-            )),
-            publisher.clone(),
+        let repo_paths_gateway = Arc::new(RepoPathsGateway::new(
+            Arc::new(parking_lot::RwLock::new(vec![path.clone()])),
+            config.clone(),
         ));
+        let repositories = Arc::new(RepoPathsUsecase::new(
+            repo_paths_gateway.clone(),
+            repo_paths_gateway,
+            publisher.clone(),
+            config_mutation.clone(),
+        ));
+        let repository_config = Arc::new(
+            releashd::test_support::integration::settings::RepositoryConfigUsecase::new(
+                config.clone(),
+                Arc::new(
+                    releashd::test_support::integration::repository::GitGateway::new(
+                        config.clone(),
+                    ),
+                ),
+                config_mutation.clone(),
+            )
+            .with_state_publisher(publisher.clone()),
+        );
         let repository_state = Arc::new(RepositoryStateService::new(
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
                 Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
+                repository_config.clone(),
             )),
             publisher.clone(),
             Arc::new(NotifyRepositoryStateWatcher::new(repository.clone())),
@@ -330,6 +347,7 @@ impl Fixture {
                 Arc::new(
                     releashd::test_support::integration::sessions::FakeProviderExecutableProbeGateway::default(),
                 ),
+                config_mutation.clone(),
             )
             .unwrap()
             .with_state_publisher(publisher.clone()),
@@ -350,6 +368,7 @@ impl Fixture {
             ),
             repositories,
             repository,
+            repository_config,
             workflow,
             workspaces,
             git_host,
@@ -375,7 +394,7 @@ impl Fixture {
             review_comments_dir: releashd::test_support::integration::platform::state_dir(&root),
             workflows_dir: workflows_dir.clone(),
             app_config: Arc::new(
-                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config.clone(), config.clone())
+                releashd::test_support::integration::settings::AppConfigUsecase::new(config.clone(), config_mutation.clone())
                     .with_state_publisher(publisher.clone()),
             ),
             notion: Arc::new(
@@ -385,6 +404,7 @@ impl Fixture {
                     Arc::new(releashd::test_support::integration::platform::NotionApiGatewayImpl::new(
                         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
                     )),
+                    config_mutation.clone(),
                 )
                 .with_state_publisher(publisher.clone()),
             ),
@@ -445,7 +465,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     let r = &fixture.reads;
     let p = &fixture.path;
     let branch = r.repository.get_current_branch(p).unwrap();
-    r.repository
+    r.repository_config
         .set_branch_base_override(p, "feature", Some(&branch))
         .unwrap();
     let workspace = releashd::test_support::integration::platform::WorkspaceState {
@@ -627,6 +647,98 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ["missing-session".to_string(), format!("{p}:120")]
     );
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+pub async fn test_設定購読_初期値と保存後の値を既存のproto内容で配信する() {
+    use releashd::test_support::integration::subscriptions::PublishedState;
+    use releashd::test_support::integration::wire::{from_message, state_payload::Value as W};
+    use serde_json::json;
+
+    // Given
+    let fixture = Fixture::new();
+    for (target, before, after) in [
+        (
+            "desktop-settings",
+            json!({"startMinimized":false,"crashReporting":true,"performanceTelemetry":true,"autoLaunch":false}),
+            json!({"startMinimized":true,"crashReporting":true,"performanceTelemetry":true,"autoLaunch":false}),
+        ),
+        (
+            "workflow-config",
+            json!({"approval_auto_approve":false}),
+            json!({"approval_auto_approve":true}),
+        ),
+        (
+            "terminal-startup-command",
+            json!(""),
+            json!("printf '準備完了\\n'"),
+        ),
+    ] {
+        let mut stream = Box::pin(fixture.subscriptions.open(target.into()).unwrap());
+        assert!(matches!(
+            stream.next().await,
+            Some(StateSubscriptionEvent::Ready)
+        ));
+        start_read(&fixture.subscriptions, target, target, None)
+            .await
+            .unwrap();
+
+        for (index, expected) in [before, after].into_iter().enumerate() {
+            // When
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap();
+            let value = match event {
+                StateSubscriptionEvent::Item(_, Event::Snapshot(_, value)) if index == 0 => value,
+                StateSubscriptionEvent::Item(_, Event::Change(_, _, value)) if index == 1 => value,
+                _ => panic!("settings snapshot or change"),
+            };
+            let PublishedState::Value(value) = value.as_ref() else {
+                panic!("settings payload");
+            };
+            let actual = match value.value.as_ref().unwrap() {
+                W::DesktopSettings(value) => {
+                    from_message("releash.client.v1.DesktopSettings", value).unwrap()
+                }
+                W::WorkflowConfig(value) => {
+                    from_message("releash.client.v1.WorkflowSection", value).unwrap()
+                }
+                W::TerminalStartupCommand(value) => json!(value.value.as_ref().unwrap()),
+                other => panic!("unexpected payload: {other:?}"),
+            };
+
+            // Then
+            assert_eq!(actual, expected, "{target}");
+            if index == 0 {
+                assert!(matches!(
+                    stream.next().await,
+                    Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
+                ));
+                match target {
+                    "desktop-settings" => {
+                        fixture.reads.app_config.update_app_settings(true).unwrap()
+                    }
+                    "workflow-config" => fixture
+                        .reads
+                        .app_config
+                        .update_workflow_config(
+                            releashd::test_support::integration::settings::WorkflowConfigInput {
+                                approval_auto_approve: true,
+                            },
+                        )
+                        .unwrap(),
+                    "terminal-startup-command" => fixture
+                        .reads
+                        .app_config
+                        .update_terminal_startup_command("printf '準備完了\\n'".into())
+                        .unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        fixture.subscriptions.close_client(target);
+    }
 }
 
 #[tokio::test]
@@ -1942,4 +2054,22 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     // Then
     assert!(resolution.sessions.is_empty());
     assert_eq!(resolution.failures.len(), 1);
+}
+
+#[tokio::test]
+pub async fn test_状態読取_baseの保存と自動への復帰を購読値に反映する() {
+    // Given
+    let fixture = Fixture::new();
+    let target = SubscriptionTarget::ReleashBase(fixture.path.clone());
+    for base in [Some("selected-base"), None] {
+        // When
+        fixture
+            .reads
+            .repository_config
+            .set_releash_base(&fixture.path, base)
+            .unwrap();
+        let value = fixture.reads.read(&target).await.unwrap();
+        // Then
+        assert!(matches!(value, StateValue::ReleashBase(actual) if actual.as_deref() == base));
+    }
 }

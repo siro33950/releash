@@ -1,19 +1,20 @@
 use std::sync::Arc;
 
-use crate::adaptor::gateway::external_editor::EditorSettingsConfigGateway;
-use crate::domain::app_config::ConfigRepository;
+use crate::domain::app_config::AppConfigRepository;
 
 pub(crate) async fn update_external_editor_shared(
-    state: &Arc<dyn ConfigRepository>,
+    state: &Arc<dyn AppConfigRepository>,
     publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     editor: String,
+    config_mutation: Arc<parking_lot::Mutex<()>>,
 ) -> Result<(), crate::adaptor::presenter::error::AppError> {
-    let settings = EditorSettingsConfigGateway::new(state.clone());
+    let repository = state.clone();
     crate::common::operation_context::spawn_blocking(move || {
         crate::usecase::external_editor::open_usecase::update_external_editor(
-            &settings,
+            repository.as_ref(),
             publisher.as_ref(),
             editor,
+            config_mutation.as_ref(),
         )
     })
     .await

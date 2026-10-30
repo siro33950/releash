@@ -1,9 +1,8 @@
 use releashd::test_support::integration::platform::Deadline;
 use releashd::test_support::integration::platform::OperationContext;
 use releashd::test_support::integration::platform::OperationStopped;
-use releashd::test_support::integration::repository::ConfigRepository;
-use releashd::test_support::integration::repository::ConfigUpdate;
-use releashd::test_support::integration::settings::AppConfigDocument;
+use releashd::test_support::integration::repository::AppConfig;
+use releashd::test_support::integration::repository::AppConfigRepository;
 use releashd::test_support::integration::settings::AppConfigError;
 use releashd::test_support::integration::transport::ConnectFailure;
 use releashd::test_support::integration::workflow::AppConfigManagedWorktreeResolver;
@@ -12,15 +11,12 @@ use releashd::test_support::integration::workflow::ManagedWorktreeResolverError;
 use releashd::test_support::integration::workflow::WorkflowRuntimeError;
 use std::sync::Arc;
 
-struct Config(AppConfigDocument);
-impl ConfigRepository for Config {
-    fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
+struct Config(AppConfig);
+impl AppConfigRepository for Config {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
         Ok(self.0.clone())
     }
-    fn save(&self, _: AppConfigDocument) -> Result<(), AppConfigError> {
-        unreachable!()
-    }
-    fn update(&self, _: ConfigUpdate) -> Result<(), AppConfigError> {
+    fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
         unreachable!()
     }
 }
@@ -34,7 +30,7 @@ pub async fn test_managed_worktree非同期解決_期限と取消の分類をrun
     let mut config = releashd::test_support::integration::settings::config_to_domain(
         &releashd::test_support::integration::settings::ReleashConfig::default(),
     );
-    config.app.last_repo_paths = vec![root.clone()];
+    assert!(config.add_repo_path(&root));
     let resolver = AppConfigManagedWorktreeResolver::new(
         Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
         Arc::new(Config(config)),
@@ -77,6 +73,53 @@ pub async fn test_managed_worktree非同期解決_期限と取消の分類をrun
         Err(ManagedWorktreeResolverError::Validation(_))
     ));
 }
+
+#[tokio::test]
+async fn test_managed_worktree非同期解決_登録済みrepositoryのworktreeだけを解決する() {
+    // Given
+    let (registered_dir, registered_repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&registered_repo);
+    let (_unregistered_dir, unregistered_repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&unregistered_repo);
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+    let registered = worktree_parent.path().join("registered-wt");
+    registered_repo
+        .worktree("registered-wt", &registered, None)
+        .unwrap();
+    let unregistered = worktree_parent.path().join("unregistered-wt");
+    unregistered_repo
+        .worktree("unregistered-wt", &unregistered, None)
+        .unwrap();
+    let mut config = releashd::test_support::integration::settings::config_to_domain(
+        &releashd::test_support::integration::settings::ReleashConfig::default(),
+    );
+    assert!(config.add_repo_path(&registered_dir.path().to_string_lossy()));
+    let resolver = AppConfigManagedWorktreeResolver::new(
+        Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
+        Arc::new(Config(config)),
+    );
+
+    // When
+    let accepted = resolver
+        .resolve(registered.join(".").to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    let rejected = resolver
+        .resolve(unregistered.to_string_lossy().into_owned())
+        .await;
+
+    // Then
+    assert_eq!(
+        std::path::PathBuf::from(accepted),
+        registered.canonicalize().unwrap()
+    );
+    assert!(matches!(
+        rejected,
+        Err(ManagedWorktreeResolverError::Validation(message))
+            if message.contains("not a configured git worktree")
+    ));
+}
+
 pub(crate) mod tests {
 
     use tempfile::TempDir;

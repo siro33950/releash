@@ -1,4 +1,3 @@
-use releashd::test_support::integration::subscriptions::notion_target;
 use releashd::test_support::integration::subscriptions::FakeDelivery;
 use releashd::test_support::integration::subscriptions::RecordingOutput;
 use releashd::test_support::integration::subscriptions::StateChangeSource;
@@ -113,26 +112,35 @@ impl StateSubscriptionRead for ReopeningReads {
 #[tokio::test]
 pub async fn test_notion購読_旧client終了中の新規開始は旧workerの解放から項目と結果を保護する() {
     // Given
-    let targets = [
-        notion_target(),
-        SubscriptionTarget::NotionLabelOptions("/repo".into()),
-    ];
     let mut results = Vec::new();
     let mut cases = Vec::new();
-    for target in targets {
+    for labels in [false, true] {
         let mut fixture = crate::state_subscription_reads::Fixture::new();
+        let target = if labels {
+            SubscriptionTarget::NotionLabelOptions(fixture.path.clone())
+        } else {
+            SubscriptionTarget::NotionTasks(
+                releashd::test_support::integration::platform::NotionTaskListRequest {
+                    path: fixture.path.clone(),
+                    count: 20,
+                    title: None,
+                    labels: Default::default(),
+                },
+            )
+        };
         fixture.reads.notion = Arc::new(
             releashd::test_support::integration::platform::NotionUsecase::new(
                 fixture.config.clone(),
                 fixture.config.clone(),
                 Arc::new(ReopeningNotionApi::default()),
+                Default::default(),
             ),
         );
         fixture
             .reads
             .notion
             .save_config(
-                "/repo".into(),
+                fixture.path.clone(),
                 releashd::test_support::integration::settings::NotionRepoConfig {
                     api_token: "token".into(),
                     database_id: "database".into(),
@@ -161,7 +169,7 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
         cases.push((target, fixture, reads, output, subscriptions));
     }
     // When
-    for (target, _fixture, reads, output, subscriptions) in cases {
+    for (target, fixture, reads, output, subscriptions) in cases {
         subscriptions.test_remove_client_registration("old");
         reads.pause.store(true, std::sync::atomic::Ordering::SeqCst);
         let starting = subscriptions.clone();
@@ -184,7 +192,7 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
         reads.resume.notify_one();
         let started = start.await.unwrap();
         let initial = reads.read(&target).await;
-        subscriptions.notify(StateChangeSource::NotionConfig("/repo".into()));
+        subscriptions.notify(StateChangeSource::NotionConfig(fixture.path.clone()));
         tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
             .await
             .unwrap();

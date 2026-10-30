@@ -8,9 +8,10 @@ use crate::usecase::{
     },
     comment::ReviewCommentUsecase,
     git_host::GitHostUsecase,
+    git_usecase::GitUsecase,
     provider_dto::AgentSessionProviderDto,
     repo_paths_usecase::RepoPathsUsecase,
-    repository_usecase::RepositoryUsecase,
+    repository_config_usecase::RepositoryConfigUsecase,
     review_usecase::ReviewUsecase,
     workflow::WorkflowUsecase,
     workspace_tree::WorkspaceListUsecase,
@@ -163,7 +164,8 @@ where
 pub struct WorkspaceStateReads {
     pub daemon: crate::usecase::daemon::DaemonUsecase,
     pub repositories: Arc<RepoPathsUsecase>,
-    pub repository: Arc<RepositoryUsecase>,
+    pub repository: Arc<GitUsecase>,
+    pub repository_config: Arc<RepositoryConfigUsecase>,
     pub workflow: Arc<WorkflowUsecase>,
     pub workspaces: Arc<WorkspaceListUsecase>,
     pub sessions: Arc<AgentSessionReadUsecase>,
@@ -382,7 +384,7 @@ impl WorkspaceStateReads {
                     .collect(),
             ),
             T::BranchBase(p, name) => {
-                StateValue::BranchBase(self.repository.get_branch_base(p, name).map_err(error)?)
+                StateValue::BranchBase(self.repository_config.get_branch_base(p, name).map_err(error)?)
             }
             T::BranchStatus(p) => StateValue::BranchStatus(
                 self.repository
@@ -478,7 +480,7 @@ impl WorkspaceStateReads {
                     .filter(|(branch, has_worktree)| branch.can_create_worktree(*has_worktree)).collect()
             ),
             T::ReleashBase(p) => {
-                StateValue::ReleashBase(self.repository.get_releash_base(p).map_err(error)?)
+                StateValue::ReleashBase(self.repository_config.get_releash_base(p).map_err(error)?)
             }
             T::TerminalStartupCommand => StateValue::TerminalStartupCommand(self.app_config.terminal_startup_command().map_err(error)?),
             T::WorkflowConfig => {

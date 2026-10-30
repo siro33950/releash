@@ -168,7 +168,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::DesktopSettings(value) => {
-                wire::state_payload::Value::DesktopSettings((*value).into())
+                wire::state_payload::Value::DesktopSettings(value.into())
             }
             StateValue::NotionConfig(value) => wire::state_payload::Value::NotionConfig(
                 crate::adaptor::presenter::client::value(
@@ -203,7 +203,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             ),
             StateValue::TerminalStartupCommand(value) => wire::state_payload::Value::TerminalStartupCommand(wire::ResultString { value: Some(value.clone()) }),
             StateValue::WorkflowConfig(value) => wire::state_payload::Value::WorkflowConfig(
-                crate::adaptor::presenter::client::value(*value)
+                crate::adaptor::presenter::client::value(value)
                 .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::ProviderUsage(values) => wire::state_payload::Value::ProviderUsage(wire::ProviderUsageSnapshot {

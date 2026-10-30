@@ -146,31 +146,14 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
     }
 }
 
-impl From<crate::usecase::app_config::query_service::DesktopSettingsDto> for DesktopSettings {
-    fn from(value: crate::usecase::app_config::query_service::DesktopSettingsDto) -> Self {
+impl From<&crate::domain::app_config::AppConfig> for DesktopSettings {
+    fn from(value: &crate::domain::app_config::AppConfig) -> Self {
         Self {
-            close_to_tray: Some(value.close_to_tray),
-            start_minimized: Some(value.start_minimized),
-            crash_reporting: Some(value.crash_reporting),
-            performance_telemetry: Some(value.performance_telemetry),
-            auto_launch: Some(value.auto_launch),
+            start_minimized: Some(value.start_minimized()),
+            crash_reporting: Some(value.telemetry().crash_reporting),
+            performance_telemetry: Some(value.telemetry().performance_telemetry),
+            auto_launch: Some(value.auto_launch()),
         }
-    }
-}
-
-impl TryFrom<DesktopSettings> for crate::usecase::app_config::query_service::DesktopSettingsDto {
-    type Error = String;
-    fn try_from(value: DesktopSettings) -> Result<Self, String> {
-        let field = |value: Option<bool>, name: &str| {
-            value.ok_or_else(|| format!("Missing DesktopSettings.{name}"))
-        };
-        Ok(Self {
-            close_to_tray: field(value.close_to_tray, "close_to_tray")?,
-            start_minimized: field(value.start_minimized, "start_minimized")?,
-            crash_reporting: field(value.crash_reporting, "crash_reporting")?,
-            performance_telemetry: field(value.performance_telemetry, "performance_telemetry")?,
-            auto_launch: field(value.auto_launch, "auto_launch")?,
-        })
     }
 }
 

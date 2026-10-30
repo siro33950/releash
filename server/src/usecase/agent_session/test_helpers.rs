@@ -8,9 +8,10 @@ use crate::domain::agent_session::aggregates::{
     ProviderAvailability, ProviderExecutable, ProviderUnavailableReason, ResolvedProviderExecutable,
 };
 use crate::domain::agent_session::{
-    ProviderExecutableConfigRepository, ProviderExecutableConfigRepositoryError,
     ProviderExecutableProbeGateway, ProviderExecutableProbeGatewayError,
 };
+use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
+use crate::domain::app_config::{AppConfig, AppConfigError, AppConfigRepository};
 use crate::domain::provider_lifecycle::ProviderKind;
 
 #[derive(Default)]
@@ -55,20 +56,55 @@ impl crate::domain::agent_session::provider_terminal_gateway::ProviderAgentTermi
     }
 }
 
-#[derive(Default)]
 pub struct FakeProviderExecutableConfigRepository {
-    overrides: Mutex<HashMap<ProviderKind, ProviderExecutable>>,
+    config: Mutex<AppConfig>,
     fail_save: AtomicBool,
+}
+
+impl Default for FakeProviderExecutableConfigRepository {
+    fn default() -> Self {
+        Self {
+            config: Mutex::new(AppConfig::new(
+                false,
+                false,
+                vec![],
+                String::new(),
+                String::new(),
+                TelemetryConfig {
+                    crash_reporting: false,
+                    performance_telemetry: false,
+                },
+                WorkflowConfig {
+                    approval_auto_approve: false,
+                },
+                HashMap::new(),
+                HashMap::new(),
+            )),
+            fail_save: AtomicBool::new(false),
+        }
+    }
 }
 
 impl FakeProviderExecutableConfigRepository {
     #[cfg(test)]
     pub(crate) fn with_override(provider: ProviderKind, executable: &str) -> Self {
         Self {
-            overrides: Mutex::new(HashMap::from([(
-                provider,
-                ProviderExecutable::new(executable).unwrap(),
-            )])),
+            config: Mutex::new(AppConfig::new(
+                false,
+                false,
+                vec![],
+                String::new(),
+                String::new(),
+                TelemetryConfig {
+                    crash_reporting: false,
+                    performance_telemetry: false,
+                },
+                WorkflowConfig {
+                    approval_auto_approve: false,
+                },
+                HashMap::from([(provider, ProviderExecutable::new(executable).unwrap())]),
+                HashMap::new(),
+            )),
             fail_save: AtomicBool::new(false),
         }
     }
@@ -79,36 +115,21 @@ impl FakeProviderExecutableConfigRepository {
     }
 }
 
-impl ProviderExecutableConfigRepository for FakeProviderExecutableConfigRepository {
-    fn configured_executable(
-        &self,
-        provider: ProviderKind,
-    ) -> Result<Option<ProviderExecutable>, ProviderExecutableConfigRepositoryError> {
-        Ok(self.overrides.lock().unwrap().get(&provider).cloned())
+impl AppConfigRepository for FakeProviderExecutableConfigRepository {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
+        Ok(self.config.lock().unwrap().clone())
     }
 
-    fn save_configured_executable(
-        &self,
-        provider: ProviderKind,
-        executable: Option<&ProviderExecutable>,
-    ) -> Result<(), ProviderExecutableConfigRepositoryError> {
+    fn save(&self, config: AppConfig) -> Result<(), AppConfigError> {
         if self.fail_save.load(Ordering::SeqCst) {
-            return Err(ProviderExecutableConfigRepositoryError::Technical(
+            return Err(AppConfigError::Technical(
                 crate::domain::failure::TechnicalFailure {
                     nature: crate::domain::failure::TechnicalFailureNature::Transient,
                     message: "unavailable".into(),
                 },
             ));
         }
-        let mut overrides = self.overrides.lock().unwrap();
-        match executable {
-            Some(executable) => {
-                overrides.insert(provider, executable.clone());
-            }
-            None => {
-                overrides.remove(&provider);
-            }
-        }
+        *self.config.lock().unwrap() = config;
         Ok(())
     }
 }

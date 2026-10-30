@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::path::to_canonical_forward_slash;
-use crate::usecase::repository_usecase::RepositoryUsecase;
+use crate::usecase::git_usecase::GitUsecase;
 
 /// worktree 自身の git ディレクトリ。index と HEAD がここにある。
 /// main worktree では Repository の git ディレクトリで、ref と全 worktree の登録も持つ。
@@ -15,7 +15,7 @@ pub fn resolve_worktree_git_dir(repo_path: &str) -> Result<PathBuf, String> {
         .to_path_buf())
 }
 
-pub fn resolve_file_watch_paths(_usecase: &RepositoryUsecase, repo_path: &str) -> Vec<PathBuf> {
+pub fn resolve_file_watch_paths(_usecase: &GitUsecase, repo_path: &str) -> Vec<PathBuf> {
     let path = PathBuf::from(repo_path);
     vec![path.canonicalize().unwrap_or(path)]
 }

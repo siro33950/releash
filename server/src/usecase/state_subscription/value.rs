@@ -32,7 +32,7 @@ pub enum StateValue {
     Branches(Vec<BranchDto>),
     BranchBase(Option<String>),
     /// ブランチと、その worktree があるか。
-    BranchStatus(Vec<(crate::domain::repository::Branch, bool)>),
+    BranchStatus(Vec<(crate::domain::git::Branch, bool)>),
     CurrentBranch(String),
     Issues(
         crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,
@@ -73,13 +73,13 @@ pub enum StateValue {
     Facets(Vec<FacetSummaryDto>),
     Facet(String),
     Diagnostics(DiagnosticReport),
-    DesktopSettings(crate::usecase::app_config::query_service::DesktopSettingsDto),
+    DesktopSettings(crate::domain::app_config::AppConfig),
     NotionConfig(Option<crate::usecase::notion::usecase::NotionRepoConfigDto>),
     ProviderAvailability(crate::usecase::agent_session::ProviderAvailabilitySnapshotDto),
     ExternalEditor(crate::usecase::external_editor::dto::ExternalEditorState),
     ReleashBase(Option<String>),
     TerminalStartupCommand(String),
-    WorkflowConfig(crate::usecase::app_config::query_service::WorkflowConfigDto),
+    WorkflowConfig(crate::domain::app_config::value_objects::WorkflowConfig),
     ProviderUsage(Vec<crate::usecase::provider_usage::ProviderUsageDto>),
     ProviderHookHealth(crate::usecase::provider_lifecycle::ProviderHookHealthReadResult),
 }

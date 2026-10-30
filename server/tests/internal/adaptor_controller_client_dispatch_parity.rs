@@ -1,8 +1,8 @@
 fn value(result: impl serde::Serialize) -> Result<serde_json::Value, serde_json::Value> {
     serde_json::to_value(result).map_err(|error| serde_json::json!(error.to_string()))
 }
-use base64::Engine;
 
+use base64::Engine;
 use releashd::test_support::integration::transport::ClientCommandDispatch;
 use releashd::test_support::integration::wire;
 use serde_json::Value;
@@ -47,6 +47,7 @@ fn parity_app_with_runtime(
         releashd::test_support::integration::sessions::ProviderAvailabilityUsecase::initialize(
             Arc::new(FakeProviderExecutableConfigRepository::default()),
             Arc::new(FakeProviderExecutableProbeGateway::default()),
+            Default::default(),
         )
         .unwrap(),
     ));
@@ -280,7 +281,7 @@ pub async fn test_計算と操作command_connectの実行結果とエラーがdi
     ));
     let config = app.client.config_repository.as_ref().unwrap();
     let mut settings = config.load().unwrap();
-    settings.app.last_repo_paths = vec![path.clone()];
+    settings.add_repo_path(&path);
     config.save(settings).unwrap();
     let data = tempfile::tempdir().unwrap();
     let mut dispatch = ClientCommandDispatch::new(
@@ -385,13 +386,7 @@ pub async fn test_worktree変更_protoは実引数の成功とusecaseエラー�
     // Given
     let (_temp, path) = mutation_repository();
     let (app, dispatch) = parity_app();
-    let uc = app
-        .client
-        .app_state
-        .as_ref()
-        .unwrap()
-        .repository_usecase
-        .clone();
+    let uc = app.client.app_state.as_ref().unwrap().git_usecase.clone();
     let branch = "feature/parity";
     let expected = invoke_dispatch(&app, "create_worktree", json!({"repoPath": path.clone(),"branch": branch,"createBranch": true,"baseBranch": Some("base")}))
     .await
@@ -900,19 +895,20 @@ pub async fn test_登録希望_proto経由の一般設定保存から独立し�
             Ok(Value::Null),
         )
         .await;
-        assert_parity(
-            &dispatch,
-            "update_app_settings",
-            json!({"app": {"close_to_tray": false, "start_minimized": true}}),
-            Ok(Value::Null),
-        )
-        .await;
-        // Then
-        let mut expected = original.clone();
-        expected.app.auto_launch = requested;
-        expected.app.close_to_tray = false;
-        expected.app.start_minimized = true;
-        assert_eq!(repository.load().unwrap(), expected);
+        for start_minimized in [true, false] {
+            assert_parity(
+                &dispatch,
+                "update_app_settings",
+                json!({"app": {"start_minimized": start_minimized}}),
+                Ok(Value::Null),
+            )
+            .await;
+            // Then
+            let mut expected = original.clone();
+            expected.update_auto_launch(requested);
+            expected.update_start_minimized(start_minimized);
+            assert_eq!(repository.load().unwrap(), expected);
+        }
     }
     // When
     let error = dispatch
@@ -926,7 +922,7 @@ pub async fn test_登録希望_proto経由の一般設定保存から独立し�
         releashd::test_support::integration::transport::from_value(error).unwrap()["code"],
         "INVALID_REQUEST"
     );
-    assert!(!repository.load().unwrap().app.auto_launch);
+    assert!(!repository.load().unwrap().auto_launch());
 }
 
 #[tokio::test]
@@ -938,11 +934,6 @@ pub async fn test_一般設定保存_必須入力の欠落ではどの設定も�
     for app in [
         None,
         Some(wire::WindowSettings {
-            close_to_tray: None,
-            start_minimized: Some(true),
-        }),
-        Some(wire::WindowSettings {
-            close_to_tray: Some(false),
             start_minimized: None,
         }),
     ] {

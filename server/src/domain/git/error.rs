@@ -2,10 +2,10 @@
 ///
 /// 外部リソース（git2・ファイル I/O 等）への依存を持たないよう、
 /// 具体的な外部エラー型はメッセージ文字列として畳み込んで保持する。
-/// 外部エラー → `RepositoryError` への変換は gateway 層
+/// 外部エラー → `GitError` への変換は gateway 層
 /// （`adaptor/gateway/shared/error_handling.rs`）で行う。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RepositoryError {
+pub enum GitError {
     Technical(crate::domain::failure::TechnicalFailure),
     /// 外部リソース由来のエラー（git2・I/O 等）。メッセージを保持する。
     External(String),
@@ -13,7 +13,7 @@ pub enum RepositoryError {
     Rule(String),
 }
 
-impl std::fmt::Display for RepositoryError {
+impl std::fmt::Display for GitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Technical(error) => std::fmt::Display::fmt(error, f),
@@ -22,9 +22,9 @@ impl std::fmt::Display for RepositoryError {
     }
 }
 
-impl std::error::Error for RepositoryError {}
+impl std::error::Error for GitError {}
 
-impl RepositoryError {
+impl GitError {
     pub fn rule(message: impl Into<String>) -> Self {
         Self::Rule(message.into())
     }

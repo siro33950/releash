@@ -1,7 +1,7 @@
 use crate::adaptor::controller::terminal_surface_runtime as terminal_surface;
 use crate::{adaptor, domain, infrastructure, usecase};
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
-use domain::app_config::{ConfigRepository, ConfigSecretRepository, NotionConfigRepository};
+use domain::app_config::{AppConfigRepository, ConfigSecretRepository, RepositoryConfigRepository};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -191,9 +191,10 @@ pub async fn compose(
     );
 
     let app_config = Arc::new(AppConfig::new(config, config_path));
-    let config_repository: Arc<dyn ConfigRepository> = app_config.clone();
+    let config_mutation = Arc::new(parking_lot::Mutex::new(()));
+    let config_repository: Arc<dyn AppConfigRepository> = app_config.clone();
     let config_secret_repository: Arc<dyn ConfigSecretRepository> = app_config.clone();
-    let notion_config_repository: Arc<dyn NotionConfigRepository> = app_config.clone();
+    let notion_config_repository: Arc<dyn RepositoryConfigRepository> = app_config.clone();
 
     let terminal_surface_runtime = terminal_surface::TerminalSurfaceRuntime::new(
         Arc::new(terminal_surface::BackgroundWork::new(
@@ -252,9 +253,8 @@ pub async fn compose(
         adaptor::gateway::notion::NotionApiGatewayImpl::new(retry_limiter.clone()),
     );
 
-    let provider_executable_config: Arc<
-        dyn domain::agent_session::ProviderExecutableConfigRepository,
-    > = app_config.clone();
+    let provider_executable_config: Arc<dyn domain::app_config::AppConfigRepository> =
+        app_config.clone();
     let provider_history_home =
         dirs::home_dir().unwrap_or_else(|| data_dir.join("provider-history-unavailable"));
     let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
@@ -278,6 +278,8 @@ pub async fn compose(
                         store: local_event_store.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
+                        git: Arc::new(adaptor::gateway::repository::git::GitGateway::new(app_config.clone())),
+                        config_mutation: config_mutation.clone(),
                         provider_executable_probe: Arc::new(
                             #[cfg(any(target_os = "macos", target_os = "linux"))]
                             adaptor::gateway::agent_session::LocalProviderExecutableProbeGateway::with_initial_search_path(
@@ -338,8 +340,7 @@ pub async fn compose(
     {
         if let Ok(cfg) = config_repository.load() {
             let paths: Vec<String> = cfg
-                .app
-                .last_repo_paths
+                .repo_paths()
                 .iter()
                 .filter(|p| !p.is_empty())
                 .cloned()
@@ -348,46 +349,63 @@ pub async fn compose(
         }
     }
 
-    let repository_usecase = Arc::new(
+    let git_usecase = Arc::new(
         adaptor::controller::wiring::build_repository_usecase_with_worktree_terminals(
             terminal_surface.clone(),
+            app_config.clone(),
             Arc::new(usecase::worktree_operation::WorktreeOperations::new(Arc::new(
                 adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&data_dir),
             ))),
         ).with_state_publisher(state_subscriptions.clone()),
     );
 
+    let repository_config_usecase = Arc::new(
+        usecase::repository_config_usecase::RepositoryConfigUsecase::new(
+            app_config.clone(),
+            Arc::new(adaptor::gateway::repository::git::GitGateway::new(
+                app_config.clone(),
+            )),
+            config_mutation.clone(),
+        )
+        .with_state_publisher(state_subscriptions.clone()),
+    );
+
     use adaptor::controller::state::AppState;
     use adaptor::gateway::repository::repo_paths::RepoPathsGateway;
     use usecase::repo_paths_usecase::RepoPathsUsecase;
 
-    let repo_paths_gateway =
-        RepoPathsGateway::new(shared_repo_paths.clone(), config_repository.clone());
-
-    let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
-        Arc::new(repo_paths_gateway),
-        state_subscriptions.clone(),
+    let repo_paths_gateway = Arc::new(RepoPathsGateway::new(
+        shared_repo_paths.clone(),
+        config_repository.clone(),
     ));
 
-    repo_paths_usecase.initialize_from_cwd(&repository_usecase)?;
-    let repositories = shared_repo_paths.read().clone();
-    migrate_legacy_workspace_states(&workspace_state_store, &repositories, &repository_usecase)
-        .await;
+    let repo_paths_usecase = Arc::new(RepoPathsUsecase::new(
+        repo_paths_gateway.clone(),
+        repo_paths_gateway,
+        state_subscriptions.clone(),
+        config_mutation.clone(),
+    ));
 
-    let code_usecase = Arc::new(adaptor::controller::wiring::build_code_usecase());
+    repo_paths_usecase.initialize_from_cwd(&git_usecase)?;
+    let repositories = shared_repo_paths.read().clone();
+    migrate_legacy_workspace_states(&workspace_state_store, &repositories, &git_usecase).await;
+
+    let code_usecase =
+        Arc::new(adaptor::controller::wiring::build_code_usecase_with_gateways(app_config.clone()));
     let git_host_usecase = Arc::new(
         adaptor::controller::wiring::build_git_host_usecase()
             .with_state_publisher(state_subscriptions.clone()),
     );
     let repository_scanner = Arc::new(
         adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
-            repository_usecase.clone(),
+            git_usecase.clone(),
             code_usecase.clone(),
+            repository_config_usecase.clone(),
         ),
     );
     let repository_state_repository = Arc::new(
         adaptor::gateway::repository::state::RepositoryStateRepositoryGateway::new(
-            repository_usecase.clone(),
+            git_usecase.clone(),
         ),
     );
     let repository_scan_runtime =
@@ -398,7 +416,7 @@ pub async fn compose(
         state_subscriptions.clone(),
         Arc::new(
             adaptor::gateway::repository::state::NotifyRepositoryStateWatcher::new(
-                repository_usecase.clone(),
+                git_usecase.clone(),
             ),
         ),
         repository_scan_runtime.clone(),
@@ -429,7 +447,7 @@ pub async fn compose(
         adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
             failure_store.clone(),
             data_dir.clone(),
-            repository_usecase.clone(),
+            git_usecase.clone(),
             config_repository.clone(),
             local_event_store.clone(),
             node_processes.clone(),
@@ -442,6 +460,7 @@ pub async fn compose(
             notion_config_repository.clone(),
             app_config.clone(),
             notion_api_gateway.clone(),
+            config_mutation.clone(),
         )
         .with_state_publisher(state_subscriptions.clone()),
     );
@@ -450,7 +469,7 @@ pub async fn compose(
     let workspace_list = Arc::new(
         crate::adaptor::controller::wiring::build_workspace_list_usecase(
             repo_paths_usecase.clone(),
-            repository_usecase.clone(),
+            git_usecase.clone(),
             repository_state.clone(),
             workflow_usecase.clone(),
             git_host_usecase.clone(),
@@ -458,7 +477,8 @@ pub async fn compose(
     );
     let app_state = AppState {
         workspace_list,
-        repository_usecase: repository_usecase.clone(),
+        git_usecase: git_usecase.clone(),
+        repository_config_usecase: repository_config_usecase.clone(),
         repo_paths_usecase,
         code_usecase,
         review_usecase,
@@ -478,7 +498,7 @@ pub async fn compose(
             },
             adaptor::gateway::workflow::WorkflowRuntimeCommandGatewayDeps {
                 node_processes,
-                repository_usecase: repository_usecase.clone(),
+                git_usecase: git_usecase.clone(),
                 app_config: config_repository.clone(),
                 workspace_query: workspace_query_service.clone(),
                 agent_session_launch: agent_session_launch.clone(),
@@ -538,8 +558,7 @@ pub async fn compose(
     let app_config_usecase = Arc::new(
         usecase::app_config::AppConfigUsecase::new(
             config_repository.clone(),
-            app_config.clone(),
-            app_config.clone(),
+            config_mutation.clone(),
         )
         .with_state_publisher(state_subscriptions.clone()),
     );
@@ -549,7 +568,7 @@ pub async fn compose(
         .into_owned();
     let create_worktrees_usecase =
         Arc::new(usecase::create_worktrees::CreateWorktreesUsecase::new(
-            app_state.repository_usecase.clone(),
+            app_state.git_usecase.clone(),
             agent_session_launch.clone(),
             workflow_runtime_usecase.clone(),
         ));
@@ -570,6 +589,7 @@ pub async fn compose(
         review_comment_usecase: Some(review_comment_usecase),
         session_review_usecase: Some(session_review_usecase.clone()),
         config_repository: Some(config_repository.clone()),
+        config_mutation: config_mutation.clone(),
         app_config_usecase: Some(app_config_usecase.clone()),
         workflow_runtime_usecase: Some(workflow_runtime_usecase.clone()),
         editor_launcher: Arc::new(adaptor::gateway::external_editor::NativeEditorLauncherGateway),
@@ -595,7 +615,8 @@ pub async fn compose(
                         .unwrap()
                         .repo_paths_usecase
                         .clone(),
-                    repository: repository_usecase.clone(),
+                    repository: git_usecase.clone(),
+                    repository_config: repository_config_usecase.clone(),
                     workflow: workflow_usecase.clone(),
                     workspaces: dependencies
                         .app_state
@@ -703,7 +724,7 @@ pub async fn compose(
 pub async fn migrate_legacy_workspace_states(
     store: &adaptor::gateway::workspace_state::WorkspaceStateStore,
     repositories: &[String],
-    repository: &usecase::repository_usecase::RepositoryUsecase,
+    repository: &usecase::git_usecase::GitUsecase,
 ) {
     crate::common::telemetry::observe_result_async(
         usecase::workspace_state::usecase::migrate_workspace_states(

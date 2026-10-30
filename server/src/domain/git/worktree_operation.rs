@@ -1,4 +1,4 @@
-use super::RepositoryError;
+use super::GitError;
 
 #[derive(Default)]
 pub(crate) struct WorktreeOperationState {
@@ -25,9 +25,9 @@ impl WorktreeOperationState {
     pub(crate) fn accept_deletion(
         &mut self,
         target: WorktreeDeletionTarget,
-    ) -> Result<(), RepositoryError> {
+    ) -> Result<(), GitError> {
         if !self.ready_to_delete() {
-            return Err(RepositoryError::rule("worktree deletion is not ready"));
+            return Err(GitError::rule("worktree deletion is not ready"));
         }
         self.deletion = Some(WorktreeDeletion::Accepted(target));
         Ok(())
@@ -40,9 +40,9 @@ impl WorktreeOperationState {
         }
     }
 
-    pub(crate) fn begin_mutation(&mut self) -> Result<(), RepositoryError> {
+    pub(crate) fn begin_mutation(&mut self) -> Result<(), GitError> {
         if self.is_deleting() {
-            return Err(RepositoryError::rule("worktree deletion is in progress"));
+            return Err(GitError::rule("worktree deletion is in progress"));
         }
         self.mutations += 1;
         Ok(())
@@ -52,9 +52,9 @@ impl WorktreeOperationState {
         self.mutations -= 1;
     }
 
-    pub(crate) fn begin_deletion(&mut self) -> Result<(), RepositoryError> {
+    pub(crate) fn begin_deletion(&mut self) -> Result<(), GitError> {
         if self.is_deleting() {
-            return Err(RepositoryError::rule("worktree deletion is in progress"));
+            return Err(GitError::rule("worktree deletion is in progress"));
         }
         self.deletion = Some(WorktreeDeletion::Preparing);
         Ok(())
@@ -77,9 +77,6 @@ pub trait WorktreeOperationLease: Send + Sync {}
 
 #[async_trait::async_trait]
 pub trait WorktreeOperationLocks: Send + Sync {
-    fn mutation(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError>;
-    async fn deletion(
-        &self,
-        identity: &str,
-    ) -> Result<Box<dyn WorktreeOperationLease>, RepositoryError>;
+    fn mutation(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError>;
+    async fn deletion(&self, identity: &str) -> Result<Box<dyn WorktreeOperationLease>, GitError>;
 }

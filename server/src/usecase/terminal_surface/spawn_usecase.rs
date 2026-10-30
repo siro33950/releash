@@ -178,7 +178,7 @@ pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
     cwd: Option<String>,
     owner: TerminalSurfaceOwner,
     label: Option<String>,
-    config: &dyn crate::domain::app_config::ConfigRepository,
+    config: &dyn crate::domain::app_config::AppConfigRepository,
 ) -> Result<GetOrSpawnTerminalOutcome, UsecaseError> {
     let session_key = owner.stable_key();
     loop {
@@ -219,7 +219,7 @@ pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
         };
         checkpoint_lookup.finish();
         let startup_command = match config.load() {
-            Ok(document) => Some(document.app.terminal_startup_command),
+            Ok(config) => Some(config.terminal_startup_command().to_owned()),
             Err(error) => {
                 manager.rollback_spawn_slot(&reservation);
                 return Err(error.into());

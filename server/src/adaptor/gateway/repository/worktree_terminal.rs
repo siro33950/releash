@@ -5,7 +5,7 @@
 //! best-effort であり、個別の失敗は terminal surface 側でログされ削除手順を
 //! 中断させない。
 
-use crate::domain::repository::WorktreeTerminalGateway;
+use crate::domain::git::WorktreeTerminalGateway;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 impl WorktreeTerminalGateway for TerminalSurfaceApplication {

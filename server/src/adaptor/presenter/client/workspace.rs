@@ -5,8 +5,8 @@
 use super as wire;
 use super::conversions::cv;
 use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycle};
+use crate::domain::git::Branch;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::repository::Branch;
 use crate::domain::workspace_tree::{
     WorkspaceExecution, WorkspaceNodeKind, WorkspaceTree, WorkspaceTreeNode, WorkspaceVisibleNode,
 };

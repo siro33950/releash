@@ -174,7 +174,7 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                     candidate.repository_root =
                         super::super::repository::worktree::recorded_main_repo_path(path).map_err(
                             |error| match error {
-                                crate::domain::repository::RepositoryError::Technical(error) => {
+                                crate::domain::git::GitError::Technical(error) => {
                                     WorkflowError::Technical(error)
                                 }
                                 error => WorkflowError::external(error.to_string()),

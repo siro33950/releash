@@ -197,13 +197,13 @@ impl WorkflowAgentSessionPort for RecordingWorkflowAgentSessions {
 
 #[derive(Clone)]
 pub struct ConfiguredWorktreeGateway {
-    repository: std::sync::Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
+    repository: std::sync::Arc<crate::usecase::git_usecase::GitUsecase>,
     repo_paths: Vec<String>,
 }
 
 impl ConfiguredWorktreeGateway {
     pub fn new(
-        repository: std::sync::Arc<crate::usecase::repository_usecase::RepositoryUsecase>,
+        repository: std::sync::Arc<crate::usecase::git_usecase::GitUsecase>,
         repo_paths: Vec<String>,
     ) -> Self {
         Self {

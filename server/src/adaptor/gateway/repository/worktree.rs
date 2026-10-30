@@ -5,19 +5,17 @@ use crate::adaptor::gateway::shared::git_operation::GitOperationError;
 use crate::adaptor::gateway::shared::git_operation::{
     detect_default_branch, get_branch_name_for_repo,
 };
-use crate::domain::repository::{
-    normalize_repo_path, BaseAncestry, RepositoryError, Worktree, WorktreeRepository,
-};
+use crate::domain::git::{normalize_repo_path, BaseAncestry, GitError, Worktree};
 use crate::infrastructure::git::client;
 use git2::{BranchType, Oid, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions};
 use std::path::{Path, PathBuf};
 
-pub fn get_main_repo_path(any_path: &str) -> Result<String, RepositoryError> {
+pub fn get_main_repo_path(any_path: &str) -> Result<String, GitError> {
     let repo = git_operation::run(|| client::discover(any_path))?;
     main_repo_path(&repo)
 }
 
-pub fn find_main_repo_path(any_path: &str) -> Result<Option<String>, RepositoryError> {
+pub fn find_main_repo_path(any_path: &str) -> Result<Option<String>, GitError> {
     match git_operation::run(|| client::discover(any_path)) {
         Ok(repo) => main_repo_path(&repo).map(Some),
         Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
@@ -25,7 +23,7 @@ pub fn find_main_repo_path(any_path: &str) -> Result<Option<String>, RepositoryE
     }
 }
 
-pub fn recorded_main_repo_path(path: &str) -> Result<Option<String>, RepositoryError> {
+pub fn recorded_main_repo_path(path: &str) -> Result<Option<String>, GitError> {
     if let Some(repository) = git_operation::optional(git_operation::run(|| client::open(path)))? {
         return main_repo_path(&repository).map(Some);
     }
@@ -46,7 +44,7 @@ pub fn recorded_main_repo_path(path: &str) -> Result<Option<String>, RepositoryE
     })())
 }
 
-fn main_repo_path(repo: &Repository) -> Result<String, RepositoryError> {
+fn main_repo_path(repo: &Repository) -> Result<String, GitError> {
     if repo.is_worktree() {
         let git_dir = repo.path();
         let commondir_file = git_dir.join("commondir");
@@ -56,25 +54,25 @@ fn main_repo_path(repo: &Repository) -> Result<String, RepositoryError> {
             let commondir = commondir.canonicalize()?;
             let main_workdir = commondir
                 .parent()
-                .ok_or_else(|| RepositoryError::rule("cannot determine main repo path"))?;
+                .ok_or_else(|| GitError::rule("cannot determine main repo path"))?;
             return path_to_worktree_identity(main_workdir);
         }
     }
 
     let workdir = repo
         .workdir()
-        .ok_or_else(|| RepositoryError::rule("bare repository"))?;
+        .ok_or_else(|| GitError::rule("bare repository"))?;
     path_to_worktree_identity(workdir)
 }
 
-fn path_to_normalized_repo_string(path: &Path) -> Result<String, RepositoryError> {
+fn path_to_normalized_repo_string(path: &Path) -> Result<String, GitError> {
     let path = path
         .to_str()
-        .ok_or_else(|| RepositoryError::rule("invalid path encoding"))?;
+        .ok_or_else(|| GitError::rule("invalid path encoding"))?;
     Ok(normalize_repo_path(path))
 }
 
-pub fn path_to_worktree_identity(path: &Path) -> Result<String, RepositoryError> {
+pub fn path_to_worktree_identity(path: &Path) -> Result<String, GitError> {
     let path = path_to_normalized_repo_string(path)?;
     let identity = super::worktree_operation::worktree_identity(&path)?;
     path_to_normalized_repo_string(&identity)
@@ -83,7 +81,7 @@ pub fn path_to_worktree_identity(path: &Path) -> Result<String, RepositoryError>
 /// worktree の dirty 件数を算出する共通ロジック。
 /// 未追跡ディレクトリ配下も再帰的に個別計上し、ignored は除外する。
 /// 算出条件（`StatusOptions`）を 1 箇所に集約し、経路ごとの差異を排除する。
-fn count_dirty_entries(repo: &Repository) -> Result<u32, RepositoryError> {
+fn count_dirty_entries(repo: &Repository) -> Result<u32, GitError> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true).recurse_untracked_dirs(true);
     let statuses = git_operation::run(|| repo.statuses(Some(&mut opts)))?;
@@ -93,7 +91,7 @@ fn count_dirty_entries(repo: &Repository) -> Result<u32, RepositoryError> {
         .count() as u32)
 }
 
-pub fn get_worktree_dirty_count(worktree_path: &str) -> Result<u32, RepositoryError> {
+pub fn get_worktree_dirty_count(worktree_path: &str) -> Result<u32, GitError> {
     let repo = git_operation::run(|| client::open(worktree_path))?;
     count_dirty_entries(&repo)
 }
@@ -130,15 +128,15 @@ pub fn each_worktree<'a>(
     })
 }
 
-fn resolve_main_repo_path(repo: &Repository) -> Result<PathBuf, RepositoryError> {
+fn resolve_main_repo_path(repo: &Repository) -> Result<PathBuf, GitError> {
     repo.workdir()
         .map(|p| p.to_path_buf())
-        .ok_or_else(|| RepositoryError::rule("bare repository"))
+        .ok_or_else(|| GitError::rule("bare repository"))
 }
 
 /// 壊れた（`validate()` 失敗）linked worktree を working tree ごと prune する。
 /// 個別エントリの prune 失敗は無視する（best-effort）。`create_worktree` の事前掃除に使う。
-pub fn prune_invalid_worktrees(repo: &Repository) -> Result<(), RepositoryError> {
+pub fn prune_invalid_worktrees(repo: &Repository) -> Result<(), GitError> {
     if let Some(wt_names) = git_operation::optional(git_operation::run(|| repo.worktrees()))? {
         for entry in each_worktree(repo, &wt_names) {
             let (_, wt) = entry?;
@@ -156,9 +154,7 @@ pub fn prune_invalid_worktrees(repo: &Repository) -> Result<(), RepositoryError>
     Ok(())
 }
 
-pub fn registered_worktree_paths(
-    repo_path: &str,
-) -> Result<Vec<(String, String)>, RepositoryError> {
+pub fn registered_worktree_paths(repo_path: &str) -> Result<Vec<(String, String)>, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let main = resolve_main_repo_path(&repo)?;
     let name = main
@@ -261,7 +257,7 @@ fn base_ancestry(
     }))
 }
 
-pub fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
+pub fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let main_workdir = resolve_main_repo_path(&repo)?;
     let base_target_oid = resolve_base_target_oid(&repo)?;
@@ -340,7 +336,7 @@ pub fn create_worktree(
     branch: &str,
     create_branch: bool,
     base_branch: Option<&str>,
-) -> Result<Worktree, RepositoryError> {
+) -> Result<Worktree, GitError> {
     create_worktree_with_before_add(
         repo_path,
         worktree_path,
@@ -358,7 +354,7 @@ fn create_worktree_with_before_add(
     create_branch: bool,
     base_branch: Option<&str>,
     mut before_add: impl FnMut(&Repository, &str, &Path),
-) -> Result<Worktree, RepositoryError> {
+) -> Result<Worktree, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let wt_path = Path::new(worktree_path);
 
@@ -368,7 +364,7 @@ fn create_worktree_with_before_add(
     let wt_name = wt_path
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| RepositoryError::rule("invalid worktree path"))?;
+        .ok_or_else(|| GitError::rule("invalid worktree path"))?;
 
     let mut reference = if create_branch {
         let base = base_branch.unwrap_or("HEAD");
@@ -388,16 +384,15 @@ fn create_worktree_with_before_add(
         for attempt in 0..3 {
             let names = git_operation::run(|| repo.worktrees())?;
             let names = git_operation::run(|| names.iter().collect::<Result<Vec<_>, _>>())?;
-            unique_name =
-                crate::domain::repository::value_objects::worktree_path::unique_worktree_name(
-                    wt_name,
-                    &names
-                        .iter()
-                        .flatten()
-                        .copied()
-                        .chain(failed_names.iter().map(String::as_str))
-                        .collect::<Vec<_>>(),
-                );
+            unique_name = crate::domain::git::value_objects::worktree_path::unique_worktree_name(
+                wt_name,
+                &names
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .chain(failed_names.iter().map(String::as_str))
+                    .collect::<Vec<_>>(),
+            );
             if let Some(parent) = wt_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -410,7 +405,7 @@ fn create_worktree_with_before_add(
                             || wt_path.parent().is_some_and(|parent| !parent.exists()));
                     if attempt == 2 || !retryable || matches!(error, GitOperationError::Stopped(_))
                     {
-                        return Err(RepositoryError::from(error));
+                        return Err(GitError::from(error));
                     }
                     failed_names.push(unique_name.clone());
                 }
@@ -419,7 +414,7 @@ fn create_worktree_with_before_add(
         unreachable!()
     })();
     if let Err(error) = result {
-        if matches!(error, RepositoryError::Technical(_)) {
+        if matches!(error, GitError::Technical(_)) {
             return Err(error);
         }
         if create_branch {
@@ -443,12 +438,12 @@ fn removal_target(
     repo_path: &str,
     worktree_path: &str,
     force: bool,
-) -> Result<(git2::Worktree, PathBuf, Option<String>, bool), RepositoryError> {
+) -> Result<(git2::Worktree, PathBuf, Option<String>, bool), GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
 
     let target_path = Path::new(worktree_path)
         .canonicalize()
-        .map_err(|e| RepositoryError::rule(format!("invalid worktree path: {e}")))?;
+        .map_err(|e| GitError::rule(format!("invalid worktree path: {e}")))?;
 
     let wt_names = git_operation::run(|| repo.worktrees())?;
 
@@ -463,7 +458,7 @@ fn removal_target(
         }
     }
 
-    let wt_name = found_name.ok_or_else(|| RepositoryError::rule("worktree not found"))?;
+    let wt_name = found_name.ok_or_else(|| GitError::rule("worktree not found"))?;
     let wt = git_operation::run(|| repo.find_worktree(&wt_name))?;
 
     // worktree削除前にブランチ名を取得
@@ -494,11 +489,20 @@ fn removal_target(
     Ok((wt, target_path, wt_branch, is_locked))
 }
 
+pub(super) fn validate_removal(
+    repo_path: &str,
+    worktree_path: &str,
+    force: bool,
+) -> Result<String, GitError> {
+    let (_, path, _, _) = removal_target(repo_path, worktree_path, force)?;
+    path_to_normalized_repo_string(&path)
+}
+
 pub fn remove_worktree(
     repo_path: &str,
     worktree_path: &str,
     force: bool,
-) -> Result<Option<String>, RepositoryError> {
+) -> Result<Option<String>, GitError> {
     let (wt, target_path, wt_branch, is_locked) = removal_target(repo_path, worktree_path, force)?;
     let mut prune_opts = WorktreePruneOptions::new();
     prune_opts.valid(true).working_tree(true);
@@ -508,12 +512,11 @@ pub fn remove_worktree(
     git_operation::run(|| wt.prune(Some(&mut prune_opts)))?;
 
     if target_path.exists() {
-        std::fs::remove_dir_all(&target_path).map_err(|e| {
-            RepositoryError::rule(format!("failed to remove worktree directory: {e}"))
-        })?;
+        std::fs::remove_dir_all(&target_path)
+            .map_err(|e| GitError::rule(format!("failed to remove worktree directory: {e}")))?;
     }
 
-    let root = PathBuf::from(crate::domain::repository::worktree_dir(repo_path));
+    let root = PathBuf::from(crate::domain::git::worktree_dir(repo_path));
     let root = match root.canonicalize() {
         Ok(root) => Some(root),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -543,48 +546,6 @@ pub fn remove_worktree(
     Ok(wt_branch)
 }
 
-/// `WorktreeRepository` の git2 実装。
-pub struct WorktreeGateway;
-
-impl WorktreeRepository for WorktreeGateway {
-    fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, RepositoryError> {
-        find_main_repo_path(path)
-    }
-    fn main_repo_path(&self, any_path: &str) -> Result<String, RepositoryError> {
-        get_main_repo_path(any_path)
-    }
-    fn list(&self, repo_path: &str) -> Result<Vec<Worktree>, RepositoryError> {
-        list_worktrees(repo_path)
-    }
-    fn create(
-        &self,
-        repo_path: &str,
-        worktree_path: &str,
-        branch: &str,
-        create_branch: bool,
-        base_branch: Option<&str>,
-    ) -> Result<Worktree, RepositoryError> {
-        create_worktree(repo_path, worktree_path, branch, create_branch, base_branch)
-    }
-    fn validate_removal(
-        &self,
-        repo_path: &str,
-        worktree_path: &str,
-        force: bool,
-    ) -> Result<String, RepositoryError> {
-        let (_, path, _, _) = removal_target(repo_path, worktree_path, force)?;
-        path_to_normalized_repo_string(&path)
-    }
-    fn remove(
-        &self,
-        repo_path: &str,
-        worktree_path: &str,
-        force: bool,
-    ) -> Result<Option<String>, RepositoryError> {
-        remove_worktree(repo_path, worktree_path, force)
-    }
-}
-
 #[cfg(feature = "test-support")]
 pub fn create_worktree_with_hook(
     repo_path: &str,
@@ -593,7 +554,7 @@ pub fn create_worktree_with_hook(
     create_branch: bool,
     base_branch: Option<&str>,
     before_add: impl FnMut(&Repository, &str, &Path),
-) -> Result<Worktree, RepositoryError> {
+) -> Result<Worktree, GitError> {
     create_worktree_with_before_add(
         repo_path,
         worktree_path,

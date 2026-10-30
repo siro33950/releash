@@ -21,16 +21,14 @@ pub fn worktree_path(repo_path: &str, branch: &str) -> String {
 #[path = "worktree_path_test.rs"]
 mod worktree_path_tests;
 
-pub fn validate_worktree_branches(
-    branches: &[String],
-) -> Result<(), crate::domain::repository::RepositoryError> {
+pub fn validate_worktree_branches(branches: &[String]) -> Result<(), crate::domain::git::GitError> {
     let mut unique = std::collections::HashSet::new();
     if branches.is_empty()
         || branches
             .iter()
             .any(|branch| branch.trim().is_empty() || !unique.insert(branch))
     {
-        return Err(crate::domain::repository::RepositoryError::rule(
+        return Err(crate::domain::git::GitError::rule(
             "Select distinct non-empty branches",
         ));
     }

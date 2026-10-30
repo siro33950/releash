@@ -7,12 +7,15 @@
 
 use std::sync::Arc;
 
-use crate::domain::repository::RepoPathsRepository;
+use crate::domain::app_config::AppConfigRepository;
+use crate::domain::git::RepoPathsRepository;
 
 use super::repository_error::UsecaseError;
 
 #[derive(Clone)]
 pub struct RepoPathsUsecase {
+    config_mutation: Arc<parking_lot::Mutex<()>>,
+    config: Arc<dyn AppConfigRepository>,
     repo: Arc<dyn RepoPathsRepository>,
     subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
     mutation: Arc<parking_lot::Mutex<()>>,
@@ -20,10 +23,14 @@ pub struct RepoPathsUsecase {
 
 impl RepoPathsUsecase {
     pub fn new(
+        config: Arc<dyn AppConfigRepository>,
         repo: Arc<dyn RepoPathsRepository>,
         subscriptions: crate::usecase::state_subscription::StateSubscriptionUsecase,
+        config_mutation: Arc<parking_lot::Mutex<()>>,
     ) -> Self {
         Self {
+            config_mutation,
+            config,
             repo,
             subscriptions,
             mutation: Arc::new(parking_lot::Mutex::new(())),
@@ -32,7 +39,7 @@ impl RepoPathsUsecase {
 
     pub(crate) fn initialize_from_cwd(
         &self,
-        repository: &crate::usecase::repository_usecase::RepositoryUsecase,
+        repository: &crate::usecase::git_usecase::GitUsecase,
     ) -> Result<(), UsecaseError> {
         if let Some(root) = repository.find_main_repo_path(&repository.get_cwd()?)? {
             self.add(&root)?;
@@ -48,8 +55,12 @@ impl RepoPathsUsecase {
     /// 追加成功時のみ、更新後の一覧が配信されるまで待つ。
     pub fn add(&self, path: &str) -> Result<bool, UsecaseError> {
         let _mutation = self.mutation.lock();
-        let added = self.repo.add(path)?;
+        let guard = self.config_mutation.lock();
+        let mut config = self.config.load()?;
+        let added = config.add_repo_path(path);
         if added {
+            self.config.save(config)?;
+            drop(guard);
             self.notify_changed();
         }
         Ok(added)
@@ -59,8 +70,12 @@ impl RepoPathsUsecase {
     /// 削除成功時のみ、更新後の一覧が配信されるまで待つ。
     pub fn remove(&self, path: &str) -> Result<bool, UsecaseError> {
         let _mutation = self.mutation.lock();
-        let removed = self.repo.remove(path)?;
+        let guard = self.config_mutation.lock();
+        let mut config = self.config.load()?;
+        let removed = config.remove_repo_path(path);
         if removed {
+            self.config.save(config)?;
+            drop(guard);
             self.notify_changed();
         }
         Ok(removed)

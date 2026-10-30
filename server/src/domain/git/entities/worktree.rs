@@ -38,17 +38,17 @@ impl Worktree {
         &self,
         force: bool,
         dirty_count: u32,
-    ) -> Result<(), crate::domain::repository::RepositoryError> {
-        use crate::domain::repository::RepositoryError;
+    ) -> Result<(), crate::domain::git::GitError> {
+        use crate::domain::git::GitError;
         if self.is_main {
-            return Err(RepositoryError::rule("cannot remove the main worktree"));
+            return Err(GitError::rule("cannot remove the main worktree"));
         }
         if !force {
             if self.is_locked {
-                return Err(RepositoryError::rule("worktree is locked"));
+                return Err(GitError::rule("worktree is locked"));
             }
             if dirty_count > 0 {
-                return Err(RepositoryError::rule(format!(
+                return Err(GitError::rule(format!(
                     "worktree has {dirty_count} uncommitted change(s). Use force to remove."
                 )));
             }

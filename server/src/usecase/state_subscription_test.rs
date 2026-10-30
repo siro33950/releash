@@ -1165,7 +1165,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
             WorkspaceListRepository {
                 path: "/failed".into(),
                 worktrees: Fetched::ready(vec![WorkspaceListWorktree {
-                    worktree: crate::domain::repository::Worktree::being_deleted(
+                    worktree: crate::domain::git::Worktree::being_deleted(
                         "/failed/linked",
                         "branch".into(),
                     ),
@@ -1310,11 +1310,11 @@ async fn test_監視対象読み取り失敗_reconcileから該当repositoryだ�
         }
     }
     struct Files;
-    impl crate::domain::repository::file_watcher::FileWatchGateway for Files {
+    impl crate::domain::git::file_watcher::FileWatchGateway for Files {
         fn start_tree(
             &self,
             _: &str,
-            _: crate::domain::repository::file_watcher::WatchChangeHandler,
+            _: crate::domain::git::file_watcher::WatchChangeHandler,
         ) -> Result<u64, String> {
             unreachable!()
         }
@@ -1384,7 +1384,7 @@ async fn test_監視対象読み取り失敗_reconcileから該当repositoryだ�
 
 #[tokio::test]
 async fn test_ファイル監視_読取中の失敗は張り直し成功まで解除しない() {
-    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use crate::domain::git::file_watcher::{FileWatchGateway, WatchChangeHandler};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     #[derive(Default)]
     struct Files {
@@ -1539,7 +1539,7 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
 
 #[tokio::test]
 async fn test_ファイル監視_稼働中の失敗を配信し張り直しで値へ戻す() {
-    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use crate::domain::git::file_watcher::{FileWatchGateway, WatchChangeHandler};
     #[derive(Default)]
     struct Files {
         callbacks: Mutex<Vec<WatchChangeHandler>>,
@@ -1637,7 +1637,7 @@ async fn test_ファイル監視_稼働中の失敗を配信し張り直しで�
 
 #[test]
 fn test_ファイル監視_失敗と張り直しの配信順序を排他で保つ() {
-    use crate::domain::repository::file_watcher::{FileWatchGateway, WatchChangeHandler};
+    use crate::domain::git::file_watcher::{FileWatchGateway, WatchChangeHandler};
     use std::sync::mpsc;
     use std::time::Duration;
 

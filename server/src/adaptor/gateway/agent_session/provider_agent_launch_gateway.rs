@@ -15,6 +15,7 @@ pub struct LocalProviderAgentLaunchGateway {
     root: PathBuf,
     hook_cli_alias: String,
     hook_token: std::sync::Arc<str>,
+    git: std::sync::Arc<dyn crate::domain::git::GitService>,
 }
 
 impl LocalProviderAgentLaunchGateway {
@@ -23,6 +24,7 @@ impl LocalProviderAgentLaunchGateway {
         hook_cli_alias: String,
         hook_token: std::sync::Arc<str>,
         claude_config_dir: PathBuf,
+        git: std::sync::Arc<dyn crate::domain::git::GitService>,
     ) -> Self {
         Self {
             root: data_dir.join("provider-launches"),
@@ -30,6 +32,7 @@ impl LocalProviderAgentLaunchGateway {
             claude_config_dir,
             hook_cli_alias,
             hook_token,
+            git,
         }
     }
 
@@ -95,11 +98,12 @@ impl ProviderAgentLaunchGateway for LocalProviderAgentLaunchGateway {
             self.data_dir.to_string_lossy().into_owned(),
         ));
         if let Some(base_branch) =
-            crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch(
+            crate::adaptor::gateway::repository::git_config::resolve_effective_base_branch_with_git(
                 worktree_path,
+                self.git.as_ref(),
             )
             .or_else(|error| match error {
-                crate::domain::repository::RepositoryError::Technical(stopped) => {
+                crate::domain::git::GitError::Technical(stopped) => {
                     Err(ProviderAgentLaunchGatewayError::Technical(stopped))
                 }
                 _ => Ok(None),

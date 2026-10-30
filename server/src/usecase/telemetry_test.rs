@@ -1,8 +1,7 @@
 use super::*;
-use crate::domain::app_config::repository::ConfigUpdate;
-use crate::domain::app_config::value_objects::AppConfigDocument;
-use crate::domain::app_config::{AppConfigError, ConfigRepository};
-use std::sync::{Arc, Mutex};
+use crate::domain::app_config::{AppConfig, AppConfigError, AppConfigRepository};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Default)]
 struct Port(Mutex<Vec<String>>);
@@ -29,36 +28,26 @@ impl TelemetryPort for Port {
         self.0.lock().unwrap().push(format!("crash:{enabled}"));
     }
 }
+
 struct Config {
-    document: Mutex<AppConfigDocument>,
+    document: Mutex<AppConfig>,
     fail: bool,
 }
-impl ConfigRepository for Config {
-    fn load(&self) -> Result<AppConfigDocument, AppConfigError> {
+impl AppConfigRepository for Config {
+    fn load(&self) -> Result<AppConfig, AppConfigError> {
         Ok(self.document.lock().unwrap().clone())
     }
-    fn save(&self, document: AppConfigDocument) -> Result<(), AppConfigError> {
+    fn save(&self, document: AppConfig) -> Result<(), AppConfigError> {
         if self.fail {
-            return Err(AppConfigError::Repository("save failed".into()));
+            return Err(AppConfigError::Technical(
+                crate::domain::failure::TechnicalFailure {
+                    nature: crate::domain::failure::TechnicalFailureNature::Other,
+                    message: "save failed".into(),
+                },
+            ));
         }
         *self.document.lock().unwrap() = document;
         Ok(())
-    }
-    fn update(&self, update: ConfigUpdate) -> Result<(), AppConfigError> {
-        let mut document = self.load()?;
-        update(&mut document)?;
-        self.save(document)
-    }
-}
-impl crate::usecase::app_config::query_service::WorkflowConfigQueryService for Config {
-    fn get_workflow_config(
-        &self,
-    ) -> Result<crate::usecase::app_config::query_service::WorkflowConfigDto, AppConfigError> {
-        Ok(
-            crate::usecase::app_config::query_service::WorkflowConfigDto {
-                approval_auto_approve: self.document.lock().unwrap().workflow.approval_auto_approve,
-            },
-        )
     }
 }
 
@@ -67,31 +56,26 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
     for fail in [false, true] {
         // Given
         let repository = Arc::new(Config {
-            document: Mutex::new(AppConfigDocument {
-                telemetry: crate::domain::app_config::value_objects::TelemetryConfig {
+            document: Mutex::new(AppConfig::new(
+                false,
+                false,
+                Vec::new(),
+                String::new(),
+                String::new(),
+                crate::domain::app_config::value_objects::TelemetryConfig {
                     crash_reporting: false,
                     performance_telemetry: false,
                 },
-                app: crate::domain::app_config::value_objects::AppSettings {
-                    close_to_tray: false,
-                    auto_launch: false,
-                    start_minimized: false,
-                    last_root_path: String::new(),
-                    last_repo_paths: Vec::new(),
-                    external_editor: String::new(),
-                    terminal_startup_command: String::new(),
-                },
-                workflow: crate::domain::app_config::value_objects::WorkflowConfig {
+                crate::domain::app_config::value_objects::WorkflowConfig {
                     approval_auto_approve: false,
                 },
-            }),
+                Default::default(),
+                Default::default(),
+            )),
             fail,
         });
-        let config = crate::usecase::app_config::AppConfigUsecase::new(
-            repository.clone(),
-            repository.clone(),
-            repository,
-        );
+        let config =
+            crate::usecase::app_config::AppConfigUsecase::new(repository, Default::default());
         let port = Port::default();
         let usecase = TelemetryUsecase::new(&port);
         // When
@@ -107,9 +91,9 @@ fn test_telemetry設定_永続化成功時だけruntime設定を更新する() {
             assert!(calls.is_empty());
         } else {
             assert_eq!(calls, ["performance:true", "crash:true"]);
-            assert!(settings.performance_telemetry);
-            assert!(settings.crash_reporting);
         }
+        assert_eq!(settings.telemetry().performance_telemetry, !fail);
+        assert_eq!(settings.telemetry().crash_reporting, !fail);
         assert!(!workflow.approval_auto_approve);
     }
 }
@@ -132,16 +116,4 @@ fn test_telemetry操作_引数とquery結果をportへ委譲する() {
             "usage:event"
         ]
     );
-}
-
-impl crate::usecase::app_config::query_service::TerminalStartupCommandQueryService for Config {
-    fn terminal_startup_command(&self) -> Result<String, AppConfigError> {
-        Ok(self
-            .document
-            .lock()
-            .unwrap()
-            .app
-            .terminal_startup_command
-            .clone())
-    }
 }

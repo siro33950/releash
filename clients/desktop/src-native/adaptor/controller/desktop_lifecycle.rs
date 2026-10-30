@@ -66,7 +66,7 @@ pub(crate) fn connected<R: tauri::Runtime>(
 pub(crate) async fn settings_changed<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     subscription: crate::domain::daemon_connection::DaemonSubscription,
-    settings: releashd::desktop_api::DesktopSettingsDto,
+    settings: crate::usecase::daemon_connection_query::DesktopSettingsDto,
 ) {
     crate::common::serial::run(
         app,

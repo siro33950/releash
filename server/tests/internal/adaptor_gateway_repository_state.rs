@@ -235,6 +235,7 @@ pub async fn test_repository走査の期限切れ_旧走査を回収して同じ
         releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
             Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
+            Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
         ),
     );
     let path = dir.path().to_str().unwrap().to_owned();

@@ -243,7 +243,6 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             releash::wire::state_subscription_event::Event::Snapshot(releash::wire::StatePayload {
                 value: Some(releash::wire::state_payload::Value::DesktopSettings(
                     releash::wire::DesktopSettings {
-                        close_to_tray: Some(false),
                         start_minimized: Some(true),
                         crash_reporting: Some(false),
                         performance_telemetry: Some(true),
@@ -272,7 +271,6 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
                 releash::wire::StatePayload {
                     value: Some(releash::wire::state_payload::Value::DesktopSettings(
                         releash::wire::DesktopSettings {
-                            close_to_tray: Some(true),
                             start_minimized: Some(false),
                             crash_reporting: Some(false),
                             performance_telemetry: Some(true),
@@ -355,7 +353,6 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             .unwrap();
         drop(initialized);
         let client = updates.borrow_and_update().clone().unwrap();
-        assert!(!host::desktop_window_preferences(app.handle()));
         assert_eq!(
             host::desktop_login_item_calls(app.handle())
                 .iter()
@@ -388,8 +385,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             host::apply_observed_desktop_settings(
                 &handle,
                 stale_client,
-                releashd::desktop_api::DesktopSettingsDto {
-                    close_to_tray: true,
+                host::integration::daemon_connection::DesktopSettingsDto {
                     start_minimized: false,
                     crash_reporting: true,
                     performance_telemetry: false,
@@ -430,7 +426,6 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
         serialized.await.unwrap();
         stale.await.unwrap();
         // Then
-        assert!(!host::desktop_window_preferences(app.handle()));
         assert!(!telemetry::crash_reporting_enabled());
         assert!(!host::desktop_login_item_calls(app.handle()).contains(&"unregister"));
         let old_subscription = client.subscription();
@@ -459,7 +454,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             },
         ));
         tokio::time::timeout(Duration::from_secs(3), async {
-            while !host::desktop_window_preferences(app.handle()) {
+            while !host::desktop_login_item_calls(app.handle()).contains(&"unregister") {
                 tokio::task::yield_now().await;
             }
         })

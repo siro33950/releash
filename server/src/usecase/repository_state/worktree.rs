@@ -9,7 +9,7 @@ use super::runtime::{RepositoryStateInvalidationSender, RepositoryStateWorkerRun
 use super::scanner::RepositoryScanner;
 use super::snapshot::{RepositorySnapshot, RepositorySnapshotParts};
 use super::worker::InvalidateReason;
-use crate::domain::repository::Worktree;
+use crate::domain::git::Worktree;
 use crate::usecase::fetched::Fetched;
 
 pub trait RepositoryStateWatchSession: Send + Sync {}

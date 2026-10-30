@@ -2,12 +2,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::app_config::value_objects as domain_vo;
-
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReleashConfig {
     #[serde(default)]
@@ -20,6 +14,9 @@ pub struct ReleashConfig {
     pub agents: AgentsSection,
     #[serde(default)]
     pub workflow: WorkflowSection,
+    #[serde(skip)]
+    pub provider_configuration_revisions:
+        HashMap<crate::domain::provider_lifecycle::ProviderKind, u32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -129,36 +126,18 @@ pub struct CodexAgentSection {
     pub cli_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppSection {
-    #[serde(default = "default_true")]
-    pub close_to_tray: bool,
     #[serde(default)]
     pub auto_launch: bool,
     #[serde(default)]
     pub start_minimized: bool,
-    #[serde(default)]
-    pub last_root_path: String,
     #[serde(default)]
     pub last_repo_paths: Vec<String>,
     #[serde(default)]
     pub external_editor: String,
     #[serde(default)]
     pub terminal_startup_command: String,
-}
-
-impl Default for AppSection {
-    fn default() -> Self {
-        Self {
-            close_to_tray: true,
-            auto_launch: false,
-            start_minimized: false,
-            last_root_path: String::new(),
-            last_repo_paths: Vec::new(),
-            external_editor: String::new(),
-            terminal_startup_command: String::new(),
-        }
-    }
 }
 
 fn default_crash_reporting() -> bool {
@@ -186,68 +165,78 @@ impl Default for TelemetrySection {
     }
 }
 
-pub fn config_to_domain(config: &ReleashConfig) -> domain_vo::AppConfigDocument {
-    domain_vo::AppConfigDocument {
-        telemetry: telemetry_to_domain(&config.telemetry),
-        app: app_to_domain(&config.app),
-        workflow: workflow_to_domain(&config.workflow),
-    }
+#[cfg(any(test, feature = "test-support"))]
+pub fn config_to_domain(config: &ReleashConfig) -> crate::domain::app_config::AppConfig {
+    try_config_to_domain(config).expect("provider executable must be valid")
 }
 
-pub fn apply_domain_to_config(config: &mut ReleashConfig, domain: domain_vo::AppConfigDocument) {
-    config.telemetry = telemetry_to_model(domain.telemetry);
-    config.app = app_to_model(domain.app);
-    config.workflow = workflow_to_model(domain.workflow);
+pub(super) fn try_config_to_domain(
+    config: &ReleashConfig,
+) -> Result<crate::domain::app_config::AppConfig, crate::domain::app_config::AppConfigError> {
+    use crate::domain::agent_session::aggregates::ProviderExecutable;
+    use crate::domain::app_config::value_objects::{TelemetryConfig, WorkflowConfig};
+    use crate::domain::app_config::{AppConfig, AppConfigError};
+    use crate::domain::provider_lifecycle::ProviderKind;
+
+    let mut executables = HashMap::new();
+    for (provider, path) in [
+        (ProviderKind::Claude, &config.agents.claude.cli_path),
+        (ProviderKind::Codex, &config.agents.codex.cli_path),
+    ] {
+        if let Some(path) = path {
+            let executable = ProviderExecutable::new(path.clone())
+                .map_err(|_| AppConfigError::InvalidInput("Invalid provider executable".into()))?;
+            executables.insert(provider, executable);
+        }
+    }
+    Ok(AppConfig::new(
+        config.app.auto_launch,
+        config.app.start_minimized,
+        config.app.last_repo_paths.clone(),
+        config.app.external_editor.clone(),
+        config.app.terminal_startup_command.clone(),
+        TelemetryConfig {
+            crash_reporting: config.telemetry.crash_reporting,
+            performance_telemetry: config.telemetry.performance_telemetry,
+        },
+        WorkflowConfig {
+            approval_auto_approve: config.workflow.approval_auto_approve,
+        },
+        executables,
+        config.provider_configuration_revisions.clone(),
+    ))
 }
 
-pub fn telemetry_to_domain(telemetry: &TelemetrySection) -> domain_vo::TelemetryConfig {
-    domain_vo::TelemetryConfig {
-        crash_reporting: telemetry.crash_reporting,
-        performance_telemetry: telemetry.performance_telemetry,
-    }
-}
+pub fn apply_domain_to_config(
+    config: &mut ReleashConfig,
+    domain: crate::domain::app_config::AppConfig,
+) {
+    use crate::domain::provider_lifecycle::ProviderKind;
 
-pub fn telemetry_to_model(telemetry: domain_vo::TelemetryConfig) -> TelemetrySection {
-    TelemetrySection {
-        crash_reporting: telemetry.crash_reporting,
-        performance_telemetry: telemetry.performance_telemetry,
-    }
-}
-
-pub fn app_to_domain(app: &AppSection) -> domain_vo::AppSettings {
-    domain_vo::AppSettings {
-        close_to_tray: app.close_to_tray,
-        auto_launch: app.auto_launch,
-        start_minimized: app.start_minimized,
-        last_root_path: app.last_root_path.clone(),
-        last_repo_paths: app.last_repo_paths.clone(),
-        external_editor: app.external_editor.clone(),
-        terminal_startup_command: app.terminal_startup_command.clone(),
-    }
-}
-
-pub fn app_to_model(app: domain_vo::AppSettings) -> AppSection {
-    AppSection {
-        close_to_tray: app.close_to_tray,
-        auto_launch: app.auto_launch,
-        start_minimized: app.start_minimized,
-        last_root_path: app.last_root_path,
-        last_repo_paths: app.last_repo_paths,
-        external_editor: app.external_editor,
-        terminal_startup_command: app.terminal_startup_command,
-    }
-}
-
-pub fn workflow_to_domain(workflow: &WorkflowSection) -> domain_vo::WorkflowConfig {
-    domain_vo::WorkflowConfig {
-        approval_auto_approve: workflow.approval_auto_approve,
-    }
-}
-
-pub fn workflow_to_model(workflow: domain_vo::WorkflowConfig) -> WorkflowSection {
-    WorkflowSection {
-        approval_auto_approve: workflow.approval_auto_approve,
-    }
+    config.app = AppSection {
+        auto_launch: domain.auto_launch(),
+        start_minimized: domain.start_minimized(),
+        last_repo_paths: domain.repo_paths().to_vec(),
+        external_editor: domain.external_editor().to_owned(),
+        terminal_startup_command: domain.terminal_startup_command().to_owned(),
+    };
+    config.telemetry = TelemetrySection {
+        crash_reporting: domain.telemetry().crash_reporting,
+        performance_telemetry: domain.telemetry().performance_telemetry,
+    };
+    config.workflow.approval_auto_approve = domain.workflow().approval_auto_approve;
+    let executables = domain.provider_executables();
+    config.agents.claude.cli_path = executables
+        .get(&ProviderKind::Claude)
+        .map(|executable| executable.as_str().to_owned());
+    config.agents.codex.cli_path = executables
+        .get(&ProviderKind::Codex)
+        .map(|executable| executable.as_str().to_owned());
+    config.provider_configuration_revisions = ProviderKind::supported()
+        .iter()
+        .map(|provider| (*provider, domain.provider_configuration_revision(*provider)))
+        .filter(|(_, revision)| *revision != 0)
+        .collect();
 }
 
 #[cfg(test)]

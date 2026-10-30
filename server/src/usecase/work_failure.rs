@@ -25,6 +25,7 @@ impl From<&crate::usecase::repository_error::UsecaseError> for Failure {
     fn from(error: &crate::usecase::repository_error::UsecaseError) -> Self {
         use crate::usecase::repository_error::UsecaseError as E;
         match error {
+            E::AppConfig(error) => Failure::from(error),
             E::Workflow(error) => Failure::from(error),
             E::Session(error) => Failure::from(error),
             E::Repository(error) => Failure::from(error),
@@ -33,9 +34,9 @@ impl From<&crate::usecase::repository_error::UsecaseError> for Failure {
     }
 }
 
-impl From<&crate::domain::repository::error::RepositoryError> for Failure {
-    fn from(error: &crate::domain::repository::error::RepositoryError) -> Self {
-        use crate::domain::repository::error::RepositoryError as E;
+impl From<&crate::domain::git::error::GitError> for Failure {
+    fn from(error: &crate::domain::git::error::GitError) -> Self {
+        use crate::domain::git::error::GitError as E;
         match error {
             E::Technical(error) => Failure::from(error),
             E::External(_) => Failure::Technical(TechnicalFailureNature::Other),
@@ -72,7 +73,7 @@ impl From<&crate::domain::app_config::error::AppConfigError> for Failure {
     fn from(error: &crate::domain::app_config::error::AppConfigError) -> Self {
         use crate::domain::app_config::error::AppConfigError as E;
         match error {
-            E::Repository(_) => Failure::Technical(TechnicalFailureNature::Other),
+            E::Technical(error) => Failure::from(error),
             E::InvalidInput(_) => Failure::Business(BusinessFailure::Other),
         }
     }
@@ -476,16 +477,6 @@ impl From<&crate::domain::workspace_state::WorkspaceStateError> for Failure {
             crate::domain::workspace_state::WorkspaceStateError::Technical(error) => {
                 Self::from(error)
             }
-        }
-    }
-}
-
-impl From<&crate::domain::agent_session::ProviderExecutableConfigRepositoryError> for Failure {
-    fn from(error: &crate::domain::agent_session::ProviderExecutableConfigRepositoryError) -> Self {
-        use crate::domain::agent_session::ProviderExecutableConfigRepositoryError as E;
-        match error {
-            E::Technical(error) => Self::from(error),
-            E::InvalidInput => Self::Business(BusinessFailure::Other),
         }
     }
 }

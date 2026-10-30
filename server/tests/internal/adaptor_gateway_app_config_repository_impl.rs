@@ -1,5 +1,5 @@
-use releashd::test_support::integration::repository::ConfigRepository;
-use releashd::test_support::integration::repository::NotionConfigRepository;
+use releashd::test_support::integration::repository::AppConfigRepository;
+use releashd::test_support::integration::repository::RepositoryConfigRepository;
 use releashd::test_support::integration::settings::config_to_domain;
 use releashd::test_support::integration::settings::load_or_create_config;
 use releashd::test_support::integration::settings::AppConfig;
@@ -15,6 +15,9 @@ pub fn test_設定の秘匿対象_旧serverとnotionの単独値を出力とarti
     // Given
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("releash.toml");
+    let repo_dir = dir.path().join("repo");
+    git2::Repository::init(&repo_dir).unwrap();
+    let repo_path = repo_dir.to_str().unwrap();
     let legacy = r#"
 [server]
 bind = "0.0.0.0"
@@ -30,7 +33,8 @@ close_to_tray = false
 api_token = "notion-value-1234"
 database_id = "database-id"
 "#;
-    fs::write(&path, legacy).unwrap();
+    let legacy = legacy.replace("/repo", repo_path);
+    fs::write(&path, &legacy).unwrap();
     let config = AppConfig::new(load_or_create_config(&path).unwrap(), path.clone());
 
     // When
@@ -57,25 +61,22 @@ database_id = "database-id"
         );
     }
     assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
-    let before = ConfigRepository::load(&config).unwrap();
-    assert!(!before.app.close_to_tray);
-    let notion = NotionConfigRepository::get(&config, "/repo")
-        .unwrap()
-        .unwrap();
-    assert_eq!(notion.database_id, "database-id");
+    let before = AppConfigRepository::load(&config).unwrap();
+    let notion = RepositoryConfigRepository::load(&config, repo_path).unwrap();
+    assert_eq!(notion.notion().unwrap().database_id, "database-id");
 
     // When
-    ConfigRepository::save(&config, before.clone()).unwrap();
+    AppConfigRepository::save(&config, before.clone()).unwrap();
 
     // Then
     let saved = fs::read_to_string(&path).unwrap();
     assert!(!saved.contains("[server"));
     assert!(!saved.contains("0123456789abcdef0123456789abcdef"));
     assert!(!saved.contains("cert.pem"));
-    assert_eq!(ConfigRepository::load(&config).unwrap(), before);
+    assert_eq!(AppConfigRepository::load(&config).unwrap(), before);
     assert_eq!(
-        NotionConfigRepository::get(&config, "/repo").unwrap(),
-        Some(notion)
+        RepositoryConfigRepository::load(&config, repo_path).unwrap(),
+        notion
     );
     assert_eq!(
         config.configured_secret_values().unwrap(),
@@ -158,7 +159,7 @@ pub fn test_設定の秘匿対象_読み取り失敗を通知する() {
     // When
     let error = config.read_legacy_server_token().unwrap_err();
     // Then
-    assert!(matches!(error, AppConfigError::Repository(_)));
+    assert!(matches!(error, AppConfigError::Technical(_)));
     assert!(error.to_string().contains("読み込み失敗"));
 }
 
@@ -172,7 +173,7 @@ pub fn test_設定の秘匿対象_パース失敗にtokenを含めず通知す�
     // When
     let error = config.read_legacy_server_token().unwrap_err();
     // Then
-    assert!(matches!(error, AppConfigError::Repository(_)));
+    assert!(matches!(error, AppConfigError::Technical(_)));
     assert!(error.to_string().contains("パース失敗"));
     assert!(!error.to_string().contains("legacy-sensitive-value"));
 }
@@ -183,10 +184,10 @@ pub(crate) mod tests {
     use releashd::test_support::integration::settings::NotionRepoConfigModel;
 
     use releashd::test_support::integration::providers::ProviderKind;
-    use releashd::test_support::integration::repository::NotionConfigRepository;
+    use releashd::test_support::integration::repository::{
+        AppConfigRepository, RepositoryConfigRepository,
+    };
     use releashd::test_support::integration::sessions::ProviderExecutable;
-    use releashd::test_support::integration::sessions::ProviderExecutableConfigRepository;
-    use releashd::test_support::integration::sessions::ProviderExecutableConfigRepositoryError;
     use releashd::test_support::integration::settings::load_or_create_config;
     use releashd::test_support::integration::settings::read_config_if_exists;
     use releashd::test_support::integration::settings::write_config;
@@ -202,85 +203,236 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn provider_executable_config既存tomlのoverrideをupdateしresetする() {
+    pub fn test_repository設定_base_branchの保存と自動への復帰をgitへ永続化する() {
+        // Given
         let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path().join("repo")).unwrap();
+        let repo_path = repo.workdir().unwrap().to_str().unwrap();
         let path = config_path(&dir);
         let app_config = AppConfig::new(ReleashConfig::default(), path.clone());
-        let executable = ProviderExecutable::new("/opt/custom/claude").unwrap();
 
-        ProviderExecutableConfigRepository::save_configured_executable(
-            &app_config,
-            ProviderKind::Claude,
-            Some(&executable),
-        )
-        .unwrap();
-        assert_eq!(
-            ProviderExecutableConfigRepository::configured_executable(
-                &app_config,
-                ProviderKind::Claude,
-            )
-            .unwrap()
-            .unwrap(),
-            executable
-        );
-        assert!(fs::read_to_string(&path)
-            .unwrap()
-            .contains("cli_path = \"/opt/custom/claude\""));
+        for base in [Some("develop"), None, None] {
+            // When
+            let mut config = RepositoryConfigRepository::load(&app_config, repo_path).unwrap();
+            config.set_base_branch(base);
+            RepositoryConfigRepository::save(&app_config, config).unwrap();
 
-        ProviderExecutableConfigRepository::save_configured_executable(
-            &app_config,
-            ProviderKind::Claude,
-            None,
-        )
-        .unwrap();
+            // Then
+            assert_eq!(
+                RepositoryConfigRepository::load(&app_config, repo_path)
+                    .unwrap()
+                    .base_branch(),
+                base
+            );
+            let stored = repo.config().unwrap().get_string("releash.base");
+            match base {
+                Some(base) => assert_eq!(stored.unwrap(), base),
+                None => assert_eq!(stored.unwrap_err().code(), git2::ErrorCode::NotFound),
+            }
+        }
+    }
+
+    #[test]
+    pub fn test_repository設定_toml保存失敗時はnotionとbase_branchを保持する() {
+        for previous_base in [None, Some("main")] {
+            // Given
+            let dir = TempDir::new().unwrap();
+            let repo = git2::Repository::init(dir.path().join("repo")).unwrap();
+            let repo_path = repo.workdir().unwrap().to_str().unwrap();
+            if let Some(base) = previous_base {
+                repo.config()
+                    .unwrap()
+                    .set_str("releash.base", base)
+                    .unwrap();
+            }
+            let path = config_path(&dir);
+            let mut config = ReleashConfig::default();
+            config.notion.insert(
+                repo_path.into(),
+                NotionRepoConfigModel {
+                    api_token: "before-token".into(),
+                    database_id: "before-db".into(),
+                    property_mapping: Default::default(),
+                },
+            );
+            write_config(&path, &config).unwrap();
+            let original = fs::read_to_string(&path).unwrap();
+            let app_config = AppConfig::new(config, path.clone());
+            let before = RepositoryConfigRepository::load(&app_config, repo_path).unwrap();
+            let backup = dir.path().join("saved.toml");
+            fs::rename(&path, &backup).unwrap();
+            fs::create_dir(&path).unwrap();
+
+            for remove in [false, true] {
+                // When
+                let mut next = before.clone();
+                next.set_base_branch(if previous_base.is_some() {
+                    None
+                } else {
+                    Some("develop")
+                });
+                next.set_notion(if remove {
+                    None
+                } else {
+                    Some(
+                        releashd::test_support::integration::settings::NotionRepoConfig {
+                            api_token: "after-token".into(),
+                            database_id: "after-db".into(),
+                            property_mapping: Default::default(),
+                        },
+                    )
+                });
+                let result = RepositoryConfigRepository::save(&app_config, next);
+
+                // Then
+                assert!(matches!(result, Err(super::AppConfigError::Technical(_))));
+                assert_eq!(
+                    RepositoryConfigRepository::load(&app_config, repo_path).unwrap(),
+                    before
+                );
+                assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+            }
+        }
+    }
+
+    #[test]
+    pub fn test_repository設定_git保存失敗時はnotionとbase_branchを保持する() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path().join("repo")).unwrap();
+        let repo_path = repo.workdir().unwrap().to_str().unwrap();
+        let path = config_path(&dir);
+        let config = ReleashConfig::default();
+        write_config(&path, &config).unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        let app_config = AppConfig::new(config, path.clone());
+        let before = RepositoryConfigRepository::load(&app_config, repo_path).unwrap();
+        fs::write(repo.path().join("config.lock"), "locked").unwrap();
+        let mut next = before.clone();
+        next.set_base_branch(Some("develop"));
+        next.set_notion(Some(
+            releashd::test_support::integration::settings::NotionRepoConfig {
+                api_token: "token".into(),
+                database_id: "db".into(),
+                property_mapping: Default::default(),
+            },
+        ));
+
+        // When
+        let result = RepositoryConfigRepository::save(&app_config, next);
+
+        // Then
+        assert!(matches!(result, Err(super::AppConfigError::Technical(_))));
         assert_eq!(
-            ProviderExecutableConfigRepository::configured_executable(
-                &app_config,
-                ProviderKind::Claude,
-            )
-            .unwrap(),
-            None
+            RepositoryConfigRepository::load(&app_config, repo_path).unwrap(),
+            before
         );
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    pub fn test_repository設定_存在しないrepositoryの読み込み失敗を返す() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let app_config = AppConfig::new(ReleashConfig::default(), config_path(&dir));
+        let path = dir.path().join("missing");
+
+        // When
+        let result = RepositoryConfigRepository::load(&app_config, path.to_str().unwrap());
+
+        // Then
+        assert!(matches!(result, Err(super::AppConfigError::Technical(_))));
+    }
+
+    #[test]
+    pub fn provider_executable_config既存tomlのoverrideをupdateしresetする() {
+        // Given
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        fs::write(&path, "[agents.claude]\ncli_path = '/before/claude'\n[agents.codex]\ncli_path = '/before/codex'\n[app]\nauto_launch = true\n").unwrap();
+        let app_config = AppConfig::new(load_or_create_config(&path).unwrap(), path.clone());
+        for (provider, other) in [
+            (ProviderKind::Claude, ProviderKind::Codex),
+            (ProviderKind::Codex, ProviderKind::Claude),
+        ] {
+            let before = AppConfigRepository::load(&app_config).unwrap();
+            let other_executable = before.provider_executable(other).cloned();
+            let executable = ProviderExecutable::new("/opt/custom/provider").unwrap();
+            let revision = before.provider_configuration_revision(provider);
+
+            // When
+            let mut next = before;
+            next.update_provider_executable(provider, Some(executable.clone()))
+                .unwrap();
+            AppConfigRepository::save(&app_config, next).unwrap();
+
+            // Then
+            let stored = AppConfigRepository::load(&app_config).unwrap();
+            assert_eq!(stored.provider_executable(provider), Some(&executable));
+            assert_eq!(
+                stored.provider_configuration_revision(provider),
+                revision + 1
+            );
+            assert_eq!(stored.provider_executable(other), other_executable.as_ref());
+            let reloaded = super::config_to_domain(&load_or_create_config(&path).unwrap());
+            assert_eq!(reloaded.provider_executable(provider), Some(&executable));
+            assert!(reloaded.auto_launch());
+
+            // When
+            let mut next = stored;
+            next.update_provider_executable(provider, None).unwrap();
+            AppConfigRepository::save(&app_config, next).unwrap();
+
+            // Then
+            let stored = AppConfigRepository::load(&app_config).unwrap();
+            assert_eq!(stored.provider_executable(provider), None);
+            assert_eq!(
+                stored.provider_configuration_revision(provider),
+                revision + 2
+            );
+            assert_eq!(stored.provider_executable(other), other_executable.as_ref());
+            assert_eq!(
+                super::config_to_domain(&load_or_create_config(&path).unwrap())
+                    .provider_executable(provider),
+                None
+            );
+        }
     }
 
     #[test]
     pub fn provider_executable_config保存失敗時はmemory上のoverrideも進めない() {
+        // Given
         let dir = TempDir::new().unwrap();
         let mut config = ReleashConfig::default();
-        config.agents.claude.cli_path = Some("/before/claude".to_string());
+        config.agents.claude.cli_path = Some("/before/claude".into());
         let blocked_parent = dir.path().join("blocked-parent");
         fs::write(&blocked_parent, "not a directory").unwrap();
         let app_config = AppConfig::new(config, blocked_parent.join("releash.toml"));
-        let next = ProviderExecutable::new("/after/claude").unwrap();
+        let before = AppConfigRepository::load(&app_config).unwrap();
 
-        assert_eq!(
-            ProviderExecutableConfigRepository::save_configured_executable(
-                &app_config,
-                ProviderKind::Claude,
-                Some(&next),
-            )
-            .unwrap_err(),
-            ProviderExecutableConfigRepositoryError::Technical(
-                releashd::test_support::integration::platform::TechnicalFailure {
-                    nature:
-                        releashd::test_support::integration::platform::TechnicalFailureNature::Other,
-                    message: format!(
-                        "ディレクトリ作成失敗: {}",
-                        std::io::Error::from_raw_os_error(17)
-                    )
-                }
-            )
-        );
-        assert_eq!(
-            ProviderExecutableConfigRepository::configured_executable(
-                &app_config,
-                ProviderKind::Claude,
-            )
-            .unwrap()
-            .unwrap()
-            .as_str(),
-            "/before/claude"
-        );
+        // When / Then
+        for executable in [
+            Some(ProviderExecutable::new("/after/claude").unwrap()),
+            None,
+        ] {
+            let mut next = before.clone();
+            next.update_provider_executable(ProviderKind::Claude, executable)
+                .unwrap();
+            next.update_auto_launch(true);
+            assert_eq!(
+                AppConfigRepository::save(&app_config, next).unwrap_err(),
+                super::AppConfigError::Technical(
+                    releashd::test_support::integration::platform::TechnicalFailure {
+                        nature: releashd::test_support::integration::platform::TechnicalFailureNature::Other,
+                        message: format!(
+                            "ディレクトリ作成失敗: {}",
+                            std::io::Error::from_raw_os_error(17)
+                        ),
+                    }
+                )
+            );
+            assert_eq!(AppConfigRepository::load(&app_config).unwrap(), before);
+        }
     }
 
     #[test]
@@ -331,7 +483,6 @@ close_to_tray = false
         assert!(!saved.contains("legacy-secret"));
         assert!(!saved.contains("cert.pem"));
         let reloaded = load_or_create_config(&path).unwrap();
-        assert!(!reloaded.app.close_to_tray);
         assert!(reloaded.telemetry.performance_telemetry);
     }
 
@@ -509,6 +660,27 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert_eq!(mode, 0o600);
     }
 
+    #[cfg(unix)]
+    #[test]
+    pub fn test_設定保存_既存ファイルの公開権限を引き継がない() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Given
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        // When
+        write_config(&path, &ReleashConfig::default()).unwrap();
+
+        // Then
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     #[test]
     pub fn telemetry_roundtrip() {
         let dir = TempDir::new().unwrap();
@@ -580,20 +752,16 @@ token = "existing_token_value_here_with_enough_length_!!"
         let path = config_path(&dir);
 
         let mut config = ReleashConfig::default();
-        config.app.close_to_tray = false;
         config.app.auto_launch = true;
         config.app.start_minimized = true;
-        config.app.last_root_path = "/repo/path".to_string();
         config.app.last_repo_paths = vec!["/repo/path".to_string(), "/repo/path2".to_string()];
         config.app.external_editor = "/Applications/Cursor.app".to_string();
         write_config(&path, &config).unwrap();
 
         let reloaded = fs::read_to_string(&path).unwrap();
         let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
-        assert!(!reloaded.app.close_to_tray);
         assert!(reloaded.app.auto_launch);
         assert!(reloaded.app.start_minimized);
-        assert_eq!(reloaded.app.last_root_path, "/repo/path");
         assert_eq!(
             reloaded.app.last_repo_paths,
             vec!["/repo/path", "/repo/path2"]
@@ -615,10 +783,8 @@ token = "existing_token_value_here_with_enough_length_!!"
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert!(config.app.close_to_tray);
         assert!(!config.app.auto_launch);
         assert!(!config.app.start_minimized);
-        assert!(config.app.last_root_path.is_empty());
         assert!(config.app.last_repo_paths.is_empty());
     }
 
@@ -634,14 +800,23 @@ port = 9700
 token = "existing_token_value_here_with_enough_length_!!"
 
 [app]
+close_to_tray = false
 last_root_path = "/old/single/repo"
+auto_launch = true
+start_minimized = true
+external_editor = "cursor"
 last_bind_ip = "192.168.1.1"
 "#;
         fs::write(&path, content).unwrap();
 
         let config = load_or_create_config(&path).unwrap();
-        assert_eq!(config.app.last_root_path, "/old/single/repo");
         assert!(config.app.last_repo_paths.is_empty());
+        assert!(config.app.auto_launch);
+        assert!(config.app.start_minimized);
+        assert_eq!(config.app.external_editor, "cursor");
+        let observed = read_config_if_exists(&path).unwrap().unwrap();
+        assert_eq!(observed.app, config.app);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
     }
 
     #[test]
@@ -655,7 +830,6 @@ last_bind_ip = "192.168.1.1"
             "/repo/b".to_string(),
             "/repo/c".to_string(),
         ];
-        config.app.last_root_path = "/repo/a".to_string();
         write_config(&path, &config).unwrap();
 
         let reloaded = load_or_create_config(&path).unwrap();
@@ -663,7 +837,6 @@ last_bind_ip = "192.168.1.1"
             reloaded.app.last_repo_paths,
             vec!["/repo/a", "/repo/b", "/repo/c"]
         );
-        assert_eq!(reloaded.app.last_root_path, "/repo/a");
     }
 
     #[test]
@@ -712,8 +885,10 @@ token = "existing_token_value_here_with_enough_length_!!"
     pub fn notion_config_repository_upsert_get_remove_preserves_all_fields() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
-        let app_config = AppConfig::new(ReleashConfig::default(), path);
-        let repo_path = "/path/to/repo";
+        let app_config = AppConfig::new(ReleashConfig::default(), path.clone());
+        let repo_dir = dir.path().join("repo");
+        git2::Repository::init(&repo_dir).unwrap();
+        let repo_path = repo_dir.to_str().unwrap();
         let config = releashd::test_support::integration::settings::NotionRepoConfig {
             api_token: "ntn_test_token".to_string(),
             database_id: "db-id-456".to_string(),
@@ -735,31 +910,47 @@ token = "existing_token_value_here_with_enough_length_!!"
                 },
         };
 
-        NotionConfigRepository::upsert(&app_config, repo_path.to_string(), config.clone()).unwrap();
-        let stored = NotionConfigRepository::get(&app_config, repo_path)
-            .unwrap()
-            .unwrap();
+        // Given
+        let mut entity = RepositoryConfigRepository::load(&app_config, repo_path).unwrap();
+        assert!(entity.notion().is_none());
+        entity.set_notion(Some(config.clone()));
+        entity.set_base_branch(Some("develop"));
 
-        assert_eq!(stored.api_token, config.api_token);
-        assert_eq!(stored.database_id, config.database_id);
-        assert_eq!(stored.property_mapping.title, config.property_mapping.title);
+        // When
+        RepositoryConfigRepository::save(&app_config, entity).unwrap();
+
+        // Then
+        let stored = RepositoryConfigRepository::load(&app_config, repo_path).unwrap();
+        assert_eq!(stored.notion(), Some(&config));
+        assert_eq!(stored.base_branch(), Some("develop"));
+        let reopened = AppConfig::new(load_or_create_config(&path).unwrap(), path.clone());
         assert_eq!(
-            stored.property_mapping.labels,
-            config.property_mapping.labels
+            RepositoryConfigRepository::load(&reopened, repo_path).unwrap(),
+            stored
         );
         assert_eq!(
-            stored.property_mapping.branch_name,
-            config.property_mapping.branch_name
-        );
-        assert_eq!(
-            stored.property_mapping.branch_prefix,
-            config.property_mapping.branch_prefix
+            load_or_create_config(&path).unwrap().notion[repo_path].api_token,
+            config.api_token
         );
 
-        NotionConfigRepository::remove(&app_config, repo_path).unwrap();
-        assert!(NotionConfigRepository::get(&app_config, repo_path)
+        // When
+        let mut entity = stored;
+        entity.set_notion(None);
+        RepositoryConfigRepository::save(&app_config, entity).unwrap();
+
+        // Then
+        assert!(RepositoryConfigRepository::load(&app_config, repo_path)
             .unwrap()
+            .notion()
             .is_none());
+        assert!(load_or_create_config(&path).unwrap().notion.is_empty());
+        assert_eq!(
+            RepositoryConfigRepository::load(&app_config, repo_path)
+                .unwrap()
+                .base_branch(),
+            Some("develop")
+        );
+        assert!(repo_dir.exists());
     }
 
     #[test]

@@ -689,6 +689,7 @@ pub(crate) mod tests {
         let data_dir =
             std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).unwrap();
+        let config_mutation = Arc::new(parking_lot::Mutex::new(()));
         let app_config = Arc::new(
             releashd::test_support::integration::settings::AppConfig::new(
                 releashd::test_support::integration::settings::ReleashConfig::default(),
@@ -696,9 +697,9 @@ pub(crate) mod tests {
             ),
         );
         let config_repository: Arc<
-            dyn releashd::test_support::integration::repository::ConfigRepository,
+            dyn releashd::test_support::integration::repository::AppConfigRepository,
         > = app_config.clone();
-        let repository_usecase =
+        let git_usecase =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
         let notion_usecase = Arc::new(
             releashd::test_support::integration::platform::NotionUsecase::new(
@@ -709,30 +710,37 @@ pub(crate) mod tests {
                         releashd::test_support::integration::platform::shared_limiter(),
                     ),
                 ),
+                config_mutation.clone(),
             ),
         );
-        let repo_paths_gateway =
+        let repo_paths_gateway = Arc::new(
             releashd::test_support::integration::repository::RepoPathsGateway::new(
                 <releashd::test_support::integration::repository::SharedRepoPaths>::default(),
                 config_repository.clone(),
-            );
+            ),
+        );
         let repo_paths_usecase = Arc::new(
             releashd::test_support::integration::platform::RepoPathsUsecase::new(
-                Arc::new(repo_paths_gateway),
+                repo_paths_gateway.clone(),
+                repo_paths_gateway,
                 releashd::test_support::integration::subscriptions::test_subscriptions(),
+                config_mutation.clone(),
             ),
         );
         let code_usecase =
             Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let repository_scanner = Arc::new(
             releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
-                repository_usecase.clone(),
+                git_usecase.clone(),
                 code_usecase.clone(),
+                Arc::new(
+                    releashd::test_support::integration::settings::repository_config_usecase(),
+                ),
             ),
         );
         let repository_state_repository = Arc::new(
             releashd::test_support::integration::repository::RepositoryStateRepositoryGateway::new(
-                repository_usecase.clone(),
+                git_usecase.clone(),
             ),
         );
         let repository_state = Arc::new(
@@ -770,7 +778,7 @@ pub(crate) mod tests {
             releashd::test_support::integration::platform::build_workflow_services_with_repository_worktrees(
                 Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
                 data_dir.clone(),
-                repository_usecase.clone(),
+                git_usecase.clone(),
                 config_repository.clone(),
                 local_event_store.clone(),
                 Arc::new(
@@ -785,7 +793,7 @@ pub(crate) mod tests {
         let workspace_list = Arc::new(
             releashd::test_support::integration::platform::build_workspace_list_usecase(
                 repo_paths_usecase.clone(),
-                repository_usecase.clone(),
+                git_usecase.clone(),
                 repository_state.clone(),
                 workflow_usecase.clone(),
                 git_host_usecase.clone(),
@@ -793,7 +801,10 @@ pub(crate) mod tests {
         );
         let app_state = AppState {
             workspace_list,
-            repository_usecase: repository_usecase.clone(),
+            git_usecase: git_usecase.clone(),
+            repository_config_usecase: Arc::new(
+                releashd::test_support::integration::settings::repository_config_usecase(),
+            ),
             repo_paths_usecase,
             code_usecase,
             review_usecase,
@@ -807,11 +818,11 @@ pub(crate) mod tests {
         );
         client.app_state = Some(app_state);
         client.config_repository = Some(config_repository.clone());
+        client.config_mutation = config_mutation.clone();
         client.app_config_usecase = Some(Arc::new(
             releashd::test_support::integration::settings::AppConfigUsecase::new(
                 config_repository,
-                app_config.clone(),
-                app_config.clone(),
+                config_mutation.clone(),
             ),
         ));
         client.watcher = Arc::new(releashd::test_support::integration::platform::WatcherUsecase::new(
@@ -863,7 +874,7 @@ pub(crate) mod tests {
         let canonical_str = canonical.to_string_lossy().to_string();
         let config_repository = app.client.config_repository.as_ref().unwrap();
         let mut config = config_repository.load().unwrap();
-        config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
+        assert!(config.add_repo_path(&repo_path.to_string_lossy()));
         config_repository.save(config).unwrap();
         (
             app,
@@ -873,6 +884,33 @@ pub(crate) mod tests {
             repo_parent,
             worktree_parent,
         )
+    }
+
+    #[test]
+    fn test_managed_worktree同期解決_repositoryの登録を削除するとworktreeを拒否する() {
+        // Given
+        let (app, _data_dir, _store, worktree_path, repo_parent, _worktree_parent) =
+            make_read_only_app_with_managed_worktree();
+        let workflow = &app.client.app_state.as_ref().unwrap().workflow_usecase;
+        assert_eq!(
+            workflow.resolve_worktree_path(&worktree_path).unwrap(),
+            worktree_path
+        );
+        let config_repository = app.client.config_repository.as_ref().unwrap();
+        let mut config = config_repository.load().unwrap();
+        assert!(config.remove_repo_path(&repo_parent.path().join("repo").to_string_lossy()));
+        config_repository.save(config).unwrap();
+
+        // When
+        let result = workflow.resolve_worktree_path(&worktree_path);
+
+        // Then
+        assert!(matches!(
+            result,
+            Err(releashd::test_support::integration::workflow::WorkflowError::External(message))
+                if message.contains("not a configured git worktree")
+        ));
+        assert!(std::path::Path::new(&worktree_path).exists());
     }
 
     /// Spec [05] Rule: 指定 execution の現在 state を観測する（event log からの純粋投影）。

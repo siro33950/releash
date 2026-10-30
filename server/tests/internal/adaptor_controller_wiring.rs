@@ -44,6 +44,10 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        git: Arc::new(
+            releashd::test_support::integration::repository::GitGateway::new(config.clone()),
+        ),
+        config_mutation: Default::default(),
         hook_token: std::sync::Arc::<str>::from("hook-token"),
         launch_retention: releashd::test_support::integration::platform::run(
             releashd::test_support::integration::platform::delays(
@@ -85,7 +89,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         },
         WorkflowRuntimeCommandGatewayDeps {
             node_processes: processes,
-            repository_usecase: repository.clone(),
+            git_usecase: repository.clone(),
             app_config: config,
             workspace_query,
             agent_session_launch: sessions.launch,
@@ -299,6 +303,10 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = releashd::test_support::integration::platform::build_terminal_surface_application_with_data_dir(data_dir.clone());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        git: Arc::new(
+            releashd::test_support::integration::repository::GitGateway::new(config.clone()),
+        ),
+        config_mutation: Default::default(),
         hook_token: std::sync::Arc::<str>::from("hook-token"),
         launch_retention: releashd::test_support::integration::platform::run(
             releashd::test_support::integration::platform::delays(
@@ -340,7 +348,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         },
         WorkflowRuntimeCommandGatewayDeps {
             node_processes: processes,
-            repository_usecase: repository.clone(),
+            git_usecase: repository.clone(),
             app_config: config,
             workspace_query: workspace_query.clone(),
             agent_session_launch: sessions.launch.clone(),

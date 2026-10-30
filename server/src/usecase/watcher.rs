@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::repository::file_watcher::FileWatchGateway;
+use crate::domain::git::file_watcher::FileWatchGateway;
 use crate::usecase::repository_state::RepositoryStateService;
 
 #[derive(Debug, thiserror::Error)]
@@ -29,7 +29,7 @@ impl WatcherUsecase {
     pub(crate) fn start_files(
         &self,
         path: &str,
-        on_change: crate::domain::repository::file_watcher::WatchChangeHandler,
+        on_change: crate::domain::git::file_watcher::WatchChangeHandler,
     ) -> Result<u64, UsecaseError> {
         self.files
             .start_tree(path, on_change)

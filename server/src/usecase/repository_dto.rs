@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::repository::{Branch, FileDiffStat, FileStatus};
+use crate::domain::git::{Branch, FileDiffStat, FileStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchDto {

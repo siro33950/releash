@@ -53,7 +53,7 @@ pub fn admit(
         C::CreateWorktrees(a) => {
             let runtime =
                 runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-            crate::domain::repository::validate_worktree_branches(&a.branches)
+            crate::domain::git::validate_worktree_branches(&a.branches)
                 .map_err(|error| invalid_request(error.to_string()))?;
             return runtime
                 .begin_worktrees_creation_mutation(&a.repo_path, &a.branches)

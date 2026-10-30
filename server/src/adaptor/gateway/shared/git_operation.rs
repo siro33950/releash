@@ -42,7 +42,7 @@ impl From<GitOperationError> for crate::domain::code::CodeError {
         }
     }
 }
-impl From<GitOperationError> for crate::domain::repository::RepositoryError {
+impl From<GitOperationError> for crate::domain::git::GitError {
     fn from(error: GitOperationError) -> Self {
         match error {
             GitOperationError::Git(error) => error.into(),
