@@ -202,21 +202,30 @@ struct ViewElement {
   func focusTextField(
     index: Int = 0, file: StaticString = #filePath, line: UInt = #line
   ) async throws {
-    await refresh()
-    let element = try XCTUnwrap(
-      snapshot.filter { $0.role == kAXTextFieldRole && $0.enabled }.dropFirst(index).first,
-      file: file, line: line)
+    func field() -> ViewElement? {
+      snapshot.filter { $0.role == kAXTextFieldRole && $0.enabled }.dropFirst(index).first
+    }
     let deadline = ContinuousClock.now + .seconds(5)
+    var result = AXError.success
+    var element: ViewElement?
     repeat {
-      NSApp.activate()
-      window.makeKeyAndOrderFront(nil)
-      _ = AXUIElementSetAttributeValue(
-        element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+      await refresh()
+      element = field()
+      if let element {
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        result = AXUIElementSetAttributeValue(
+          element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+      }
       try await Task.sleep(for: .milliseconds(20))
-      if isEditing(element.reference) { break }
+      if let element, isEditing(element.reference) { break }
     } while ContinuousClock.now < deadline
+    let focused = try XCTUnwrap(element, file: file, line: line)
     XCTAssertTrue(
-      isEditing(element.reference), "text field did not take focus", file: file, line: line)
+      isEditing(focused.reference),
+      "text field did not take focus: ax=\(result.rawValue) key=\(window.isKeyWindow) "
+        + "responder=\(String(describing: window.firstResponder))",
+      file: file, line: line)
     await refresh()
   }
   private func isEditing(_ element: AXUIElement) -> Bool {
