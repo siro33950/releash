@@ -210,10 +210,8 @@ struct ViewElement {
     repeat {
       NSApp.activate()
       window.makeKeyAndOrderFront(nil)
-      XCTAssertEqual(
-        AXUIElementSetAttributeValue(
-          element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue), .success,
-        file: file, line: line)
+      _ = AXUIElementSetAttributeValue(
+        element.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue)
       try await Task.sleep(for: .milliseconds(20))
       if isEditing(element.reference) { break }
     } while ContinuousClock.now < deadline

@@ -35,6 +35,9 @@ indirect enum PaneLayout: Equatable {
   case split(id: String, axis: Axis, ratio: Double, first: PaneLayout, second: PaneLayout)
   enum Axis: String { case horizontal, vertical }
   static func empty() -> Self { .pane(id: UUID().uuidString, tabs: [], active: nil) }
+  var isEmpty: Bool {
+    if case .pane(_, let tabs, .none) = self { tabs.isEmpty } else { false }
+  }
   var id: String {
     switch self {
     case .pane(let id, _, _), .split(let id, _, _, _, _): id
