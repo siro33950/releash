@@ -59,7 +59,7 @@ struct SessionTabPane: View {
         if let subscription { model.unsubscribe(subscription) }
         subscription = nil
         model.panes.sessionSnapshots.removeValue(forKey: tabID)
-        if snapshot.hasSession {
+        if snapshot.hasSession, !model.panes.controller.allTabIds.contains(tabID) {
           model.releaseAgentTerminal(path: snapshot.session.workspaceWorktreePath, id: sessionID)
         }
       }

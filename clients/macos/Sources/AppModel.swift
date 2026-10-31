@@ -470,20 +470,21 @@ import SwiftProtobuf
       let visible = errors.filter { workspaceReadErrors[$0.key] == false }
       if !visible.isEmpty { displayedFailure = .workspace(visible) }
     }
+    let previous = layoutLoaded ? layout : nil
+    var received = previous ?? .empty()
+    var unset = false
     if value.hasValue {
       workspaceState = value.value
       workspaceState.readFailures = []
       if value.value.hasPaneLayout {
         do {
-          layout = try PaneLayout(value.value.paneLayout)
+          received = try PaneLayout(value.value.paneLayout)
         } catch { failure = failureMessage(error) }
       } else {
-        layout = .empty()
-
+        unset = true
       }
     } else {
-      layout = .empty()
-
+      unset = true
       workspaceState = Releash_Client_V1_WorkspaceStateDto()
       workspaceState.version = 1
       workspaceState.tabs.editors = Releash_Client_V1_ListWorkspaceTabEntryDto()
@@ -493,14 +494,18 @@ import SwiftProtobuf
       workspaceState.layout.rightCollapsed = true
       workspaceState.layout.rightBottomCollapsed = true
     }
-    do {
-      if (try? panes.layout()) != layout { try panes.restore(layout) }
-    } catch {
-      failure = failureMessage(error)
-      return
+    if unset, previous?.isEmpty != true { received = .empty() }
+    if received != previous {
+      do {
+        if (try? panes.layout()) != received { try panes.restore(received) }
+      } catch {
+        failure = failureMessage(error)
+        return
+      }
+      layout = received
     }
     layoutLoaded = true
-    syncTerminalTabs(layout)
+    syncTerminalTabs((try? panes.layout()) ?? layout)
     syncNodeTabTitles()
     openPendingRoot()
   }

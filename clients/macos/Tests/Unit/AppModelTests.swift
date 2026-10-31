@@ -506,6 +506,70 @@ extension AppModelTests {
   }
 }
 
+@MainActor final class AppModelLayoutEchoTests: XCTestCase {
+  func test_同じ配置の再配信_未保存のペイン分割を取り消さない() throws {
+    // Given
+    let model = AppModel()
+    model.selectedWorktree = "/repo"
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.paneLayout = testLayout(.file).message
+    model.receiveWorkspaceState(state, path: "/repo")
+    XCTAssertTrue(model.layoutLoaded)
+    let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allPaneIds, [first, second])
+    // When
+    state.value.paneLayout = PaneLayout.empty().message
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allPaneIds.count, 1)
+  }
+
+  func test_未設定配置の再配信_未保存のペイン分割を取り消さない() throws {
+    // Given
+    let model = AppModel()
+    model.selectedWorktree = "/repo"
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value = Releash_Client_V1_WorkspaceStateDto()
+    model.receiveWorkspaceState(state, path: "/repo")
+    let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allPaneIds, [first, second])
+    // When
+    state.value.paneLayout = testLayout(.file).message
+    model.receiveWorkspaceState(state, path: "/repo")
+    state.value.clearPaneLayout()
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allPaneIds.count, 1)
+    XCTAssertTrue(model.layout.isEmpty)
+  }
+
+  func test_復元に失敗した配置_比較用の配置を更新しない() throws {
+    // Given
+    let model = AppModel()
+    model.selectedWorktree = "/repo"
+    let saved = testLayout(.file)
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.paneLayout = saved.message
+    model.receiveWorkspaceState(state, path: "/repo")
+    let panes = model.panes.controller.allPaneIds
+    // When
+    state.value.paneLayout = PaneLayout.pane(id: "broken", tabs: [], active: "missing").message
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertNotNil(model.failure)
+    XCTAssertEqual(model.layout, saved)
+    XCTAssertEqual(model.panes.controller.allPaneIds, panes)
+  }
+}
+
 private func testLayout(_ kind: PaneTab.Kind) -> PaneLayout {
   let tab = PaneTab(kind: kind)
   return .pane(id: "test-pane", tabs: [tab], active: tab.id)
