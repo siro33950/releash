@@ -82,9 +82,21 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 
 ditto -c -k --keepParent "$APP" "$WORK/notarize.zip"
 mkdir -p .build/Distribution
-xcrun notarytool submit "$WORK/notarize.zip" --apple-id "$APPLE_ID" \
-  --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait --timeout 30m \
-  --output-format json > .build/Distribution/notary.json
+notary() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if xcrun notarytool "$@" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" --output-format json > .build/Distribution/notary.json; then
+      return 0
+    fi
+    echo "::warning::notarytool $1 failed (attempt $attempt)"
+    sleep $((attempt * 30))
+  done
+  return 1
+}
+notary submit "$WORK/notarize.zip"
+SUBMISSION_ID=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["id"])' .build/Distribution/notary.json)
+notary wait "$SUBMISSION_ID" --timeout 30m
 python3 - .build/Distribution/notary.json <<'PY'
 import json, sys
 with open(sys.argv[1]) as file:

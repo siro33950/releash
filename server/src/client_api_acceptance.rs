@@ -170,7 +170,7 @@ pub fn connect_client(endpoint: &ClientEndpoint) -> NativeClient {
         .as_u32()
         .unwrap();
     rpc::ClientServiceClient::new(
-        HttpClient::plaintext(),
+        HttpClient::plaintext_http2_only(),
         ClientConfig::new(endpoint.url.parse().unwrap())
             .with_default_header("authorization", format!("Bearer {}", endpoint.token))
             .with_default_timeout(std::time::Duration::from_millis(timeout.into())),
