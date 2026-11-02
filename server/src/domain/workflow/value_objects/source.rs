@@ -10,6 +10,10 @@ pub enum WorkflowSource {
 impl WorkflowSource {
     /// 取得元が組み込みであるかを返す。
     pub fn is_builtin(&self) -> bool {
-        todo!()
+        matches!(self, Self::Builtin)
     }
 }
+
+#[cfg(test)]
+#[path = "source_test.rs"]
+mod source_tests;
