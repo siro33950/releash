@@ -11,8 +11,10 @@ use serde_json::Value;
 use crate::domain::workflow::{
     ExecutionTree, ExecutionTreeId, Facet, FacetKind, FacetRepository, FacetSummary,
     WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
-    WorkflowSummary,
 };
+
+#[cfg(test)]
+use crate::domain::workflow::WorkflowSummary;
 
 use super::event_draft;
 use super::ports::{
@@ -57,6 +59,7 @@ impl WorkflowQueryService {
         }
     }
 
+    #[cfg(test)]
     pub fn list_workflows(
         &self,
         running_names: &[crate::domain::workflow::WorkflowExecutionSummary],

@@ -77,7 +77,15 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         config.clone(),
         store.clone(),
         processes.clone(),
-        root.join("workflows"),
+        releashd::test_support::integration::platform::WorkflowEditorDependencies {
+            settings: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorSettingsGateway,
+            ),
+            launcher: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorLauncherGateway,
+            ),
+            workflows_dir: root.join("workflows"),
+        },
     );
     let (runtime, _) = build_workflow_runtime_usecase(
         retrying.clone(),
@@ -211,7 +219,43 @@ pub(crate) mod tests {
 
     #[tokio::test]
     pub async fn b006_all_client_surfaces_use_the_production_workspace_query_contract() {
-        todo!()
+        // Given: the production composition root owns one live query object,
+        // and the standalone loopback composition opens the same SQLite
+        // authority through its read-only backend.
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(
+            releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
+                root.path().to_path_buf(),
+                std::sync::Arc::new(
+                    releashd::test_support::integration::platform::RetryLimiter::new(),
+                ),
+            ),
+        )
+        .unwrap();
+        let workspace = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        seed_b006_execution(&store, &workspace).await;
+        let (workflow, query) = build_workflow_services_with_gateways(
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
+            root.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
+            store.clone(),
+            None,
+            None,
+        );
+        let tree = workflow.workspace_tree(&workspace).await.unwrap();
+        // Then
+        assert!(!tree.visible().roots().is_empty());
+        assert_eq!(
+            query.execution_summaries(None, None).await.unwrap().len(),
+            1
+        );
     }
 }
 
@@ -300,7 +344,15 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         config.clone(),
         store.clone(),
         processes.clone(),
-        workflows_dir.clone(),
+        releashd::test_support::integration::platform::WorkflowEditorDependencies {
+            settings: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorSettingsGateway,
+            ),
+            launcher: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorLauncherGateway,
+            ),
+            workflows_dir: workflows_dir.clone(),
+        },
     );
     let (runtime, _) = build_workflow_runtime_usecase(
         retrying.clone(),

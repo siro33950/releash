@@ -28,8 +28,6 @@ struct FakeDefinitionSourceGateway {
     sources: Mutex<HashMap<String, String>>,
     save_definition: Mutex<Option<WorkflowDefinitionContent>>,
     save_error: Mutex<Option<String>>,
-    format_error: Mutex<Option<String>>,
-    saves: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl FakeDefinitionSourceGateway {
@@ -47,10 +45,6 @@ impl FakeDefinitionSourceGateway {
     fn fail_saves(&self, message: &str) {
         *self.save_error.lock().unwrap() = Some(message.to_string());
     }
-
-    fn saves(&self) -> Vec<(String, Option<String>)> {
-        self.saves.lock().unwrap().clone()
-    }
 }
 
 impl WorkflowDefinitionSourceService for FakeDefinitionSourceGateway {
@@ -60,12 +54,28 @@ impl WorkflowDefinitionSourceService for FakeDefinitionSourceGateway {
 
     fn parse(
         &self,
-        _source: &str,
+        _: &str,
     ) -> Result<
         crate::domain::workflow::WorkflowDefinition,
         crate::domain::workflow::WorkflowSourceSaveError,
     > {
-        todo!()
+        if let Some(message) = self.save_error.lock().unwrap().as_ref() {
+            return Err(crate::domain::workflow::WorkflowSourceSaveError::Workflow(
+                WorkflowError::external(message),
+            ));
+        }
+        Ok(crate::usecase::workflow::test_helpers::definition(
+            self.save_definition
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| {
+                    workflow_definition("saved-workflow")
+                        .content()
+                        .unwrap()
+                        .clone()
+                }),
+        ))
     }
 }
 
@@ -103,13 +113,42 @@ impl ManagedWorktreeGateway for FakeManagedWorktreeGateway {
 }
 
 #[derive(Default)]
-struct FakeExternalEditorGateway {
-    opened: Mutex<Vec<String>>,
+struct FakeEditorLauncher {
+    opened: Mutex<Vec<(Vec<std::path::PathBuf>, String, String)>>,
 }
 
-impl FakeExternalEditorGateway {
-    fn opened(&self) -> Vec<String> {
+impl FakeEditorLauncher {
+    fn opened(&self) -> Vec<(Vec<std::path::PathBuf>, String, String)> {
         self.opened.lock().unwrap().clone()
+    }
+}
+
+impl crate::domain::external_editor::EditorLauncherGateway for FakeEditorLauncher {
+    fn open_path(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<(), crate::domain::external_editor::EditorError> {
+        unreachable!()
+    }
+    fn open_paths(
+        &self,
+        paths: &[std::path::PathBuf],
+        editor: &str,
+        label: &str,
+    ) -> Result<(), crate::domain::external_editor::EditorError> {
+        self.opened
+            .lock()
+            .unwrap()
+            .push((paths.into(), editor.into(), label.into()));
+        Ok(())
+    }
+}
+struct SelectedEditor;
+impl crate::domain::external_editor::EditorSettingsGateway for SelectedEditor {
+    fn selected_editor(&self) -> Result<String, crate::domain::external_editor::EditorError> {
+        Ok("Code".into())
     }
 }
 
@@ -141,7 +180,8 @@ impl WorkflowDiagnosticsGateway for FakeDiagnosticsGateway {
 
 struct Fixture {
     usecase: WorkflowUsecase,
-    editors: Arc<FakeExternalEditorGateway>,
+    editors: Arc<FakeEditorLauncher>,
+    facets: Arc<FakeFacetRepository>,
     definitions: Arc<FakeDefinitionRepository>,
     definition_sources: Arc<FakeDefinitionSourceGateway>,
     diagnostics: Arc<FakeDiagnosticsGateway>,
@@ -224,18 +264,55 @@ impl Fixture {
         executions: Vec<WorkflowExecutionSummary>,
         definition_sources: Arc<FakeDefinitionSourceGateway>,
     ) -> Self {
-        todo!()
+        let definitions = Arc::new(FakeDefinitionRepository::default());
+        let facets = Arc::new(FakeFacetRepository::default());
+        let events = Arc::new(FakeEventRepository::default());
+        let editors = Arc::new(FakeEditorLauncher::default());
+        let diagnostics = Arc::new(FakeDiagnosticsGateway::default());
+        let workspace_nodes = Arc::new(FakeWorkspaceTreeRepository::default());
+        let workspace_query =
+            crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(
+                executions,
+            );
+        let query = WorkflowQueryService::new(
+            definitions.clone(),
+            definition_sources.clone(),
+            facets.clone(),
+            events.clone(),
+            Arc::new(NoopExecutionProjectionRepository),
+        );
+        let usecase = WorkflowUsecase::new(
+            query,
+            definitions.clone(),
+            definition_sources.clone(),
+            facets.clone(),
+            Arc::new(FakeManagedWorktreeGateway),
+            Arc::new(SelectedEditor),
+            editors.clone(),
+            Arc::new(crate::usecase::workflow::test_support::NoopDirectoryService),
+            diagnostics.clone(),
+            Arc::new(NoopArchiveRepository),
+            workspace_nodes.clone(),
+            workspace_query,
+            Arc::new(UnexpectedFailures),
+        );
+        Self {
+            usecase,
+            editors,
+            facets,
+            definitions,
+            definition_sources,
+            diagnostics,
+        }
     }
 }
 
-fn workflow_definition(name: &str) -> WorkflowDefinitionContent {
-    WorkflowDefinitionContent {
-        name: name.to_string(),
-        description: String::new(),
-        schemas: Default::default(),
-        nodes: Vec::new(),
-        entry: "main".to_string(),
-    }
+fn workflow_definition(name: &str) -> crate::domain::workflow::WorkflowDefinition {
+    crate::usecase::workflow::test_helpers::definition(WorkflowDefinitionContent {
+        name: name.into(),
+        entry: "main".into(),
+        ..Default::default()
+    })
 }
 
 async fn execution_summary(
@@ -271,7 +348,25 @@ pub fn resolve_worktree_path_delegates_to_managed_worktree_gateway() {
 
 #[tokio::test]
 pub async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projection() {
-    todo!()
+    let executions = vec![
+        execution_summary(
+            "00000000-0000-0000-0000-000000000001",
+            "/canonical/repo",
+            ExecutionStatus::Running,
+        )
+        .await,
+    ];
+    let fixture = Fixture::with_executions(executions);
+    fixture.definitions.insert(workflow_definition("idle"));
+    fixture.definitions.insert(workflow_definition("wf"));
+    let read = fixture.usecase.read_usecase();
+
+    let workflows = read.list_workflow_summaries().await.unwrap();
+    assert_eq!(workflows.len(), 2);
+    assert_eq!(workflows[0].name, "idle");
+    assert!(!workflows[0].is_running);
+    assert_eq!(workflows[1].name, "wf");
+    assert!(workflows[1].is_running);
 }
 
 #[test]
@@ -292,28 +387,100 @@ pub fn get_workflow_source_returns_some_and_none_from_gateway() {
 
 #[test]
 pub fn test_workflow読取_定義不在を返す() {
-    todo!()
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let result = fixture.usecase.get_workflow("missing");
+    // Then
+    assert!(matches!(result, Err(WorkflowError::NotFound(_))));
 }
 
 #[test]
 pub fn test_workflow読取_定義読取失敗を不在と区別する() {
-    todo!()
+    // Given
+    let fixture = Fixture::new();
+    *fixture.definitions.read_error.lock().unwrap() = Some("definition unreadable".into());
+    // When
+    let result = fixture.usecase.get_workflow("missing");
+    // Then
+    assert!(
+        matches!(result, Err(WorkflowError::External(message)) if message == "definition unreadable")
+    );
 }
 
 #[test]
-pub fn test_workflow読取_形式読取失敗を既定形式と区別する() {
-    todo!()
+pub fn test_workflow読取_解釈失敗を既定内容に置き換えない() {
+    // Given
+    let fixture = Fixture::new();
+    fixture
+        .definitions
+        .insert(crate::domain::workflow::WorkflowDefinition::restore(
+            "present".into(),
+            "/workflows".into(),
+            crate::domain::workflow::WorkflowSource::File {
+                path: "/workflows/present.lua".into(),
+            },
+            crate::domain::workflow::WorkflowSourceFormat::Lua,
+            Err(WorkflowError::external("parse failed")),
+        ));
+    // When
+    let definition = fixture.usecase.get_workflow("present").unwrap();
+    // Then
+    assert_eq!(
+        definition.format(),
+        crate::domain::workflow::WorkflowSourceFormat::Lua
+    );
+    assert!(
+        matches!(definition.content(), Err(WorkflowError::External(message)) if message == "parse failed")
+    );
 }
 
 #[test]
 pub fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors() {
-    todo!()
+    let fixture = Fixture::new();
+    fixture
+        .definition_sources
+        .set_save_definition(workflow_definition("saved-wf").content().unwrap().clone());
+
+    let saved = fixture
+        .usecase
+        .save_workflow_source("name: saved-wf\n", Some("old-wf"))
+        .unwrap();
+
+    assert_eq!(saved.file_stem(), "saved-wf");
+    assert_eq!(fixture.definitions.get_saved("saved-wf"), Some(saved));
+
+    assert_eq!(
+        *fixture.definitions.saved_sources.lock().unwrap(),
+        [("name: saved-wf\n".into(), Some("old-wf".into()))]
+    );
+
+    fixture.definition_sources.fail_saves("save failed");
+
+    assert!(fixture
+        .usecase
+        .save_workflow_source("name: failed-wf\n", None)
+        .is_err());
 }
 
 #[test]
 pub fn editor_commands_delegate_to_external_editor_gateway() {
+    // Given
     let fixture = Fixture::new();
-
+    fixture
+        .definitions
+        .insert(workflow_definition("custom-workflow"));
+    crate::domain::workflow::FacetRepository::save(
+        &*fixture.facets,
+        crate::usecase::workflow::test_helpers::facet(
+            FacetKind::Instruction,
+            "implement",
+            "instruction".into(),
+        ),
+        true,
+    )
+    .unwrap();
+    // When
     fixture
         .usecase
         .open_workflow_in_editor("custom-workflow")
@@ -322,12 +489,33 @@ pub fn editor_commands_delegate_to_external_editor_gateway() {
         .usecase
         .open_facet_in_editor(FacetKind::Instruction, "implement")
         .unwrap();
-
+    fixture.usecase.open_workflow_directory_in_editor().unwrap();
+    // Then
+    use std::path::PathBuf;
     assert_eq!(
         fixture.editors.opened(),
         vec![
-            "workflow:custom-workflow".to_string(),
-            "facet:instructions:implement".to_string(),
+            (
+                vec![
+                    PathBuf::from("/workflows"),
+                    PathBuf::from("/workflows/custom-workflow.yml")
+                ],
+                "Code".into(),
+                "ワークフロー".into()
+            ),
+            (
+                vec![
+                    PathBuf::from("/workflows"),
+                    PathBuf::from("/workflows/instructions/implement.md")
+                ],
+                "Code".into(),
+                "ファセット".into()
+            ),
+            (
+                vec![PathBuf::from("/workflows")],
+                "Code".into(),
+                "フォルダ".into()
+            ),
         ]
     );
 }
@@ -387,4 +575,48 @@ impl crate::domain::failure::FailureRecordRepository for UnexpectedFailures {
     fn attention_messages(&self, _: &str) -> Vec<String> {
         Vec::new()
     }
+}
+
+#[test]
+fn test_外部編集_builtinの定義とfacetを拒否しlauncherを呼ばない() {
+    // Given
+    use crate::domain::workflow::{WorkflowDefinition, WorkflowSource, WorkflowSourceFormat};
+    let fixture = Fixture::new();
+    fixture.definitions.insert(WorkflowDefinition::restore(
+        "builtin".into(),
+        "/workflows".into(),
+        WorkflowSource::Builtin,
+        WorkflowSourceFormat::Yaml,
+        Ok(WorkflowDefinitionContent {
+            name: "builtin".into(),
+            ..Default::default()
+        }),
+    ));
+    fixture
+        .facets
+        .facets
+        .lock()
+        .unwrap()
+        .insert((FacetKind::Policy, "coding".into()), "# Coding".into());
+    fixture
+        .facets
+        .builtin_keys
+        .lock()
+        .unwrap()
+        .insert((FacetKind::Policy, "coding".into()));
+    // When
+    let definition_error = fixture
+        .usecase
+        .open_workflow_in_editor("builtin")
+        .unwrap_err();
+    let facet_error = fixture
+        .usecase
+        .open_facet_in_editor(FacetKind::Policy, "coding")
+        .unwrap_err();
+    // Then
+    for error in [definition_error, facet_error] {
+        assert!(error.to_string().contains("ビルトイン"));
+        assert!(error.to_string().contains("外部エディタで開けません"));
+    }
+    assert!(fixture.editors.opened().is_empty());
 }

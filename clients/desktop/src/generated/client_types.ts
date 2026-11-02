@@ -1613,6 +1613,8 @@ export type InputOpenWorkflowInEditorRequest = {
 	name: string;
 };
 
+export type InputOpenWorkflowDirectoryInEditorRequest = Record<string, never>;
+
 export type InputRefreshProviderAvailabilityRequest = Record<string, never>;
 
 export type InputRemoveRepoPathRequest = {
@@ -2147,6 +2149,7 @@ export interface ClientCommandArgs {
 	open_folder_in_editor: InputOpenFolderInEditorRequest;
 	open_in_editor: InputOpenInEditorRequest;
 	open_workflow_in_editor: InputOpenWorkflowInEditorRequest;
+	open_workflow_directory_in_editor: InputOpenWorkflowDirectoryInEditorRequest;
 	refresh_provider_availability: InputRefreshProviderAvailabilityRequest;
 	remove_repo_path: InputRemoveRepoPathRequest;
 	remove_worktree: InputRemoveWorktreeRequest;
@@ -2306,6 +2309,9 @@ export interface ClientCommands {
 	open_in_editor(args: ClientCommandArgs["open_in_editor"]): Promise<void>;
 	open_workflow_in_editor(
 		args: ClientCommandArgs["open_workflow_in_editor"],
+	): Promise<void>;
+	open_workflow_directory_in_editor(
+		args: ClientCommandArgs["open_workflow_directory_in_editor"],
 	): Promise<void>;
 	refresh_provider_availability(
 		args: ClientCommandArgs["refresh_provider_availability"],

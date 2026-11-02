@@ -12,60 +12,63 @@ pub(crate) mod tests {
 
     struct FakeDefinitionRepository {
         workflow: WorkflowDefinitionContent,
+        format: crate::domain::workflow::WorkflowSourceFormat,
+        read_error: Option<WorkflowError>,
     }
 
     impl crate::domain::workflow::WorkflowDefinitionRepository for FakeDefinitionRepository {
         fn list(
             &self,
-            _running: &[crate::domain::workflow::WorkflowExecutionSummary],
-        ) -> Result<
-            Vec<crate::domain::workflow::WorkflowSummary>,
-            crate::domain::workflow::WorkflowError,
-        > {
-            todo!()
+            running: &[crate::domain::workflow::WorkflowExecutionSummary],
+        ) -> Result<Vec<crate::domain::workflow::WorkflowSummary>, WorkflowError> {
+            Ok(vec![self.get(&self.workflow.name)?.summary(running)])
         }
-
         fn get(
             &self,
-            _name: &str,
-        ) -> Result<
-            crate::domain::workflow::WorkflowDefinition,
-            crate::domain::workflow::WorkflowError,
-        > {
-            todo!()
+            name: &str,
+        ) -> Result<crate::domain::workflow::WorkflowDefinition, WorkflowError> {
+            if let Some(error) = &self.read_error {
+                return Err(error.clone());
+            }
+            if name != self.workflow.name {
+                return Err(WorkflowError::NotFound(name.into()));
+            }
+            Ok(crate::domain::workflow::WorkflowDefinition::restore(
+                name.into(),
+                "/workflows".into(),
+                crate::domain::workflow::WorkflowSource::File {
+                    path: "/workflows/wf.lua".into(),
+                },
+                self.format,
+                Ok(self.workflow.clone()),
+            ))
         }
-
         fn save(
             &self,
-            _definition: crate::domain::workflow::WorkflowDefinition,
-            _original_name: Option<&str>,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            todo!()
+            _: crate::domain::workflow::WorkflowDefinition,
+            _: Option<&str>,
+        ) -> Result<(), WorkflowError> {
+            unreachable!()
         }
-
         fn delete(
             &self,
-            _definition: &crate::domain::workflow::WorkflowDefinition,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            todo!()
+            _: &crate::domain::workflow::WorkflowDefinition,
+        ) -> Result<(), WorkflowError> {
+            unreachable!()
         }
-
         fn find(
             &self,
-            _name: Option<&str>,
-        ) -> Result<
-            Option<crate::domain::workflow::WorkflowDefinition>,
-            crate::domain::workflow::WorkflowError,
-        > {
-            todo!()
+            _: Option<&str>,
+        ) -> Result<Option<crate::domain::workflow::WorkflowDefinition>, WorkflowError> {
+            unreachable!()
         }
         fn save_source(
             &self,
-            _definition: &crate::domain::workflow::WorkflowDefinition,
-            _source: &str,
-            _original_name: Option<&str>,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            todo!()
+            _: &crate::domain::workflow::WorkflowDefinition,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<(), WorkflowError> {
+            unreachable!()
         }
     }
 
@@ -85,7 +88,7 @@ pub(crate) mod tests {
             crate::domain::workflow::WorkflowDefinition,
             crate::domain::workflow::WorkflowSourceSaveError,
         > {
-            todo!()
+            unreachable!()
         }
     }
 
@@ -142,35 +145,19 @@ pub(crate) mod tests {
         }
     }
 
-    /// `source_format` の戻り値だけを制御する gateway。
-    struct FakeSourceFormatGateway {
-        format: Option<crate::domain::workflow::WorkflowSourceFormat>,
-    }
-
-    impl WorkflowDefinitionSourceService for FakeSourceFormatGateway {
-        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
-            Ok(None)
-        }
-
-        fn parse(
-            &self,
-            _source: &str,
-        ) -> Result<
-            crate::domain::workflow::WorkflowDefinition,
-            crate::domain::workflow::WorkflowSourceSaveError,
-        > {
-            todo!()
-        }
-    }
-
-    fn service_with_source_format(
-        format: Option<crate::domain::workflow::WorkflowSourceFormat>,
+    fn service_with_metadata(
+        format: crate::domain::workflow::WorkflowSourceFormat,
+        read_error: Option<WorkflowError>,
     ) -> WorkflowQueryService {
         WorkflowQueryService::new(
             Arc::new(FakeDefinitionRepository {
                 workflow: workflow(),
+                format,
+                read_error,
             }),
-            Arc::new(FakeSourceFormatGateway { format }),
+            Arc::new(FakeDefinitionSourceGateway {
+                workflow_source: None,
+            }),
             Arc::new(FakeFacetRepository::default()),
             Arc::new(FakeEventRepository::default()),
             Arc::new(FakeExecutionProjectionRepository::default()),
@@ -178,18 +165,42 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn get_workflow_source_format_returns_lua_from_gateway() {
-        todo!()
+    fn test_workflow取得_entityのlua形式を保持する() {
+        // Given
+        let service =
+            service_with_metadata(crate::domain::workflow::WorkflowSourceFormat::Lua, None);
+        // When
+        let definition = service.get_workflow("wf").unwrap();
+        // Then
+        assert_eq!(
+            definition.format(),
+            crate::domain::workflow::WorkflowSourceFormat::Lua
+        );
     }
-
     #[test]
-    fn get_workflow_source_format_propagates_gateway_error() {
-        todo!()
+    fn test_workflow取得_repositoryの失敗を伝える() {
+        // Given
+        let service = service_with_metadata(
+            crate::domain::workflow::WorkflowSourceFormat::Yaml,
+            Some(WorkflowError::external("read failed")),
+        );
+        // When / Then
+        assert!(
+            matches!(service.get_workflow("wf"), Err(WorkflowError::External(message)) if message == "read failed")
+        );
     }
-
     #[test]
-    fn get_workflow_source_format_rejects_invalid_file_stem() {
-        todo!()
+    fn test_workflow取得_不正なfile_stemをrepositoryより先に拒否する() {
+        // Given
+        let service = service_with_metadata(
+            crate::domain::workflow::WorkflowSourceFormat::Yaml,
+            Some(WorkflowError::external("must not be called")),
+        );
+        // When / Then
+        assert!(matches!(
+            service.get_workflow("../escape"),
+            Err(WorkflowError::Validation(_))
+        ));
     }
 
     struct Fixture {
@@ -203,6 +214,8 @@ pub(crate) mod tests {
         fn new() -> Self {
             let definitions = Arc::new(FakeDefinitionRepository {
                 workflow: workflow(),
+                format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
+                read_error: None,
             });
             let definition_sources = Arc::new(FakeDefinitionSourceGateway {
                 workflow_source: None,
@@ -318,12 +331,73 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_queries_delegate_to_definition_repository() {
-        todo!()
+        let fixture = Fixture::new();
+        let summaries = fixture.service.list_workflows(&[]).unwrap();
+        assert_eq!(summaries[0].name, "wf");
+        assert!(!summaries[0].is_running);
+        assert_eq!(
+            fixture
+                .service
+                .get_workflow("wf")
+                .unwrap()
+                .content()
+                .unwrap(),
+            &workflow()
+        );
+        assert!(matches!(
+            fixture.service.get_workflow("missing"),
+            Err(WorkflowError::NotFound(_))
+        ));
+        assert!(fixture.service.get_workflow("bad name!").is_err());
+        assert!(fixture.service.get_workflow_source("bad name!").is_err());
     }
 
     #[tokio::test]
     async fn event_and_facet_queries_validate_execution_ids_and_delegate() {
-        todo!()
+        let fixture = Fixture::new();
+        fixture
+            .events
+            .append(&WorkflowEventDraft {
+                execution_id: test_execution_id().to_string(),
+                event_kind: "execution_started".to_string(),
+                timestamp: 1.0,
+                payload: serde_json::json!({}),
+            })
+            .unwrap();
+        fixture.facets.facets.lock().unwrap().insert(
+            (FacetKind::Instruction, "implement".to_string()),
+            "instruction body".to_string(),
+        );
+
+        assert_eq!(
+            fixture
+                .service
+                .read_events(test_execution_id())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(matches!(
+            fixture.service.read_events("not-a-uuid").await.unwrap_err(),
+            WorkflowError::Validation(_)
+        ));
+        assert_eq!(
+            fixture
+                .service
+                .get_facet(FacetKind::Instruction, "implement")
+                .unwrap()
+                .content(),
+            "instruction body"
+        );
+        assert_eq!(
+            fixture
+                .service
+                .list_facet_summaries(FacetKind::Instruction)
+                .unwrap()[0]
+                .key,
+            "implement"
+        );
     }
 
     #[tokio::test]

@@ -136,6 +136,7 @@ message CommandRequest {
     OpenFolderInEditorRequest open_folder_in_editor = 99;
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
+    OpenWorkflowDirectoryInEditorRequest open_workflow_directory_in_editor = 207;
     RefreshProviderAvailabilityRequest refresh_provider_availability = 105;
     RemoveRepoPathRequest remove_repo_path = 106;
     RemoveWorktreeRequest remove_worktree = 107;
@@ -305,6 +306,7 @@ message CommandResult {
     Unit open_folder_in_editor = 99;
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
+    Unit open_workflow_directory_in_editor = 207;
     Unit refresh_provider_availability = 105;
     ResultBool remove_repo_path = 106;
     Unit remove_worktree = 107;
@@ -2099,6 +2101,8 @@ message ListNotionTaskView {
   repeated NotionTaskView items = 1;
 }
 
+message OpenWorkflowDirectoryInEditorRequest {}
+
 message RefreshProviderAvailabilityRequest {
 
 }
@@ -2707,6 +2711,7 @@ service ClientService {
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenInEditor(OpenInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc OpenWorkflowDirectoryInEditor(OpenWorkflowDirectoryInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc RefreshProviderAvailability(RefreshProviderAvailabilityRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool) { option (scope) = SCOPE_OPERATOR; }

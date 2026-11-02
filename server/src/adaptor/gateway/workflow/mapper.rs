@@ -110,6 +110,7 @@ fn domain_items_source_to_schema(
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn schema_workflow_summary_to_domain(
     summary: crate::adaptor::gateway::workflow::schema::Summary,
 ) -> domain::WorkflowSummary {
@@ -123,7 +124,7 @@ pub(crate) fn schema_workflow_summary_to_domain(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn domain_workflow_summary_to_schema(
     summary: domain::WorkflowSummary,
 ) -> crate::adaptor::gateway::workflow::schema::Summary {

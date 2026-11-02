@@ -26,6 +26,21 @@ impl WorkflowDefinitionFileRepository {
         storage::workflows_dir()
     }
 
+    fn load_builtin(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {
+        let content = match builtin::load_builtin_workflow_resolved(name, &self.facets_base_dir) {
+            Ok(Some(workflow)) => mapper::schema_workflow_to_domain(workflow),
+            Ok(None) => return Err(WorkflowError::NotFound(name.to_string())),
+            Err(error) => Err(WorkflowError::external(error.to_string())),
+        };
+        Ok(WorkflowDefinition::restore(
+            name.to_string(),
+            self.workflows_dir.clone(),
+            WorkflowSource::Builtin,
+            WorkflowSourceFormat::Yaml,
+            content,
+        ))
+    }
+
     fn load_file(&self, name: &str, path: PathBuf) -> WorkflowDefinition {
         let format = storage::workflow_source_format(&path).unwrap_or_default();
         let content = storage::load_workflow(&path, &self.facets_base_dir)
@@ -67,32 +82,17 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
             .collect::<Vec<_>>();
         for summary in builtin::list_builtin_workflows() {
             if !summaries.iter().any(|item| item.name == summary.name) {
-                let mut summary = mapper::schema_workflow_summary_to_domain(summary);
-                summary.is_running = running
-                    .iter()
-                    .any(|execution| execution.workflow_name == summary.name);
-                summaries.push(summary);
+                summaries.push(self.load_builtin(&summary.name)?.summary(running));
             }
         }
         summaries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(summaries)
+        Ok(storage::collapse_duplicate_names(summaries))
     }
 
     fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {
         match storage::resolve_workflow_path(&self.workflows_dir, name) {
             Ok(path) => Ok(self.load_file(name, path)),
-            Err(storage::StorageError::NotFound { .. }) => {
-                let workflow = builtin::load_builtin_workflow_resolved(name, &self.facets_base_dir)
-                    .map_err(|error| WorkflowError::external(error.to_string()))?
-                    .ok_or_else(|| WorkflowError::NotFound(name.to_string()))?;
-                Ok(WorkflowDefinition::restore(
-                    name.to_string(),
-                    self.workflows_dir.clone(),
-                    WorkflowSource::Builtin,
-                    WorkflowSourceFormat::Yaml,
-                    mapper::schema_workflow_to_domain(workflow),
-                ))
-            }
+            Err(storage::StorageError::NotFound { .. }) => self.load_builtin(name),
             Err(error) => Err(error.into()),
         }
     }

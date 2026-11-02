@@ -2,7 +2,7 @@ pub(crate) mod tests {
     use super::super::*;
     use crate::domain::workflow::{
         ExecutionTree, ExecutionTreeId, FacetRefs, NodeDefinition, NodeKind, SchemaDef,
-        SessionSpec, WorkflowDefinitionContent, WorkflowDefinitionRepository, WorkflowSummary,
+        SessionSpec, WorkflowDefinitionContent,
     };
     use crate::usecase::workflow::ports::WorkflowEventDraft;
     use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
@@ -10,62 +10,7 @@ pub(crate) mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
-    struct NoopDefinitionRepository;
-
-    impl WorkflowDefinitionRepository for NoopDefinitionRepository {
-        fn list(
-            &self,
-            _running: &[crate::domain::workflow::WorkflowExecutionSummary],
-        ) -> Result<
-            Vec<crate::domain::workflow::WorkflowSummary>,
-            crate::domain::workflow::WorkflowError,
-        > {
-            todo!()
-        }
-
-        fn get(
-            &self,
-            _name: &str,
-        ) -> Result<
-            crate::domain::workflow::WorkflowDefinition,
-            crate::domain::workflow::WorkflowError,
-        > {
-            todo!()
-        }
-
-        fn save(
-            &self,
-            _definition: crate::domain::workflow::WorkflowDefinition,
-            _original_name: Option<&str>,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            todo!()
-        }
-
-        fn delete(
-            &self,
-            _definition: &crate::domain::workflow::WorkflowDefinition,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            todo!()
-        }
-
-        fn find(
-            &self,
-            _name: Option<&str>,
-        ) -> Result<
-            Option<crate::domain::workflow::WorkflowDefinition>,
-            crate::domain::workflow::WorkflowError,
-        > {
-            todo!()
-        }
-        fn save_source(
-            &self,
-            _definition: &crate::domain::workflow::WorkflowDefinition,
-            _source: &str,
-            _original_name: Option<&str>,
-        ) -> Result<(), crate::domain::workflow::WorkflowError> {
-            todo!()
-        }
-    }
+    use crate::usecase::workflow::test_helpers::FakeDefinitionRepository as NoopDefinitionRepository;
 
     use crate::usecase::workflow::test_helpers::{FakeEventRepository, FakeFacetRepository};
 
@@ -100,7 +45,7 @@ pub(crate) mod tests {
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let query = WorkflowQueryService::new(
-                Arc::new(NoopDefinitionRepository),
+                Arc::new(NoopDefinitionRepository::default()),
                 Arc::new(NoopDefinitionSourceGateway),
                 facets.clone(),
                 events.clone(),

@@ -1,8 +1,11 @@
+#[cfg(any(test, feature = "test-support"))]
 use super::builtin;
 use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet;
-use super::schema::{Summary, WorkflowDefinitionYaml};
+#[cfg(any(test, feature = "test-support"))]
+use super::schema::Summary;
+use super::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow::validation::{self, ValidationError};
 use crate::domain::workflow::WorkflowSourceFormat;
 use crate::usecase::workflow::diagnostic_dto::{DiagnosticItem, DiagnosticStage, Severity};
@@ -137,6 +140,7 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn save_workflow(dir: &Path, workflow: &WorkflowDefinitionYaml) -> Result<(), StorageError> {
     validate_workflow_definition(workflow)?;
 
@@ -186,6 +190,7 @@ pub fn load_workflow_source(dir: &Path, name: &str) -> Result<String, StorageErr
     Ok(fs::read_to_string(path)?)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn save_workflow_source(
     dir: &Path,
     facets_base_dir: &Path,
@@ -336,6 +341,7 @@ pub fn workflow_files(dir: &Path) -> Result<Vec<(String, std::path::PathBuf)>, S
     Ok(files)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn list_file_summaries<T>(
     dir: &Path,
     loader: impl Fn(&Path) -> Result<T, StorageError>,
@@ -370,13 +376,24 @@ fn list_file_summaries<T>(
     }
 
     summaries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(collapse_duplicate_names(summaries))
+    Ok(collapse_duplicate_names(
+        summaries
+            .into_iter()
+            .map(super::mapper::schema_workflow_summary_to_domain)
+            .collect(),
+    )
+    .into_iter()
+    .map(super::mapper::domain_workflow_summary_to_schema)
+    .collect())
 }
 
 /// 同じ名前を複数の形式が宣言した状態は `resolve_workflow_path` が `WFS006` として
 /// 拒否する。一覧でも 1 件へ畳み込み、選べる行と実行できる定義を一致させる。
-fn collapse_duplicate_names(summaries: Vec<Summary>) -> Vec<Summary> {
-    let mut collapsed: Vec<Summary> = Vec::with_capacity(summaries.len());
+pub(crate) fn collapse_duplicate_names(
+    summaries: Vec<crate::domain::workflow::WorkflowSummary>,
+) -> Vec<crate::domain::workflow::WorkflowSummary> {
+    let mut collapsed: Vec<crate::domain::workflow::WorkflowSummary> =
+        Vec::with_capacity(summaries.len());
     for summary in summaries {
         match collapsed.last_mut() {
             Some(previous) if previous.name == summary.name => {
@@ -396,6 +413,7 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     list_workflows_with_facets(dir, dir)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn list_workflows_with_facets(
     dir: &Path,
     facets_base_dir: &Path,
@@ -436,6 +454,7 @@ pub fn list_workflows_with_facets(
     Ok(summaries)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn validate_workflow_definition(workflow: &WorkflowDefinitionYaml) -> Result<(), StorageError> {
     let diagnostics = diagnostics::diagnose_workflow_definition(workflow, None);
     if diagnostics
@@ -526,6 +545,7 @@ pub(crate) fn workflow_source_format(path: &Path) -> Option<WorkflowSourceFormat
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     let path = resolve_workflow_path(dir, name)?;
     fs::remove_file(path)?;

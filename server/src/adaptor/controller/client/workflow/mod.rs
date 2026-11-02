@@ -2,8 +2,6 @@ pub(crate) mod shared;
 pub(crate) use shared::register_shared;
 
 #[cfg(any(test, feature = "test-support"))]
-use crate::adaptor::gateway::workflow::builtin;
-#[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::facet::FacetKind;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::schema::FacetSummary as GatewayFacetSummary;
@@ -22,8 +20,9 @@ pub(crate) mod session_errors;
 use self::session_errors::redacted_workflow_tab_error;
 
 #[cfg(any(test, feature = "test-support"))]
-fn parse_facet_kind(_kind: &str) -> Result<FacetKind, String> {
-    todo!()
+fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
+    kind.parse()
+        .map_err(|_| format!("Unknown facet kind: {kind}"))
 }
 
 // ---- ファセットコマンドの内部実装（テスト可能な純粋関数として切り出し） ----
@@ -96,7 +95,11 @@ fn validate_execution_id(
 
 // ---- 新規コマンド ----
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
+#[path = "mod_test.rs"]
+mod mod_tests;
+
+#[cfg(test)]
 fn validate_template_variables(content: &str) -> Result<(), String> {
     let errors =
         crate::adaptor::gateway::workflow::workflow_host::prompt_rendering::find_undefined_template_variables(
@@ -110,7 +113,3 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "mod_test.rs"]
-mod mod_tests;

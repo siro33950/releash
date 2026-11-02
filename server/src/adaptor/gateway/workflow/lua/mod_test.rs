@@ -319,14 +319,13 @@ nodes:
             serde_json::from_str(&serde_json::to_string(&workflow).unwrap()).unwrap();
         // Then
         for definition in [&workflow, &restored] {
-            let dto = crate::usecase::workflow::dto::workflow_to_dto(definition);
-            let work = dto.nodes.iter().find(|node| node.name == "work").unwrap();
-            let delegate = work.completion.as_ref().unwrap().delegate.as_ref().unwrap();
+            let work = definition.node_by_name("work").unwrap();
+            let delegate = work.completion.delegate.as_ref().unwrap();
             assert_eq!(
                 delegate
                     .inputs
                     .iter()
-                    .map(|input| (input.parameter.as_str(), input.source.as_str()))
+                    .map(|(parameter, source)| (parameter.as_str(), source.raw()))
                     .collect::<Vec<_>>(),
                 [
                     ("zebra", "work"),
