@@ -132,13 +132,6 @@ mod definition_tests;
 fn source_save_error_to_workflow_error(error: WorkflowSourceSaveError) -> WorkflowError {
     match error {
         WorkflowSourceSaveError::Workflow(error) => error,
-        WorkflowSourceSaveError::Diagnostics(items) => WorkflowError::validation(format!(
-            "workflow_diagnostics: {}",
-            items
-                .iter()
-                .map(|item| format!("{}: {}", item.code, item.message))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )),
+        WorkflowSourceSaveError::Diagnostics(items) => WorkflowError::Diagnostics(items),
     }
 }

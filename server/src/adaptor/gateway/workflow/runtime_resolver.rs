@@ -40,8 +40,8 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
 
 /// Runtime start の外部識別子はファイル名ではなく WorkflowDefinitionContent.name である。
 ///
-/// ユーザーが YAML を直接編集・rename した場合も同じ規則を保つため、全 definition を
-/// load した後に name で一意解決する。複数ファイル（または builtin）が同じ name を
+/// ユーザーが YAML を直接編集・rename した場合も同じ規則を保つため、全 definition の
+/// name を読んで候補を絞り、一致した定義だけを完全に読み込む。複数ファイル（または builtin）が同じ name を
 /// 宣言した状態を先勝ちにすると実行対象が directory iteration order に依存するため、
 /// §7 の閉じた code 表で workflow name の妥当性にも使われる WFS006 Diagnostic として
 /// 明示的に拒否する（表にない新 code は追加しない）。
@@ -69,25 +69,39 @@ pub fn resolve_workflow_by_name(
         paths.sort();
 
         for path in paths {
-            match crate::adaptor::gateway::workflow::storage::load_workflow(&path, facets_base_dir)
-            {
-                Ok(workflow) if workflow.name == workflow_name => {
-                    matches.push((path.display().to_string(), workflow));
+            let name = read_workflow_name(&path, workflows_dir, facets_base_dir);
+            match name {
+                Ok(name) if name == workflow_name => {
+                    match super::storage::load_workflow(&path, facets_base_dir) {
+                        Ok(workflow) => matches.push((path.display().to_string(), workflow)),
+                        Err(error) => {
+                            if path.file_stem().and_then(|stem| stem.to_str())
+                                == Some(workflow_name)
+                            {
+                                exact_file_error = Some(error.to_string());
+                            }
+                            log::warn!("workflow definition skipped: {}: {error}", path.display());
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(error)
                     if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) =>
                 {
-                    exact_file_error = Some(error.to_string());
+                    log::warn!("workflow definition skipped: {}: {error}", path.display());
+                    exact_file_error = Some(error);
                 }
                 Err(error) => {
-                    log::warn!("workflow definition skipped: {}: {error}", path.display());
+                    log::debug!("workflow definition skipped: {}: {error}", path.display())
                 }
             }
         }
     }
 
     for summary in crate::adaptor::gateway::workflow::builtin::list_builtin_workflows() {
+        if summary.name != workflow_name {
+            continue;
+        }
         match crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
             &summary.name,
             facets_base_dir,
@@ -120,6 +134,39 @@ pub fn resolve_workflow_by_name(
             Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
                 "workflow_diagnostics: WFS006: workflow name '{workflow_name}' is duplicated: {sources}"
             )))
+        }
+    }
+}
+
+fn read_workflow_name(
+    path: &Path,
+    workflows_dir: &Path,
+    facets_base_dir: &Path,
+) -> Result<String, String> {
+    let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    match super::storage::workflow_source_format(path) {
+        Some(crate::domain::workflow::WorkflowSourceFormat::Lua) => {
+            let catalog =
+                super::lua::facet_catalog(facets_base_dir).map_err(|error| error.to_string())?;
+            super::lua::load_lua_workflow(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<unknown>.lua"),
+                &content,
+                workflows_dir,
+                catalog,
+            )
+            .map(|definition| definition.workflow.name)
+            .map_err(|error| error.to_string())
+        }
+        _ => {
+            #[derive(serde::Deserialize)]
+            struct Name {
+                name: String,
+            }
+            serde_saphyr::from_str::<Name>(&content)
+                .map(|value| value.name)
+                .map_err(|error| error.to_string())
         }
     }
 }

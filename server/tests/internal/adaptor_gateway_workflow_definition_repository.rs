@@ -403,15 +403,18 @@ fn test_定義取得_解釈できない利用者ファイルはentityの失敗�
     let definition = repository.get("invalid").unwrap();
     // Then
     assert!(matches!(definition.source(), WorkflowSource::File { .. }));
-    assert!(definition.content().is_err());
-    assert!(repository
-        .list(&[])
-        .unwrap()
+    let error = definition.content().unwrap_err();
+    assert!(matches!(error, WorkflowError::Diagnostics(_)));
+    let summaries = repository.list(&[]).unwrap();
+    let summary = summaries
         .iter()
         .find(|summary| summary.name == "invalid")
-        .unwrap()
-        .failure
-        .is_some());
+        .unwrap();
+    assert_eq!(summary.description, "Invalid workflow definition");
+    assert_eq!(
+        summary.failure,
+        Some(releashd::test_support::integration::platform::WorkFailure::from_error(error))
+    );
 }
 
 #[test]

@@ -111,57 +111,6 @@ fn domain_items_source_to_schema(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn schema_workflow_summary_to_domain(
-    summary: crate::adaptor::gateway::workflow::schema::Summary,
-) -> domain::WorkflowSummary {
-    domain::WorkflowSummary {
-        failure: summary.failure,
-        name: summary.name,
-        description: summary.description,
-        builtin: summary.builtin,
-        is_running: summary.is_running,
-        source_format: summary.source_format,
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn domain_workflow_summary_to_schema(
-    summary: domain::WorkflowSummary,
-) -> crate::adaptor::gateway::workflow::schema::Summary {
-    crate::adaptor::gateway::workflow::schema::Summary {
-        failure: summary.failure,
-        name: summary.name,
-        description: summary.description,
-        builtin: summary.builtin,
-        is_running: summary.is_running,
-        source_format: summary.source_format,
-    }
-}
-
-pub(crate) fn gateway_facet_summary_to_domain(
-    summary: crate::adaptor::gateway::workflow::schema::FacetSummary,
-) -> domain::FacetSummary {
-    domain::FacetSummary {
-        key: summary.key,
-        kind: summary.kind,
-        description: summary.description,
-        builtin: summary.builtin,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn domain_facet_summary_to_gateway(
-    summary: domain::FacetSummary,
-) -> crate::adaptor::gateway::workflow::schema::FacetSummary {
-    crate::adaptor::gateway::workflow::schema::FacetSummary {
-        key: summary.key,
-        kind: summary.kind,
-        description: summary.description,
-        builtin: summary.builtin,
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
 pub fn event_draft_to_event(
     event: &WorkflowEventDraft,
 ) -> Result<workflow_event::WorkflowEvent, domain::WorkflowError> {

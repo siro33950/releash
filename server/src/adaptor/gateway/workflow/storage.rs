@@ -1,10 +1,6 @@
-#[cfg(any(test, feature = "test-support"))]
-use super::builtin;
 use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet;
-#[cfg(any(test, feature = "test-support"))]
-use super::schema::Summary;
 use super::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow::validation::{self, ValidationError};
 use crate::domain::workflow::WorkflowSourceFormat;
@@ -62,8 +58,8 @@ impl From<StorageError> for crate::domain::workflow::WorkflowError {
                 })
             }
             StorageError::NotFound { name } => Self::NotFound(name),
+            StorageError::Diagnostics(items) => Self::Diagnostics(items),
             error @ (StorageError::YamlDeserialize(_)
-            | StorageError::Diagnostics(_)
             | StorageError::Validation(_)
             | StorageError::FacetResolution(_)) => Self::Validation(error.to_string()),
         }
@@ -140,47 +136,12 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn save_workflow(dir: &Path, workflow: &WorkflowDefinitionYaml) -> Result<(), StorageError> {
-    validate_workflow_definition(workflow)?;
-
-    ensure_dir(dir)?;
-
-    let content = serde_saphyr::to_string(workflow)?;
-
-    let file_path = dir.join(format!("{}.yml", workflow.name));
-    let tmp_path = dir.join(format!(
-        "{}.yml.{}.tmp",
-        workflow.name,
-        uuid::Uuid::new_v4()
-    ));
-
-    fs::write(&tmp_path, &content)?;
-    if let Err(e) = fs::rename(&tmp_path, &file_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(e.into());
-    }
-
-    Ok(())
-}
-
 pub fn parse_workflow_source(
     content: &str,
     facets_base_dir: &Path,
 ) -> Result<WorkflowDefinitionYaml, StorageError> {
     let diagnosis = diagnostics::diagnose_workflow_source(content, None);
-    if diagnosis.has_errors() {
-        return Err(StorageError::Diagnostics(diagnosis.diagnostics));
-    }
-    let workflow = diagnosis.workflow.ok_or_else(|| {
-        StorageError::Diagnostics(vec![DiagnosticItem::new(
-            "WFS001",
-            Severity::Error,
-            DiagnosticStage::ParseShape,
-            None,
-            "workflow source could not be parsed",
-        )])
-    })?;
+    let workflow = diagnosed_workflow(diagnosis)?;
     let _ = resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
     Ok(workflow)
 }
@@ -188,31 +149,6 @@ pub fn parse_workflow_source(
 pub fn load_workflow_source(dir: &Path, name: &str) -> Result<String, StorageError> {
     let path = resolve_workflow_path(dir, name)?;
     Ok(fs::read_to_string(path)?)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn save_workflow_source(
-    dir: &Path,
-    facets_base_dir: &Path,
-    content: &str,
-) -> Result<WorkflowDefinitionYaml, StorageError> {
-    let workflow = parse_workflow_source(content, facets_base_dir)?;
-    ensure_dir(dir)?;
-
-    let file_path = dir.join(format!("{}.yml", workflow.name));
-    let tmp_path = dir.join(format!(
-        "{}.yml.{}.tmp",
-        workflow.name,
-        uuid::Uuid::new_v4()
-    ));
-
-    fs::write(&tmp_path, content)?;
-    if let Err(e) = fs::rename(&tmp_path, &file_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(e.into());
-    }
-
-    Ok(workflow)
 }
 
 trait WorkflowDefinitionLoader {
@@ -306,18 +242,7 @@ pub fn load_workflow(
         path.parent().unwrap_or_else(|| Path::new(".")),
         facets_base_dir,
     );
-    if diagnosis.has_errors() {
-        return Err(StorageError::Diagnostics(diagnosis.diagnostics));
-    }
-    let workflow = diagnosis.workflow.ok_or_else(|| {
-        StorageError::Diagnostics(vec![DiagnosticItem::new(
-            "WFS001",
-            Severity::Error,
-            DiagnosticStage::ParseShape,
-            None,
-            "workflow source could not be parsed",
-        )])
-    })?;
+    let workflow = diagnosed_workflow(diagnosis)?;
     let _ = resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
     Ok(workflow)
 }
@@ -341,52 +266,6 @@ pub fn workflow_files(dir: &Path) -> Result<Vec<(String, std::path::PathBuf)>, S
     Ok(files)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-fn list_file_summaries<T>(
-    dir: &Path,
-    loader: impl Fn(&Path) -> Result<T, StorageError>,
-    to_summary: impl Fn(T) -> Summary,
-) -> Result<Vec<Summary>, StorageError> {
-    let mut summaries = Vec::new();
-    for (stem, path) in workflow_files(dir)? {
-        match loader(&path) {
-            Ok(item) => {
-                let mut summary = to_summary(item);
-                summary.name = stem.to_string();
-                summary.source_format = workflow_source_format(&path).unwrap_or_default();
-                summaries.push(summary);
-            }
-            Err(e) => {
-                summaries.push(Summary {
-                    name: stem.to_string(),
-                    description: if matches!(&e, StorageError::Diagnostics(_)) {
-                        "Invalid workflow definition".into()
-                    } else {
-                        String::new()
-                    },
-                    failure: Some(crate::domain::failure::WorkFailure::from_error(
-                        &crate::domain::workflow::WorkflowError::from(e),
-                    )),
-                    builtin: false,
-                    is_running: false,
-                    source_format: workflow_source_format(&path).unwrap(),
-                });
-            }
-        }
-    }
-
-    summaries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(collapse_duplicate_names(
-        summaries
-            .into_iter()
-            .map(super::mapper::schema_workflow_summary_to_domain)
-            .collect(),
-    )
-    .into_iter()
-    .map(super::mapper::domain_workflow_summary_to_schema)
-    .collect())
-}
-
 /// 同じ名前を複数の形式が宣言した状態は `resolve_workflow_path` が `WFS006` として
 /// 拒否する。一覧でも 1 件へ畳み込み、選べる行と実行できる定義を一致させる。
 pub(crate) fn collapse_duplicate_names(
@@ -406,64 +285,6 @@ pub(crate) fn collapse_duplicate_names(
         }
     }
     collapsed
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
-    list_workflows_with_facets(dir, dir)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn list_workflows_with_facets(
-    dir: &Path,
-    facets_base_dir: &Path,
-) -> Result<Vec<Summary>, StorageError> {
-    // list 用途では facet 未解決でも一覧表示に支障がないため、deserialize+validate のみを行う。
-    // facet 解決が必要な実行系経路は明示的に `load_workflow` を呼ぶ。
-    let load_for_listing = |path: &Path| -> Result<WorkflowDefinitionYaml, StorageError> {
-        let content = fs::read_to_string(path)?;
-        let diagnosis = diagnose_workflow_file(path, &content, dir, facets_base_dir);
-        if diagnosis.has_errors() {
-            return Err(StorageError::Diagnostics(diagnosis.diagnostics));
-        }
-        let workflow = diagnosis.workflow.ok_or_else(|| {
-            StorageError::Diagnostics(vec![DiagnosticItem::new(
-                "WFS001",
-                Severity::Error,
-                DiagnosticStage::ParseShape,
-                None,
-                "workflow source could not be parsed",
-            )])
-        })?;
-        Ok(workflow)
-    };
-    let mut summaries = list_file_summaries(dir, load_for_listing, |wf| Summary {
-        failure: None,
-        name: wf.name.clone(),
-        description: wf.description,
-        builtin: false,
-        is_running: false,
-        source_format: WorkflowSourceFormat::Yaml,
-    })?;
-    for s in builtin::list_builtin_workflows() {
-        if !summaries.iter().any(|existing| existing.name == s.name) {
-            summaries.push(s);
-        }
-    }
-    summaries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(summaries)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn validate_workflow_definition(workflow: &WorkflowDefinitionYaml) -> Result<(), StorageError> {
-    let diagnostics = diagnostics::diagnose_workflow_definition(workflow, None);
-    if diagnostics
-        .iter()
-        .any(|item| item.severity == Severity::Error)
-    {
-        return Err(StorageError::Diagnostics(diagnostics));
-    }
-    Ok(())
 }
 
 pub fn resolve_and_validate_workflow_facets(
@@ -545,11 +366,33 @@ pub(crate) fn workflow_source_format(path: &Path) -> Option<WorkflowSourceFormat
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
-    let path = resolve_workflow_path(dir, name)?;
-    fs::remove_file(path)?;
-    Ok(())
+fn diagnosed_workflow(
+    diagnosis: diagnostics::WorkflowSourceDiagnostics,
+) -> Result<WorkflowDefinitionYaml, StorageError> {
+    if diagnosis.has_errors() {
+        return Err(StorageError::Diagnostics(diagnosis.diagnostics));
+    }
+    diagnosis.workflow.ok_or_else(|| {
+        StorageError::Diagnostics(vec![DiagnosticItem::new(
+            "WFS001",
+            Severity::Error,
+            DiagnosticStage::ParseShape,
+            None,
+            "workflow source could not be parsed",
+        )])
+    })
+}
+
+pub(crate) fn write_atomically(path: &Path, content: &str) -> Result<(), StorageError> {
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    let tmp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = fs::write(&tmp_path, content).and_then(|()| fs::rename(&tmp_path, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result.map_err(StorageError::from)
 }
 
 #[cfg(test)]

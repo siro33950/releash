@@ -195,53 +195,40 @@ pub(crate) mod tests {
         )
         .unwrap();
         let wf = make_test_workflow("source-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
-        // Simulate duplicate logic
-        let new_name = "copied-wf";
-        releashd::test_support::integration::workflow::validate_name(new_name).unwrap();
-        assert!(!dir.join(format!("{new_name}.yml")).exists());
-        assert!(
-            releashd::test_support::integration::workflow::list_builtin_workflows()
-                .iter()
-                .all(|row| row.name != new_name)
-        );
-
-        let mut copied = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join("source-wf.yml"),
-            dir,
-        )
-        .unwrap();
-        copied.name = new_name.to_string();
-        releashd::test_support::integration::workflow::save_workflow(dir, &copied).unwrap();
-
-        assert!(dir.join(format!("{new_name}.yml")).exists());
-        let loaded = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join(format!("{new_name}.yml")),
-            dir,
-        )
-        .unwrap();
-        assert_eq!(loaded.name, new_name);
+        // When
+        let usecase = workflow_usecase(dir);
+        usecase
+            .duplicate_workflow("source-wf", "copied-wf")
+            .unwrap();
+        // Then
+        use releashd::test_support::integration::workflow::{
+            WorkflowDefinitionFileRepository, WorkflowDefinitionRepository,
+        };
+        assert!(dir.join("copied-wf.yml").exists());
+        let copied = WorkflowDefinitionFileRepository::new(dir, dir)
+            .get("copied-wf")
+            .unwrap();
+        let content = copied.content().unwrap();
+        assert_eq!(content.name, "copied-wf");
+        assert_eq!(content.description, wf.description);
+        assert_eq!(content.nodes, wf.nodes);
     }
 
     #[test]
     pub fn duplicate_workflow_rejects_existing_custom_name() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("instructions")).unwrap();
+        std::fs::write(dir.join("instructions/review-acceptance.md"), "Review.").unwrap();
         let wf = make_test_workflow("existing-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
-        // Act: Simulate the duplicate check from the command
-        let new_name = "existing-wf";
-        let result: Result<(), String> = if dir.join(format!("{new_name}.yml")).exists() {
-            Err(format!("ワークフロー '{new_name}' は既に存在します"))
-        } else {
-            Ok(())
-        };
-
-        // Assert
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("既に存在します"));
+        // When
+        let result = workflow_usecase(dir).duplicate_workflow("existing-wf", "existing-wf");
+        // Then
+        assert!(result.unwrap_err().to_string().contains("既に存在します"));
     }
 
     #[test]
@@ -319,8 +306,8 @@ pub(crate) mod tests {
         // Create two workflows
         let wf_a = make_test_workflow("workflow-a");
         let wf_b = make_test_workflow("workflow-b");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf_a).unwrap();
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf_b).unwrap();
+        super::seed_workflow(dir, &wf_a).unwrap();
+        super::seed_workflow(dir, &wf_b).unwrap();
 
         // Simulate renaming workflow-a to workflow-b (duplicate)
         let original_name = Some("workflow-a".to_string());
@@ -414,29 +401,41 @@ pub(crate) mod tests {
 
     // ---- save_workflow create/update/rename logic ----
 
-    /// save_workflow のコア判定ロジックを再現するヘルパー
-    fn simulate_save_workflow(
+    fn save_workflow(
         dir: &Path,
         workflow: &WorkflowDefinitionYaml,
         original_name: Option<&str>,
     ) -> Result<(), String> {
-        let is_new = original_name.is_none();
-        let is_rename = original_name.is_some_and(|o| o != workflow.name);
-        if (is_new || is_rename) && dir.join(format!("{}.yml", workflow.name)).exists() {
-            return Err(format!("ワークフロー '{}' は既に存在します", workflow.name));
-        }
-        releashd::test_support::integration::workflow::save_workflow(dir, workflow)
-            .map_err(|e| e.to_string())?;
-        if let Some(orig) = original_name {
-            if orig != workflow.name {
-                let old_path = dir.join(format!("{orig}.yml"));
-                if old_path.exists() {
-                    std::fs::remove_file(&old_path)
-                        .map_err(|e| format!("旧ファイル削除失敗: {e}"))?;
-                }
-            }
-        }
-        Ok(())
+        workflow_usecase(dir)
+            .save_workflow_source_with_diagnostics(
+                &serde_saphyr::to_string(workflow).unwrap(),
+                original_name,
+            )
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    fn workflow_usecase(
+        dir: &Path,
+    ) -> releashd::test_support::integration::workflow::WorkflowUsecase {
+        std::fs::create_dir_all(dir.join("instructions")).unwrap();
+        std::fs::write(
+            dir.join("instructions/review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
+        let store = releashd::test_support::integration::persistence::LocalEventStore::open(
+            releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
+                dir.to_path_buf(),
+                Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+            ),
+        )
+        .unwrap();
+        releashd::test_support::integration::platform::workflow_services(
+            store,
+            dir,
+            Some(dir.to_path_buf()),
+        )
     }
 
     #[test]
@@ -452,12 +451,12 @@ pub(crate) mod tests {
         .unwrap();
 
         let wf = make_test_workflow("my-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
         // Update same workflow (original_name = Some("my-wf"), name = "my-wf")
         let mut updated = make_test_workflow("my-wf");
         updated.description = "updated desc".to_string();
-        let result = simulate_save_workflow(dir, &updated, Some("my-wf"));
+        let result = save_workflow(dir, &updated, Some("my-wf"));
         assert!(
             result.is_ok(),
             "Expected same-name update to succeed, got: {result:?}"
@@ -477,7 +476,7 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("brand-new");
-        let result = simulate_save_workflow(dir, &wf, None);
+        let result = save_workflow(dir, &wf, None);
         assert!(result.is_ok());
         assert!(dir.join("brand-new.yml").exists());
     }
@@ -488,9 +487,9 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("dup-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
-        let result = simulate_save_workflow(dir, &wf, None);
+        let result = save_workflow(dir, &wf, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("既に存在します"));
     }
@@ -501,11 +500,11 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("old-name");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
         let mut renamed = make_test_workflow("new-name");
         renamed.description = "renamed".to_string();
-        let result = simulate_save_workflow(dir, &renamed, Some("old-name"));
+        let result = save_workflow(dir, &renamed, Some("old-name"));
         assert!(result.is_ok());
         assert!(!dir.join("old-name.yml").exists());
         assert!(dir.join("new-name.yml").exists());
@@ -516,19 +515,11 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        releashd::test_support::integration::workflow::save_workflow(
-            dir,
-            &make_test_workflow("wf-a"),
-        )
-        .unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            dir,
-            &make_test_workflow("wf-b"),
-        )
-        .unwrap();
+        super::seed_workflow(dir, &make_test_workflow("wf-a")).unwrap();
+        super::seed_workflow(dir, &make_test_workflow("wf-b")).unwrap();
 
         let renamed = make_test_workflow("wf-b");
-        let result = simulate_save_workflow(dir, &renamed, Some("wf-a"));
+        let result = save_workflow(dir, &renamed, Some("wf-a"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("既に存在します"));
     }
@@ -939,4 +930,14 @@ async fn test_facet編集rpc_正規名だけをdomainの種類へ変換する() 
             assert!(result.is_err());
         }
     }
+}
+
+fn seed_workflow(
+    dir: &std::path::Path,
+    workflow: &releashd::test_support::integration::workflow::WorkflowDefinitionContent,
+) -> std::io::Result<()> {
+    std::fs::write(
+        dir.join(format!("{}.yml", workflow.name)),
+        serde_saphyr::to_string(workflow).unwrap(),
+    )
 }

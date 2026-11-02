@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::{facet as gateway_facet, mapper, storage};
+use super::{facet as gateway_facet, storage};
 use crate::domain::workflow::{
     Facet, FacetKey, FacetKind, FacetRepository, FacetSummary, WorkflowError, WorkflowSource,
 };
@@ -63,14 +63,7 @@ impl FacetRepository for WorkflowFacetFileRepository {
 
     fn save(&self, facet: Facet, _is_new: bool) -> Result<(), WorkflowError> {
         let path = facet.file_path()?;
-        storage::ensure_dir(&self.base_dir.join(facet.kind().dir_name()))?;
-        let tmp_path = path.with_extension(format!("md.{}.tmp", uuid::Uuid::new_v4()));
-        fs::write(&tmp_path, facet.content())
-            .map_err(|error| WorkflowError::external(error.to_string()))?;
-        if let Err(error) = fs::rename(&tmp_path, path) {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(WorkflowError::external(error.to_string()));
-        }
+        storage::write_atomically(path, facet.content())?;
         if let Err(error) = super::lua::generate_editor_support(&self.base_dir) {
             log::warn!("Lua editor support generation failed after facet save: {error}");
         }
@@ -89,11 +82,5 @@ impl FacetRepository for WorkflowFacetFileRepository {
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
         gateway_facet::list_facet_summaries(kind, &self.base_dir)
             .map_err(|error| WorkflowError::external(error.to_string()))
-            .map(|summaries| {
-                summaries
-                    .into_iter()
-                    .map(mapper::gateway_facet_summary_to_domain)
-                    .collect()
-            })
     }
 }

@@ -197,7 +197,7 @@ pub(crate) mod tests {
 }
 
 #[test]
-fn test_facet一覧_不正なキーを除いて有効な項目を返す() {
+fn test_facet一覧_不正なキーも診断とともに残す() {
     use releashd::test_support::integration::workflow::{
         FacetKind, FacetRepository, WorkflowFacetFileRepository,
     };
@@ -213,5 +213,16 @@ fn test_facet一覧_不正なキーを除いて有効な項目を返す() {
     assert!(list
         .iter()
         .any(|row| row.key == "valid" && row.description == "Valid" && !row.builtin));
-    assert!(!list.iter().any(|row| row.key == "bad key!"));
+    let invalid = list.iter().find(|row| row.key == "bad key!").unwrap();
+    assert_eq!(invalid.kind, "policy");
+    assert!(invalid.description.is_empty());
+    assert!(!invalid.builtin);
+    let report =
+        releashd::test_support::integration::workflow::diagnose_all(dir.path(), dir.path())
+            .unwrap();
+    assert_eq!(report.facet_summaries["policy/bad key!"].error_count, 1);
+    assert!(report
+        .items
+        .iter()
+        .any(|item| item.code == "FAC001" && item.facet_key.as_deref() == Some("bad key!")));
 }

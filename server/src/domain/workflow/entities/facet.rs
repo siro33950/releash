@@ -15,18 +15,18 @@ pub struct Facet {
 impl Facet {
     /// 取得した Facet の識別子、本文と編集元を復元する。
     pub fn restore(
-        _kind: FacetKind,
-        _key: FacetKey,
-        _directory: PathBuf,
-        _source: WorkflowSource,
-        _content: String,
+        kind: FacetKind,
+        key: FacetKey,
+        directory: PathBuf,
+        source: WorkflowSource,
+        content: String,
     ) -> Self {
         Self {
-            kind: _kind,
-            key: _key,
-            directory: _directory,
-            source: _source,
-            content: _content,
+            kind,
+            key,
+            directory,
+            source,
+            content,
         }
     }
 
@@ -53,9 +53,9 @@ impl Facet {
     /// 取得元、本文の変数と新規保存の重複を検証して本文を変更する。
     pub fn update_content(
         &mut self,
-        _content: &str,
-        _is_new: bool,
-        _existing_keys: &[String],
+        content: &str,
+        is_new: bool,
+        existing_keys: &[String],
     ) -> Result<(), WorkflowError> {
         if self.source.is_builtin() {
             return Err(WorkflowError::validation(
@@ -63,7 +63,7 @@ impl Facet {
             ));
         }
         let undefined: Vec<_> =
-            crate::domain::workflow::services::reference::extract_template_references(_content)
+            crate::domain::workflow::services::reference::extract_template_references(content)
                 .into_iter()
                 .filter(|value| {
                     crate::domain::workflow::services::reference::split_reference(value).is_none()
@@ -75,13 +75,13 @@ impl Facet {
                 undefined.join(", ")
             )));
         }
-        if _is_new && _existing_keys.iter().any(|key| key == self.key.as_str()) {
+        if is_new && existing_keys.iter().any(|key| key == self.key.as_str()) {
             return Err(WorkflowError::validation(format!(
                 "ファセット '{}' は既に存在します",
                 self.key.as_str()
             )));
         }
-        self.content = _content.to_string();
+        self.content = content.to_string();
         Ok(())
     }
 
@@ -116,7 +116,7 @@ impl Facet {
             .unwrap_or_default();
         crate::domain::workflow::FacetSummary {
             key: self.key().as_str().to_string(),
-            kind: self.kind.canonical_name().to_string(),
+            kind: self.kind().canonical_name().to_string(),
             description,
             builtin: self.source().is_builtin(),
         }
@@ -130,16 +130,16 @@ impl Facet {
     /// 複製先の key と重複を検証し、利用者の Facet を作る。
     pub fn duplicate(
         &self,
-        _new_key: &str,
-        _existing_keys: &[String],
+        new_key: &str,
+        existing_keys: &[String],
     ) -> Result<Self, WorkflowError> {
-        let key = FacetKey::new(_new_key)?;
-        if _existing_keys
+        let key = FacetKey::new(new_key)?;
+        if existing_keys
             .iter()
             .any(|existing| existing == key.as_str())
         {
             return Err(WorkflowError::validation(format!(
-                "ファセット '{_new_key}' は既に存在します"
+                "ファセット '{new_key}' は既に存在します"
             )));
         }
         Ok(Self {
@@ -150,7 +150,7 @@ impl Facet {
                 path: self
                     .directory
                     .join(self.kind.dir_name())
-                    .join(format!("{_new_key}.md")),
+                    .join(format!("{new_key}.md")),
             },
             content: self.content.clone(),
         })

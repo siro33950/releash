@@ -4,8 +4,6 @@ pub(crate) use shared::register_shared;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::facet::FacetKind;
 #[cfg(any(test, feature = "test-support"))]
-use crate::adaptor::gateway::workflow::schema::FacetSummary as GatewayFacetSummary;
-#[cfg(any(test, feature = "test-support"))]
 use std::path::Path;
 
 pub(crate) mod definition;
@@ -49,7 +47,7 @@ pub fn get_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<String,
 pub fn list_facet_summaries_inner(
     kind: &str,
     base_dir: &Path,
-) -> Result<Vec<GatewayFacetSummary>, String> {
+) -> Result<Vec<crate::domain::workflow::FacetSummary>, String> {
     let facet_kind = parse_facet_kind(kind)?;
     crate::adaptor::gateway::workflow::facet::list_facet_summaries(facet_kind, base_dir)
         .map_err(|e| e.to_string())

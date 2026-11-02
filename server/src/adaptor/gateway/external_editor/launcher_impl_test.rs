@@ -3,10 +3,12 @@ use super::*;
 #[test]
 fn test_外部編集_フォルダとファイルを一度の起動に順に渡す() {
     // Given
-    let paths = [
-        PathBuf::from("/workflow folder"),
-        PathBuf::from("/workflow folder/definition.yml"),
-    ];
+    let directory = tempfile::tempdir().unwrap();
+    let folder = directory.path().join("workflow folder");
+    std::fs::create_dir(&folder).unwrap();
+    let file = folder.join("definition.yml");
+    std::fs::write(&file, "definition").unwrap();
+    let paths = [folder, file];
     // When
     let mut launches = 0;
     open_paths_with(&paths, "Visual Studio Code", "定義", |command| {
@@ -27,8 +29,8 @@ fn test_外部編集_フォルダとファイルを一度の起動に順に渡�
                 "-a",
                 "Visual Studio Code",
                 "--",
-                "/workflow folder",
-                "/workflow folder/definition.yml"
+                paths[0].to_str().unwrap(),
+                paths[1].to_str().unwrap()
             ]
         );
         Ok(())
@@ -76,7 +78,7 @@ fn test_外部編集_空パスと未選択で存在しないパスは起動し�
 #[test]
 fn test_外部編集_起動失敗に対象を付けて返す() {
     // Given / When
-    let error = open_paths_with(&[PathBuf::from("/workflows")], "Code", "定義", |_| {
+    let error = open_paths_with(&[PathBuf::from(".")], "Code", "定義", |_| {
         Err(std::io::Error::other("launch failed"))
     })
     .unwrap_err();
@@ -84,5 +86,18 @@ fn test_外部編集_起動失敗に対象を付けて返す() {
     assert_eq!(
         error.to_string(),
         "エディタで定義を開けませんでした: launch failed"
+    );
+}
+
+#[test]
+fn test_外部編集_エディタ指定時も存在しないパスは起動しない() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let paths = [dir.path().to_path_buf(), dir.path().join("missing.yml")];
+    // When
+    let result = open_paths_with(&paths, "Code", "定義", |_| panic!("起動されない"));
+    // Then
+    assert!(
+        matches!(result, Err(EditorError::Launch(message)) if message.contains("エディタで定義を開けませんでした"))
     );
 }

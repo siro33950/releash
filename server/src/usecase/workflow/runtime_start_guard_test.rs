@@ -55,3 +55,15 @@ pub(crate) mod tests {
         assert_eq!(err.to_string(), "Workflow has no nodes");
     }
 }
+
+#[test]
+fn test_workflow診断失敗_診断の表示を実行拒否理由にする() {
+    // Given
+    let error = domain::WorkflowError::Diagnostics(Vec::new());
+    let message = error.to_string();
+    // When
+    let result =
+        domain_validation_to_runtime_error(error, &domain::WorkflowDefinitionContent::default());
+    // Then
+    assert!(matches!(result, WorkflowRuntimeError::InvalidWorkflow(actual) if actual == message));
+}

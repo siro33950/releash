@@ -13,7 +13,6 @@ use crate::domain::workflow::{
     WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
 };
 
-#[cfg(test)]
 use crate::domain::workflow::WorkflowSummary;
 
 use super::event_draft;
@@ -59,7 +58,6 @@ impl WorkflowQueryService {
         }
     }
 
-    #[cfg(test)]
     pub fn list_workflows(
         &self,
         running_names: &[crate::domain::workflow::WorkflowExecutionSummary],

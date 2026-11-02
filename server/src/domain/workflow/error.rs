@@ -36,7 +36,14 @@ impl std::fmt::Display for WorkflowError {
                 write!(f, "incompatible_stored_event: {message}")
             }
             Self::Validation(msg) => write!(f, "validation_error: {msg}"),
-            Self::Diagnostics(_) => todo!(),
+            Self::Diagnostics(items) => {
+                let messages = items
+                    .iter()
+                    .map(|item| format!("{}: {}", item.code, item.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "workflow_diagnostics: {messages}")
+            }
             Self::Conflict(msg) => write!(f, "conflict: {msg}"),
             Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
             Self::NotFound(msg) => write!(f, "not_found: {msg}"),

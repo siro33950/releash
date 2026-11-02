@@ -192,3 +192,12 @@ fn test_ui状態の技術的失敗_停止の種別を保持する() {
         assert_eq!(Failure::from(&error), Failure::Technical(nature));
     }
 }
+
+#[test]
+fn test_workflow診断失敗_業務失敗に分類する() {
+    // Given / When / Then
+    assert_eq!(
+        Failure::from(&WorkflowError::Diagnostics(Vec::new())),
+        Failure::Business(BusinessFailure::Other)
+    );
+}

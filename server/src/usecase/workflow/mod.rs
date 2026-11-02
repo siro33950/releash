@@ -61,7 +61,6 @@ pub(crate) use workspace_tree::{
 #[derive(Clone)]
 pub struct WorkflowReadUsecase {
     query: WorkflowQueryService,
-    definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
 }
@@ -69,13 +68,11 @@ pub struct WorkflowReadUsecase {
 impl WorkflowReadUsecase {
     pub(crate) fn new(
         query: WorkflowQueryService,
-        definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     ) -> Self {
         Self {
             query,
-            definitions,
             workspace_query,
             diagnostics,
         }
@@ -95,7 +92,7 @@ impl WorkflowReadUsecase {
             .workspace_query
             .execution_summaries(None, Some(ExecutionStatusFilter::Active))
             .await?;
-        self.definitions.list(&running)
+        self.query.list_workflows(&running)
     }
 
     pub async fn get_execution_state(
@@ -156,12 +153,7 @@ impl WorkflowUsecase {
         let facet_commands =
             WorkflowFacetUsecase::new(facets.clone(), editor_settings, editor_launcher);
         let output = WorkflowOutputUsecase::new(query.clone());
-        let read = WorkflowReadUsecase::new(
-            query.clone(),
-            definitions,
-            workspace_query.clone(),
-            diagnostics,
-        );
+        let read = WorkflowReadUsecase::new(query.clone(), workspace_query.clone(), diagnostics);
         Self {
             query,
             definition_commands,

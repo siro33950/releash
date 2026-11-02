@@ -24,7 +24,9 @@ fn domain_validation_to_runtime_error(
     _workflow: &domain::WorkflowDefinitionContent,
 ) -> WorkflowRuntimeError {
     match err {
-        domain::WorkflowError::Diagnostics(_) => todo!(),
+        error @ domain::WorkflowError::Diagnostics(_) => {
+            WorkflowRuntimeError::InvalidWorkflow(error.to_string())
+        }
         error @ (domain::WorkflowError::Technical(_) | domain::WorkflowError::Editor(_)) => {
             WorkflowRuntimeError::Store(error.into())
         }

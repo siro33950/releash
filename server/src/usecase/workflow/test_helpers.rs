@@ -170,12 +170,13 @@ impl FacetRepository for FakeFacetRepository {
         kind: FacetKind,
         key: &str,
     ) -> Result<crate::domain::workflow::Facet, WorkflowError> {
-        crate::domain::workflow::FacetKey::new(key)?;
-        Ok(facet(
-            kind,
-            key,
-            self.get_saved(kind, key).unwrap_or_default(),
-        ))
+        match self.get(kind, key) {
+            Err(WorkflowError::NotFound(_)) => {
+                crate::domain::workflow::FacetKey::new(key)?;
+                Ok(facet(kind, key, String::new()))
+            }
+            result => result,
+        }
     }
 }
 

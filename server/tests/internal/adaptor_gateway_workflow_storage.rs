@@ -1,14 +1,9 @@
 use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-use releashd::test_support::integration::workflow::delete_workflow;
 use releashd::test_support::integration::workflow::diagnose_workflow_file;
-use releashd::test_support::integration::workflow::list_workflows;
-use releashd::test_support::integration::workflow::list_workflows_with_facets;
 use releashd::test_support::integration::workflow::load_workflow;
 use releashd::test_support::integration::workflow::parse_workflow_source;
 use releashd::test_support::integration::workflow::resolve_and_validate_workflow_facets;
 use releashd::test_support::integration::workflow::resolve_workflow_path;
-use releashd::test_support::integration::workflow::save_workflow;
-use releashd::test_support::integration::workflow::save_workflow_source;
 use releashd::test_support::integration::workflow::workflow_files;
 use releashd::test_support::integration::workflow::NodeDefinition;
 use releashd::test_support::integration::workflow::NodeKind;
@@ -17,6 +12,11 @@ use releashd::test_support::integration::workflow::StorageError;
 use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
 use releashd::test_support::integration::workflow::WorkflowSourceFormat;
 use releashd::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION;
+use releashd::test_support::integration::workflow::{
+    WorkflowDefinition, WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    WorkflowDefinitionRepository, WorkflowDefinitionSourceService, WorkflowError,
+    WorkflowSourceSaveError,
+};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -61,7 +61,9 @@ pub fn test_定義一覧_読めないファイルを失敗欄に残す() {
     let directory = tempfile::tempdir().unwrap();
     fs::create_dir(directory.path().join("unreadable.yml")).unwrap();
     // When
-    let summaries = list_workflows(directory.path()).unwrap();
+    let summaries = WorkflowDefinitionFileRepository::new(directory.path(), directory.path())
+        .list(&[])
+        .unwrap();
     // Then
     let row = summaries.iter().find(|s| s.name == "unreadable").unwrap();
     assert!(matches!(
@@ -109,7 +111,12 @@ pub fn save_and_load_workflow() {
     .unwrap();
 
     let wf = sample_workflow("my-workflow", false);
-    save_workflow(dir, &wf).unwrap();
+    WorkflowDefinitionFileRepository::new(dir, dir)
+        .save(
+            WorkflowDefinition::new(dir.to_path_buf(), wf).unwrap(),
+            None,
+        )
+        .unwrap();
 
     let file_path = dir.join("my-workflow.yml");
     assert!(file_path.exists());
@@ -149,10 +156,13 @@ nodes:
         instruction: review
 "#;
 
-    assert!(save_workflow_source(dir, dir, known).is_ok());
-    let error = save_workflow_source(dir, dir, with_unknown).unwrap_err();
+    let gateway = WorkflowDefinitionFileSourceGateway::new(dir, dir);
+    let repository = WorkflowDefinitionFileRepository::new(dir, dir);
+    let definition = gateway.parse(known).unwrap();
+    repository.save_source(&definition, known, None).unwrap();
+    let error = gateway.parse(with_unknown).unwrap_err();
     assert!(
-        matches!(error, StorageError::Diagnostics(ref items) if items.iter().any(|item| item.code == "WFS002")),
+        matches!(error, WorkflowSourceSaveError::Diagnostics(ref items) if items.iter().any(|item| item.code == "WFS002")),
         "unknown field must be rejected: {error:?}"
     );
 
@@ -170,12 +180,14 @@ pub fn list_workflows_returns_sorted_summaries() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
 
-    save_workflow(dir, &sample_workflow("charlie", false)).unwrap();
-    save_workflow(dir, &sample_workflow("alpha", false)).unwrap();
-    save_workflow(dir, &sample_workflow("bravo", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("charlie", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("alpha", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("bravo", false)).unwrap();
 
     // When
-    let list = list_workflows(dir).unwrap();
+    let list = WorkflowDefinitionFileRepository::new(dir, dir)
+        .list(&[])
+        .unwrap();
     // Then
     let builtin_names = builtin_workflow_names();
     let mut expected_names = vec![
@@ -207,12 +219,14 @@ pub fn list_workflows_uses_file_stem_not_yaml_name() {
     let dir = tmp.path();
 
     // save_workflowで作成（ファイル名 = YAML本文name）
-    save_workflow(dir, &sample_workflow("original", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("original", false)).unwrap();
 
     // ファイルをリネームしてYAML本文nameとファイルstemを乖離させる
     fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
 
-    let list = list_workflows(dir).unwrap();
+    let list = WorkflowDefinitionFileRepository::new(dir, dir)
+        .list(&[])
+        .unwrap();
     let disk_entry = list.iter().find(|s| s.name == "renamed").unwrap();
     // Summary.nameはファイルstem（renamed）であるべき、YAML本文（original）ではない
     assert_eq!(disk_entry.name, "renamed");
@@ -234,7 +248,9 @@ nodes:
     )
     .unwrap();
 
-    let list = list_workflows(dir).unwrap();
+    let list = WorkflowDefinitionFileRepository::new(dir, dir)
+        .list(&[])
+        .unwrap();
     let disk_entry = list.iter().find(|s| s.name == "broken").unwrap();
 
     assert_eq!(disk_entry.description, "Invalid workflow definition");
@@ -286,7 +302,9 @@ return r.workflow{
 
     // When
     let load_error = load_workflow(&broken_path, tmp.path()).unwrap_err();
-    let summaries = list_workflows(tmp.path()).unwrap();
+    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
+        .list(&[])
+        .unwrap();
 
     // Then
     let StorageError::Diagnostics(load_diagnostics) = load_error else {
@@ -322,7 +340,7 @@ pub fn list_workflows_collapses_same_name_across_formats() {
     // Given
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    save_workflow(dir, &sample_workflow("duplicated", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("duplicated", false)).unwrap();
     fs::write(
         dir.join("duplicated.lua"),
         r#"
@@ -336,7 +354,9 @@ return r.workflow{
     .unwrap();
 
     // When
-    let list = list_workflows(dir).unwrap();
+    let list = WorkflowDefinitionFileRepository::new(dir, dir)
+        .list(&[])
+        .unwrap();
     let matched = list
         .iter()
         .filter(|summary| summary.name == "duplicated")
@@ -351,7 +371,9 @@ return r.workflow{
 #[test]
 pub fn list_workflows_empty_dir_includes_builtins() {
     let tmp = TempDir::new().unwrap();
-    let list = list_workflows(tmp.path()).unwrap();
+    let list = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
+        .list(&[])
+        .unwrap();
     for name in builtin_workflow_names() {
         assert!(list.iter().any(|s| s.name == name));
     }
@@ -359,7 +381,12 @@ pub fn list_workflows_empty_dir_includes_builtins() {
 
 #[test]
 pub fn list_workflows_nonexistent_dir_includes_builtins() {
-    let list = list_workflows(Path::new("/nonexistent/path")).unwrap();
+    let list = WorkflowDefinitionFileRepository::new(
+        Path::new("/nonexistent/path"),
+        Path::new("/nonexistent/path"),
+    )
+    .list(&[])
+    .unwrap();
     for name in builtin_workflow_names() {
         assert!(list.iter().any(|s| s.name == name));
     }
@@ -370,33 +397,37 @@ pub fn delete_workflow_success() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
 
-    save_workflow(dir, &sample_workflow("deleteme", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("deleteme", false)).unwrap();
     assert!(dir.join("deleteme.yml").exists());
 
-    delete_workflow(dir, "deleteme").unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir, dir);
+    repository
+        .delete(&repository.get("deleteme").unwrap())
+        .unwrap();
     assert!(!dir.join("deleteme.yml").exists());
 }
 
 #[test]
-pub fn test_定義削除_利用者ファイルのないbuiltin名はnot_found() {
+pub fn test_定義削除_利用者ファイルのないbuiltin名は拒否する() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
 
     let builtin_name = first_builtin_workflow_name();
-    let result = delete_workflow(dir, &builtin_name);
+    let repository = WorkflowDefinitionFileRepository::new(dir, dir);
+    let result = repository.delete(&repository.get(&builtin_name).unwrap());
     assert!(matches!(
         result.unwrap_err(),
-        StorageError::NotFound { ref name } if name == &builtin_name
+        WorkflowError::Validation(ref message) if message.contains("ビルトイン")
     ));
 }
 
 #[test]
 pub fn delete_nonexistent_workflow_fails() {
     let tmp = TempDir::new().unwrap();
-    let result = delete_workflow(tmp.path(), "nope");
+    let result = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path()).get("nope");
     assert!(matches!(
         result.unwrap_err(),
-        StorageError::NotFound { ref name } if name == "nope"
+        WorkflowError::NotFound(ref name) if name == "nope"
     ));
 }
 
@@ -406,7 +437,7 @@ pub fn delete_nonexistent_workflow_fails() {
 pub fn resolve_workflow_path_success() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    save_workflow(dir, &sample_workflow("my-workflow", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("my-workflow", false)).unwrap();
 
     let result = resolve_workflow_path(dir, "my-workflow");
     assert!(result.is_ok());
@@ -455,8 +486,8 @@ pub fn save_workflow_rename_to_existing_name_detected() {
     let dir = tmp.path();
 
     // 既存ワークフローを作成
-    save_workflow(dir, &sample_workflow("existing", false)).unwrap();
-    save_workflow(dir, &sample_workflow("to-rename", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("existing", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("to-rename", false)).unwrap();
 
     // "to-rename" → "existing" へのリネームは重複検出されるべき
     let target_path = dir.join("existing.yml");
@@ -471,7 +502,7 @@ pub fn save_workflow_new_with_duplicate_name_detected() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
 
-    save_workflow(dir, &sample_workflow("my-flow", false)).unwrap();
+    seed_workflow(dir, &sample_workflow("my-flow", false)).unwrap();
 
     // 同名の新規作成は重複チェックで検出されるべき
     let existing = dir.join("my-flow.yml");
@@ -820,7 +851,9 @@ return r.workflow{
 
     // When
     let workflow = load_workflow(&path, tmp.path()).unwrap();
-    let summaries = list_workflows(tmp.path()).unwrap();
+    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
+        .list(&[])
+        .unwrap();
 
     // Then
     assert_eq!(workflow.name, "lua-workflow");
@@ -872,7 +905,9 @@ return r.workflow{
 
     // When
     let workflow = load_workflow(&workflow_path, tmp.path()).unwrap();
-    let summaries = list_workflows(tmp.path()).unwrap();
+    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
+        .list(&[])
+        .unwrap();
 
     // Then
     let main = workflow
@@ -993,7 +1028,9 @@ pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式�
     )
     .unwrap();
     // When
-    let rows = list_workflows_with_facets(dir, dir).unwrap();
+    let rows = WorkflowDefinitionFileRepository::new(dir, dir)
+        .list(&[])
+        .unwrap();
     let report = releashd::test_support::integration::workflow::diagnose_all(dir, dir).unwrap();
     // Then
     let listed: std::collections::BTreeSet<_> = rows.iter().map(|row| row.name.clone()).collect();
@@ -1053,7 +1090,9 @@ pub fn test_定義一覧_壊れた定義の失敗をvalidationとして残す() 
         directory.path(),
     );
     // When
-    let rows = list_workflows(directory.path()).unwrap();
+    let rows = WorkflowDefinitionFileRepository::new(directory.path(), directory.path())
+        .list(&[])
+        .unwrap();
     // Then
     let row = rows.iter().find(|row| row.name == "broken").unwrap();
     assert!(matches!(
@@ -1064,11 +1103,21 @@ pub fn test_定義一覧_壊れた定義の失敗をvalidationとして残す() 
         row.failure,
         Some(
             releashd::test_support::integration::platform::WorkFailure::from_error(
-                &releashd::test_support::integration::workflow::WorkflowError::Validation(
-                    StorageError::Diagnostics(diagnosis.diagnostics).to_string()
+                &releashd::test_support::integration::workflow::WorkflowError::Diagnostics(
+                    diagnosis.diagnostics
                 )
             )
         )
     );
     assert_eq!(row.description, "Invalid workflow definition");
+}
+
+fn seed_workflow(
+    dir: &std::path::Path,
+    workflow: &releashd::test_support::integration::workflow::WorkflowDefinitionContent,
+) -> std::io::Result<()> {
+    std::fs::write(
+        dir.join(format!("{}.yml", workflow.name)),
+        serde_saphyr::to_string(workflow).unwrap(),
+    )
 }
