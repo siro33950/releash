@@ -197,6 +197,36 @@ fn node_status_to_view(
     }
 }
 
+pub(crate) fn save_workflow_source_result(
+    result: Result<workflow::WorkflowDefinition, workflow::WorkflowSourceSaveError>,
+) -> Result<
+    crate::adaptor::presenter::client::SaveWorkflowSourceResultDto,
+    crate::adaptor::presenter::error::AppError,
+> {
+    use crate::adaptor::presenter::client::{
+        save_workflow_source_result_dto::Variant, SaveWorkflowDiagnostics,
+        SaveWorkflowSourceResultDto, SaveWorkflowSuccess,
+    };
+    use crate::adaptor::presenter::error::AppError;
+    use workflow::WorkflowSourceSaveError;
+    match result {
+        Ok(workflow) => Ok(SaveWorkflowSourceResultDto {
+            variant: Some(Variant::Success(SaveWorkflowSuccess {
+                ok: Some(true),
+                name: Some(workflow.file_stem().to_string()),
+            })),
+        }),
+        Err(WorkflowSourceSaveError::Diagnostics(diagnostics)) => Ok(SaveWorkflowSourceResultDto {
+            variant: Some(Variant::Diagnostics(SaveWorkflowDiagnostics {
+                ok: Some(false),
+                diagnostics: Some(diagnostics.try_into().map_err(AppError::new)?),
+                error: Some("workflow_diagnostics".to_string()),
+            })),
+        }),
+        Err(WorkflowSourceSaveError::Workflow(error)) => Err(AppError::from_failure(error)),
+    }
+}
+
 #[cfg(test)]
 #[path = "workflow_test.rs"]
 pub(crate) mod workflow_tests;

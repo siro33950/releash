@@ -68,10 +68,10 @@ fn open_paths_with(
         let (first, remaining) = paths.split_first().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "開くパスがありません")
         })?;
+        for path in paths {
+            std::fs::metadata(path)?;
+        }
         let mut command = if editor.is_empty() {
-            for path in paths {
-                std::fs::metadata(path)?;
-            }
             open::commands(first).into_iter().next().ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "開くコマンドが見つかりません")
             })?

@@ -949,16 +949,11 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
     pub use crate::adaptor::gateway::workflow::startup_repository::HostWorkflowStartup;
     pub use crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository;
-    pub use crate::adaptor::gateway::workflow::storage::delete_workflow;
     pub use crate::adaptor::gateway::workflow::storage::diagnose_workflow_file;
-    pub use crate::adaptor::gateway::workflow::storage::list_workflows;
-    pub use crate::adaptor::gateway::workflow::storage::list_workflows_with_facets;
     pub use crate::adaptor::gateway::workflow::storage::load_workflow;
     pub use crate::adaptor::gateway::workflow::storage::parse_workflow_source;
     pub use crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets;
     pub use crate::adaptor::gateway::workflow::storage::resolve_workflow_path;
-    pub use crate::adaptor::gateway::workflow::storage::save_workflow;
-    pub use crate::adaptor::gateway::workflow::storage::save_workflow_source;
     pub use crate::adaptor::gateway::workflow::storage::workflow_files;
     pub use crate::adaptor::gateway::workflow::storage::StorageError;
     pub use crate::adaptor::gateway::workflow::storage::DUPLICATE_NAME_DESCRIPTION;

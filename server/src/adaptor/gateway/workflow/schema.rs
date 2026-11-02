@@ -22,11 +22,3 @@ pub struct Summary {
     pub is_running: bool,
     pub source_format: crate::domain::workflow::WorkflowSourceFormat,
 }
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct FacetSummary {
-    pub key: String,
-    pub kind: String,
-    pub description: String,
-    pub builtin: bool,
-}

@@ -116,7 +116,9 @@ fn test_source保存エラー変換_業務エラーと診断を保持する() {
         error
     );
     assert_eq!(
-        source_save_error_to_workflow_error(WorkflowSourceSaveError::Diagnostics(vec![diagnostic])),
-        WorkflowError::validation("workflow_diagnostics: WFS001: invalid source")
+        source_save_error_to_workflow_error(WorkflowSourceSaveError::Diagnostics(vec![
+            diagnostic.clone()
+        ])),
+        WorkflowError::Diagnostics(vec![diagnostic])
     );
 }

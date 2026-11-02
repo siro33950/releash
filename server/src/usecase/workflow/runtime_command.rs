@@ -198,9 +198,8 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
         self.record_provider_stop(command, lifecycle_events)
             .await
             .map_err(|error| match error {
-                WorkflowError::Diagnostics(_) => todo!(),
                 WorkflowError::Store(kind) => crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(kind),
-                WorkflowError::Validation(_)
+                WorkflowError::Validation(_) | WorkflowError::Diagnostics(_)
                 | WorkflowError::InvalidState(_)
                 | WorkflowError::NotFound(_)
                 | WorkflowError::UnauthorizedApprovalTarget(_) => {
@@ -239,7 +238,6 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
             .release_deleted_execution_tree(tree_id)
             .await
             .map_err(|error| match error {
-                WorkflowError::Diagnostics(_) => todo!(),
                 WorkflowError::Store(kind) => {
                     crate::usecase::agent_session::ExecutionTreeCacheReleaseError::Store(kind)
                 }
@@ -251,6 +249,7 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
                     )
                 }
                 WorkflowError::Validation(_)
+                | WorkflowError::Diagnostics(_)
                 | WorkflowError::InvalidState(_)
                 | WorkflowError::NotFound(_)
                 | WorkflowError::UnauthorizedApprovalTarget(_)
@@ -298,7 +297,6 @@ fn map_started_execution_tree_error(
     error: WorkflowError,
 ) -> crate::usecase::agent_session::StartedExecutionTreeRegistrationError {
     match error {
-        WorkflowError::Diagnostics(_) => todo!(),
         WorkflowError::Store(kind) => {
             crate::usecase::agent_session::StartedExecutionTreeRegistrationError::Store(kind)
         }
@@ -310,6 +308,7 @@ fn map_started_execution_tree_error(
             )
         }
         WorkflowError::Validation(_)
+        | WorkflowError::Diagnostics(_)
         | WorkflowError::InvalidState(_)
         | WorkflowError::NotFound(_)
         | WorkflowError::UnauthorizedApprovalTarget(_)

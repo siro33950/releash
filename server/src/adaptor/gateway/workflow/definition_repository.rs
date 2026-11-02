@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{builtin, mapper, storage};
 use crate::domain::workflow::{
@@ -114,7 +114,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
             mapper::domain_workflow_to_schema(definition.content().map_err(Clone::clone)?)?;
         let content = serde_saphyr::to_string(&schema)
             .map_err(|error| WorkflowError::external(error.to_string()))?;
-        write_definition(path, &content, &self.workflows_dir)?;
+        storage::write_atomically(path, &content)?;
         remove_obsolete_file(&definition, original_name)
     }
 
@@ -124,7 +124,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
         source: &str,
         original_name: Option<&str>,
     ) -> Result<(), WorkflowError> {
-        write_definition(definition.file_path()?, source, &self.workflows_dir)?;
+        storage::write_atomically(definition.file_path()?, source)?;
         remove_obsolete_file(definition, original_name)
     }
 
@@ -132,17 +132,6 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
         fs::remove_file(definition.file_path()?)
             .map_err(|error| WorkflowError::external(error.to_string()))
     }
-}
-
-fn write_definition(path: &Path, content: &str, workflows_dir: &Path) -> Result<(), WorkflowError> {
-    storage::ensure_dir(workflows_dir)?;
-    let tmp_path = path.with_extension(format!("yml.{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&tmp_path, content).map_err(|error| WorkflowError::external(error.to_string()))?;
-    if let Err(error) = fs::rename(&tmp_path, path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(WorkflowError::external(error.to_string()));
-    }
-    Ok(())
 }
 
 fn remove_obsolete_file(

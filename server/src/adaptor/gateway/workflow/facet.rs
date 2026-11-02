@@ -163,22 +163,23 @@ pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, Face
 pub fn list_facet_summaries(
     kind: FacetKind,
     base_dir: &Path,
-) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
+) -> Result<Vec<crate::domain::workflow::FacetSummary>, FacetError> {
     use crate::domain::workflow::{Facet, FacetKey};
     let mut summaries = Vec::new();
     for key in list_facets(kind, base_dir)? {
         let Ok(facet_key) = FacetKey::new(key.clone()) else {
+            summaries.push(crate::domain::workflow::FacetSummary {
+                key,
+                kind: kind.canonical_name().to_string(),
+                description: String::new(),
+                builtin: false,
+            });
             continue;
         };
         let (source, content) = load_facet_with_source(kind, &key, base_dir)?;
         let summary =
             Facet::restore(kind, facet_key, base_dir.to_path_buf(), source, content).summary();
-        summaries.push(super::schema::FacetSummary {
-            key: summary.key,
-            kind: summary.kind,
-            description: summary.description,
-            builtin: summary.builtin,
-        });
+        summaries.push(summary);
     }
     Ok(summaries)
 }

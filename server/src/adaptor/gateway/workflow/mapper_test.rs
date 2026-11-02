@@ -5,53 +5,6 @@ pub(crate) mod tests {
     };
 
     #[test]
-    fn workflow_summary_serializes_like_existing_wire_shape() {
-        // Given
-        let domain = domain::WorkflowSummary {
-            failure: None,
-            name: "wf".to_string(),
-            description: "desc".to_string(),
-            builtin: false,
-            is_running: true,
-            source_format: domain::WorkflowSourceFormat::Yaml,
-        };
-        // When
-        let mapped = domain_workflow_summary_to_schema(domain.clone());
-        // Then
-        assert_eq!(
-            serde_json::to_value(mapped).unwrap(),
-            serde_json::json!({
-                "name": "wf",
-                "description": "desc",
-                "builtin": false,
-                "is_running": true,
-                "source_format": "yaml"
-            })
-        );
-    }
-
-    #[test]
-    fn facet_summary_serializes_like_existing_wire_shape() {
-        let domain = domain::FacetSummary {
-            key: "coding".to_string(),
-            kind: "policy".to_string(),
-            description: "desc".to_string(),
-            builtin: false,
-        };
-        let mapped = domain_facet_summary_to_gateway(domain.clone());
-
-        assert_eq!(
-            serde_json::to_value(mapped).unwrap(),
-            serde_json::json!({
-                "key": "coding",
-                "kind": "policy",
-                "description": "desc",
-                "builtin": false
-            })
-        );
-    }
-
-    #[test]
     fn workflow_mapping_preserves_facet_refs_without_runtime_contents() {
         let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),

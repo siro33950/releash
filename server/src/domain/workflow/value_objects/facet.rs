@@ -14,13 +14,13 @@ impl std::str::FromStr for FacetKind {
     type Err = WorkflowError;
 
     /// Facet の種類を解釈し、解釈できない指定を拒否する。
-    fn from_str(_value: &str) -> Result<Self, Self::Err> {
-        match _value {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
             "policy" => Ok(Self::Policy),
             "knowledge" => Ok(Self::Knowledge),
             "instruction" => Ok(Self::Instruction),
             _ => Err(WorkflowError::validation(format!(
-                "不明なファセットの種類: {_value}"
+                "不明なファセットの種類: {value}"
             ))),
         }
     }
@@ -56,8 +56,8 @@ impl FacetKey {
     }
 
     /// Facet の key が英数字で始まり、英数字・ハイフン・アンダースコアだけを含むことを検証する。
-    pub fn new(_value: impl Into<String>) -> Result<Self, WorkflowError> {
-        let value = _value.into();
+    pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
+        let value = value.into();
         let mut chars = value.chars();
         if !chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
             || !chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

@@ -1,10 +1,6 @@
 use crate::adaptor::controller::state::AppState;
-use crate::adaptor::presenter::client::{
-    save_workflow_source_result_dto::Variant, SaveWorkflowDiagnostics, SaveWorkflowSourceResultDto,
-    SaveWorkflowSuccess,
-};
+use crate::adaptor::presenter::client::SaveWorkflowSourceResultDto;
 use crate::adaptor::presenter::error::AppError;
-use crate::usecase::workflow::ports::WorkflowSourceSaveError;
 
 pub(crate) async fn save_workflow_source_shared(
     state: &AppState,
@@ -13,24 +9,9 @@ pub(crate) async fn save_workflow_source_shared(
 ) -> Result<SaveWorkflowSourceResultDto, AppError> {
     let usecase = state.workflow_usecase.clone();
     crate::common::operation_context::spawn_blocking(move || {
-        match usecase.save_workflow_source_with_diagnostics(&source, original_name.as_deref()) {
-            Ok(workflow) => Ok(SaveWorkflowSourceResultDto {
-                variant: Some(Variant::Success(SaveWorkflowSuccess {
-                    ok: Some(true),
-                    name: Some(workflow.file_stem().to_string()),
-                })),
-            }),
-            Err(WorkflowSourceSaveError::Diagnostics(diagnostics)) => {
-                Ok(SaveWorkflowSourceResultDto {
-                    variant: Some(Variant::Diagnostics(SaveWorkflowDiagnostics {
-                        ok: Some(false),
-                        diagnostics: Some(diagnostics.try_into().map_err(AppError::new)?),
-                        error: Some("workflow_diagnostics".to_string()),
-                    })),
-                })
-            }
-            Err(WorkflowSourceSaveError::Workflow(error)) => Err(AppError::from_failure(error)),
-        }
+        crate::adaptor::presenter::workflow::save_workflow_source_result(
+            usecase.save_workflow_source_with_diagnostics(&source, original_name.as_deref()),
+        )
     })
     .await
     .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?

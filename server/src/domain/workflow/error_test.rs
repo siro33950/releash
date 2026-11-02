@@ -75,3 +75,28 @@ pub(crate) mod workflow_error_tests {
         );
     }
 }
+
+#[test]
+fn test_診断失敗_複数のcodeとmessageを従来の形式で表示する() {
+    use crate::domain::workflow::value_objects::diagnostic::{
+        DiagnosticItem, DiagnosticStage, Severity,
+    };
+    // Given
+    let items = [("WFS001", "invalid"), ("FAC002", "missing")]
+        .into_iter()
+        .map(|(code, message)| {
+            DiagnosticItem::new(
+                code,
+                Severity::Error,
+                DiagnosticStage::ParseShape,
+                None,
+                message,
+            )
+        })
+        .collect();
+    // When / Then
+    assert_eq!(
+        WorkflowError::Diagnostics(items).to_string(),
+        "workflow_diagnostics: WFS001: invalid; FAC002: missing"
+    );
+}

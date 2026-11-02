@@ -156,7 +156,15 @@ fn test_保存と複製_luaと解釈失敗を拒否する() {
         WorkflowSourceFormat::Lua,
         Ok(content("03_full-review")),
     );
-    let error = WorkflowError::validation("workflow_diagnostics: WFS001: invalid");
+    let error = WorkflowError::Diagnostics(vec![
+        crate::domain::workflow::value_objects::diagnostic::DiagnosticItem::new(
+            "WFS001",
+            crate::domain::workflow::value_objects::diagnostic::Severity::Error,
+            crate::domain::workflow::value_objects::diagnostic::DiagnosticStage::ParseShape,
+            None,
+            "invalid",
+        ),
+    ]);
     let invalid = definition(
         "broken",
         WorkflowSource::File {
@@ -242,7 +250,15 @@ fn test_定義概要_診断失敗だけに説明を付け失敗を保持する()
     // Given / When / Then
     for (error, description) in [
         (
-            WorkflowError::validation("workflow_diagnostics: WFS001: invalid"),
+            WorkflowError::Diagnostics(vec![
+                crate::domain::workflow::value_objects::diagnostic::DiagnosticItem::new(
+                    "WFS001",
+                    crate::domain::workflow::value_objects::diagnostic::Severity::Error,
+                    crate::domain::workflow::value_objects::diagnostic::DiagnosticStage::ParseShape,
+                    None,
+                    "invalid",
+                ),
+            ]),
             "Invalid workflow definition",
         ),
         (WorkflowError::validation("YAMLパース失敗: invalid"), ""),

@@ -8,8 +8,8 @@ pub struct WorkflowDirectory {
 
 impl WorkflowDirectory {
     /// 定義の保管場所を表す。
-    pub fn new(_path: PathBuf) -> Self {
-        Self { path: _path }
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
     }
 
     /// 定義の保管場所を返す。

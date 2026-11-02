@@ -53,4 +53,44 @@ pub(crate) mod tests {
             "Task: write tests"
         );
     }
+
+    #[test]
+    fn test_facet保存_builtinを拒否し利用者ファイルは受理する() {
+        // Given
+        let facets = Arc::new(FakeFacetRepository::default());
+        for key in ["builtin", "custom"] {
+            facets
+                .facets
+                .lock()
+                .unwrap()
+                .insert((FacetKind::Policy, key.into()), "original".into());
+        }
+        facets
+            .builtin_keys
+            .lock()
+            .unwrap()
+            .insert((FacetKind::Policy, "builtin".into()));
+        let usecase = WorkflowFacetUsecase::new(
+            facets.clone(),
+            Arc::new(NoopEditorSettingsGateway),
+            Arc::new(NoopEditorLauncherGateway),
+        );
+        // When
+        let result = usecase.save_facet(FacetKind::Policy, "builtin", "changed", false);
+        // Then
+        assert!(
+            matches!(result, Err(WorkflowError::Validation(message)) if message.contains("ビルトイン"))
+        );
+        assert_eq!(
+            facets.get_saved(FacetKind::Policy, "builtin").as_deref(),
+            Some("original")
+        );
+        usecase
+            .save_facet(FacetKind::Policy, "custom", "changed", false)
+            .unwrap();
+        assert_eq!(
+            facets.get_saved(FacetKind::Policy, "custom").as_deref(),
+            Some("changed")
+        );
+    }
 }

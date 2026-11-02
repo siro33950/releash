@@ -149,11 +149,7 @@ pub(crate) mod tests {
     #[test]
     pub fn resolves_definition_name_when_filename_differs() {
         let tmp = TempDir::new().unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            tmp.path(),
-            &workflow("declared-name"),
-        )
-        .unwrap();
+        super::seed_workflow(tmp.path(), &workflow("declared-name")).unwrap();
         std::fs::rename(
             tmp.path().join("declared-name.yml"),
             tmp.path().join("different-filename.yml"),
@@ -168,11 +164,7 @@ pub(crate) mod tests {
     #[test]
     pub fn duplicate_definition_names_are_reported_as_diagnostic() {
         let tmp = TempDir::new().unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            tmp.path(),
-            &workflow("duplicate-name"),
-        )
-        .unwrap();
+        super::seed_workflow(tmp.path(), &workflow("duplicate-name")).unwrap();
         std::fs::copy(
             tmp.path().join("duplicate-name.yml"),
             tmp.path().join("second-file.yml"),
@@ -210,11 +202,7 @@ return r.workflow{
     #[test]
     pub fn duplicate_name_across_yaml_and_lua_is_reported() {
         let tmp = TempDir::new().unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            tmp.path(),
-            &workflow("duplicate-cross-format"),
-        )
-        .unwrap();
+        super::seed_workflow(tmp.path(), &workflow("duplicate-cross-format")).unwrap();
         std::fs::write(
             tmp.path().join("duplicate-cross-format.lua"),
             r#"
@@ -260,4 +248,32 @@ async fn test_workflow定義解決_注入された保存先から定義とfacet�
 
     // Then
     assert_eq!(definition.name, "isolated-resolver-test");
+}
+
+fn seed_workflow(
+    dir: &std::path::Path,
+    workflow: &releashd::test_support::integration::workflow::WorkflowDefinitionContent,
+) -> std::io::Result<()> {
+    std::fs::write(
+        dir.join(format!("{}.yml", workflow.name)),
+        serde_saphyr::to_string(workflow).unwrap(),
+    )
+}
+
+#[test]
+fn test_workflow名前解決_無関係な定義の欠損facetを解決しない() {
+    use releashd::test_support::integration::workflow::resolve_workflow_by_name;
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("target.yml"),
+        "name: target\ndescription: target\nnodes:\n  main:\n    command: 'true'\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("unrelated.yml"), "name: unrelated\nnodes:\n  main:\n    session:\n      provider: claude\n      facets:\n        instruction: missing\n").unwrap();
+    std::fs::write(dir.path().join("unrelated.lua"), "local r = require('releash'); return r.workflow{name='other', main=r.session{provider='claude', facets={instruction='missing'}}}").unwrap();
+    // When
+    let result = resolve_workflow_by_name(dir.path(), dir.path(), "target").unwrap();
+    // Then
+    assert_eq!(result.name, "target");
 }
