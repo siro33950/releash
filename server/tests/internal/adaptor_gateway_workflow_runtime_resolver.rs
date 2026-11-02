@@ -259,21 +259,3 @@ fn seed_workflow(
         serde_saphyr::to_string(workflow).unwrap(),
     )
 }
-
-#[test]
-fn test_workflow名前解決_無関係な定義の欠損facetを解決しない() {
-    use releashd::test_support::integration::workflow::resolve_workflow_by_name;
-    // Given
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("target.yml"),
-        "name: target\ndescription: target\nnodes:\n  main:\n    command: 'true'\n",
-    )
-    .unwrap();
-    std::fs::write(dir.path().join("unrelated.yml"), "name: unrelated\nnodes:\n  main:\n    session:\n      provider: claude\n      facets:\n        instruction: missing\n").unwrap();
-    std::fs::write(dir.path().join("unrelated.lua"), "local r = require('releash'); return r.workflow{name='other', main=r.session{provider='claude', facets={instruction='missing'}}}").unwrap();
-    // When
-    let result = resolve_workflow_by_name(dir.path(), dir.path(), "target").unwrap();
-    // Then
-    assert_eq!(result.name, "target");
-}

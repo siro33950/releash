@@ -90,12 +90,53 @@ fn test_組み込み定義_保存と削除と外部編集を理由付きで拒�
 
 #[test]
 fn test_利用者定義_組み込みと同名でも更新と削除と外部編集ができる() {
-    todo!()
+    // Given
+    let original = file("03_full-review");
+    let existing = ["03_full-review".to_string()];
+    // When / Then
+    assert_eq!(original.validate_save(Some(&original), &existing), Ok(()));
+    assert_eq!(original.ensure_deletable(), Ok(()));
+    assert_eq!(
+        original.file_path().unwrap(),
+        Path::new("/actual/03_full-review.yml")
+    );
+    assert_eq!(
+        original.editor_paths().unwrap(),
+        [
+            PathBuf::from("/workflows"),
+            PathBuf::from("/actual/03_full-review.yml")
+        ]
+    );
 }
 
 #[test]
 fn test_保存検証_新規と改名のときだけ同名を拒否する() {
-    todo!()
+    // Given
+    let definition = file("03_full-review");
+    let existing = ["03_full-review".to_string()];
+    let original = file("old");
+    // When / Then
+    validation(
+        definition.validate_save(None, &existing),
+        "ワークフロー '03_full-review' は既に存在します",
+    );
+    validation(
+        definition.validate_save(Some(&original), &existing),
+        "ワークフロー '03_full-review' は既に存在します",
+    );
+    assert_eq!(definition.validate_save(None, &[]), Ok(()));
+    assert_eq!(definition.validate_save(Some(&original), &[]), Ok(()));
+    assert_eq!(definition.obsolete_path(None), None);
+    assert_eq!(definition.obsolete_path(Some("03_full-review")), None);
+    assert_eq!(
+        definition.obsolete_path(Some("old")),
+        Some("/workflows/old.yml".into())
+    );
+    let invalid = file("../bad");
+    assert!(matches!(
+        invalid.validate_save(Some(&invalid), &[]),
+        Err(WorkflowError::Validation(_))
+    ));
 }
 
 #[test]

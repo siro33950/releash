@@ -28,12 +28,7 @@ impl fmt::Display for StorageError {
             Self::YamlDeserialize(e) => write!(f, "YAMLパース失敗: {e}"),
             Self::YamlSerialize(e) => write!(f, "YAMLシリアライズ失敗: {e}"),
             Self::Diagnostics(items) => {
-                let messages = items
-                    .iter()
-                    .map(|item| format!("{}: {}", item.code, item.message))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                write!(f, "workflow_diagnostics: {messages}")
+                crate::domain::workflow::WorkflowError::Diagnostics(items.clone()).fmt(f)
             }
             Self::Validation(e) => write!(f, "validation_error: {e}"),
             Self::FacetResolution(e) => write!(f, "facet解決失敗: {e}"),
@@ -345,7 +340,7 @@ pub(crate) fn workflow_source_format(path: &Path) -> Option<WorkflowSourceFormat
     }
 }
 
-fn diagnosed_workflow(
+pub(super) fn diagnosed_workflow(
     diagnosis: diagnostics::WorkflowSourceDiagnostics,
 ) -> Result<WorkflowDefinitionYaml, StorageError> {
     if diagnosis.has_errors() {

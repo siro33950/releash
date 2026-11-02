@@ -419,7 +419,7 @@ impl FakeDefinitionRepository {
 
 impl WorkflowDefinitionRepository for FakeDefinitionRepository {
     fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
-        todo!()
+        Ok(self.definitions.lock().unwrap().keys().cloned().collect())
     }
     fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {
         if let Some(message) = self.read_error.lock().unwrap().as_ref() {

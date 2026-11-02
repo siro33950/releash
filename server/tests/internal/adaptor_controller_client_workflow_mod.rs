@@ -1,4 +1,9 @@
 pub(crate) mod tests {
+    use releashd::test_support::integration::workflow::{
+        ExecutionOrigin, FacetFileQueryService, FacetQueryService, NodeKindName, WorkflowEvent,
+    };
+
+    use std::str::FromStr;
 
     use releashd::test_support::integration::platform::AppState;
     use releashd::test_support::integration::workflow::get_facet_inner;
@@ -136,12 +141,34 @@ pub(crate) mod tests {
 
     #[test]
     pub fn list_facet_summaries_inner_lists_for_each_kind() {
-        todo!()
+        // Given
+        let tmp = setup_tmp_facets_base();
+        for (kind, _) in THREE_KINDS {
+            // When
+            let summaries = FacetFileQueryService::new(tmp.path())
+                .list_facet_summaries(FacetKind::from_str(kind).unwrap())
+                .unwrap();
+            // Then
+            assert!(
+                summaries.iter().any(|s| s.key == key_for(kind)),
+                "list_facet_summaries({kind}) must include the seeded key"
+            );
+        }
     }
 
     #[test]
     pub fn list_facet_summaries_inner_rejects_unknown_without_io() {
-        todo!()
+        // Given
+        let tmp = setup_tmp_facets_base();
+        let bad = "unknown";
+        // When
+        let result = FacetKind::from_str(bad)
+            .and_then(|kind| FacetFileQueryService::new(tmp.path()).list_facet_summaries(kind));
+        // Then
+        assert!(
+            result.is_err(),
+            "list_facet_summaries({bad}) must be rejected"
+        );
     }
 
     // ---- duplicate logic tests ----
@@ -282,35 +309,6 @@ pub(crate) mod tests {
     // ---- Builtin guard tests ----
 
     // ---- save_workflow rename duplicate check ----
-
-    #[test]
-    pub fn save_workflow_rename_rejects_duplicate_name() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        // Create two workflows
-        let wf_a = make_test_workflow("workflow-a");
-        let wf_b = make_test_workflow("workflow-b");
-        super::seed_workflow(dir, &wf_a).unwrap();
-        super::seed_workflow(dir, &wf_b).unwrap();
-
-        // Simulate renaming workflow-a to workflow-b (duplicate)
-        let original_name = Some("workflow-a".to_string());
-        let new_name = "workflow-b";
-        let is_rename = original_name.as_ref().is_some_and(|o| *o != new_name);
-
-        // Act: Simulate the rename duplicate check from the command
-        let result: Result<(), String> =
-            if is_rename && dir.join(format!("{new_name}.yml")).exists() {
-                Err(format!("ワークフロー '{new_name}' は既に存在します"))
-            } else {
-                Ok(())
-            };
-
-        // Assert
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("既に存在します"));
-    }
 
     // ---- save_facet is_new duplicate check ----
 
@@ -762,7 +760,63 @@ pub(crate) mod tests {
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
     pub async fn execution_projection_preserves_state_without_runtime_enrichment() {
-        todo!()
+        // Given
+        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        let execution_id = uuid::Uuid::from_bytes([5; 16]).to_string();
+        releashd::test_support::integration::workflow::append_canonical_events(
+            &local_event_store,
+            &[
+                WorkflowEvent::ExecutionStarted {
+                    repository_root: None,
+                    execution_id: execution_id.clone(),
+                    workflow_name: "adapter-boundary".to_string(),
+                    worktree_path: worktree_path.clone(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    definition: make_test_workflow("adapter-boundary"),
+                    timestamp: 500.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    worktree: None,
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "ne-main-1".to_string(),
+                    node_name: "main".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    parent: None,
+                    timestamp: 500.0,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let read = app
+            .client
+            .app_state
+            .as_ref()
+            .unwrap()
+            .workflow_usecase
+            .clone();
+        // When
+        let view = read
+            .get_execution_state(&execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        // Then
+        assert_eq!(view.id, execution_id);
+        assert_eq!(view.node_executions.len(), 1);
+        assert_eq!(view.node_executions[0].node_name, "main");
+        assert!(view.node_executions[0].session_id.is_none());
+
+        // 存在しない execution_id は Ok(None)。
+        let missing = read
+            .get_execution_state(&uuid::Uuid::from_bytes([97; 16]).to_string())
+            .await
+            .unwrap();
+        assert!(missing.is_none());
     }
 }
 

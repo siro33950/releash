@@ -39,6 +39,7 @@ pub(crate) mod startup_repository;
 pub(crate) mod state;
 pub(crate) mod storage;
 pub(crate) mod stored_definition;
+pub(crate) mod summary_query;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;

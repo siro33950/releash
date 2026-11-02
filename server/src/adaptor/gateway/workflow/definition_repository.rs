@@ -72,7 +72,18 @@ impl WorkflowDefinitionFileSourceGateway {
 
 impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
     fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
-        todo!()
+        let mut names = storage::workflow_files(&self.workflows_dir)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        names.extend(
+            builtin::list_builtin_workflows()
+                .into_iter()
+                .map(|item| item.name),
+        );
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {

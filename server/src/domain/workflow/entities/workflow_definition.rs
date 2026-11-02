@@ -73,10 +73,32 @@ impl WorkflowDefinition {
     /// 取得元、形式、名前と保存先の重複から保存の可否を決める。
     pub fn validate_save(
         &self,
-        _original: Option<&Self>,
-        _existing_names: &[String],
+        original: Option<&Self>,
+        existing_names: &[String],
     ) -> Result<(), WorkflowError> {
-        todo!()
+        if self.source.is_builtin() || original.is_some_and(|original| original.source.is_builtin())
+        {
+            return Err(WorkflowError::validation(
+                "ビルトインワークフローは編集できません",
+            ));
+        }
+        if original.is_some_and(|original| original.format == WorkflowSourceFormat::Lua) {
+            return Err(WorkflowError::validation(
+                "Lua workflow は保存できません。外部エディタで編集してください",
+            ));
+        }
+        let content = self.content().map_err(Clone::clone)?;
+        crate::domain::workflow::validation::validate_name(&content.name)
+            .map_err(|error| WorkflowError::validation(error.to_string()))?;
+        if original.is_none_or(|original| original.file_stem != self.file_stem)
+            && existing_names.iter().any(|name| name == &content.name)
+        {
+            return Err(WorkflowError::validation(format!(
+                "ワークフロー '{}' は既に存在します",
+                content.name
+            )));
+        }
+        Ok(())
     }
 
     /// 保存の成功後に不要になる元のファイルを決める。

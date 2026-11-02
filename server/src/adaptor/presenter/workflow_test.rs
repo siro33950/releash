@@ -3,12 +3,46 @@ pub(crate) mod tests {
 
     #[test]
     fn test_定義概要_転送型に各項目を保持する() {
-        todo!()
+        // Given
+        let domain = crate::usecase::workflow::WorkflowSummaryDto {
+            failure: None,
+            name: "wf".to_string(),
+            description: "desc".to_string(),
+            builtin: false,
+            is_running: true,
+            source_format: workflow::WorkflowSourceFormat::Yaml,
+        };
+        // When
+        let mapped =
+            crate::adaptor::presenter::client::WorkflowSummaryDto::try_from(domain).unwrap();
+        // Then
+        assert_eq!(mapped.name.as_deref(), Some("wf"));
+        assert_eq!(mapped.description.as_deref(), Some("desc"));
+        assert_eq!(mapped.builtin, Some(false));
+        assert_eq!(mapped.is_running, Some(true));
+        assert_eq!(
+            mapped.source_format.unwrap().value,
+            Some(crate::adaptor::presenter::client::workflow_source_format::Value::Yaml as i32)
+        );
+        assert!(mapped.read_error.is_none());
     }
 
     #[test]
     fn test_facet概要_転送型に各項目を保持する() {
-        todo!()
+        // Given
+        let domain = crate::usecase::workflow::FacetSummaryDto {
+            key: "coding".to_string(),
+            kind: "policy".to_string(),
+            description: "desc".to_string(),
+            builtin: false,
+        };
+        // When
+        let mapped = crate::adaptor::presenter::client::FacetSummaryDto::try_from(domain).unwrap();
+        // Then
+        assert_eq!(mapped.key.as_deref(), Some("coding"));
+        assert_eq!(mapped.kind.as_deref(), Some("policy"));
+        assert_eq!(mapped.description.as_deref(), Some("desc"));
+        assert_eq!(mapped.builtin, Some(false));
     }
 
     fn artifact(node_name: &str) -> workflow::Artifact {
@@ -172,4 +206,25 @@ fn test_定義保存結果_診断と業務失敗を転送する() {
         result.connect_code(),
         connectrpc::ErrorCode::InvalidArgument
     );
+}
+
+#[test]
+fn test_定義概要_読取失敗を既存の転送文言へ変える() {
+    // Given
+    let failure = crate::domain::failure::WorkFailure::from_error(
+        &crate::domain::workflow::WorkflowError::external("unreadable"),
+    );
+    let expected = format!("Workflow read failed: {failure}");
+    let dto = crate::usecase::workflow::WorkflowSummaryDto {
+        failure: Some(failure),
+        name: "broken".into(),
+        description: String::new(),
+        builtin: false,
+        is_running: false,
+        source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
+    };
+    // When
+    let mapped = crate::adaptor::presenter::client::WorkflowSummaryDto::try_from(dto).unwrap();
+    // Then
+    assert_eq!(mapped.read_error, Some(expected));
 }
