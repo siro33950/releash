@@ -6,7 +6,6 @@ pub(crate) mod tests {
         let workflow = schema::WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![schema::NodeDefinition {
                 name: "implement".to_string(),
@@ -45,7 +44,6 @@ pub(crate) mod tests {
         let workflow = schema::WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![schema::NodeDefinition {
                 name: "main".to_string(),

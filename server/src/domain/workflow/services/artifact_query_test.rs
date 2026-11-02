@@ -2,7 +2,7 @@ use super::*;
 use crate::domain::workflow::{
     ApprovalGrantedFact, ArtifactProducedFact, ExecutionOrigin, ExecutionParentRef,
     ExecutionTreeLaunch, NodeFactMeta, ProcessExitedFact, StartedFact, StopReceivedFact,
-    SubmitReceivedFact, WorkflowDefinition,
+    SubmitReceivedFact, WorkflowDefinitionContent,
 };
 
 struct Log {
@@ -12,7 +12,7 @@ struct Log {
 
 impl Log {
     fn new(nodes: &str) -> Self {
-        let definition: WorkflowDefinition =
+        let definition: WorkflowDefinitionContent =
             serde_saphyr::from_str(&format!("name: test\ndescription: test\nnodes:\n{nodes}"))
                 .unwrap();
         Self {

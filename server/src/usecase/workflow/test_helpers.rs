@@ -121,32 +121,27 @@ impl FacetRepository for FakeFacetRepository {
             .collect())
     }
 
-    fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-        self.facets
-            .lock()
-            .unwrap()
-            .get(&(kind, key.to_string()))
-            .cloned()
-            .ok_or_else(|| WorkflowError::NotFound(key.to_string()))
+    fn get(
+        &self,
+        _kind: crate::domain::workflow::FacetKind,
+        _key: &str,
+    ) -> Result<crate::domain::workflow::Facet, crate::domain::workflow::WorkflowError> {
+        todo!()
     }
 
     fn save(
         &self,
-        kind: FacetKind,
-        key: &str,
-        content: &str,
+        _facet: crate::domain::workflow::Facet,
         _is_new: bool,
-    ) -> Result<(), WorkflowError> {
-        self.facets
-            .lock()
-            .unwrap()
-            .insert((kind, key.to_string()), content.to_string());
-        Ok(())
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        todo!()
     }
 
-    fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        self.facets.lock().unwrap().remove(&(kind, key.to_string()));
-        Ok(())
+    fn delete(
+        &self,
+        _facet: &crate::domain::workflow::Facet,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        todo!()
     }
 
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
@@ -165,6 +160,14 @@ impl FacetRepository for FakeFacetRepository {
                 builtin: false,
             })
             .collect())
+    }
+
+    fn get_or_new(
+        &self,
+        _kind: crate::domain::workflow::FacetKind,
+        _key: &str,
+    ) -> Result<crate::domain::workflow::Facet, crate::domain::workflow::WorkflowError> {
+        todo!()
     }
 }
 
@@ -389,53 +392,58 @@ impl FakeDefinitionRepository {
         self.definitions
             .lock()
             .unwrap()
-            .insert(definition.name.clone(), definition);
+            .insert(definition.file_stem().to_owned(), definition);
     }
 }
 
 impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-    fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        let mut summaries = self
-            .definitions
-            .lock()
-            .unwrap()
-            .values()
-            .map(|definition| WorkflowSummary {
-                failure: None,
-                name: definition.name.clone(),
-                description: definition.description.clone(),
-                builtin: definition.builtin,
-                is_running: running_names.contains(&definition.name),
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
-            })
-            .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(summaries)
+    fn list(
+        &self,
+        _running: &[crate::domain::workflow::WorkflowExecutionSummary],
+    ) -> Result<Vec<crate::domain::workflow::WorkflowSummary>, crate::domain::workflow::WorkflowError>
+    {
+        todo!()
     }
 
-    fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-        if let Some(message) = self.read_error.lock().unwrap().as_ref() {
-            return Err(WorkflowError::external(message));
-        }
-        Ok(self.definitions.lock().unwrap().get(file_stem).cloned())
+    fn get(
+        &self,
+        _name: &str,
+    ) -> Result<crate::domain::workflow::WorkflowDefinition, crate::domain::workflow::WorkflowError>
+    {
+        todo!()
     }
 
     fn save(
         &self,
-        definition: WorkflowDefinition,
+        _definition: crate::domain::workflow::WorkflowDefinition,
         _original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
-        self.definitions
-            .lock()
-            .unwrap()
-            .insert(definition.name.clone(), definition);
-        Ok(())
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        todo!()
     }
 
-    fn delete(&self, name: &str) -> Result<(), WorkflowError> {
-        self.deleted.lock().unwrap().push(name.to_string());
-        self.definitions.lock().unwrap().remove(name);
-        Ok(())
+    fn delete(
+        &self,
+        _definition: &crate::domain::workflow::WorkflowDefinition,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        todo!()
+    }
+
+    fn find(
+        &self,
+        _name: Option<&str>,
+    ) -> Result<
+        Option<crate::domain::workflow::WorkflowDefinition>,
+        crate::domain::workflow::WorkflowError,
+    > {
+        todo!()
+    }
+    fn save_source(
+        &self,
+        _definition: &crate::domain::workflow::WorkflowDefinition,
+        _source: &str,
+        _original_name: Option<&str>,
+    ) -> Result<(), crate::domain::workflow::WorkflowError> {
+        todo!()
     }
 }
 

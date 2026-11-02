@@ -23,21 +23,14 @@ impl DefaultWorkflowDefinitionResolver {
 impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
     async fn resolve(
         &self,
-        workflow_name: &str,
-    ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
-        let workflow_name = workflow_name.to_string();
-        let dir = self.workflows_dir.clone();
-        crate::common::operation_context::spawn_blocking(move || {
-            resolve_workflow_by_name(&dir, &dir, &workflow_name)
-        })
-        .await
-        .map_err(|e| {
-            WorkflowDefinitionResolverError::Infrastructure(format!("task join error: {e}"))
-        })?
+        _workflow_name: &str,
+    ) -> Result<crate::domain::workflow::WorkflowDefinitionContent, WorkflowDefinitionResolverError>
+    {
+        todo!()
     }
 }
 
-/// Runtime start の外部識別子はファイル名ではなく WorkflowDefinition.name である。
+/// Runtime start の外部識別子はファイル名ではなく WorkflowDefinitionContent.name である。
 ///
 /// ユーザーが YAML を直接編集・rename した場合も同じ規則を保つため、全 definition を
 /// load した後に name で一意解決する。複数ファイル（または builtin）が同じ name を
@@ -49,78 +42,7 @@ pub fn resolve_workflow_by_name(
     facets_base_dir: &Path,
     workflow_name: &str,
 ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
-    let mut matches = Vec::new();
-    let mut exact_file_error = None;
-
-    if workflows_dir.exists() {
-        let entries = std::fs::read_dir(workflows_dir).map_err(|error| {
-            WorkflowDefinitionResolverError::Infrastructure(format!(
-                "workflow directory read failed: {error}"
-            ))
-        })?;
-        let mut paths = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                crate::adaptor::gateway::workflow::storage::workflow_source_format(path).is_some()
-            })
-            .collect::<Vec<_>>();
-        paths.sort();
-
-        for path in paths {
-            match crate::adaptor::gateway::workflow::storage::load_workflow(&path, facets_base_dir)
-            {
-                Ok(workflow) if workflow.name == workflow_name => {
-                    matches.push((path.display().to_string(), workflow));
-                }
-                Ok(_) => {}
-                Err(error)
-                    if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) =>
-                {
-                    exact_file_error = Some(error.to_string());
-                }
-                Err(error) => {
-                    log::warn!("workflow definition skipped: {}: {error}", path.display());
-                }
-            }
-        }
-    }
-
-    for summary in crate::adaptor::gateway::workflow::builtin::list_builtin_workflows() {
-        match crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
-            &summary.name,
-            facets_base_dir,
-        ) {
-            Ok(Some(workflow)) if workflow.name == workflow_name => {
-                matches.push((format!("builtin:{}", summary.name), workflow));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                log::warn!(
-                    "builtin workflow definition skipped: {}: {error}",
-                    summary.name
-                );
-            }
-        }
-    }
-
-    match matches.len() {
-        0 => Err(WorkflowDefinitionResolverError::InvalidWorkflow(
-            exact_file_error
-                .unwrap_or_else(|| format!("ワークフロー '{workflow_name}' が見つかりません")),
-        )),
-        1 => Ok(matches.pop().expect("one workflow match").1),
-        _ => {
-            let sources = matches
-                .iter()
-                .map(|(source, _)| source.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
-                "workflow_diagnostics: WFS006: workflow name '{workflow_name}' is duplicated: {sources}"
-            )))
-        }
-    }
+    todo!()
 }
 
 pub struct AppConfigManagedWorktreeResolver {

@@ -1,7 +1,7 @@
 use releashd::test_support::integration::process::spawn_shell_command;
 use releashd::test_support::integration::process::OutputLimit;
 use releashd::test_support::integration::workflow::render_parameter_references;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use serde_json::json;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -9,7 +9,7 @@ use tempfile::TempDir;
 #[tokio::test]
 pub async fn test_fanout集約command_fixtureのjqがmapの全slotのlgtmを判定する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/adaptor/gateway/workflow/fixtures/valid/fanout-command-reducer.yml"
     )))

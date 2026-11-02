@@ -2,16 +2,15 @@ use crate::adaptor::gateway::workflow::node_session_boundary::WorkflowAgentSessi
 use crate::adaptor::gateway::workflow::node_session_boundary::WorkflowSessionLaunchConfig;
 use crate::domain::workflow::{
     ChildEntry, ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeKind, NodeKindName,
-    SequenceSpec, WorkflowDefinition, WorkflowEvent,
+    SequenceSpec, WorkflowDefinitionContent, WorkflowEvent,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use std::sync::Arc;
 pub const TREE: &str = "00000000-0000-4000-8000-00000000e001";
-pub fn definition() -> WorkflowDefinition {
-    WorkflowDefinition {
+pub fn definition() -> WorkflowDefinitionContent {
+    WorkflowDefinitionContent {
         name: "wf".to_string(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![
             NodeDefinition {

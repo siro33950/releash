@@ -8,7 +8,7 @@ use releashd::test_support::integration::workflow::NodeStart;
 use releashd::test_support::integration::workflow::RuntimeCommitSnapshot;
 use releashd::test_support::integration::workflow::TransitionOutcome;
 use releashd::test_support::integration::workflow::WorkflowControlPlaneCommit;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowEvent;
 use releashd::test_support::integration::workflow::WorkflowRuntimeError;
 use releashd::test_support::integration::workflow::WorkflowRuntimeHost;
@@ -1546,7 +1546,7 @@ nodes:
 schemas:
   result: {type: object, properties: {passed: {type: boolean}, task: {type: string}}, required: [passed, task]}
 "#;
-    let definition: WorkflowDefinition = serde_saphyr::from_str(source).unwrap();
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str(source).unwrap();
     let expected_inputs = definition
         .node_by_name("worker")
         .unwrap()

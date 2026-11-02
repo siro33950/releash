@@ -34,7 +34,7 @@ fn fixture(
     };
     let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "tree".into(),
-        workflow: WorkflowDefinition {
+        workflow: WorkflowDefinitionContent {
             name: "delegate".into(),
             entry: "main".into(),
             nodes: vec![parent, child],
@@ -289,7 +289,7 @@ fn test_delegate_提出で発火し同じsessionで再提出し上限後は最�
 #[test]
 fn test_delegate_上限後の提出は最後のchild結果でsequenceのgive_upへ進む() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: delegate-routing
 description: test
@@ -529,7 +529,7 @@ fn test_delegate_承認だけではchild待ちと未成立の続行を完了で�
 }
 
 fn execution_from_source(source: &str) -> (ExecutionTree, impl FnMut() -> String) {
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(source).unwrap();
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(source).unwrap();
     let errors = crate::domain::workflow::services::validation::validate_all(&workflow);
     assert!(errors.is_empty(), "{errors:?}");
     let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {

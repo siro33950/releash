@@ -1129,7 +1129,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::workflow::NodeKind;
     use releashd::test_support::integration::workflow::Rule;
     use releashd::test_support::integration::workflow::Severity;
-    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
     use releashd::test_support::integration::workflow::YamlSpanMap;
     use std::collections::HashSet;
     use std::path::Path;
@@ -1534,7 +1534,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "canonical-custom-facet".to_string(),
             description: "canonical custom facet diagnostic".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("custom-instruction"))],
@@ -1574,7 +1573,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "builtin-override".to_string(),
             description: "disk facet overrides builtin".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some(&builtin_instruction))],
@@ -1608,7 +1606,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "mixed-references".to_string(),
             description: "mixed valid and invalid references".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1658,7 +1655,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "broken-inventory".to_string(),
             description: "one broken facet inventory".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1686,7 +1682,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "mixed-knowledge".to_string(),
             description: "valid knowledge and invalid instruction".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1729,7 +1724,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "scope-parity".to_string(),
             description: "facet reference parity".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1782,7 +1776,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "cross-kind-degrade".to_string(),
             description: "broken policy inventory and healthy knowledge".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1809,7 +1802,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "missing-facet".to_string(),
             description: "missing facet reference".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node("main", Some("missing-policy"), &[], None)],
@@ -1855,7 +1847,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "facet-syntax".to_string(),
             description: "invalid Facet template syntax".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("invalid-template"))],
@@ -1892,7 +1883,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "facet-reference".to_string(),
             description: "invalid Facet template reference".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("invalid-reference"))],
@@ -1932,7 +1922,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "custom-facet".to_string(),
             description: "custom facet diagnostic".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("custom-instruction"))],
@@ -1966,7 +1955,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "builtin-facet".to_string(),
             description: "builtin facet diagnostic".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some(&builtin_instruction))],
@@ -2313,7 +2301,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "semantic-template".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("bad"))],
@@ -2416,7 +2403,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -2461,7 +2447,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -2498,7 +2483,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -2532,7 +2516,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "review-list".to_string(),
@@ -2580,7 +2563,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "input-contract".to_string(),
@@ -2623,7 +2605,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2662,7 +2643,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2717,7 +2697,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2764,7 +2743,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2849,7 +2827,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "bad-template".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("bad"))],
@@ -2891,7 +2868,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "command-wf".to_string(),
             description: "command test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_command("main", "cargo build")],
@@ -2920,7 +2896,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "command-wf".to_string(),
             description: "command test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_command("main", "   ")],
@@ -2950,7 +2925,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("impl"))],
@@ -2977,7 +2951,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "knowledge-usage".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -3021,7 +2994,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "bad workflow".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("impl"))],
@@ -3131,7 +3103,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "input-ref".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "artifact".to_string(),
@@ -3210,7 +3181,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "par-item".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "item-contract".to_string(),

@@ -5,10 +5,9 @@ fn test_workflow検証変換_停止分類を保持する() {
     use crate::common::operation_context::OperationStopped;
     use crate::domain::failure::{StorageFailure, StorageFailureSource, TechnicalFailure};
     // Given
-    let workflow = domain::WorkflowDefinition {
+    let workflow = domain::WorkflowDefinitionContent {
         name: "test".into(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: Vec::new(),
         entry: "main".into(),
@@ -35,15 +34,14 @@ pub(crate) mod tests {
     use super::super::*;
     use crate::domain::workflow::NodeDefinition;
 
-    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinitionContent {
         let entry = nodes
             .first()
             .map(|node| node.name.clone())
             .unwrap_or_else(|| "main".to_string());
-        WorkflowDefinition {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: Default::default(),
             nodes,
             entry,

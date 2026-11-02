@@ -1,10 +1,10 @@
 use super::*;
-use crate::domain::workflow::WorkflowDefinition;
+use crate::domain::workflow::WorkflowDefinitionContent;
 
 #[test]
 fn test_delegate_起動指示は同一sessionでの再提出とturn終了と予約キーを説明する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: implement}}, artifact: result, completion: {delegate: {child: check, when: child.ok, max_iterations: 2}}}\n  check: {command: check}\nschemas:\n  result: {type: object, properties: {done: {type: boolean}}, required: [done]}").unwrap();
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: implement}}, artifact: result, completion: {delegate: {child: check, when: child.ok, max_iterations: 2}}}\n  check: {command: check}\nschemas:\n  result: {type: object, properties: {done: {type: boolean}}, required: [done]}").unwrap();
     let facets = crate::domain::workflow::FacetContents {
         instruction: Some("implement".into()),
         ..Default::default()

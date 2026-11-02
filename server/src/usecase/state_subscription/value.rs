@@ -4,11 +4,7 @@ use crate::usecase::{
     code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
     provider_dto::AgentSessionProviderDto,
     repository_dto::{BranchDto, WorktreeEntryDto},
-    workflow::{
-        diagnostic_dto::DiagnosticReport,
-        dto::{FacetSummaryDto, WorkflowDto, WorkflowSummaryDto},
-        WorkspaceNodeDetailDto,
-    },
+    workflow::{diagnostic_dto::DiagnosticReport, WorkspaceNodeDetailDto},
     workspace_tree::WorkspaceList,
 };
 
@@ -67,11 +63,11 @@ pub enum StateValue {
     ReviewSessionThreads(Option<Vec<crate::domain::comment::Thread>>),
     ReviewSessionThread(Option<crate::domain::comment::Thread>),
     ReviewSessionThreadHistory(Option<Vec<crate::domain::comment::ReviewHistoryEntry>>),
-    Workflows(Vec<WorkflowSummaryDto>),
-    Workflow(Option<WorkflowDto>),
+    Workflows(Vec<crate::domain::workflow::WorkflowSummary>),
+    Workflow(crate::domain::workflow::WorkflowDefinition),
     WorkflowSource(Option<String>),
-    Facets(Vec<FacetSummaryDto>),
-    Facet(String),
+    Facets(Vec<crate::domain::workflow::FacetSummary>),
+    Facet(crate::domain::workflow::Facet),
     Diagnostics(DiagnosticReport),
     DesktopSettings(crate::domain::app_config::AppConfig),
     NotionConfig(Option<crate::usecase::notion::usecase::NotionRepoConfigDto>),

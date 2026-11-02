@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 #[cfg(any(test, feature = "test-support"))]
-use super::definition::WorkflowDefinition;
+use super::definition::WorkflowDefinitionContent;
 #[cfg(any(test, feature = "test-support"))]
 use super::execution::ExecutionOrigin;
 #[cfg(any(test, feature = "test-support"))]
@@ -51,7 +51,7 @@ pub struct WorkflowRuntimeSnapshot {
     pub current_node_name: Option<String>,
     pub current_session_id: Option<String>,
     pub node_history: Vec<NodeHistoryEntry>,
-    pub workflow_definition: WorkflowDefinition,
+    pub workflow_definition: WorkflowDefinitionContent,
     pub total_token_usage: TokenUsage,
     pub artifacts: HashMap<String, RuntimeArtifact>,
     pub node_executions: Vec<NodeExecution>,

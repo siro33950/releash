@@ -19,7 +19,7 @@ pub fn retried_delegate_parent_facts() -> Vec<crate::domain::workflow::NodeFactR
         request: String::new(),
         workflow_name: "retry-parent".into(),
         launched_as: ExecutionTreeLaunch::Workflow,
-        definition: Some(WorkflowDefinition {
+        definition: Some(WorkflowDefinitionContent {
             entry: "main".into(),
             nodes: vec![
                 NodeDefinition {
@@ -177,7 +177,7 @@ pub fn retried_delegate_parent_facts() -> Vec<crate::domain::workflow::NodeFactR
 
 pub fn scoped_dynamic_fanout_facts() -> Vec<crate::domain::workflow::NodeFactRecord> {
     use crate::domain::workflow::*;
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         entry: "main".into(),
         nodes: vec![
             NodeDefinition {
@@ -632,7 +632,7 @@ pub fn session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFactRecord>
             env: Default::default(),
         })
     };
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         entry: "outer".into(),
         nodes: vec![
             NodeDefinition {
@@ -903,7 +903,7 @@ pub fn isolated_session_timestamp_facts() -> Vec<crate::domain::workflow::NodeFa
         request: String::new(),
         workflow_name: "isolated-time".into(),
         launched_as: ExecutionTreeLaunch::Workflow,
-        definition: Some(WorkflowDefinition {
+        definition: Some(WorkflowDefinitionContent {
             entry: "session".into(),
             nodes: vec![NodeDefinition {
                 name: "session".into(),

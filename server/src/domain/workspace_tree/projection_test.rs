@@ -1,7 +1,7 @@
 use self::tests::{execution, node, EXECUTION_ID};
 use super::*;
 use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecutionStatus;
-use crate::domain::workflow::{NodeCompletionSignalState, NodeKindName, WorkflowDefinition};
+use crate::domain::workflow::{NodeCompletionSignalState, NodeKindName, WorkflowDefinitionContent};
 use crate::domain::workspace_tree::{WorkspaceNodeStatus, WorkspaceNodeStatusClassification};
 
 #[test]
@@ -19,7 +19,7 @@ fn test_未紐づけsession_プロセス不在判定でも青になる() {
         execution_id: EXECUTION_ID,
         workflow_name: "workflow",
         workspace_identity: "/repo",
-        workflow_definition: Some(&WorkflowDefinition::default()),
+        workflow_definition: Some(&WorkflowDefinitionContent::default()),
         node_executions: &[runtime],
         retry_predecessors: &Default::default(),
         delegate_waiting_node_ids: &Default::default(),
@@ -78,7 +78,7 @@ fn test_完了済みworkflow_session_プロセス消失後も緑になる() {
             execution_id: EXECUTION_ID,
             workflow_name: "session",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: std::slice::from_ref(&runtime),
             retry_predecessors: &Default::default(),
             delegate_waiting_node_ids: &Default::default(),
@@ -139,7 +139,7 @@ fn test_delegate親_子のactivityを集約する() {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &nodes,
             retry_predecessors: &Default::default(),
             delegate_waiting_node_ids: &["parent".into()].into_iter().collect(),
@@ -168,7 +168,7 @@ pub(crate) mod tests {
     };
     use crate::domain::workflow::{
         ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState, NodeDefinition, NodeKindName,
-        TokenUsage, WorkflowDefinition,
+        TokenUsage, WorkflowDefinitionContent,
     };
     use crate::domain::workspace_tree::{
         WorkspaceCommandResult, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
@@ -229,7 +229,7 @@ pub(crate) mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &[runtime],
             retry_predecessors: &std::collections::HashMap::new(),
             delegate_waiting_node_ids: &Default::default(),
@@ -411,13 +411,13 @@ pub(crate) mod tests {
             OTHER_EXECUTION_ID,
             RuntimeNodeExecutionStatus::Running,
         );
-        let definition = WorkflowDefinition {
+        let definition = WorkflowDefinitionContent {
             name: "workflow".to_string(),
             nodes: vec![NodeDefinition {
                 name: "test".to_string(),
                 ..NodeDefinition::default()
             }],
-            ..WorkflowDefinition::default()
+            ..WorkflowDefinitionContent::default()
         };
 
         let execution = execution();
@@ -488,7 +488,7 @@ pub(crate) mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "session",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &[session],
             retry_predecessors: &std::collections::HashMap::new(),
             delegate_waiting_node_ids: &Default::default(),
@@ -522,13 +522,13 @@ pub(crate) mod tests {
         waiting.display_command = None;
         waiting.completion_signals = NodeCompletionSignalState::SubmitReceived;
         waiting.artifact = Some(serde_json::json!({"result": "ready"}));
-        let definition = WorkflowDefinition {
+        let definition = WorkflowDefinitionContent {
             name: "workflow".to_string(),
             nodes: vec![NodeDefinition {
                 name: "test".to_string(),
                 ..NodeDefinition::default()
             }],
-            ..WorkflowDefinition::default()
+            ..WorkflowDefinitionContent::default()
         };
         let execution = execution();
 
@@ -615,7 +615,7 @@ pub(crate) mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &[first, second, latest, loop_visit],
             retry_predecessors: &retry_predecessors,
             delegate_waiting_node_ids: &Default::default(),
@@ -684,7 +684,7 @@ pub(crate) mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
             delegate_waiting_node_ids: &Default::default(),
@@ -748,7 +748,7 @@ pub(crate) mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &runtime_nodes,
             retry_predecessors: &std::collections::HashMap::new(),
             delegate_waiting_node_ids: &Default::default(),
@@ -812,7 +812,7 @@ pub(crate) mod tests {
             execution_id: EXECUTION_ID,
             workflow_name: "workflow",
             workspace_identity: "/repo",
-            workflow_definition: Some(&WorkflowDefinition::default()),
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
             node_executions: &[waiting],
             retry_predecessors: &std::collections::HashMap::new(),
             delegate_waiting_node_ids: &Default::default(),
@@ -865,7 +865,7 @@ pub(crate) mod tests {
             session.display_command = None;
             session.completion_signals = completion_signals;
             let runtime_nodes = [session];
-            let definition = WorkflowDefinition::default();
+            let definition = WorkflowDefinitionContent::default();
             let execution = execution();
 
             // When: Node 状態を固定して3つの活動状態を投影する
@@ -941,7 +941,7 @@ pub(crate) mod tests {
                 execution_id: EXECUTION_ID,
                 workflow_name: "workflow",
                 workspace_identity: "/repo",
-                workflow_definition: Some(&WorkflowDefinition::default()),
+                workflow_definition: Some(&WorkflowDefinitionContent::default()),
                 node_executions: &[runtime],
                 retry_predecessors: &Default::default(),
                 delegate_waiting_node_ids: &Default::default(),
@@ -986,7 +986,7 @@ pub(crate) mod tests {
                         execution_id: EXECUTION_ID,
                         workflow_name: "workflow",
                         workspace_identity: "/repo",
-                        workflow_definition: Some(&WorkflowDefinition::default()),
+                        workflow_definition: Some(&WorkflowDefinitionContent::default()),
                         node_executions: &[runtime],
                         retry_predecessors: &Default::default(),
                         delegate_waiting_node_ids: &Default::default(),
@@ -1028,7 +1028,7 @@ pub(crate) mod tests {
 #[test]
 fn test_sessionノード_providerとmodelを定義から配る() {
     // Given
-    let definition: WorkflowDefinition = serde_saphyr::from_str(
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str(
         "name: test\ndescription: test\nnodes:\n  test: {session: {provider: codex, model: test-model}}\n",
     )
     .unwrap();
@@ -1073,7 +1073,7 @@ fn test_model配信_指定のないsessionとcommandは空欄になる() {
         ("session: {provider: codex}", NodeKindName::Session),
         ("command: 'true'", NodeKindName::Command),
     ] {
-        let definition: WorkflowDefinition = serde_saphyr::from_str(&format!(
+        let definition: WorkflowDefinitionContent = serde_saphyr::from_str(&format!(
             "name: test\ndescription: test\nnodes:\n  test: {{{source}}}\n"
         ))
         .unwrap();

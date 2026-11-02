@@ -2,15 +2,8 @@ use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::error::AppError;
 use crate::domain::workflow::FacetKind;
 
-fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, AppError> {
-    match kind {
-        "policy" => Ok(FacetKind::Policy),
-        "knowledge" => Ok(FacetKind::Knowledge),
-        "instruction" => Ok(FacetKind::Instruction),
-        _ => Err(AppError::invalid_request(format!(
-            "Unknown facet kind: {kind}"
-        ))),
-    }
+fn parse_domain_facet_kind(_kind: &str) -> Result<FacetKind, AppError> {
+    todo!()
 }
 
 pub(crate) async fn save_facet_shared(

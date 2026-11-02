@@ -1,6 +1,8 @@
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
-use crate::domain::workflow::{ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowError};
+use crate::domain::workflow::{
+    ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowDefinitionContent, WorkflowError,
+};
 
 use super::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 
@@ -36,39 +38,7 @@ pub trait WorkflowExecutionProjectionRepository: Send + Sync {
     ) -> Result<Option<ExecutionTree>, WorkflowError>;
 }
 
-pub trait WorkflowDefinitionSourceGateway: Send + Sync {
-    fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError>;
-    fn source_format(
-        &self,
-        _file_stem: &str,
-    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
-        Ok(crate::domain::workflow::WorkflowSourceFormat::Yaml)
-    }
-    fn save_source(
-        &self,
-        source: &str,
-        original_name: Option<&str>,
-    ) -> Result<WorkflowDefinition, WorkflowError>;
-    fn save_source_with_diagnostics(
-        &self,
-        source: &str,
-        original_name: Option<&str>,
-    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
-        self.save_source(source, original_name)
-            .map_err(WorkflowSourceSaveError::Workflow)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum WorkflowSourceSaveError {
-    Diagnostics(Vec<super::diagnostic_dto::DiagnosticItem>),
-    Workflow(WorkflowError),
-}
-
-pub trait ExternalEditorGateway: Send + Sync {
-    fn open_workflow(&self, name: &str) -> Result<(), WorkflowError>;
-    fn open_facet(&self, kind: &str, key: &str) -> Result<(), WorkflowError>;
-}
+pub use crate::domain::workflow::{WorkflowDefinitionSourceService, WorkflowSourceSaveError};
 
 /// workflow diagnostics の診断対象。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +85,7 @@ pub trait WorkflowStartExecutionGateway: Send + Sync {
     async fn resolve_start_execution_workflow(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowError>;
+    ) -> Result<WorkflowDefinitionContent, WorkflowError>;
     async fn start_resolved_execution(
         &self,
         command: ResolvedStartExecutionCommand,

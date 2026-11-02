@@ -151,56 +151,7 @@ pub fn load_builtin_workflow_resolved(
     name: &str,
     base_facets_dir: &std::path::Path,
 ) -> Result<Option<WorkflowDefinitionYaml>, BuiltinError> {
-    let Some(entry) = BUILTINS
-        .iter()
-        .find(|e| e.filename.strip_suffix(".yml") == Some(name))
-    else {
-        return Ok(None);
-    };
-    let diagnosis = diagnostics::diagnose_workflow_source(entry.content, Some(name));
-    if diagnosis.has_errors() {
-        return Err(BuiltinError::Diagnostics {
-            filename: entry.filename,
-            diagnostics: diagnosis.diagnostics,
-        });
-    }
-    let mut wf: WorkflowDefinitionYaml =
-        diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
-            filename: entry.filename,
-            message: "workflow source could not be parsed".to_string(),
-        })?;
-    wf.builtin = true;
-    validation::validate(&workflow_definition_to_domain(&wf)).map_err(|err| {
-        BuiltinError::Validation {
-            filename: entry.filename,
-            source: err,
-        }
-    })?;
-    if let Err(err) = storage::resolve_and_validate_workflow_facets(&wf, base_facets_dir) {
-        return Err(match err {
-            storage::StorageError::FacetResolution(source) => BuiltinError::FacetResolution {
-                filename: entry.filename,
-                source,
-            },
-            storage::StorageError::Validation(source) => BuiltinError::Validation {
-                filename: entry.filename,
-                source,
-            },
-            storage::StorageError::Diagnostics(diagnostics) => BuiltinError::Diagnostics {
-                filename: entry.filename,
-                diagnostics,
-            },
-            other => BuiltinError::Validation {
-                filename: entry.filename,
-                source: validation::ValidationError::InvalidArtifactReference {
-                    reference: entry.filename.to_string(),
-                    kind: validation::InvalidArtifactReferenceKind::InvalidInputRef,
-                    reason: other.to_string(),
-                },
-            },
-        });
-    }
-    Ok(Some(wf))
+    todo!()
 }
 
 /// 同梱 YAML を再 parse せず、`BUILTINS` メタデータから直接 `Summary` を組み立てる。
@@ -559,23 +510,11 @@ pub fn list_builtin_facet_keys(kind: FacetKind) -> Vec<&'static str> {
         .collect()
 }
 
-pub fn is_builtin_workflow(name: &str) -> bool {
-    BUILTINS
-        .iter()
-        .any(|e| e.filename.strip_suffix(".yml") == Some(name))
-}
-
 pub fn builtin_workflow_source(name: &str) -> Option<&'static str> {
     BUILTINS
         .iter()
         .find(|e| e.filename.strip_suffix(".yml") == Some(name))
         .map(|e| e.content)
-}
-
-pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
-    BUILTIN_FACETS
-        .iter()
-        .any(|e| e.kind == kind && e.key == key)
 }
 
 #[cfg(test)]

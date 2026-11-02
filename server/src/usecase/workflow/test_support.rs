@@ -1,19 +1,21 @@
-use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
+use crate::domain::workflow::{WorkflowDefinitionContent, WorkflowError};
 
-use super::ports::WorkflowDefinitionSourceGateway;
+use super::ports::WorkflowDefinitionSourceService;
 
 pub(crate) struct NoopDefinitionSourceGateway;
 
-impl WorkflowDefinitionSourceGateway for NoopDefinitionSourceGateway {
+impl WorkflowDefinitionSourceService for NoopDefinitionSourceGateway {
     fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
         Ok(None)
     }
 
-    fn save_source(
+    fn parse(
         &self,
         _source: &str,
-        _original_name: Option<&str>,
-    ) -> Result<WorkflowDefinition, WorkflowError> {
-        Err(WorkflowError::external("not used"))
+    ) -> Result<
+        crate::domain::workflow::WorkflowDefinition,
+        crate::domain::workflow::WorkflowSourceSaveError,
+    > {
+        todo!()
     }
 }

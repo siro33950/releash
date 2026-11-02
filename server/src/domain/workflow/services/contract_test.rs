@@ -1,15 +1,15 @@
 pub(crate) mod contract_service_tests {
     use super::super::*;
     use crate::domain::workflow::value_objects::{
-        FacetRefs, FanoutSpec, NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinition,
+        FacetRefs, FanoutSpec, NodeDefinition, NodeKind, SchemaDef, SessionSpec,
+        WorkflowDefinitionContent,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn workflow() -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: BTreeMap::from([(
                 "review".to_string(),
                 SchemaDef::Object {

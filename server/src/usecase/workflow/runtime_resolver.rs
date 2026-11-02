@@ -1,4 +1,4 @@
-use crate::domain::workflow::WorkflowDefinition;
+use crate::domain::workflow::WorkflowDefinitionContent;
 
 #[derive(Debug)]
 pub enum WorkflowDefinitionResolverError {
@@ -38,7 +38,7 @@ pub trait WorkflowDefinitionResolver: Send + Sync {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError>;
+    ) -> Result<WorkflowDefinitionContent, WorkflowDefinitionResolverError>;
 }
 
 /// WorkflowRuntimeHost core が AppConfig / filesystem canonicalize / Git worktree 列挙を

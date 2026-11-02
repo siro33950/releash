@@ -1,16 +1,12 @@
 pub(crate) mod tests {
 
     use releashd::test_support::integration::platform::AppState;
-    use releashd::test_support::integration::workflow::delete_facet_inner;
-    use releashd::test_support::integration::workflow::duplicate_facet_inner;
     use releashd::test_support::integration::workflow::get_facet_inner;
     use releashd::test_support::integration::workflow::list_facet_summaries_inner;
     use releashd::test_support::integration::workflow::list_facets_inner;
-    use releashd::test_support::integration::workflow::open_facet_in_editor_inner;
     use releashd::test_support::integration::workflow::register_shared;
-    use releashd::test_support::integration::workflow::save_facet_inner;
     use releashd::test_support::integration::workflow::FacetKind;
-    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
     use std::sync::Arc;
 
     use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
@@ -140,56 +136,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn save_facet_inner_writes_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let key = format!("created-{dir_name}");
-            save_facet_inner(kind, &key, "WRITTEN_BODY", true, tmp.path()).unwrap();
-            let path = tmp.path().join(dir_name).join(format!("{key}.md"));
-            assert!(path.exists(), "save_facet({kind}) must create {path:?}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "WRITTEN_BODY");
-        }
-    }
-
-    #[test]
-    pub fn save_facet_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = save_facet_inner(bad, "anything", "BODY", true, tmp.path());
-            assert!(result.is_err(), "save_facet({bad}) must be rejected");
-        }
-    }
-
-    #[test]
-    pub fn delete_facet_inner_removes_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let key = key_for(kind);
-            let path = tmp.path().join(dir_name).join(format!("{key}.md"));
-            assert!(path.exists());
-            delete_facet_inner(kind, &key, tmp.path()).unwrap();
-            assert!(!path.exists(), "delete_facet({kind}) must remove {path:?}");
-        }
-    }
-
-    #[test]
-    pub fn delete_facet_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = delete_facet_inner(bad, "sample-policies", tmp.path());
-            assert!(result.is_err(), "delete_facet({bad}) must be rejected");
-        }
-        // 3種のサンプルは温存されている
-        for (_, dir_name) in THREE_KINDS {
-            assert!(tmp
-                .path()
-                .join(dir_name)
-                .join(format!("sample-{dir_name}.md"))
-                .exists());
-        }
-    }
-
-    #[test]
     pub fn list_facet_summaries_inner_lists_for_each_kind() {
         let tmp = setup_tmp_facets_base();
         for (kind, _) in THREE_KINDS {
@@ -213,82 +159,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    pub fn duplicate_facet_inner_creates_new_file_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let source = key_for(kind);
-            let new_key = format!("copied-{dir_name}");
-            duplicate_facet_inner(kind, &source, &new_key, tmp.path()).unwrap();
-            let path = tmp.path().join(dir_name).join(format!("{new_key}.md"));
-            assert!(
-                path.exists(),
-                "duplicate_facet({kind}) must create {path:?}"
-            );
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "SAMPLE_BODY");
-        }
-    }
-
-    #[test]
-    pub fn duplicate_facet_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = duplicate_facet_inner(bad, "src", "dst", tmp.path());
-            assert!(result.is_err(), "duplicate_facet({bad}) must be rejected");
-        }
-    }
-
-    #[test]
-    pub fn open_facet_in_editor_inner_invokes_opener_for_each_kind() {
-        // open_facet_in_editor のエディタ呼び出し点はテストダブル（クロージャ）で差し替えて、
-        // 実プロセスを起動せずに 3 種すべての正常経路到達と引数（対象パス）を検証する。
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let recorded: Arc<std::sync::Mutex<Vec<String>>> =
-                Arc::new(std::sync::Mutex::new(Vec::new()));
-            let recorded_clone = recorded.clone();
-            let key = key_for(kind);
-            open_facet_in_editor_inner(kind, &key, tmp.path(), move |path_str| {
-                recorded_clone.lock().unwrap().push(path_str.to_string());
-                Ok(())
-            })
-            .unwrap();
-            let paths = recorded.lock().unwrap();
-            assert_eq!(
-                paths.len(),
-                1,
-                "opener must be invoked exactly once for {kind}"
-            );
-            let expected = tmp.path().join(dir_name).join(format!("{key}.md"));
-            assert_eq!(
-                paths[0],
-                expected.to_string_lossy().to_string(),
-                "opener must receive the resolved facet path for {kind}"
-            );
-        }
-    }
-
-    #[test]
-    pub fn open_facet_in_editor_inner_rejects_unknown_without_invoking_opener() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let invoked: Arc<std::sync::Mutex<bool>> = Arc::new(std::sync::Mutex::new(false));
-            let invoked_clone = invoked.clone();
-            let result = open_facet_in_editor_inner(bad, "sample", tmp.path(), move |_| {
-                *invoked_clone.lock().unwrap() = true;
-                Ok(())
-            });
-            assert!(
-                result.is_err(),
-                "open_facet_in_editor({bad}) must be rejected"
-            );
-            assert!(
-                !*invoked.lock().unwrap(),
-                "opener must not be invoked for {bad}"
-            );
-        }
-    }
-
     // ---- duplicate logic tests ----
     // These test the core duplicate logic using storage/facet/builtin functions directly,
     // mirroring what the Tauri commands do inside spawn_blocking.
@@ -297,7 +167,6 @@ pub(crate) mod tests {
         WorkflowDefinitionYaml {
             name: name.to_string(),
             description: "test workflow".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "main".to_string(),
@@ -316,41 +185,7 @@ pub(crate) mod tests {
 
     #[test]
     pub fn duplicate_workflow_normal_case() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let instructions = dir.join("instructions");
-        std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(
-            instructions.join("review-acceptance.md"),
-            "Review the change.",
-        )
-        .unwrap();
-        let wf = make_test_workflow("source-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
-
-        // Simulate duplicate logic
-        let new_name = "copied-wf";
-        releashd::test_support::integration::workflow::validate_name(new_name).unwrap();
-        assert!(!dir.join(format!("{new_name}.yml")).exists());
-        assert!(!releashd::test_support::integration::workflow::is_builtin_workflow(new_name));
-
-        let mut copied = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join("source-wf.yml"),
-            dir,
-        )
-        .unwrap();
-        copied.name = new_name.to_string();
-        copied.builtin = false;
-        releashd::test_support::integration::workflow::save_workflow(dir, &copied).unwrap();
-
-        assert!(dir.join(format!("{new_name}.yml")).exists());
-        let loaded = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join(format!("{new_name}.yml")),
-            dir,
-        )
-        .unwrap();
-        assert_eq!(loaded.name, new_name);
-        assert!(!loaded.builtin);
+        todo!()
     }
 
     #[test]
@@ -512,32 +347,7 @@ pub(crate) mod tests {
 
     #[test]
     pub fn duplicate_facet_rejects_builtin_key() {
-        let builtin_keys = releashd::test_support::integration::workflow::list_builtin_facet_keys(
-            FacetKind::Policy,
-        );
-        if let Some(key) = builtin_keys.first() {
-            // list_facets includes builtins, so duplicate to a builtin key would be caught
-            // by the existing.contains(&new_key) check
-            assert!(
-                releashd::test_support::integration::workflow::is_builtin_facet(
-                    FacetKind::Policy,
-                    key
-                )
-            );
-
-            // Verify list_facets returns builtin keys (which is used for duplicate check)
-            let tmp = TempDir::new().unwrap();
-            let base_dir = tmp.path();
-            let existing = releashd::test_support::integration::workflow::list_facets(
-                FacetKind::Policy,
-                base_dir,
-            )
-            .unwrap();
-            assert!(
-                existing.contains(&key.to_string()),
-                "list_facets should include builtin key '{key}'"
-            );
-        }
+        todo!()
     }
 
     // ---- save_workflow create/update/rename logic ----

@@ -128,7 +128,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::workflow::CommandSpec;
     use releashd::test_support::integration::workflow::NodeDefinition;
     use releashd::test_support::integration::workflow::NodeKind;
-    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
 
     fn workflow(name: &str) -> WorkflowDefinitionYaml {
         WorkflowDefinitionYaml {

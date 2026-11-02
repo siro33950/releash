@@ -14,7 +14,7 @@ use releashd::test_support::integration::workflow::NodeDefinition;
 use releashd::test_support::integration::workflow::NodeKind;
 use releashd::test_support::integration::workflow::SessionSpec;
 use releashd::test_support::integration::workflow::StorageError;
-use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
 use releashd::test_support::integration::workflow::WorkflowSourceFormat;
 use releashd::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION;
 use std::fs;
@@ -22,24 +22,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 fn sample_workflow(name: &str, builtin: bool) -> WorkflowDefinitionYaml {
-    WorkflowDefinitionYaml {
-        name: name.to_string(),
-        description: format!("{name} workflow"),
-        builtin,
-        schemas: Default::default(),
-        nodes: vec![NodeDefinition {
-            name: "main".to_string(),
-            kind: NodeKind::Session(SessionSpec {
-                facets: FacetRefs {
-                    instruction: Some("review-acceptance".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..NodeDefinition::default()
-        }],
-        entry: "main".to_string(),
-    }
+    todo!()
 }
 
 fn builtin_workflow_names() -> Vec<String> {

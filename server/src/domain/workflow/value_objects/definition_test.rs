@@ -45,7 +45,7 @@ fn test_command_env_空mapを省略し既存snapshotを空mapとして読む() {
             "nodes":{"main":{"command":"true"}}
         }"#;
 
-    let workflow = serde_json::from_str::<WorkflowDefinition>(snapshot).unwrap();
+    let workflow = serde_json::from_str::<WorkflowDefinitionContent>(snapshot).unwrap();
     let command = workflow.nodes[0].command_spec().unwrap();
     assert!(command.env.is_empty());
 
@@ -56,7 +56,7 @@ fn test_command_env_空mapを省略し既存snapshotを空mapとして読む() {
 
 #[test]
 fn test_command_env_宣言をdefinition_snapshotで往復する() {
-    let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+    let workflow = serde_saphyr::from_str::<WorkflowDefinitionContent>(
         r#"name: wf
 description: test
 nodes:
@@ -71,7 +71,7 @@ nodes:
     .unwrap();
 
     let serialized = serde_json::to_string(&workflow).unwrap();
-    let restored = serde_json::from_str::<WorkflowDefinition>(&serialized).unwrap();
+    let restored = serde_json::from_str::<WorkflowDefinitionContent>(&serialized).unwrap();
 
     assert_eq!(restored, workflow);
     assert_eq!(
@@ -185,7 +185,7 @@ fn test_entry解決_mainが先頭以外でもrootとして解決される() {
         name: name.to_string(),
         ..Default::default()
     };
-    let workflow = WorkflowDefinition {
+    let workflow = WorkflowDefinitionContent {
         nodes: vec![node("helper"), node("main"), node("done")],
         ..Default::default()
     };
@@ -196,7 +196,7 @@ fn test_entry解決_mainが先頭以外でもrootとして解決される() {
 
 #[test]
 fn test_entry解決_entryと同名nodeが無ければ解決しない() {
-    let workflow = WorkflowDefinition {
+    let workflow = WorkflowDefinitionContent {
         nodes: vec![NodeDefinition {
             name: "helper".to_string(),
             ..Default::default()
@@ -463,12 +463,12 @@ fn test_述語定義の保存_workflow全体の現在形式を再読込できる
         "{or: [clean, skipped]}",
         "{and: [passed, {or: [clean, skipped]}]}",
     ] {
-        let workflow: WorkflowDefinition =
+        let workflow: WorkflowDefinitionContent =
             serde_saphyr::from_str(&source.replace("{and: [passed, {or: [clean, skipped]}]}", on))
                 .unwrap();
         // When
         let serialized = serde_json::to_string(&workflow).unwrap();
-        let restored: WorkflowDefinition = serde_json::from_str(&serialized).unwrap();
+        let restored: WorkflowDefinitionContent = serde_json::from_str(&serialized).unwrap();
         // Then
         assert_eq!(restored, workflow);
     }

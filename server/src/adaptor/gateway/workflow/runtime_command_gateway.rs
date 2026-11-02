@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::domain::app_config::AppConfigRepository;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
-use crate::domain::workflow::{WorkflowDefinition, WorkflowError};
+use crate::domain::workflow::{WorkflowDefinitionContent, WorkflowError};
 use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::workflow::command::{AbortExecutionCommand, ResolvedStartExecutionCommand};
 use crate::usecase::workflow::control_plane::{
@@ -61,7 +61,7 @@ impl WorkflowStartExecutionGateway for WorkflowRuntimeCommandGateway {
     async fn resolve_start_execution_workflow(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowError> {
+    ) -> Result<WorkflowDefinitionContent, WorkflowError> {
         let workflow = self
             .driver
             .resolve_start_execution_workflow(workflow_name)

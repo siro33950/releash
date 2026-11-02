@@ -15,7 +15,7 @@ use crate::adaptor::gateway::workflow::test_support::{
 use crate::adaptor::gateway::workflow::workflow_host::WorkflowRuntimeHost;
 use crate::adaptor::gateway::workflow::WorkflowRuntimeCommandGateway;
 use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workflow::WorkflowDefinition;
+use crate::domain::workflow::WorkflowDefinitionContent;
 use crate::infrastructure::local_api::LocalApiServer;
 use crate::terminal_subscription_acceptance::TerminalSubscriptionHarness as TerminalSurfaceRuntime;
 use crate::terminal_surface::TerminalSurfaceOwnerV1;
@@ -115,7 +115,7 @@ impl WorkflowDefinitionResolver for AcceptanceUnusedWorkflowDefinitionResolver {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+    ) -> Result<WorkflowDefinitionContent, WorkflowDefinitionResolverError> {
         Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
             "agent-session acceptance host does not start workflow '{workflow_name}'"
         )))

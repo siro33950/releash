@@ -1,5 +1,8 @@
 mod contract;
 pub(crate) mod definition;
+pub mod diagnostic;
+mod directory;
+mod source;
 pub(crate) use definition::{InputsMap, InputsMapSeed};
 pub(crate) mod execution;
 pub(crate) mod execution_metadata;
@@ -21,8 +24,8 @@ pub use definition::{
     EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs, FanoutSpec, InputParam,
     InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
     NodeKindName, NodeNamespace, NodeNamespaceError, Rule, SchemaDef, SequenceSpec,
-    SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition, WorkflowSourceFormat,
-    WorkflowSummary, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
+    SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinitionContent,
+    WorkflowSourceFormat, WorkflowSummary, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
     MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{
@@ -64,3 +67,6 @@ pub use worktree_origin::{
 
 #[cfg(any(test, feature = "test-support"))]
 pub use state::WorkflowRuntimeSnapshot;
+
+pub use directory::WorkflowDirectory;
+pub use source::WorkflowSource;

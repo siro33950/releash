@@ -1,7 +1,7 @@
 mod workspace_tree_tests {
     use super::super::*;
     use crate::domain::provider_lifecycle::ProviderKind;
-    use crate::domain::workflow::WorkflowDefinition;
+    use crate::domain::workflow::WorkflowDefinitionContent;
     use crate::domain::workflow::{
         FacetRefs, FanoutSpec, ItemsSource, NodeCompletion, NodeDefinition, NodeKind, SequenceSpec,
         SessionSpec,
@@ -88,11 +88,10 @@ mod workspace_tree_tests {
         }
     }
 
-    fn definition() -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn definition() -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "review".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: BTreeMap::new(),
             nodes: vec![NodeDefinition {
                 name: "plan".to_string(),

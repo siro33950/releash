@@ -226,11 +226,10 @@ fn default_entry_node() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowDefinition {
+/// 解釈済みの workflow 定義の内容。
+pub struct WorkflowDefinitionContent {
     pub name: String,
     pub description: String,
-    #[serde(default)]
-    pub builtin: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub schemas: BTreeMap<String, SchemaDef>,
     #[serde(
@@ -243,12 +242,11 @@ pub struct WorkflowDefinition {
     pub entry: String,
 }
 
-impl Default for WorkflowDefinition {
+impl Default for WorkflowDefinitionContent {
     fn default() -> Self {
         Self {
             name: String::new(),
             description: String::new(),
-            builtin: false,
             schemas: BTreeMap::new(),
             nodes: Vec::new(),
             entry: default_entry_node(),
@@ -256,7 +254,7 @@ impl Default for WorkflowDefinition {
     }
 }
 
-impl WorkflowDefinition {
+impl WorkflowDefinitionContent {
     pub fn dynamic_fanout_names(&self) -> std::collections::BTreeSet<String> {
         self.nodes
             .iter()

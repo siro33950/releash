@@ -12,7 +12,7 @@ use releashd::test_support::integration::workflow::NodeSessionInfo;
 use releashd::test_support::integration::workflow::RuntimeCommitSnapshot;
 use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
 use releashd::test_support::integration::workflow::WorkflowDefaults;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowEvent;
 use releashd::test_support::integration::workflow::WorkflowExecutionInsert;
 use releashd::test_support::integration::workflow::WorkflowRuntimeDependencies;
@@ -398,7 +398,7 @@ impl Fixture {
     }
 
     pub(crate) async fn persist_started(&self, nodes: &str, root: &str) -> RuntimeCommitSnapshot {
-        let workflow: WorkflowDefinition = serde_saphyr::from_str(&format!(
+        let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(&format!(
             "name: isolated\ndescription: test\nnodes:\n{nodes}"
         ))
         .unwrap();

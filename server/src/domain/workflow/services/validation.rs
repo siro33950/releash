@@ -2,7 +2,7 @@ use crate::domain::workflow::services::{contract_schema, reference, routing};
 use crate::domain::workflow::value_objects::{MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW};
 use crate::domain::workflow::{
     is_reserved_node_name, FieldPath, InputParam, ItemsSource, NodeDefinition, NodeKind,
-    NodeKindName, SchemaDef, WorkflowDefinition, WorkflowDefinitionName, WorkflowError,
+    NodeKindName, SchemaDef, WorkflowDefinitionContent, WorkflowDefinitionName, WorkflowError,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -668,7 +668,7 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     }
 }
 
-pub fn validate_workflow_shape(workflow: &WorkflowDefinition) -> Result<(), WorkflowError> {
+pub fn validate_workflow_shape(workflow: &WorkflowDefinitionContent) -> Result<(), WorkflowError> {
     if workflow.nodes.is_empty() {
         return Err(WorkflowError::validation("workflow has no nodes"));
     }
@@ -677,7 +677,7 @@ pub fn validate_workflow_shape(workflow: &WorkflowDefinition) -> Result<(), Work
 
 /// インライン宣言・無名エントリは load 時の正規化で `nodes` カタログへ登録される
 /// ため、カタログ長がそのまま再帰的な総 node 数になる。
-fn total_node_count(workflow: &WorkflowDefinition) -> usize {
+fn total_node_count(workflow: &WorkflowDefinitionContent) -> usize {
     workflow.nodes.len()
 }
 
@@ -686,7 +686,7 @@ fn total_node_count(workflow: &WorkflowDefinition) -> usize {
 /// items が供給されるパラメータは、entry の inputs での明示配線
 /// （`<パラメータ>: items`）か、子のパラメータがちょうど1つの場合の自動束縛で
 /// 決まる。型あり（Contract 付き）パラメータには要素 Contract の一致を要求する。
-fn collect_fanout_items_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_fanout_items_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     for parent in &workflow.nodes {
@@ -832,7 +832,7 @@ fn collect_fanout_items_errors(workflow: &WorkflowDefinition) -> Vec<ValidationE
     errors
 }
 
-fn collect_delegate_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_delegate_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     for node in &workflow.nodes {
         let Some(delegate) = &node.completion.delegate else {
@@ -909,7 +909,7 @@ fn collect_delegate_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError
 /// 予約供給元 `request` に閉じる。fanout の子は並走し兄弟を持たないため、
 /// 供給元は自 fanout の input パラメータ + `request` + `items` に閉じる
 /// （外部文脈は親が fanout のパラメータへ配線して渡す）。
-fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_children_wiring_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     for owner in &workflow.nodes {
@@ -1105,7 +1105,7 @@ fn collect_children_wiring_errors(workflow: &WorkflowDefinition) -> Vec<Validati
 }
 
 fn validate_node_source_field_path(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node: &NodeDefinition,
     field_path: &FieldPath,
 ) -> Result<(), String> {
@@ -1147,7 +1147,7 @@ fn field_path_resolution_reason(
 
 /// 合成子の包含循環（children に置かれた合成子を辿ると自分自身へ戻る）を検出する。
 /// 深さの総量は `MAX_NODES_PER_WORKFLOW` が縛るため、循環だけが非有界の芽になる。
-fn collect_inclusion_cycle_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_inclusion_cycle_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let composite_children: BTreeMap<&str, Vec<&str>> = workflow
         .nodes
         .iter()
@@ -1223,7 +1223,7 @@ fn inclusion_cycle_from<'a>(
 }
 
 /// sequence の artifact 宣言を拒否する。
-fn collect_sequence_artifact_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_sequence_artifact_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     workflow
         .nodes
         .iter()
@@ -1234,7 +1234,7 @@ fn collect_sequence_artifact_errors(workflow: &WorkflowDefinition) -> Vec<Valida
         .collect()
 }
 
-fn collect_reserved_parameter_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_reserved_parameter_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     for node in &workflow.nodes {
         for parameter in node.input_parameter_names() {
@@ -1249,7 +1249,7 @@ fn collect_reserved_parameter_errors(workflow: &WorkflowDefinition) -> Vec<Valid
     errors
 }
 
-pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
+pub fn validate(workflow: &WorkflowDefinitionContent) -> Result<(), ValidationError> {
     validate_name(&workflow.name)?;
 
     if workflow.nodes.is_empty() {
@@ -1337,7 +1337,7 @@ pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
 ///
 /// validation.rs は facet I/O を持たず、workflow definition に含まれる
 /// backend-owned schema state だけを読む。
-pub fn validate_schema_refs(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
+pub fn validate_schema_refs(workflow: &WorkflowDefinitionContent) -> Result<(), ValidationError> {
     for (name, schema) in &workflow.schemas {
         if name == reference::REQUEST_ARTIFACT {
             return Err(ValidationError::InvalidArtifactReference {
@@ -1373,7 +1373,7 @@ pub fn validate_schema_refs(workflow: &WorkflowDefinition) -> Result<(), Validat
 
 /// facet 本文などの `{{ ... }}` を、使用 node の input パラメータ宣言と突合する。
 pub fn validate_template_references_for_node(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node: &NodeDefinition,
     content: &str,
 ) -> Vec<ValidationError> {
@@ -1386,7 +1386,7 @@ pub fn validate_template_references_for_node(
 fn validate_schema_def(
     name: &str,
     schema: &SchemaDef,
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
 ) -> Result<(), ValidationError> {
     match schema {
         SchemaDef::Object {
@@ -1447,7 +1447,7 @@ fn validate_node_schema_refs(
     input: &[InputParam],
     is_command: bool,
     is_fanout: bool,
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
 ) -> Result<(), ValidationError> {
     if let Some(contract) = artifact {
         validate_schema_reference_identifier(node_name, "artifact", contract)?;
@@ -1531,7 +1531,7 @@ fn safe_identifier_message() -> &'static str {
 /// `validate` / `validate_all` の両経路から呼ばれ、呼び出し側はそれぞれ
 /// 「最初のエラーで return」「全件 push して以降のチェックを打ち切る」と
 /// 消費方法を切り替える。
-fn collect_node_count_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+fn collect_node_count_errors(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     let total_nodes = total_node_count(workflow);
     if total_nodes > MAX_NODES_PER_WORKFLOW {
@@ -1592,7 +1592,7 @@ fn validate_node_kind_fields(node: &NodeDefinition) -> Result<(), ValidationErro
 /// 構造的に安全な範囲でエラーを蓄積する。
 /// 名前空間構築に失敗するレベルのエラー（EmptyName, EmptyNodes, DuplicateNode等）は
 /// 後続チェックが信頼できないため、そこで打ち切って返す。
-pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
+pub fn validate_all(workflow: &WorkflowDefinitionContent) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     if let Err(e) = validate_name(&workflow.name) {

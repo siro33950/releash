@@ -205,31 +205,15 @@ pub struct FacetSummaryDto {
 
 #[cfg(any(test, feature = "test-support"))]
 #[cfg(test)]
-pub fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
+pub fn workflow_to_dto(definition: &domain::WorkflowDefinitionContent) -> WorkflowDto {
     workflow_to_dto_with_source_format(definition, domain::WorkflowSourceFormat::Yaml)
 }
 
 pub(crate) fn workflow_to_dto_with_source_format(
-    definition: &domain::WorkflowDefinition,
+    definition: &domain::WorkflowDefinitionContent,
     source_format: domain::WorkflowSourceFormat,
 ) -> WorkflowDto {
-    WorkflowDto {
-        name: definition.name.clone(),
-        description: definition.description.clone(),
-        builtin: definition.builtin,
-        source_format: source_format.into(),
-        schemas: definition
-            .schemas
-            .iter()
-            .map(|(name, schema)| {
-                (
-                    name.clone(),
-                    contract_schema::schema_def_to_json_value(schema),
-                )
-            })
-            .collect(),
-        nodes: definition.nodes.iter().map(node_to_dto).collect(),
-    }
+    todo!()
 }
 
 pub(crate) fn workflow_summary_to_dto(summary: domain::WorkflowSummary) -> WorkflowSummaryDto {

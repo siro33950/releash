@@ -36,7 +36,7 @@ use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::NodeDefinition;
 use releashd::test_support::integration::workflow::RuntimeExecutionState;
 use releashd::test_support::integration::workflow::SessionExecutionTreeRootFacts;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 
 use releashd::test_support::integration::workflow::{node_started, started_event, TREE};
 
@@ -612,7 +612,7 @@ pub(crate) mod reconciliation_tests {
         use releashd::test_support::integration::workflow::PendingAdvance;
         // Given
         let (_directory, store) = open_store();
-        let definition: WorkflowDefinition = serde_saphyr::from_str("name: delegate\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: verify, when: child.ok, max_iterations: 2}}}\n  verify: {command: check}\nschemas:\n  result: {type: object, properties: {}, required: []}").unwrap();
+        let definition: WorkflowDefinitionContent = serde_saphyr::from_str("name: delegate\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: verify, when: child.ok, max_iterations: 2}}}\n  verify: {command: check}\nschemas:\n  result: {type: object, properties: {}, required: []}").unwrap();
         let parent_meta = test_fact_meta(TREE, "parent");
         let root = TreeRootFact {
             repository_root: None,

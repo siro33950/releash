@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::workflow::{NodeDefinition, NodeKind, WorkflowDefinition};
+use crate::domain::workflow::{NodeDefinition, NodeKind, WorkflowDefinitionContent};
 use serde_json::json;
 
 #[test]
@@ -37,7 +37,7 @@ fn test_completion保存形式_要求をmapにし要求なしはnodeから省略
             json!({"command": "true", "completion": {"require": "approval"}}),
         ),
     ] {
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "completion".into(),
             nodes: vec![NodeDefinition {
                 name: "main".into(),
@@ -53,7 +53,8 @@ fn test_completion保存形式_要求をmapにし要求なしはnodeから省略
         };
         // When
         let serialized = serde_json::to_value(&workflow).unwrap();
-        let restored: WorkflowDefinition = serde_json::from_value(serialized.clone()).unwrap();
+        let restored: WorkflowDefinitionContent =
+            serde_json::from_value(serialized.clone()).unwrap();
         // Then
         assert_eq!(serialized["nodes"]["main"], expected);
         assert_eq!(restored, workflow);
@@ -118,9 +119,9 @@ fn test_delegate配線_childrenと同じ宣言順で読み保存復元後も保�
     // Given
     let source = "name: ordered\ndescription: test\nnodes:\n  main:\n    sequence:\n      children:\n        - parent: {inputs: {zebra: request, apple: request, middle: request}}\n  parent:\n    session: {provider: codex}\n    artifact: result\n    completion:\n      delegate:\n        child: check\n        inputs: {zebra: request, apple: request, middle: request}\n        when: child.ok\n        max_iterations: 2\n  check: {command: check}\n";
     // When
-    let definition: WorkflowDefinition = serde_saphyr::from_str(source).unwrap();
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str(source).unwrap();
     let serialized = serde_json::to_string(&definition).unwrap();
-    let restored: WorkflowDefinition = serde_json::from_str(&serialized).unwrap();
+    let restored: WorkflowDefinitionContent = serde_json::from_str(&serialized).unwrap();
     // Then
     for definition in [&definition, &restored] {
         let children_inputs = &definition
@@ -178,7 +179,7 @@ fn test_delegate配線_childrenと同じく重複パラメータと空の供給�
         // When / Then
         for source in [delegate, sequence] {
             assert!(
-                serde_saphyr::from_str::<WorkflowDefinition>(&source).is_err(),
+                serde_saphyr::from_str::<WorkflowDefinitionContent>(&source).is_err(),
                 "{source}"
             );
         }

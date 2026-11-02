@@ -25,7 +25,7 @@ pub async fn seed_workflow_session_facts(
     use crate::domain::workflow::{
         ChildEntry, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeDefinition,
         NodeFact, NodeFactMeta, NodeKind, NodeKindName, SequenceSpec, SessionAttachedFact,
-        SessionSpec, StartedFact, TreeRootFact, WorkflowDefinition,
+        SessionSpec, StartedFact, TreeRootFact, WorkflowDefinitionContent,
     };
 
     if !super::fact_log::read_tree_records(store, seed.workflow_execution_id)
@@ -35,10 +35,9 @@ pub async fn seed_workflow_session_facts(
     {
         return Ok(());
     }
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         name: seed.workflow_name.to_string(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![
             NodeDefinition {
@@ -167,13 +166,12 @@ pub async fn seed_canonical_execution(
 #[cfg(any(test, feature = "test-support"))]
 fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<WorkflowEvent> {
     use crate::domain::workflow::{
-        ExecutionStatus, NodeDefinition, NodeKindName, WorkflowDefinition,
+        ExecutionStatus, NodeDefinition, NodeKindName, WorkflowDefinitionContent,
     };
 
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         name: execution.workflow_name.clone(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![NodeDefinition {
             name: "main".to_string(),

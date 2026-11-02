@@ -4,6 +4,7 @@
 //! Controllers, CLI adapters, and watchers should converge
 //! here as the legacy `workflow` module is removed.
 
+use crate::domain::workflow::WorkflowDefinitionSourceService;
 pub(crate) mod command;
 pub(crate) mod control_plane;
 mod definition;
@@ -31,14 +32,14 @@ pub(crate) mod workspace_tree;
 
 pub mod diagnostic_dto;
 
+use crate::domain::external_editor::{EditorLauncherGateway, EditorSettingsGateway};
 use crate::domain::workflow::{
-    ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, FacetKind,
+    ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, Facet, FacetKind,
     FacetRepository, FacetSummary, ManagedWorktreeGateway, WorkflowDefinition,
-    WorkflowDefinitionRepository, WorkflowError,
+    WorkflowDefinitionRepository, WorkflowDirectoryService, WorkflowError,
 };
 use crate::usecase::workflow::ports::{
-    ExternalEditorGateway, WorkflowDefinitionSourceGateway, WorkflowDiagnosticsGateway,
-    WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
+    WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
 };
 
 use definition::WorkflowDefinitionUsecase;
@@ -61,6 +62,7 @@ pub(crate) use workspace_tree::{
 #[derive(Clone)]
 pub struct WorkflowReadUsecase {
     query: WorkflowQueryService,
+    definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
     diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
 }
@@ -68,11 +70,13 @@ pub struct WorkflowReadUsecase {
 impl WorkflowReadUsecase {
     pub(crate) fn new(
         query: WorkflowQueryService,
+        definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
     ) -> Self {
         Self {
             query,
+            definitions,
             workspace_query,
             diagnostics,
         }
@@ -87,20 +91,12 @@ impl WorkflowReadUsecase {
 
     pub async fn list_workflow_summaries(
         &self,
-    ) -> Result<Vec<dto::WorkflowSummaryDto>, WorkflowError> {
-        let running_names = self
+    ) -> Result<Vec<crate::domain::workflow::WorkflowSummary>, WorkflowError> {
+        let running = self
             .workspace_query
             .execution_summaries(None, Some(ExecutionStatusFilter::Active))
-            .await?
-            .into_iter()
-            .map(|execution| execution.workflow_name)
-            .collect::<Vec<_>>();
-        self.query.list_workflows(&running_names).map(|summaries| {
-            summaries
-                .into_iter()
-                .map(dto::workflow_summary_to_dto)
-                .collect()
-        })
+            .await?;
+        self.definitions.list(&running)
     }
 
     pub async fn get_execution_state(
@@ -118,7 +114,6 @@ pub struct WorkflowUsecase {
     facet_commands: WorkflowFacetUsecase,
     output: WorkflowOutputUsecase,
     worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
-    editors: std::sync::Arc<dyn ExternalEditorGateway>,
     execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
     workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -140,27 +135,40 @@ impl WorkflowUsecase {
     pub fn new(
         query: WorkflowQueryService,
         definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
-        definition_sources: std::sync::Arc<dyn WorkflowDefinitionSourceGateway>,
+        definition_sources: std::sync::Arc<dyn WorkflowDefinitionSourceService>,
         facets: std::sync::Arc<dyn FacetRepository>,
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
-        editors: std::sync::Arc<dyn ExternalEditorGateway>,
+        editor_settings: std::sync::Arc<dyn EditorSettingsGateway>,
+        editor_launcher: std::sync::Arc<dyn EditorLauncherGateway>,
+        directory_service: std::sync::Arc<dyn WorkflowDirectoryService>,
         diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
         execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
         failures: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
     ) -> Self {
-        let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
-        let facet_commands = WorkflowFacetUsecase::new(facets.clone());
+        let definition_commands = WorkflowDefinitionUsecase::new(
+            definitions.clone(),
+            definition_sources,
+            editor_settings.clone(),
+            editor_launcher.clone(),
+            directory_service,
+        );
+        let facet_commands =
+            WorkflowFacetUsecase::new(facets.clone(), editor_settings, editor_launcher);
         let output = WorkflowOutputUsecase::new(query.clone());
-        let read = WorkflowReadUsecase::new(query.clone(), workspace_query.clone(), diagnostics);
+        let read = WorkflowReadUsecase::new(
+            query.clone(),
+            definitions,
+            workspace_query.clone(),
+            diagnostics,
+        );
         Self {
             query,
             definition_commands,
             facet_commands,
             output,
             worktrees,
-            editors,
             execution_archives,
             workspace_nodes,
             workspace_query,
@@ -182,20 +190,11 @@ impl WorkflowUsecase {
         self.query.get_workflow_source(file_stem)
     }
 
-    pub fn get_workflow_dto(
-        &self,
-        file_stem: &str,
-    ) -> Result<Option<dto::WorkflowDto>, WorkflowError> {
-        let Some(workflow) = self.query.get_workflow(file_stem)? else {
-            return Ok(None);
-        };
-        let format = self.query.get_workflow_source_format(file_stem)?;
-        Ok(Some(dto::workflow_to_dto_with_source_format(
-            &workflow, format,
-        )))
+    pub fn get_workflow(&self, file_stem: &str) -> Result<WorkflowDefinition, WorkflowError> {
+        self.query.get_workflow(file_stem)
     }
 
-    pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
+    pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError> {
         self.query.get_facet(kind, key)
     }
 
@@ -263,11 +262,16 @@ impl WorkflowUsecase {
     }
 
     pub fn open_workflow_in_editor(&self, name: &str) -> Result<(), WorkflowError> {
-        self.editors.open_workflow(name)
+        self.definition_commands.open_in_editor(name)
+    }
+
+    /// サーバの定義フォルダを外部エディタで開く。
+    pub fn open_workflow_directory_in_editor(&self) -> Result<(), WorkflowError> {
+        self.definition_commands.open_directory_in_editor()
     }
 
     pub fn open_facet_in_editor(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        self.editors.open_facet(kind.dir_name(), key)
+        self.facet_commands.open_in_editor(kind, key)
     }
 
     pub fn diagnose_all(

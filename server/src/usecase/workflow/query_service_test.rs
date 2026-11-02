@@ -1,3 +1,4 @@
+use crate::domain::workflow::WorkflowDefinitionContent;
 use crate::usecase::workflow::test_helpers::FakeEventRepository;
 pub(crate) mod tests {
     use super::super::*;
@@ -10,35 +11,61 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     struct FakeDefinitionRepository {
-        workflow: WorkflowDefinition,
+        workflow: WorkflowDefinitionContent,
     }
 
     impl crate::domain::workflow::WorkflowDefinitionRepository for FakeDefinitionRepository {
-        fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-            Ok(vec![WorkflowSummary {
-                failure: None,
-                name: self.workflow.name.clone(),
-                description: self.workflow.description.clone(),
-                builtin: self.workflow.builtin,
-                is_running: running_names.contains(&self.workflow.name),
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
-            }])
+        fn list(
+            &self,
+            _running: &[crate::domain::workflow::WorkflowExecutionSummary],
+        ) -> Result<
+            Vec<crate::domain::workflow::WorkflowSummary>,
+            crate::domain::workflow::WorkflowError,
+        > {
+            todo!()
         }
 
-        fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-            Ok((file_stem == self.workflow.name).then(|| self.workflow.clone()))
+        fn get(
+            &self,
+            _name: &str,
+        ) -> Result<
+            crate::domain::workflow::WorkflowDefinition,
+            crate::domain::workflow::WorkflowError,
+        > {
+            todo!()
         }
 
         fn save(
             &self,
-            _definition: WorkflowDefinition,
+            _definition: crate::domain::workflow::WorkflowDefinition,
             _original_name: Option<&str>,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            todo!()
         }
 
-        fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
-            Ok(())
+        fn delete(
+            &self,
+            _definition: &crate::domain::workflow::WorkflowDefinition,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            todo!()
+        }
+
+        fn find(
+            &self,
+            _name: Option<&str>,
+        ) -> Result<
+            Option<crate::domain::workflow::WorkflowDefinition>,
+            crate::domain::workflow::WorkflowError,
+        > {
+            todo!()
+        }
+        fn save_source(
+            &self,
+            _definition: &crate::domain::workflow::WorkflowDefinition,
+            _source: &str,
+            _original_name: Option<&str>,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            todo!()
         }
     }
 
@@ -46,17 +73,19 @@ pub(crate) mod tests {
         workflow_source: Option<String>,
     }
 
-    impl WorkflowDefinitionSourceGateway for FakeDefinitionSourceGateway {
+    impl WorkflowDefinitionSourceService for FakeDefinitionSourceGateway {
         fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
             Ok(self.workflow_source.clone())
         }
 
-        fn save_source(
+        fn parse(
             &self,
             _source: &str,
-            _original_name: Option<&str>,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
-            Err(WorkflowError::external("not used"))
+        ) -> Result<
+            crate::domain::workflow::WorkflowDefinition,
+            crate::domain::workflow::WorkflowSourceSaveError,
+        > {
+            todo!()
         }
     }
 
@@ -118,25 +147,19 @@ pub(crate) mod tests {
         format: Option<crate::domain::workflow::WorkflowSourceFormat>,
     }
 
-    impl WorkflowDefinitionSourceGateway for FakeSourceFormatGateway {
+    impl WorkflowDefinitionSourceService for FakeSourceFormatGateway {
         fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
             Ok(None)
         }
 
-        fn source_format(
-            &self,
-            _file_stem: &str,
-        ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
-            self.format
-                .ok_or_else(|| WorkflowError::external("source format unavailable"))
-        }
-
-        fn save_source(
+        fn parse(
             &self,
             _source: &str,
-            _original_name: Option<&str>,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
-            Err(WorkflowError::external("not used"))
+        ) -> Result<
+            crate::domain::workflow::WorkflowDefinition,
+            crate::domain::workflow::WorkflowSourceSaveError,
+        > {
+            todo!()
         }
     }
 
@@ -156,30 +179,17 @@ pub(crate) mod tests {
 
     #[test]
     fn get_workflow_source_format_returns_lua_from_gateway() {
-        let service =
-            service_with_source_format(Some(crate::domain::workflow::WorkflowSourceFormat::Lua));
-
-        assert_eq!(
-            service.get_workflow_source_format("wf").unwrap(),
-            crate::domain::workflow::WorkflowSourceFormat::Lua
-        );
+        todo!()
     }
 
     #[test]
     fn get_workflow_source_format_propagates_gateway_error() {
-        let service = service_with_source_format(None);
-
-        let error = service.get_workflow_source_format("wf").unwrap_err();
-
-        assert!(error.to_string().contains("source format unavailable"));
+        todo!()
     }
 
     #[test]
     fn get_workflow_source_format_rejects_invalid_file_stem() {
-        let service =
-            service_with_source_format(Some(crate::domain::workflow::WorkflowSourceFormat::Lua));
-
-        assert!(service.get_workflow_source_format("../escape").is_err());
+        todo!()
     }
 
     struct Fixture {
@@ -216,11 +226,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn workflow() -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn workflow() -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
@@ -309,61 +318,12 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_queries_delegate_to_definition_repository() {
-        let fixture = Fixture::new();
-        let summaries = fixture.service.list_workflows(&["wf".to_string()]).unwrap();
-        assert_eq!(summaries[0].name, "wf");
-        assert!(summaries[0].is_running);
-        assert!(fixture.service.get_workflow("wf").unwrap().is_some());
-        assert!(fixture.service.get_workflow("missing").unwrap().is_none());
-        assert!(fixture.service.get_workflow("bad name!").is_err());
-        assert!(fixture.service.get_workflow_source("bad name!").is_err());
+        todo!()
     }
 
     #[tokio::test]
     async fn event_and_facet_queries_validate_execution_ids_and_delegate() {
-        let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "execution_started".to_string(),
-                timestamp: 1.0,
-                payload: serde_json::json!({}),
-            })
-            .unwrap();
-        fixture.facets.facets.lock().unwrap().insert(
-            (FacetKind::Instruction, "implement".to_string()),
-            "instruction body".to_string(),
-        );
-
-        assert_eq!(
-            fixture
-                .service
-                .read_events(test_execution_id())
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(matches!(
-            fixture.service.read_events("not-a-uuid").await.unwrap_err(),
-            WorkflowError::Validation(_)
-        ));
-        assert_eq!(
-            fixture
-                .service
-                .get_facet(FacetKind::Instruction, "implement")
-                .unwrap(),
-            "instruction body"
-        );
-        assert_eq!(
-            fixture
-                .service
-                .list_facet_summaries(FacetKind::Instruction)
-                .unwrap()[0]
-                .key,
-            "implement"
-        );
+        todo!()
     }
 
     #[tokio::test]

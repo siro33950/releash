@@ -3,7 +3,7 @@ mod command_preparation_tests {
     use crate::domain::workflow::entities::workflow_execution::{
         ExecutionTree, ExecutionTreeRestore,
     };
-    use crate::domain::workflow::{NodeDefinition, NodeKindName, WorkflowDefinition};
+    use crate::domain::workflow::{NodeDefinition, NodeKindName, WorkflowDefinitionContent};
 
     fn input_for(node_execution_id: &str) -> CommandExecutionInput {
         CommandExecutionInput {
@@ -23,7 +23,7 @@ mod command_preparation_tests {
     fn execution_with_running_command() -> (ExecutionTree, String) {
         let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution-1".to_string(),
-            workflow: WorkflowDefinition {
+            workflow: WorkflowDefinitionContent {
                 name: "wf".to_string(),
                 entry: "check".to_string(),
                 nodes: vec![NodeDefinition {

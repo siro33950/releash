@@ -65,57 +65,12 @@ impl Serialize for FacetError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FacetKind {
-    Policy,
-    Knowledge,
-    Instruction,
-}
-
-impl FacetKind {
-    /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
-    pub fn dir_name(&self) -> &str {
-        match self {
-            Self::Policy => "policies",
-            Self::Knowledge => "knowledge",
-            Self::Instruction => "instructions",
-        }
-    }
-
-    /// UI / CLI / DiagnosticReport が共有する正規識別子（単数形）。
-    /// backend command の `parse_domain_facet_kind` が受理する語彙と一致する。
-    pub fn canonical_name(&self) -> &str {
-        match self {
-            Self::Policy => "policy",
-            Self::Knowledge => "knowledge",
-            Self::Instruction => "instruction",
-        }
-    }
-}
+pub use crate::domain::workflow::FacetKind;
 
 pub use crate::domain::workflow::{FacetContents, WorkflowFacetContents};
 
-pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
-    if key.is_empty() {
-        return Err(FacetError::InvalidKey {
-            key: key.to_string(),
-        });
-    }
-    let mut chars = key.chars();
-    let first = chars.next().unwrap();
-    if !first.is_ascii_alphanumeric() {
-        return Err(FacetError::InvalidKey {
-            key: key.to_string(),
-        });
-    }
-    for c in chars {
-        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err(FacetError::InvalidKey {
-                key: key.to_string(),
-            });
-        }
-    }
-    Ok(())
+pub fn validate_facet_key(_key: &str) -> Result<(), FacetError> {
+    todo!()
 }
 
 pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String, FacetError> {
@@ -136,16 +91,11 @@ pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String,
 }
 
 pub(crate) fn facet_exists(
-    kind: FacetKind,
-    key: &str,
-    base_dir: &Path,
+    _kind: FacetKind,
+    _key: &str,
+    _base_dir: &Path,
 ) -> Result<bool, FacetError> {
-    validate_facet_key(key)?;
-    if builtin::is_builtin_facet(kind, key) {
-        return Ok(true);
-    }
-    let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    Ok(path.try_exists()?)
+    todo!()
 }
 
 pub fn save_facet(
@@ -162,23 +112,8 @@ pub fn save_facet(
     Ok(())
 }
 
-pub fn delete_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<(), FacetError> {
-    validate_facet_key(key)?;
-    let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    if path.exists() {
-        fs::remove_file(&path)?;
-        return Ok(());
-    }
-    if builtin::is_builtin_facet(kind, key) {
-        return Err(FacetError::BuiltinProtected {
-            kind,
-            key: key.to_string(),
-        });
-    }
-    Err(FacetError::NotFound {
-        kind,
-        key: key.to_string(),
-    })
+pub fn delete_facet(_kind: FacetKind, _key: &str, _base_dir: &Path) -> Result<(), FacetError> {
+    todo!()
 }
 
 pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, FacetError> {
@@ -218,47 +153,10 @@ pub fn extract_description(content: &str) -> String {
 }
 
 pub fn list_facet_summaries(
-    kind: FacetKind,
-    base_dir: &Path,
+    _kind: FacetKind,
+    _base_dir: &Path,
 ) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
-    let kind_name = kind.canonical_name().to_string();
-    let mut summaries = Vec::new();
-    let dir = base_dir.join(kind.dir_name());
-
-    let mut seen_keys = BTreeSet::new();
-    if dir.try_exists()? {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let content = fs::read_to_string(&path)?;
-                    summaries.push(super::schema::FacetSummary {
-                        key: stem.to_string(),
-                        kind: kind_name.clone(),
-                        description: extract_description(&content),
-                        builtin: builtin::is_builtin_facet(kind, stem),
-                    });
-                    seen_keys.insert(stem.to_string());
-                }
-            }
-        }
-    }
-
-    for key in builtin::list_builtin_facet_keys(kind) {
-        if !seen_keys.contains(key) {
-            let content = builtin::get_builtin_facet(kind, key).unwrap_or("");
-            summaries.push(super::schema::FacetSummary {
-                key: key.to_string(),
-                kind: kind_name.clone(),
-                description: extract_description(content),
-                builtin: true,
-            });
-        }
-    }
-
-    summaries.sort_by(|a, b| a.key.cmp(&b.key));
-    Ok(summaries)
+    todo!()
 }
 
 pub fn resolve_facet_path(

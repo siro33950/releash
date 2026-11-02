@@ -68,16 +68,7 @@ pub fn workflow_services(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> crate::usecase::workflow::WorkflowUsecase {
-    crate::adaptor::controller::wiring::build_workflow_services_with_gateways(
-        Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
-        data_dir,
-        Arc::new(crate::adaptor::gateway::workflow::PassthroughManagedWorktreeGateway),
-        Arc::new(crate::adaptor::gateway::workflow::NoopWorkflowExternalEditorGateway),
-        store,
-        None,
-        workflows_dir,
-    )
-    .0
+    todo!()
 }
 
 pub fn write_hook_failure(

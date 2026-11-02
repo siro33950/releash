@@ -53,10 +53,9 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_mapping_preserves_facet_refs_without_runtime_contents() {
-        let definition = domain::WorkflowDefinition {
+        let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "node".to_string(),
@@ -107,7 +106,7 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_mapping_round_trips_loop_guard() {
-        let definition = domain::WorkflowDefinition {
+        let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),
             entry: "main".to_string(),
             nodes: vec![
@@ -142,10 +141,9 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_mapping_round_trips_fanout_child_and_literal_items() {
-        let definition = domain::WorkflowDefinition {
+        let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "main".to_string(),
@@ -176,10 +174,9 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_definition_serializes_like_existing_wire_shape() {
-        let definition = domain::WorkflowDefinition {
+        let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: [(
                 "plan".to_string(),
                 domain::SchemaDef::Object {

@@ -14,14 +14,13 @@ pub(crate) mod tests {
     use releashd::test_support::integration::workflow::NodeKind;
     use releashd::test_support::integration::workflow::NodeKindName;
     use releashd::test_support::integration::workflow::SessionSpec;
-    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
     use releashd::test_support::integration::workflow::WorkflowEvent;
 
-    fn definition() -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn definition() -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "main".to_string(),

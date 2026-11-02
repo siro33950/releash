@@ -762,14 +762,14 @@ pub(super) fn restore_artifact_scope(
     root: &TreeRootFact,
     first: &NodeFactRecord,
     definition: &crate::domain::workflow::NodeDefinition,
-    workflow: &crate::domain::workflow::WorkflowDefinition,
+    workflow: &crate::domain::workflow::WorkflowDefinitionContent,
 ) -> ExecutionTreeAggregate {
     let mut aggregate = ExecutionTreeAggregate::restore_runtime(ExecutionTreeRestore {
         id: first.meta.tree_id.clone(),
-        workflow: crate::domain::workflow::WorkflowDefinition {
+        workflow: crate::domain::workflow::WorkflowDefinitionContent {
             name: root.workflow_name.clone(),
             description: String::new(),
-            builtin: false,
+
             schemas: workflow.schemas.clone(),
             nodes: std::iter::once(definition)
                 .chain(workflow.nodes.iter().filter(|candidate| {

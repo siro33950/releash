@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::domain::workflow::WorkflowError;
 
+/// Session の prompt を構成する Facet の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FacetKind {
     Policy,
@@ -9,7 +10,21 @@ pub enum FacetKind {
     Instruction,
 }
 
+impl std::str::FromStr for FacetKind {
+    type Err = WorkflowError;
+
+    /// Facet の種類を解釈し、解釈できない指定を拒否する。
+    fn from_str(_value: &str) -> Result<Self, Self::Err> {
+        todo!()
+    }
+}
+
 impl FacetKind {
+    /// Facet の種類の正規識別子を返す。
+    pub fn canonical_name(self) -> &'static str {
+        todo!()
+    }
+
     /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
     pub fn dir_name(self) -> &'static str {
         match self {
@@ -24,19 +39,14 @@ impl FacetKind {
 pub struct FacetKey(String);
 
 impl FacetKey {
-    pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
-        let value = value.into();
-        if value.trim().is_empty()
-            || value.starts_with('.')
-            || value.contains('/')
-            || value.contains('\\')
-            || value.contains("..")
-        {
-            return Err(WorkflowError::validation(format!(
-                "invalid facet key: {value}"
-            )));
-        }
-        Ok(Self(value))
+    /// Facet の識別子を返す。
+    pub fn as_str(&self) -> &str {
+        todo!()
+    }
+
+    /// Facet の key が英数字で始まり、英数字・ハイフン・アンダースコアだけを含むことを検証する。
+    pub fn new(_value: impl Into<String>) -> Result<Self, WorkflowError> {
+        todo!()
     }
 }
 

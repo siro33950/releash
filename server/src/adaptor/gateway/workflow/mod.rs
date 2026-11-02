@@ -12,7 +12,6 @@ pub(crate) mod definition_repository;
 pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_gateway;
 pub(crate) mod domain_mapping;
-pub(crate) mod editor_gateway;
 pub(crate) mod event;
 pub(crate) mod event_log_writer;
 pub(crate) mod event_repository;
@@ -49,9 +48,6 @@ pub(crate) use definition_repository::{
     WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
 };
 pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;
-pub(crate) use editor_gateway::WorkflowExternalEditorGateway;
 pub(crate) use event_repository::WorkflowEventLogRepository;
 pub(crate) use execution_archive_repository::ExecutionTreeArchiveFactRepository;
 pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;

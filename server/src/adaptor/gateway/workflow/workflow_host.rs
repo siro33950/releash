@@ -49,7 +49,7 @@ use crate::domain::workflow::{
     ContractValidationResult, FailureClassification, NodeExecutionFailureKind,
     SchemaDef as DomainSchemaDef,
 };
-use crate::domain::workflow::{NodeKindName, WorkflowDefinition};
+use crate::domain::workflow::{NodeKindName, WorkflowDefinitionContent};
 use crate::infrastructure::process::command_runner::{
     self as workflow_command_runner, CommandRunOutput, CommandRunnerError,
 };
@@ -133,7 +133,7 @@ pub struct ControlPlaneCommitCandidate<'a> {
 #[derive(Clone)]
 pub struct WorkflowExecutionInsert {
     execution_id: String,
-    workflow: WorkflowDefinition,
+    workflow: WorkflowDefinitionContent,
     worktree_path: String,
     request: Option<String>,
     created_from: ExecutionOrigin,
@@ -550,7 +550,7 @@ impl WorkflowRuntimeHost {
 
     fn ensure_workflow_providers_available(
         &self,
-        workflow: &WorkflowDefinition,
+        workflow: &WorkflowDefinitionContent,
     ) -> Result<(), WorkflowRuntimeError> {
         for node in &workflow.nodes {
             let Some(session) = node.session() else {
@@ -575,7 +575,7 @@ impl WorkflowRuntimeHost {
 
     fn resolve_facet_contents_for_workflow(
         &self,
-        workflow: &WorkflowDefinition,
+        workflow: &WorkflowDefinitionContent,
     ) -> Result<WorkflowFacetContents, WorkflowRuntimeError> {
         crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets(
             workflow,
@@ -587,7 +587,7 @@ impl WorkflowRuntimeHost {
     async fn facet_contents_for_execution(
         &self,
         execution_id: &str,
-        workflow: &WorkflowDefinition,
+        workflow: &WorkflowDefinitionContent,
     ) -> Result<WorkflowFacetContents, WorkflowRuntimeError> {
         if let Some(contents) = self
             .execution_facet_contents
@@ -712,7 +712,7 @@ impl WorkflowRuntimeHost {
     async fn start_workflow(
         &self,
         app: &WorkflowRuntimeDependencies,
-        workflow: WorkflowDefinition,
+        workflow: WorkflowDefinitionContent,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -835,7 +835,7 @@ impl WorkflowRuntimeHost {
     pub(crate) async fn resolve_start_execution_workflow(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowRuntimeError> {
+    ) -> Result<WorkflowDefinitionContent, WorkflowRuntimeError> {
         crate::domain::workflow::validation::validate_name(workflow_name)
             .map_err(|e| WorkflowRuntimeError::ValidationError(format!("validation_error: {e}")))?;
         self.workflow_resolver
@@ -847,7 +847,7 @@ impl WorkflowRuntimeHost {
     pub async fn start_resolved_workflow(
         &self,
         app: &WorkflowRuntimeDependencies,
-        workflow: WorkflowDefinition,
+        workflow: WorkflowDefinitionContent,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -2379,7 +2379,7 @@ impl<'a> ControlPlaneCommitCandidate<'a> {
 impl WorkflowExecutionInsert {
     pub fn test_new(
         execution_id: String,
-        workflow: WorkflowDefinition,
+        workflow: WorkflowDefinitionContent,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,

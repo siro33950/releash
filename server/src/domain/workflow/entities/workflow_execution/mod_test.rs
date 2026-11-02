@@ -1447,7 +1447,7 @@ pub(crate) mod tests {
     fn restored_execution(state: RuntimeExecutionState) -> ExecutionTree {
         ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution-1".to_string(),
-            workflow: WorkflowDefinition {
+            workflow: WorkflowDefinitionContent {
                 name: "workflow".to_string(),
                 nodes: vec![crate::domain::workflow::NodeDefinition {
                     name: "implement".to_string(),
@@ -2427,7 +2427,7 @@ pub(crate) mod tests {
     fn tree_execution(nodes: Vec<NodeDefinition>) -> ExecutionTree {
         ExecutionTree::restore_runtime(ExecutionTreeRestore {
             id: "execution-1".to_string(),
-            workflow: WorkflowDefinition {
+            workflow: WorkflowDefinitionContent {
                 name: "tree".to_string(),
                 entry: "main".to_string(),
                 nodes,

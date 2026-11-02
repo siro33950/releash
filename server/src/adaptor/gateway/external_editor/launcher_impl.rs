@@ -5,6 +5,15 @@ use crate::domain::external_editor::EditorLauncherGateway;
 pub struct NativeEditorLauncherGateway;
 
 impl EditorLauncherGateway for NativeEditorLauncherGateway {
+    fn open_paths(
+        &self,
+        _paths: &[std::path::PathBuf],
+        _editor: &str,
+        _label: &str,
+    ) -> Result<(), EditorError> {
+        todo!()
+    }
+
     fn open_path(&self, path: &str, editor: &str, label: &str) -> Result<(), EditorError> {
         open_path_with(path, editor, label, |path, editor| match editor {
             Some(editor) => open::with_detached(path, editor),

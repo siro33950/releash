@@ -12,7 +12,7 @@ use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::NodeKindName;
 
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowDefinitionFileRepository;
 use releashd::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
 use releashd::test_support::integration::workflow::WorkflowEvent;
@@ -213,7 +213,7 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
         ))
         .unwrap();
         let id = "00000000-0000-4000-8000-000000001733";
-        let definition: WorkflowDefinition = serde_saphyr::from_str(&format!(
+        let definition: WorkflowDefinitionContent = serde_saphyr::from_str(&format!(
             "name: test\ndescription: test\nnodes:\n  main: {{worktree: isolated, {kind}: {{children: [work]}}}}\n  work: {{worktree: isolated, session: {{provider: codex}}}}"
         )).unwrap();
         let node_kind = definition.node_by_name("main").unwrap().kind_name();
@@ -354,7 +354,7 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
     ))
     .unwrap();
     let id = "00000000-0000-4000-8000-000000001733";
-    let definition: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").unwrap();
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {worktree: isolated, fanout: {items: [], children: [work]}}\n  work: {session: {provider: codex}}").unwrap();
     releashd::test_support::integration::workflow::append_facts_for_events(
         &store,
         &[

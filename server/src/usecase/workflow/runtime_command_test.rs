@@ -1,6 +1,6 @@
 pub(crate) mod tests {
     use super::super::*;
-    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition};
+    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinitionContent};
     use std::sync::Mutex;
 
     mod runtime_command_tests {
@@ -141,9 +141,9 @@ pub(crate) mod tests {
         async fn resolve_start_execution_workflow(
             &self,
             _workflow_name: &str,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
+        ) -> Result<WorkflowDefinitionContent, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_workflow");
-            Ok(WorkflowDefinition::default())
+            Ok(WorkflowDefinitionContent::default())
         }
 
         async fn start_resolved_execution(

@@ -6,14 +6,14 @@ use crate::domain::workflow as domain;
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 
 pub(crate) fn domain_workflow_to_schema(
-    definition: &domain::WorkflowDefinition,
+    definition: &domain::WorkflowDefinitionContent,
 ) -> Result<crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml, domain::WorkflowError>
 {
     Ok(
         crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
             name: definition.name.clone(),
             description: definition.description.clone(),
-            builtin: definition.builtin,
+
             schemas: definition
                 .schemas
                 .iter()
@@ -27,7 +27,7 @@ pub(crate) fn domain_workflow_to_schema(
 
 pub fn schema_workflow_to_domain(
     workflow: crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml,
-) -> Result<domain::WorkflowDefinition, domain::WorkflowError> {
+) -> Result<domain::WorkflowDefinitionContent, domain::WorkflowError> {
     Ok(crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(&workflow))
 }
 

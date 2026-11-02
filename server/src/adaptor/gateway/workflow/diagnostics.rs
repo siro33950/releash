@@ -1900,27 +1900,7 @@ fn diagnose_workflow(
     workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
     facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
 ) {
-    // ビルトイン info
-    if wf.builtin {
-        let item = DiagnosticItem::new(
-            "WFI000",
-            Severity::Info,
-            DiagnosticStage::Resolve,
-            None,
-            format!("ビルトインワークフロー '{name}'"),
-        )
-        .workflow(name.to_owned());
-        add_diagnostic(items, workflow_summaries, name, item);
-    }
-
-    check_workflow_facet_references(
-        wf,
-        name,
-        all_facet_keys,
-        items,
-        workflow_summaries,
-        facet_usage,
-    );
+    todo!()
 }
 
 fn check_workflow_facet_references(

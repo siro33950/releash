@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_review_scanの辺_正本サンプルの統合mapで既存の遷移先を維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../workflows/examples/full-cycle-development.yml"
     )))
@@ -31,7 +31,7 @@ fn test_review_scanの辺_正本サンプルの統合mapで既存の遷移先を
 #[test]
 fn test_参照schema集約_辺の既存診断messageを維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: routing-message
 description: test
@@ -71,7 +71,7 @@ nodes:
 #[test]
 fn test_fanoutの辺_名前と添字とsequence経由の値に従って遷移する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-routing.yml"
     )))
@@ -134,7 +134,7 @@ fn test_fanoutの辺_名前と添字とsequence経由の値に従って遷移す
 #[test]
 fn test_fanoutの辺_switchのslot欠番は網羅ならエラーで非網羅ならnextへ遷移する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-routing.yml"
     )))
@@ -175,7 +175,7 @@ fn test_fanoutの辺_switchのslot欠番は網羅ならエラーで非網羅な�
 #[test]
 fn test_fanoutの辺_未知段と非objectとmap終端の診断messageを維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-routing.yml"
     )))
@@ -196,7 +196,7 @@ fn test_fanoutの辺_未知段と非objectとmap終端の診断messageを維持�
 #[test]
 fn test_正本サンプルのfanout集約後の辺_整合確認の判断で既存の遷移先を維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../workflows/examples/full-cycle-development.yml"
     )))
@@ -343,7 +343,7 @@ fn test_述語の辺_合成子のmapを経由して単一参照と同じ値を�
             &format!("on: {field}"),
             &format!("on: {{and: [{field}, {{or: [{field}]}}]}}"),
         );
-        let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
+        let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(&source).unwrap();
         let sequence = workflow.entry_node().unwrap().sequence().unwrap();
         // When / Then
         assert!(validate_rules(&workflow).is_empty());
@@ -411,15 +411,15 @@ pub(crate) mod routing_tests {
         }
     }
 
-    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             nodes,
             ..Default::default()
         }
     }
 
-    fn node_index(workflow: &WorkflowDefinition, name: &str) -> usize {
+    fn node_index(workflow: &WorkflowDefinitionContent, name: &str) -> usize {
         workflow
             .nodes
             .iter()
@@ -428,7 +428,7 @@ pub(crate) mod routing_tests {
     }
 
     fn route_from(
-        workflow: &WorkflowDefinition,
+        workflow: &WorkflowDefinitionContent,
         name: &str,
         artifact: Option<&Value>,
     ) -> RouteDecision {

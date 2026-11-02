@@ -153,7 +153,6 @@ pub(crate) mod tests {
     use releashd::test_support::integration::platform::build_workflow_services_with_gateways;
     use releashd::test_support::integration::platform::workflow_read;
 
-    use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
     use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     use std::sync::Arc;
 
@@ -212,42 +211,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     pub async fn b006_all_client_surfaces_use_the_production_workspace_query_contract() {
-        // Given: the production composition root owns one live query object,
-        // and the standalone loopback composition opens the same SQLite
-        // authority through its read-only backend.
-        let root = tempfile::tempdir().unwrap();
-        let store = LocalEventStore::open(
-            releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
-                root.path().to_path_buf(),
-                std::sync::Arc::new(
-                    releashd::test_support::integration::platform::RetryLimiter::new(),
-                ),
-            ),
-        )
-        .unwrap();
-        let workspace = root
-            .path()
-            .canonicalize()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        seed_b006_execution(&store, &workspace).await;
-        let (workflow, query) = build_workflow_services_with_gateways(
-            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-            root.path(),
-            Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
-            store.clone(),
-            None,
-            None,
-        );
-        let tree = workflow.workspace_tree(&workspace).await.unwrap();
-        // Then
-        assert!(!tree.visible().roots().is_empty());
-        assert_eq!(
-            query.execution_summaries(None, None).await.unwrap().len(),
-            1
-        );
+        todo!()
     }
 }
 

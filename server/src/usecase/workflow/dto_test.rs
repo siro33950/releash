@@ -12,7 +12,8 @@ fn test_述語の定義dto_全ての参照と論理構造と遷移先を保持�
         let source =
             include_str!("../../adaptor/gateway/workflow/fixtures/valid/predicate-routing.yml")
                 .replace("{and: [passed, {or: [clean, skipped]}]}", &on.to_string());
-        let definition: domain::WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
+        let definition: domain::WorkflowDefinitionContent =
+            serde_saphyr::from_str(&source).unwrap();
         // When
         let value = serde_json::to_value(workflow_to_dto(&definition)).unwrap();
         // Then
@@ -90,7 +91,7 @@ fn test_completion表示dto_承認要求はmapで示し要求なしは省略す�
 #[test]
 fn test_delegate表示dto_配線と述語と上限を含むcompletionを保持する() {
     // Given
-    let workflow: domain::WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {require: approval, delegate: {child: check, inputs: {task: main.task}, when: child.ok, max_iterations: 2}}}\n  check: {command: check}").unwrap();
+    let workflow: domain::WorkflowDefinitionContent = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {require: approval, delegate: {child: check, inputs: {task: main.task}, when: child.ok, max_iterations: 2}}}\n  check: {command: check}").unwrap();
     // When
     let dto = node_to_dto(workflow.node_by_name("main").unwrap());
     let value = serde_json::to_value(&dto).unwrap();
@@ -186,10 +187,10 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_dto_exposes_lua_only_as_definition_source_metadata() {
-        let workflow = domain::WorkflowDefinition {
+        let workflow = domain::WorkflowDefinitionContent {
             name: "lua-workflow".to_string(),
             description: "Lua".to_string(),
-            ..domain::WorkflowDefinition::default()
+            ..domain::WorkflowDefinitionContent::default()
         };
 
         let value = serde_json::to_value(workflow_to_dto_with_source_format(
@@ -207,7 +208,7 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_to_dto_maps_knowledge_refs_to_ordered_json_array() {
-        let definition = domain::WorkflowDefinition {
+        let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
             nodes: vec![domain::NodeDefinition {
@@ -251,7 +252,7 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_to_dto_preserves_loop_guard() {
-        let definition = domain::WorkflowDefinition {
+        let definition = domain::WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
             nodes: vec![

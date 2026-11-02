@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind, NodeKindName, TokenUsage,
-    WorkflowDefinition,
+    WorkflowDefinitionContent,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub enum WorkflowEvent {
         #[serde(with = "execution_origin_serde")]
         created_from: ExecutionOrigin,
         request: String,
-        definition: WorkflowDefinition,
+        definition: WorkflowDefinitionContent,
         timestamp: f64,
     },
     NodeStarted {

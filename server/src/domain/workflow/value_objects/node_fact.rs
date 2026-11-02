@@ -8,7 +8,8 @@ use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::{
     ContractViolationRecord, ExecutionOrigin, ExecutionParentRef, NodeCompletion, NodeDefinition,
-    NodeExecutionFailureKind, NodeKind, NodeKindName, SessionSpec, TokenUsage, WorkflowDefinition,
+    NodeExecutionFailureKind, NodeKind, NodeKindName, SessionSpec, TokenUsage,
+    WorkflowDefinitionContent,
 };
 
 #[cfg(test)]
@@ -118,7 +119,7 @@ pub struct TreeRootFact {
     pub created_from: ExecutionOrigin,
     pub request: String,
     pub workflow_name: String,
-    pub definition: Option<WorkflowDefinition>,
+    pub definition: Option<WorkflowDefinitionContent>,
     pub launched_as: ExecutionTreeLaunch,
 }
 
@@ -198,10 +199,10 @@ impl SessionExecutionTreeRootFacts {
                     created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
                     workflow_name: node_name.clone(),
-                    definition: Some(WorkflowDefinition {
+                    definition: Some(WorkflowDefinitionContent {
                         name: node_name.clone(),
                         description: String::new(),
-                        builtin: false,
+
                         schemas: Default::default(),
                         nodes: vec![NodeDefinition {
                             name: node_name.clone(),

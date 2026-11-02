@@ -7,7 +7,7 @@ use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
 use crate::domain::workflow::services::projection as workflow_projection;
 #[cfg(any(test, feature = "test-support"))]
 use crate::domain::workflow::{
-    ExecutionOrigin, NodeHistoryEntry, RuntimeArtifact, TokenUsage, WorkflowDefinition,
+    ExecutionOrigin, NodeHistoryEntry, RuntimeArtifact, TokenUsage, WorkflowDefinitionContent,
 };
 
 use crate::domain::workflow::RuntimeExecutionState;
@@ -35,7 +35,7 @@ pub struct RuntimeCommitSnapshot {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) node_history: Vec<NodeHistoryEntry>,
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) workflow_definition: WorkflowDefinition,
+    pub(crate) workflow_definition: WorkflowDefinitionContent,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) total_token_usage: TokenUsage,
     /// 全スコープの Artifact をフラット化した互換 read（CLI / 表示用）。

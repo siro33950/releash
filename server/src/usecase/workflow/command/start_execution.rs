@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition, WorkflowError};
+use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinitionContent, WorkflowError};
 use crate::usecase::workflow::ports::WorkflowStartExecutionGateway;
 
 use super::preflight::WorkflowRuntimeCommandPreflight;
@@ -16,7 +16,7 @@ pub struct StartExecutionCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedStartExecutionCommand {
     pub workflow_name: String,
-    pub workflow: WorkflowDefinition,
+    pub workflow: WorkflowDefinitionContent,
     pub worktree_path: String,
     pub request: Option<String>,
     pub created_from: ExecutionOrigin,

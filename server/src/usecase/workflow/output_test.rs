@@ -2,7 +2,7 @@ pub(crate) mod tests {
     use super::super::*;
     use crate::domain::workflow::{
         ExecutionTree, ExecutionTreeId, FacetRefs, NodeDefinition, NodeKind, SchemaDef,
-        SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowSummary,
+        SessionSpec, WorkflowDefinitionContent, WorkflowDefinitionRepository, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::WorkflowEventDraft;
     use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
@@ -13,24 +13,57 @@ pub(crate) mod tests {
     struct NoopDefinitionRepository;
 
     impl WorkflowDefinitionRepository for NoopDefinitionRepository {
-        fn list(&self, _running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-            Ok(Vec::new())
+        fn list(
+            &self,
+            _running: &[crate::domain::workflow::WorkflowExecutionSummary],
+        ) -> Result<
+            Vec<crate::domain::workflow::WorkflowSummary>,
+            crate::domain::workflow::WorkflowError,
+        > {
+            todo!()
         }
 
-        fn get(&self, _file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-            Ok(None)
+        fn get(
+            &self,
+            _name: &str,
+        ) -> Result<
+            crate::domain::workflow::WorkflowDefinition,
+            crate::domain::workflow::WorkflowError,
+        > {
+            todo!()
         }
 
         fn save(
             &self,
-            _definition: WorkflowDefinition,
+            _definition: crate::domain::workflow::WorkflowDefinition,
             _original_name: Option<&str>,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            todo!()
         }
 
-        fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
-            Ok(())
+        fn delete(
+            &self,
+            _definition: &crate::domain::workflow::WorkflowDefinition,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            todo!()
+        }
+
+        fn find(
+            &self,
+            _name: Option<&str>,
+        ) -> Result<
+            Option<crate::domain::workflow::WorkflowDefinition>,
+            crate::domain::workflow::WorkflowError,
+        > {
+            todo!()
+        }
+        fn save_source(
+            &self,
+            _definition: &crate::domain::workflow::WorkflowDefinition,
+            _source: &str,
+            _original_name: Option<&str>,
+        ) -> Result<(), crate::domain::workflow::WorkflowError> {
+            todo!()
         }
     }
 
@@ -78,11 +111,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn definition_with_artifact_contract(contract: &str) -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn definition_with_artifact_contract(contract: &str) -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: BTreeMap::from([(
                 contract.to_string(),
                 SchemaDef::Object {
@@ -109,7 +141,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn execution_started(execution_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
+    fn execution_started(
+        execution_id: &str,
+        definition: WorkflowDefinitionContent,
+    ) -> WorkflowEventDraft {
         WorkflowEventDraft {
             execution_id: execution_id.to_string(),
             event_kind: "started".to_string(),
