@@ -1,6 +1,5 @@
 name: 06_handle-pr-review
 description: 現在のブランチに紐づくPRの未解決review commentを取り込み、修正方針を1つのSessionで順に決定して修正し、人間の確認後にcommit、push、replyを行う。
-builtin: true
 
 schemas:
   workflow-text: string

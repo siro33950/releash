@@ -104,7 +104,7 @@ pub enum DiagnosticScope {
 }
 
 type LoadedWorkflowDiagnostics =
-    Result<(WorkflowDefinitionYaml, Vec<DiagnosticItem>), Vec<DiagnosticItem>>;
+    Result<(WorkflowDefinitionYaml, Vec<DiagnosticItem>, bool), Vec<DiagnosticItem>>;
 type NamedWorkflowDiagnostics = (String, LoadedWorkflowDiagnostics);
 
 #[derive(Debug, Clone)]
@@ -1481,7 +1481,7 @@ fn diagnose_with_scope(
         DiagnosticScope::ReachableFromDirectory => workflows
             .iter()
             .filter_map(|(_, result)| result.as_ref().ok())
-            .flat_map(|(workflow, _)| collect_reachable_facet_keys(workflow, facets_base_dir))
+            .flat_map(|(workflow, _, _)| collect_reachable_facet_keys(workflow, facets_base_dir))
             .collect(),
     };
 
@@ -1499,7 +1499,7 @@ fn diagnose_with_scope(
                     );
                 }
             }
-            Ok((wf, source_diagnostics)) => {
+            Ok((wf, source_diagnostics, builtin)) => {
                 for item in source_diagnostics {
                     add_diagnostic(
                         &mut items,
@@ -1510,6 +1510,7 @@ fn diagnose_with_scope(
                 }
                 diagnose_workflow(
                     wf,
+                    *builtin,
                     name,
                     &all_facet_keys,
                     &mut items,
@@ -1525,15 +1526,16 @@ fn diagnose_with_scope(
             result
                 .as_ref()
                 .ok()
-                .map(|(workflow, _)| (workflow.name.as_str(), workflow))
+                .map(|(workflow, _, _)| (workflow.name.as_str(), workflow))
         })
         .collect();
 
     // --- ファセット診断 ---
     for kind in &ALL_FACET_KINDS {
-        let summaries = facet::list_facet_summaries(*kind, facets_base_dir)?;
-        for summary in &summaries {
-            let facet_id = format!("{}/{}", kind.canonical_name(), summary.key);
+        let keys = facet::list_facets(*kind, facets_base_dir)?;
+        for key in &keys {
+            let (source, content) = facet::load_facet_with_source(*kind, key, facets_base_dir)?;
+            let facet_id = format!("{}/{}", kind.canonical_name(), key);
             if scope == DiagnosticScope::ReachableFromDirectory {
                 if !all_facet_keys.contains(&facet_id) {
                     continue;
@@ -1543,46 +1545,38 @@ fn diagnose_with_scope(
             }
 
             // ファセットキー命名規則チェック
-            if facet::validate_facet_key(&summary.key).is_err() {
+            if facet::validate_facet_key(key).is_err() {
                 let item = DiagnosticItem::new(
                     "FAC001",
                     Severity::Error,
                     DiagnosticStage::Resolve,
                     None,
-                    format!(
-                        "ファセットキー '{}' が命名規則に違反しています",
-                        summary.key
-                    ),
+                    format!("ファセットキー '{}' が命名規則に違反しています", key),
                 )
-                .facet(summary.key.clone(), kind.canonical_name().to_string())
+                .facet(key.clone(), kind.canonical_name().to_string())
                 .field("key");
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
                 continue;
             }
 
             // ビルトイン info
-            if summary.builtin {
+            if source.is_builtin() {
                 let item = DiagnosticItem::new(
                     "FAC000",
                     Severity::Info,
                     DiagnosticStage::Resolve,
                     None,
-                    format!(
-                        "ビルトインファセット '{}' ({})",
-                        summary.key,
-                        kind.canonical_name()
-                    ),
+                    format!("ビルトインファセット '{}' ({})", key, kind.canonical_name()),
                 )
-                .facet(summary.key.clone(), kind.canonical_name().to_string());
+                .facet(key.clone(), kind.canonical_name().to_string());
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
             }
 
             // テンプレート変数チェック
             {
-                let content = facet::load_facet(*kind, &summary.key, facets_base_dir)?;
                 check_template_variables(
                     &content,
-                    &summary.key,
+                    key,
                     kind.canonical_name(),
                     &facet_id,
                     &mut items,
@@ -1590,7 +1584,7 @@ fn diagnose_with_scope(
                 );
                 check_facet_template_references(
                     &content,
-                    &summary.key,
+                    key,
                     kind.canonical_name(),
                     &facet_id,
                     &workflow_lookup,
@@ -1742,7 +1736,7 @@ pub fn load_workflows_in_scope(
                 let diagnosis =
                     super::storage::diagnose_workflow_file(&path, &content, dir, facets_base_dir);
                 if let Some(workflow) = diagnosis.workflow {
-                    Ok((workflow, diagnosis.diagnostics))
+                    Ok((workflow, diagnosis.diagnostics, false))
                 } else {
                     Err(diagnosis.diagnostics)
                 }
@@ -1765,7 +1759,7 @@ pub fn load_workflows_in_scope(
         for summary in builtin::list_builtin_workflows() {
             if !seen.contains(&summary.name) {
                 match builtin::load_builtin_workflow_resolved(&summary.name, facets_base_dir) {
-                    Ok(Some(wf)) => results.push((summary.name, Ok((wf, Vec::new())))),
+                    Ok(Some(wf)) => results.push((summary.name, Ok((wf, Vec::new(), true)))),
                     Ok(None) => results.push((
                         summary.name.clone(),
                         Err(vec![DiagnosticItem::new(
@@ -1894,13 +1888,34 @@ fn invalid_rule_field_name(kind: InvalidRuleKind) -> &'static str {
 
 fn diagnose_workflow(
     wf: &WorkflowDefinitionYaml,
+    builtin: bool,
     name: &str,
     all_facet_keys: &HashSet<String>,
     items: &mut Vec<DiagnosticItem>,
     workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
     facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
 ) {
-    todo!()
+    // ビルトイン info
+    if builtin {
+        let item = DiagnosticItem::new(
+            "WFI000",
+            Severity::Info,
+            DiagnosticStage::Resolve,
+            None,
+            format!("ビルトインワークフロー '{name}'"),
+        )
+        .workflow(name.to_owned());
+        add_diagnostic(items, workflow_summaries, name, item);
+    }
+
+    check_workflow_facet_references(
+        wf,
+        name,
+        all_facet_keys,
+        items,
+        workflow_summaries,
+        facet_usage,
+    );
 }
 
 fn check_workflow_facet_references(

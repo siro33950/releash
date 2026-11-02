@@ -211,7 +211,6 @@ pub(crate) mod tests {
             serde_json::json!({
                 "name": "wf",
                 "description": "desc",
-                "builtin": false,
                 "schemas": {
                     "plan": {
                         "type": "object"

@@ -11,6 +11,7 @@ pub(crate) mod builtin;
 pub(crate) mod definition_repository;
 pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_gateway;
+pub(crate) mod directory_service;
 pub(crate) mod domain_mapping;
 pub(crate) mod event;
 pub(crate) mod event_log_writer;

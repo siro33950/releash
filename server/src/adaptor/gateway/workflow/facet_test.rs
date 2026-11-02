@@ -21,29 +21,6 @@ fn invalid_keys() {
 }
 
 #[test]
-fn extract_description_heading() {
-    assert_eq!(extract_description("# My Facet\nContent here"), "My Facet");
-}
-
-#[test]
-fn extract_description_no_heading() {
-    assert_eq!(
-        extract_description("Some content\nMore content"),
-        "Some content"
-    );
-}
-
-#[test]
-fn extract_description_empty() {
-    assert_eq!(extract_description(""), "");
-}
-
-#[test]
-fn extract_description_leading_blank_lines() {
-    assert_eq!(extract_description("\n\n# Title\nBody"), "Title");
-}
-
-#[test]
 fn find_undefined_template_variables_returns_only_invalid_reference_syntax() {
     let content = "{{ goal }} {{ plan.summary }} {{ plan.a.b }} {{ bad ref }}";
     let undefined = prompt_rendering::find_undefined_template_variables(content);

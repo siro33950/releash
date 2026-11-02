@@ -122,6 +122,8 @@ mod adaptor_gateway_workflow_delegate_diagnostics;
 mod adaptor_gateway_workflow_diagnostics;
 #[path = "internal/adaptor_gateway_workflow_diagnostics_gateway.rs"]
 mod adaptor_gateway_workflow_diagnostics_gateway;
+#[path = "internal/adaptor_gateway_workflow_directory_service.rs"]
+mod adaptor_gateway_workflow_directory_service;
 #[path = "internal/adaptor_gateway_workflow_event_repository.rs"]
 mod adaptor_gateway_workflow_event_repository;
 #[path = "internal/adaptor_gateway_workflow_execution_archive_repository.rs"]

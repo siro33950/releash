@@ -233,17 +233,13 @@ pub fn list_facets_includes_builtin_keys() {
 }
 
 #[test]
-pub fn delete_builtin_facet_is_protected() {
+pub fn test_facet削除_利用者ファイルのないbuiltin名はnot_found() {
     let tmp = TempDir::new().unwrap();
-    // ビルトインキーの削除はBuiltinProtectedエラー
     let builtin_keys =
         releashd::test_support::integration::workflow::list_builtin_facet_keys(FacetKind::Policy);
     if let Some(key) = builtin_keys.first() {
         let result = delete_facet(FacetKind::Policy, key, tmp.path());
-        assert!(matches!(
-            result.unwrap_err(),
-            FacetError::BuiltinProtected { .. }
-        ));
+        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 }
 

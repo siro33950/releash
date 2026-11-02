@@ -135,7 +135,7 @@ impl fmt::Display for BuiltinError {
 
 impl std::error::Error for BuiltinError {}
 
-/// 共通 load パイプライン: parse → builtin flag 設定 → validation → facet 解決後参照検証。
+/// 共通 load パイプライン: parse → validation → facet 解決後参照検証。
 ///
 /// [02] schema 境界: built-in と user-authored YAML の load 経路を統一する。
 /// 解決済み facet 本文は gateway 側 read model として検証し、Workflow definition には
@@ -151,7 +151,54 @@ pub fn load_builtin_workflow_resolved(
     name: &str,
     base_facets_dir: &std::path::Path,
 ) -> Result<Option<WorkflowDefinitionYaml>, BuiltinError> {
-    todo!()
+    let Some(entry) = BUILTINS
+        .iter()
+        .find(|e| e.filename.strip_suffix(".yml") == Some(name))
+    else {
+        return Ok(None);
+    };
+    let diagnosis = diagnostics::diagnose_workflow_source(entry.content, Some(name));
+    if diagnosis.has_errors() {
+        return Err(BuiltinError::Diagnostics {
+            filename: entry.filename,
+            diagnostics: diagnosis.diagnostics,
+        });
+    }
+    let wf: WorkflowDefinitionYaml = diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
+        filename: entry.filename,
+        message: "workflow source could not be parsed".to_string(),
+    })?;
+    validation::validate(&workflow_definition_to_domain(&wf)).map_err(|err| {
+        BuiltinError::Validation {
+            filename: entry.filename,
+            source: err,
+        }
+    })?;
+    if let Err(err) = storage::resolve_and_validate_workflow_facets(&wf, base_facets_dir) {
+        return Err(match err {
+            storage::StorageError::FacetResolution(source) => BuiltinError::FacetResolution {
+                filename: entry.filename,
+                source,
+            },
+            storage::StorageError::Validation(source) => BuiltinError::Validation {
+                filename: entry.filename,
+                source,
+            },
+            storage::StorageError::Diagnostics(diagnostics) => BuiltinError::Diagnostics {
+                filename: entry.filename,
+                diagnostics,
+            },
+            other => BuiltinError::Validation {
+                filename: entry.filename,
+                source: validation::ValidationError::InvalidArtifactReference {
+                    reference: entry.filename.to_string(),
+                    kind: validation::InvalidArtifactReferenceKind::InvalidInputRef,
+                    reason: other.to_string(),
+                },
+            },
+        });
+    }
+    Ok(Some(wf))
 }
 
 /// 同梱 YAML を再 parse せず、`BUILTINS` メタデータから直接 `Summary` を組み立てる。
