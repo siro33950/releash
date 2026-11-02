@@ -831,6 +831,7 @@ pub mod workflow {
     pub use crate::adaptor::controller::client::workflow::list_facet_summaries_inner;
     pub use crate::adaptor::controller::client::workflow::list_facets_inner;
     pub use crate::adaptor::controller::client::workflow::shared::register_shared;
+    pub use crate::adaptor::gateway::workflow::directory_service::WorkflowDirectoryFileService;
     pub use crate::adaptor::gateway::workflow::stored_definition::decode_started;
     pub use crate::adaptor::gateway::workflow::test_helpers::definition;
     pub use crate::adaptor::gateway::workflow::test_helpers::node_started;
@@ -846,6 +847,9 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::InputParameterRef;
     pub use crate::domain::workflow::value_objects::field_path::FieldPath;
     pub use crate::domain::workflow::ApprovalGrantedFact;
+    pub use crate::domain::workflow::{
+        WorkflowDirectory, WorkflowDirectoryService, WorkflowSource,
+    };
     pub use crate::usecase::workflow::dto::facet_summary_to_dto;
     pub use crate::usecase::workflow::node_startup::NodeStartupGateway;
     pub use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;

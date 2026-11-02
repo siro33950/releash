@@ -21,8 +21,24 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn sample_workflow(name: &str, builtin: bool) -> WorkflowDefinitionYaml {
-    todo!()
+fn sample_workflow(name: &str, _builtin: bool) -> WorkflowDefinitionYaml {
+    WorkflowDefinitionYaml {
+        name: name.to_string(),
+        description: format!("{name} workflow"),
+        schemas: Default::default(),
+        nodes: vec![NodeDefinition {
+            name: "main".to_string(),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some("review-acceptance".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..NodeDefinition::default()
+        }],
+        entry: "main".to_string(),
+    }
 }
 
 fn builtin_workflow_names() -> Vec<String> {
@@ -362,7 +378,7 @@ pub fn delete_workflow_success() {
 }
 
 #[test]
-pub fn delete_builtin_workflow_fails() {
+pub fn test_定義削除_利用者ファイルのないbuiltin名はnot_found() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
 
@@ -370,7 +386,7 @@ pub fn delete_builtin_workflow_fails() {
     let result = delete_workflow(dir, &builtin_name);
     assert!(matches!(
         result.unwrap_err(),
-        StorageError::BuiltinProtected { ref name } if name == &builtin_name
+        StorageError::NotFound { ref name } if name == &builtin_name
     ));
 }
 
@@ -469,7 +485,6 @@ pub fn save_workflow_new_with_duplicate_name_detected() {
 
 #[test]
 pub fn delete_open_workflow_in_editor_builtin_guard() {
-    // ビルトインは削除不可（既にdelete_builtin_workflow_failsでテスト済み）
     // open_workflow_in_editor でもビルトインは弾かれる（カスタムファイルのみ）
     let tmp = TempDir::new().unwrap();
     let builtin_name = first_builtin_workflow_name();

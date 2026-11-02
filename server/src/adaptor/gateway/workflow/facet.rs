@@ -22,7 +22,6 @@ pub(crate) fn resolve_facets_base_dir(workflow_source_dir: &Path) -> PathBuf {
 pub enum FacetError {
     InvalidKey { key: String },
     NotFound { kind: FacetKind, key: String },
-    BuiltinProtected { kind: FacetKind, key: String },
     Io(std::io::Error),
 }
 
@@ -36,11 +35,6 @@ impl fmt::Display for FacetError {
             Self::NotFound { kind, key } => write!(
                 f,
                 "ファセット '{key}' ({}) が見つかりません",
-                kind.dir_name()
-            ),
-            Self::BuiltinProtected { kind, key } => write!(
-                f,
-                "ビルトインファセット '{key}' ({}) は削除できません",
                 kind.dir_name()
             ),
             Self::Io(e) => write!(f, "I/Oエラー: {e}"),
@@ -69,20 +63,33 @@ pub use crate::domain::workflow::FacetKind;
 
 pub use crate::domain::workflow::{FacetContents, WorkflowFacetContents};
 
-pub fn validate_facet_key(_key: &str) -> Result<(), FacetError> {
-    todo!()
+pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
+    crate::domain::workflow::FacetKey::new(key)
+        .map(|_| ())
+        .map_err(|_| FacetError::InvalidKey {
+            key: key.to_string(),
+        })
 }
 
 pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String, FacetError> {
     validate_facet_key(key)?;
+    load_facet_with_source(kind, key, base_dir).map(|(_, content)| content)
+}
+
+pub(super) fn load_facet_with_source(
+    kind: FacetKind,
+    key: &str,
+    base_dir: &Path,
+) -> Result<(crate::domain::workflow::WorkflowSource, String), FacetError> {
+    use crate::domain::workflow::WorkflowSource;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
     match fs::read_to_string(&path) {
-        Ok(content) => return Ok(content),
+        Ok(content) => return Ok((WorkflowSource::File { path }, content)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
     if let Some(content) = builtin::get_builtin_facet(kind, key) {
-        return Ok(content.to_string());
+        return Ok((WorkflowSource::Builtin, content.to_string()));
     }
     Err(FacetError::NotFound {
         kind,
@@ -91,11 +98,16 @@ pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String,
 }
 
 pub(crate) fn facet_exists(
-    _kind: FacetKind,
-    _key: &str,
-    _base_dir: &Path,
+    kind: FacetKind,
+    key: &str,
+    base_dir: &Path,
 ) -> Result<bool, FacetError> {
-    todo!()
+    validate_facet_key(key)?;
+    Ok(builtin::get_builtin_facet(kind, key).is_some()
+        || base_dir
+            .join(kind.dir_name())
+            .join(format!("{key}.md"))
+            .try_exists()?)
 }
 
 pub fn save_facet(
@@ -112,8 +124,17 @@ pub fn save_facet(
     Ok(())
 }
 
-pub fn delete_facet(_kind: FacetKind, _key: &str, _base_dir: &Path) -> Result<(), FacetError> {
-    todo!()
+pub fn delete_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<(), FacetError> {
+    validate_facet_key(key)?;
+    let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(FacetError::NotFound {
+            kind,
+            key: key.to_string(),
+        }),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, FacetError> {
@@ -136,27 +157,26 @@ pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, Face
     Ok(keys.into_iter().collect())
 }
 
-/// Markdownファイルの先頭行から説明を取得する。
-/// 先頭行が `# ` で始まる場合はその見出しテキストを、そうでなければ先頭の非空行をそのまま使用する。
-pub fn extract_description(content: &str) -> String {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(heading) = trimmed.strip_prefix("# ") {
-            return heading.trim().to_string();
-        }
-        return trimmed.to_string();
-    }
-    String::new()
-}
-
 pub fn list_facet_summaries(
-    _kind: FacetKind,
-    _base_dir: &Path,
+    kind: FacetKind,
+    base_dir: &Path,
 ) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
-    todo!()
+    use crate::domain::workflow::{Facet, FacetKey};
+    let mut summaries = Vec::new();
+    for key in list_facets(kind, base_dir)? {
+        let facet_key =
+            FacetKey::new(key.clone()).map_err(|_| FacetError::InvalidKey { key: key.clone() })?;
+        let (source, content) = load_facet_with_source(kind, &key, base_dir)?;
+        let summary =
+            Facet::restore(kind, facet_key, base_dir.to_path_buf(), source, content).summary();
+        summaries.push(super::schema::FacetSummary {
+            key: summary.key,
+            kind: summary.kind,
+            description: summary.description,
+            builtin: summary.builtin,
+        });
+    }
+    Ok(summaries)
 }
 
 pub fn resolve_facet_path(

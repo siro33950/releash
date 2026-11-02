@@ -3659,7 +3659,7 @@ return r.workflow{
                 .iter()
                 .find(|(workflow_name, _)| workflow_name == name)
                 .unwrap_or_else(|| panic!("{name} の診断 load 結果"));
-            let Ok((workflow, source_diagnostics)) = result else {
+            let Ok((workflow, source_diagnostics, _)) = result else {
                 panic!("{name} は診断時に正常 load されるべき: {result:?}");
             };
             assert_eq!(workflow.name, name);
@@ -3745,7 +3745,7 @@ return r.workflow{
             .iter()
             .find(|(name, _)| name == "healthy")
             .expect("healthy の診断 load 結果");
-        let Ok((healthy, source_diagnostics)) = healthy_result else {
+        let Ok((healthy, source_diagnostics, _)) = healthy_result else {
             panic!("healthy は正常 load されるべき: {healthy_result:?}");
         };
         assert_eq!(healthy.name, "healthy");
@@ -4499,5 +4499,30 @@ return r.workflow{ name = "items-non-object", description = "items non-object", 
             assert_eq!(lua_item.stage, yaml_item.stage, "{name}");
             assert_eq!(lua_item.message, yaml_item.message, "{name}");
         }
+    }
+}
+
+#[test]
+fn test_診断_builtin由来だけにwfi000を付ける() {
+    use releashd::test_support::integration::workflow::{diagnose_all, list_builtin_workflows};
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let builtins = list_builtin_workflows();
+    let name = &builtins[0].name;
+    std::fs::write(dir.path().join(format!("{name}.yml")), format!("name: {name}\ndescription: user override\nnodes:\n  main:\n    command: echo override\n")).unwrap();
+    // When
+    let report = diagnose_all(dir.path(), dir.path()).unwrap();
+    // Then
+    assert!(!report
+        .items
+        .iter()
+        .any(|item| item.code == "WFI000" && item.workflow_name.as_deref() == Some(name)));
+    for builtin in &builtins[1..] {
+        assert!(
+            report.items.iter().any(|item| item.code == "WFI000"
+                && item.workflow_name.as_deref() == Some(&builtin.name)),
+            "{}",
+            builtin.name
+        );
     }
 }

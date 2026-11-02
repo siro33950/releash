@@ -1,6 +1,5 @@
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::event as workflow_event;
-use crate::adaptor::gateway::workflow::facet as gateway_facet;
 use crate::domain::workflow as domain;
 #[cfg(any(test, feature = "test-support"))]
 use crate::usecase::workflow::ports::WorkflowEventDraft;
@@ -135,14 +134,6 @@ pub(crate) fn domain_workflow_summary_to_schema(
         builtin: summary.builtin,
         is_running: summary.is_running,
         source_format: summary.source_format,
-    }
-}
-
-pub(crate) fn domain_facet_kind_to_gateway(kind: domain::FacetKind) -> gateway_facet::FacetKind {
-    match kind {
-        domain::FacetKind::Policy => gateway_facet::FacetKind::Policy,
-        domain::FacetKind::Knowledge => gateway_facet::FacetKind::Knowledge,
-        domain::FacetKind::Instruction => gateway_facet::FacetKind::Instruction,
     }
 }
 
