@@ -15,14 +15,25 @@ impl std::str::FromStr for FacetKind {
 
     /// Facet の種類を解釈し、解釈できない指定を拒否する。
     fn from_str(_value: &str) -> Result<Self, Self::Err> {
-        todo!()
+        match _value {
+            "policy" => Ok(Self::Policy),
+            "knowledge" => Ok(Self::Knowledge),
+            "instruction" => Ok(Self::Instruction),
+            _ => Err(WorkflowError::validation(format!(
+                "不明なファセットの種類: {_value}"
+            ))),
+        }
     }
 }
 
 impl FacetKind {
     /// Facet の種類の正規識別子を返す。
     pub fn canonical_name(self) -> &'static str {
-        todo!()
+        match self {
+            Self::Policy => "policy",
+            Self::Knowledge => "knowledge",
+            Self::Instruction => "instruction",
+        }
     }
 
     /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
@@ -41,12 +52,21 @@ pub struct FacetKey(String);
 impl FacetKey {
     /// Facet の識別子を返す。
     pub fn as_str(&self) -> &str {
-        todo!()
+        &self.0
     }
 
     /// Facet の key が英数字で始まり、英数字・ハイフン・アンダースコアだけを含むことを検証する。
     pub fn new(_value: impl Into<String>) -> Result<Self, WorkflowError> {
-        todo!()
+        let value = _value.into();
+        let mut chars = value.chars();
+        if !chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(WorkflowError::validation(format!(
+                "ファセットキー '{value}' が無効です（先頭は英数字、以降は英数字・ハイフン・アンダースコアのみ許可）"
+            )));
+        }
+        Ok(Self(value))
     }
 }
 
