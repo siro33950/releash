@@ -26,7 +26,7 @@ pub struct DiagnosticSpan {
     pub end_col: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// 定義または Facet について検出した一つの診断。
 pub struct DiagnosticItem {
     pub code: String,

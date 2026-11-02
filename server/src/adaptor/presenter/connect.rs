@@ -295,6 +295,7 @@ impl ConnectFailure for crate::domain::workflow::error::WorkflowError {
                 connectrpc::ErrorCode::FailedPrecondition
             }
             Self::Validation(_) => connectrpc::ErrorCode::InvalidArgument,
+            Self::Diagnostics(_) => todo!(),
             Self::Conflict(_) => connectrpc::ErrorCode::Aborted,
             Self::NotFound(_) => connectrpc::ErrorCode::NotFound,
             Self::UnauthorizedApprovalTarget(_) => connectrpc::ErrorCode::PermissionDenied,

@@ -158,6 +158,7 @@ impl From<&crate::domain::workflow::error::WorkflowError> for Failure {
             E::Conflict(_) => Failure::Business(BusinessFailure::VersionConflict),
             E::NotFound(_) => Failure::Business(BusinessFailure::Other),
             E::UnauthorizedApprovalTarget(_) => Failure::Business(BusinessFailure::Other),
+            E::Diagnostics(_) => todo!(),
         }
     }
 }

@@ -129,33 +129,12 @@ impl WorkflowDefinition {
         }
     }
 
-    /// 定義の取得元、解釈結果と実行状況から一覧の項目を決める。
+    /// 定義の取得元、解釈結果と実行状況から一覧の項目を決め、診断による失敗を他の失敗と区別する。
     pub fn summary(
         &self,
         _running: &[crate::domain::workflow::WorkflowExecutionSummary],
     ) -> WorkflowSummary {
-        let (description, failure) = match &self.content {
-            Ok(content) => (content.description.clone(), None),
-            Err(error) => (
-                if matches!(error, WorkflowError::Validation(message) if message.starts_with("workflow_diagnostics:"))
-                {
-                    "Invalid workflow definition".to_string()
-                } else {
-                    String::new()
-                },
-                Some(crate::domain::failure::WorkFailure::from_error(error)),
-            ),
-        };
-        WorkflowSummary {
-            name: self.file_stem.clone(),
-            builtin: self.source.is_builtin(),
-            source_format: self.format,
-            is_running: _running
-                .iter()
-                .any(|running| running.workflow_name == self.file_stem),
-            description,
-            failure,
-        }
+        todo!()
     }
 
     /// builtin を拒否し、外部編集に使うフォルダとファイルを決める。
