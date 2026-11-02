@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use super::{builtin, mapper, storage};
 use crate::domain::workflow::{
     WorkflowDefinition, WorkflowDefinitionRepository, WorkflowDefinitionSourceService,
-    WorkflowError, WorkflowExecutionSummary, WorkflowSource, WorkflowSourceFormat,
-    WorkflowSourceSaveError, WorkflowSummary,
+    WorkflowError, WorkflowSource, WorkflowSourceFormat, WorkflowSourceSaveError,
 };
 
 #[derive(Debug, Clone)]
@@ -72,21 +71,8 @@ impl WorkflowDefinitionFileSourceGateway {
 }
 
 impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
-    fn list(
-        &self,
-        running: &[WorkflowExecutionSummary],
-    ) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        let mut summaries = storage::workflow_files(&self.workflows_dir)?
-            .into_iter()
-            .map(|(name, path)| self.load_file(&name, path).summary(running))
-            .collect::<Vec<_>>();
-        for summary in builtin::list_builtin_workflows() {
-            if !summaries.iter().any(|item| item.name == summary.name) {
-                summaries.push(self.load_builtin(&summary.name)?.summary(running));
-            }
-        }
-        summaries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(storage::collapse_duplicate_names(summaries))
+    fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
+        todo!()
     }
 
     fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {

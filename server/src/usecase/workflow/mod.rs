@@ -30,12 +30,16 @@ mod workspace_node_command;
 pub(crate) mod workspace_tree;
 
 pub mod diagnostic_dto;
+pub mod summary_query;
+pub use summary_query::{
+    FacetQueryService, FacetSummaryDto, WorkflowDefinitionQueryService, WorkflowSummaryDto,
+};
 
 use crate::domain::external_editor::{EditorLauncherGateway, EditorSettingsGateway};
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, Facet, FacetKind,
-    FacetRepository, FacetSummary, ManagedWorktreeGateway, WorkflowDefinition,
-    WorkflowDefinitionRepository, WorkflowDirectoryService, WorkflowError,
+    FacetRepository, ManagedWorktreeGateway, WorkflowDefinition, WorkflowDefinitionRepository,
+    WorkflowDirectoryService, WorkflowError,
 };
 use crate::usecase::workflow::ports::{
     WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
@@ -58,51 +62,7 @@ pub(crate) use workspace_tree::{
     WorkspaceNodeDetailDto, WorkspaceSessionNodeContentDto,
 };
 
-#[derive(Clone)]
-pub struct WorkflowReadUsecase {
-    query: WorkflowQueryService,
-    workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-    diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
-}
-
-impl WorkflowReadUsecase {
-    pub(crate) fn new(
-        query: WorkflowQueryService,
-        workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-        diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
-    ) -> Self {
-        Self {
-            query,
-            workspace_query,
-            diagnostics,
-        }
-    }
-
-    pub fn diagnose_all(
-        &self,
-        target: WorkflowDiagnosticsTarget,
-    ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
-        self.diagnostics.diagnose_all(target)
-    }
-
-    pub async fn list_workflow_summaries(
-        &self,
-    ) -> Result<Vec<crate::domain::workflow::WorkflowSummary>, WorkflowError> {
-        let running = self
-            .workspace_query
-            .execution_summaries(None, Some(ExecutionStatusFilter::Active))
-            .await?;
-        self.query.list_workflows(&running)
-    }
-
-    pub async fn get_execution_state(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<ExecutionTree>, WorkflowError> {
-        self.query.get_execution_state(execution_id).await
-    }
-}
-
+/// 定義と Facet の操作、および workflow の読み取りの入口。
 #[derive(Clone)]
 pub struct WorkflowUsecase {
     query: WorkflowQueryService,
@@ -123,13 +83,18 @@ pub struct WorkflowUsecase {
             >,
         >,
     >,
-    read: WorkflowReadUsecase,
+    diagnostics: std::sync::Arc<dyn WorkflowDiagnosticsGateway>,
+    definition_query: std::sync::Arc<dyn WorkflowDefinitionQueryService>,
+    facet_query: std::sync::Arc<dyn FacetQueryService>,
 }
 
 impl WorkflowUsecase {
+    /// 操作と読み取りに使う依存先を受け取る。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         query: WorkflowQueryService,
+        definition_query: std::sync::Arc<dyn WorkflowDefinitionQueryService>,
+        facet_query: std::sync::Arc<dyn FacetQueryService>,
         definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
         definition_sources: std::sync::Arc<dyn WorkflowDefinitionSourceService>,
         facets: std::sync::Arc<dyn FacetRepository>,
@@ -153,7 +118,6 @@ impl WorkflowUsecase {
         let facet_commands =
             WorkflowFacetUsecase::new(facets.clone(), editor_settings, editor_launcher);
         let output = WorkflowOutputUsecase::new(query.clone());
-        let read = WorkflowReadUsecase::new(query.clone(), workspace_query.clone(), diagnostics);
         Self {
             query,
             definition_commands,
@@ -165,12 +129,27 @@ impl WorkflowUsecase {
             workspace_query,
             failures,
             retained_trees: Default::default(),
-            read,
+            diagnostics,
+            definition_query,
+            facet_query,
         }
     }
 
-    pub fn read_usecase(&self) -> WorkflowReadUsecase {
-        self.read.clone()
+    /// 実行状況を取得し、定義一覧の読み取りへ渡す。
+    pub async fn list_workflow_summaries(&self) -> Result<Vec<WorkflowSummaryDto>, WorkflowError> {
+        let running = self
+            .workspace_query
+            .execution_summaries(None, Some(ExecutionStatusFilter::Active))
+            .await?;
+        self.definition_query.list_workflows(&running)
+    }
+
+    /// 指定した実行木の状態を取得する。
+    pub async fn get_execution_state(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<ExecutionTree>, WorkflowError> {
+        self.query.get_execution_state(execution_id).await
     }
 
     pub fn resolve_worktree_path(&self, worktree_path: &str) -> Result<String, WorkflowError> {
@@ -181,7 +160,11 @@ impl WorkflowUsecase {
         self.query.get_workflow_source(file_stem)
     }
 
-    pub fn get_workflow(&self, file_stem: &str) -> Result<WorkflowDefinition, WorkflowError> {
+    /// 定義を取得し、存在しない場合は空を返す。
+    pub fn get_workflow(
+        &self,
+        file_stem: &str,
+    ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
         self.query.get_workflow(file_stem)
     }
 
@@ -189,11 +172,12 @@ impl WorkflowUsecase {
         self.query.get_facet(kind, key)
     }
 
+    /// 指定した種類の Facet 一覧を取得する。
     pub fn list_facet_summaries(
         &self,
         kind: FacetKind,
-    ) -> Result<Vec<FacetSummary>, WorkflowError> {
-        self.query.list_facet_summaries(kind)
+    ) -> Result<Vec<FacetSummaryDto>, WorkflowError> {
+        self.facet_query.list_facet_summaries(kind)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -265,11 +249,12 @@ impl WorkflowUsecase {
         self.facet_commands.open_in_editor(kind, key)
     }
 
+    /// 指定した対象の診断を取得する。
     pub fn diagnose_all(
         &self,
         target: WorkflowDiagnosticsTarget,
     ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
-        self.read.diagnose_all(target)
+        self.diagnostics.diagnose_all(target)
     }
 
     pub fn render_facet_preview(

@@ -46,7 +46,7 @@ impl WorkflowDefinitionUsecase {
             .parse(source)
             .map_err(source_save_error_to_workflow_error)?;
         let original = self.definitions.find(original_name)?;
-        let existing = self.definitions.list(&[])?;
+        let existing = self.definitions.list_names()?;
         definition.validate_save(original.as_ref(), &existing)?;
         self.definitions
             .save_source(&definition, source, original_name)?;
@@ -66,7 +66,7 @@ impl WorkflowDefinitionUsecase {
             .map_err(WorkflowSourceSaveError::Workflow)?;
         let existing = self
             .definitions
-            .list(&[])
+            .list_names()
             .map_err(WorkflowSourceSaveError::Workflow)?;
         definition
             .validate_save(original.as_ref(), &existing)
@@ -92,7 +92,7 @@ impl WorkflowDefinitionUsecase {
     ) -> Result<(), WorkflowError> {
         let workflow = self.definitions.get(source_name)?;
         let duplicate = workflow.duplicate(new_name)?;
-        let existing = self.definitions.list(&[])?;
+        let existing = self.definitions.list_names()?;
         duplicate.validate_save(None, &existing)?;
         self.definitions.save(duplicate, None)
     }

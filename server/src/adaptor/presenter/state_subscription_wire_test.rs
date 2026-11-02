@@ -631,69 +631,16 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 }),
             }),
         ),
-        (
-            StateValue::Workflows(vec![crate::domain::workflow::WorkflowSummary {
-                failure: None,
-                name: "dev".into(),
-                description: "develop".into(),
-                builtin: false,
-                is_running: true,
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Lua,
-            }]),
-            W::Workflows(wire::ListWorkflowSummaryDto {
-                items: vec![wire::WorkflowSummaryDto {
-                    read_error: None,
-                    name: Some("dev".into()),
-                    description: Some("develop".into()),
-                    builtin: Some(false),
-                    is_running: Some(true),
-                    source_format: Some(wire::WorkflowSourceFormat {
-                        value: Some(wire::workflow_source_format::Value::Lua as i32),
-                    }),
-                }],
-            }),
-        ),
-        (
-            StateValue::Workflow(crate::domain::workflow::WorkflowDefinition::restore("bad".into(), "/workflows".into(), crate::domain::workflow::WorkflowSource::File { path: "/workflows/bad.yml".into() }, crate::domain::workflow::WorkflowSourceFormat::Yaml, Err(crate::domain::workflow::WorkflowError::validation("parse failed")))),
-            W::Workflow(wire::NullableWorkflowDto { value: None }),
-        ),
-        (
-            StateValue::Workflow(crate::domain::workflow::WorkflowDefinition::restore("dev".into(), "/workflows".into(), crate::domain::workflow::WorkflowSource::Builtin, crate::domain::workflow::WorkflowSourceFormat::Yaml, Ok(crate::domain::workflow::WorkflowDefinitionContent { name: "dev".into(), description: "develop".into(), ..Default::default() }))),
-            W::Workflow(wire::NullableWorkflowDto {
-                value: Some(wire::WorkflowDto {
-                    name: Some("dev".into()),
-                    description: Some("develop".into()),
-                    builtin: Some(true),
-                    source_format: Some(wire::WorkflowSourceFormat {
-                        value: Some(wire::workflow_source_format::Value::Yaml as i32),
-                    }),
-                    schemas: Some(Default::default()),
-                    nodes: Some(Default::default()),
-                }),
-            }),
-        ),
+
+
+
         (
             StateValue::WorkflowSource(Some("name: dev".into())),
             W::WorkflowSource(wire::Nullablestring {
                 value: Some("name: dev".into()),
             }),
         ),
-        (
-            StateValue::Facets(vec![crate::domain::workflow::FacetSummary {
-                key: "guide".into(),
-                kind: "policy".into(),
-                description: "guide".into(),
-                builtin: false,
-            }]),
-            W::Facets(wire::ListFacetSummaryDto {
-                items: vec![wire::FacetSummaryDto {
-                    key: Some("guide".into()),
-                    kind: Some("policy".into()),
-                    description: Some("guide".into()),
-                    builtin: Some(false),
-                }],
-            }),
-        ),
+
         (
             StateValue::Facet(crate::usecase::workflow::test_helpers::facet(crate::domain::workflow::FacetKind::Policy, "guide", "# guide".into())),
             W::Facet(wire::ResultString {

@@ -195,7 +195,6 @@ impl WorkspaceStateReads {
             T::WorkflowExecution(id) => {
                 return self
                     .workflow
-                    .read_usecase()
                     .get_execution_state(id)
                     .await
                     .map(StateValue::WorkflowExecution)
@@ -342,7 +341,6 @@ impl WorkspaceStateReads {
             T::Workflows => {
                 return Ok(StateValue::Workflows(
                     self.workflow
-                        .read_usecase()
                         .list_workflow_summaries()
                         .await
                         .map_err(error)?,

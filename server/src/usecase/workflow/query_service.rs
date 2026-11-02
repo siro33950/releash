@@ -9,11 +9,9 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ExecutionTree, ExecutionTreeId, Facet, FacetKind, FacetRepository, FacetSummary,
-    WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
+    ExecutionTree, ExecutionTreeId, Facet, FacetKind, FacetRepository, WorkflowDefinition,
+    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
 };
-
-use crate::domain::workflow::WorkflowSummary;
 
 use super::event_draft;
 use super::ports::{
@@ -58,16 +56,13 @@ impl WorkflowQueryService {
         }
     }
 
-    pub fn list_workflows(
+    /// 定義を取得し、存在しない場合は空を返す。
+    pub fn get_workflow(
         &self,
-        running_names: &[crate::domain::workflow::WorkflowExecutionSummary],
-    ) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        self.definitions.list(running_names)
-    }
-
-    pub fn get_workflow(&self, file_stem: &str) -> Result<WorkflowDefinition, WorkflowError> {
+        file_stem: &str,
+    ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
         let name = WorkflowDefinitionName::new(file_stem.to_string())?;
-        self.definitions.get(name.as_str())
+        self.definitions.find(Some(name.as_str()))
     }
 
     pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
@@ -126,13 +121,6 @@ impl WorkflowQueryService {
 
     pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError> {
         self.facets.get(kind, key)
-    }
-
-    pub fn list_facet_summaries(
-        &self,
-        kind: FacetKind,
-    ) -> Result<Vec<FacetSummary>, WorkflowError> {
-        self.facets.list_summaries(kind)
     }
 }
 

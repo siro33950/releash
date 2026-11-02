@@ -43,16 +43,6 @@ pub fn get_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<String,
         .map_err(|e| e.to_string())
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn list_facet_summaries_inner(
-    kind: &str,
-    base_dir: &Path,
-) -> Result<Vec<crate::domain::workflow::FacetSummary>, String> {
-    let facet_kind = parse_facet_kind(kind)?;
-    crate::adaptor::gateway::workflow::facet::list_facet_summaries(facet_kind, base_dir)
-        .map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 fn validation_error_string(
     e: crate::domain::workflow::services::validation::ValidationError,

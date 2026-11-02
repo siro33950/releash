@@ -17,11 +17,8 @@ pub(crate) mod tests {
     }
 
     impl crate::domain::workflow::WorkflowDefinitionRepository for FakeDefinitionRepository {
-        fn list(
-            &self,
-            running: &[crate::domain::workflow::WorkflowExecutionSummary],
-        ) -> Result<Vec<crate::domain::workflow::WorkflowSummary>, WorkflowError> {
-            Ok(vec![self.get(&self.workflow.name)?.summary(running)])
+        fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
+            todo!()
         }
         fn get(
             &self,
@@ -166,16 +163,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_workflow取得_entityのlua形式を保持する() {
-        // Given
-        let service =
-            service_with_metadata(crate::domain::workflow::WorkflowSourceFormat::Lua, None);
-        // When
-        let definition = service.get_workflow("wf").unwrap();
-        // Then
-        assert_eq!(
-            definition.format(),
-            crate::domain::workflow::WorkflowSourceFormat::Lua
-        );
+        todo!()
     }
     #[test]
     fn test_workflow取得_repositoryの失敗を伝える() {
@@ -205,7 +193,6 @@ pub(crate) mod tests {
 
     struct Fixture {
         service: WorkflowQueryService,
-        facets: Arc<FakeFacetRepository>,
         events: Arc<FakeEventRepository>,
         projections: Arc<FakeExecutionProjectionRepository>,
     }
@@ -232,7 +219,6 @@ pub(crate) mod tests {
             );
             Self {
                 service,
-                facets,
                 events,
                 projections,
             }
@@ -331,73 +317,12 @@ pub(crate) mod tests {
 
     #[test]
     fn workflow_queries_delegate_to_definition_repository() {
-        let fixture = Fixture::new();
-        let summaries = fixture.service.list_workflows(&[]).unwrap();
-        assert_eq!(summaries[0].name, "wf");
-        assert!(!summaries[0].is_running);
-        assert_eq!(
-            fixture
-                .service
-                .get_workflow("wf")
-                .unwrap()
-                .content()
-                .unwrap(),
-            &workflow()
-        );
-        assert!(matches!(
-            fixture.service.get_workflow("missing"),
-            Err(WorkflowError::NotFound(_))
-        ));
-        assert!(fixture.service.get_workflow("bad name!").is_err());
-        assert!(fixture.service.get_workflow_source("bad name!").is_err());
+        todo!()
     }
 
     #[tokio::test]
     async fn event_and_facet_queries_validate_execution_ids_and_delegate() {
-        let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "execution_started".to_string(),
-                timestamp: 1.0,
-                payload: serde_json::json!({}),
-            })
-            .unwrap();
-        fixture.facets.facets.lock().unwrap().insert(
-            (FacetKind::Instruction, "implement".to_string()),
-            "instruction body".to_string(),
-        );
-
-        assert_eq!(
-            fixture
-                .service
-                .read_events(test_execution_id())
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(matches!(
-            fixture.service.read_events("not-a-uuid").await.unwrap_err(),
-            WorkflowError::Validation(_)
-        ));
-        assert_eq!(
-            fixture
-                .service
-                .get_facet(FacetKind::Instruction, "implement")
-                .unwrap()
-                .content(),
-            "instruction body"
-        );
-        assert_eq!(
-            fixture
-                .service
-                .list_facet_summaries(FacetKind::Instruction)
-                .unwrap()[0]
-                .key,
-            "implement"
-        );
+        todo!()
     }
 
     #[tokio::test]

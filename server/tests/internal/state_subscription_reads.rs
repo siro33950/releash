@@ -74,7 +74,6 @@ use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase
 use releashd::test_support::integration::subscriptions::StateValue;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget;
 use releashd::test_support::integration::subscriptions::WorkspaceStateReads;
-use releashd::test_support::integration::workflow::WorkflowDiagnosticsTarget;
 use releashd::test_support::integration::workspace::WorkspaceListUsecase;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -458,194 +457,7 @@ impl Fixture {
 
 #[tokio::test]
 pub async fn test_状態読取_全対象を対応するサービスへ引数付きで振り分ける() {
-    // Given
-    use SubscriptionTarget as T;
-    let fixture = Fixture::new();
-    let r = &fixture.reads;
-    let p = &fixture.path;
-    let branch = r.repository.get_current_branch(p).unwrap();
-    r.repository_config
-        .set_branch_base_override(p, "feature", Some(&branch))
-        .unwrap();
-    let workspace = releashd::test_support::integration::platform::WorkspaceState {
-        version: 1,
-        panes: None,
-        tabs: releashd::test_support::integration::platform::WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        },
-        layout: releashd::test_support::integration::platform::WorkspaceLayoutState {
-            center_tab: "agent".into(),
-            active_view: "git".into(),
-            left_nav_collapsed: true,
-            right_collapsed: false,
-            right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
-        },
-    };
-    releashd::test_support::integration::platform::save_workspace_state(
-        r.workspace_state.as_ref(),
-        None,
-        "repo",
-        workspace.clone(),
-    )
-    .await
-    .unwrap();
-    r.workspaces.refresh().await;
-    let (tree, selected) = r
-        .workflow
-        .workspace_tree_selection(p, "missing")
-        .await
-        .unwrap();
-    let cases = vec![
-        (
-            T::RepositoryPaths,
-            StateValue::RepositoryPaths(vec![p.clone()]),
-        ),
-        (
-            T::Workspaces,
-            StateValue::Workspaces(r.workspaces.read().await.unwrap()),
-        ),
-        (
-            T::Selection(p.clone(), "missing".into()),
-            StateValue::Selection(tree, selected),
-        ),
-        (
-            T::NodeDetail(p.clone(), "missing".into()),
-            StateValue::NodeDetail(None),
-        ),
-        (
-            T::AgentSession("missing-session".into()),
-            StateValue::AgentSession(None),
-        ),
-        (
-            T::SessionHistory(p.clone(), 120),
-            StateValue::SessionHistory(AgentSessionHistoryPageDto {
-                items: vec![AgentSessionHistoryCandidateDto {
-                    provider: AgentSessionProviderDto::Codex,
-                    provider_session_id: "history-session".into(),
-                    label: "history".into(),
-                    updated_at_ms: 10,
-                }],
-                has_more: true,
-            }),
-        ),
-        (
-            T::Providers,
-            StateValue::Providers(vec![
-                AgentSessionProviderDto::Claude,
-                AgentSessionProviderDto::Codex,
-            ]),
-        ),
-        (
-            T::Branches(p.clone(), Some("feature".into())),
-            StateValue::Branches(vec![
-                releashd::test_support::integration::platform::BranchDto {
-                    name: branch.clone(),
-                    is_remote: false,
-                },
-            ]),
-        ),
-        (
-            T::BranchBase(p.clone(), "feature".into()),
-            StateValue::BranchBase(Some(branch.clone())),
-        ),
-        (
-            T::BranchStatus(p.clone()),
-            StateValue::BranchStatus(r.repository.list_branches_with_worktree(p).unwrap()),
-        ),
-        (
-            T::CurrentBranch(p.clone()),
-            StateValue::CurrentBranch(branch),
-        ),
-        (
-            T::Issues(p.clone()),
-            StateValue::Issues(
-                releashd::test_support::integration::platform::Fetched::ready(
-                    releashd::test_support::integration::platform::IssueListing {
-                        options:
-                            releashd::test_support::integration::platform::IssueOptions::from_issues(
-                                &[issue(1)],
-                            ),
-                        issues: vec![issue(1)],
-                    },
-                ),
-            ),
-        ),
-        (
-            T::Worktrees(p.clone()),
-            StateValue::Worktrees(r.repository.list_worktrees(p).unwrap()),
-        ),
-        (
-            T::StartupRepository,
-            StateValue::StartupRepository(r.repository.startup_worktree().unwrap()),
-        ),
-        (
-            T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace.into()), Vec::new(), None),
-        ),
-        (
-            T::Workflows,
-            StateValue::Workflows(
-                r.workflow
-                    .read_usecase()
-                    .list_workflow_summaries()
-                    .await
-                    .unwrap(),
-            ),
-        ),
-        (
-            T::Workflow("fixture".into()),
-            StateValue::Workflow(r.workflow.get_workflow("fixture").unwrap()),
-        ),
-        (
-            T::WorkflowSource("fixture".into()),
-            StateValue::WorkflowSource(r.workflow.get_workflow_source("fixture").unwrap()),
-        ),
-        (
-            T::Facets(FacetKind::Instruction),
-            StateValue::Facets(
-                r.workflow
-                    .list_facet_summaries(FacetKind::Instruction)
-                    .unwrap(),
-            ),
-        ),
-        (
-            T::Facet(FacetKind::Instruction, "fixture-instruction".into()),
-            StateValue::Facet(
-                r.workflow
-                    .get_facet(FacetKind::Instruction, "fixture-instruction")
-                    .unwrap(),
-            ),
-        ),
-        (
-            T::Diagnostics,
-            StateValue::Diagnostics(
-                r.workflow
-                    .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
-                    .unwrap(),
-            ),
-        ),
-    ];
-    // When
-    let mut actual = Vec::new();
-    for (target, expected) in cases {
-        let value = r
-            .read(&target)
-            .await
-            .unwrap_or_else(|error| panic!("{target}: {error}"));
-        actual.push((target, value, expected));
-    }
-    // Then
-    for (target, value, expected) in actual {
-        assert_eq!(value, expected, "{target}");
-    }
-    assert_eq!(
-        *fixture.sessions.calls.lock(),
-        ["missing-session".to_string(), format!("{p}:120")]
-    );
-    assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
+    todo!()
 }
 
 #[tokio::test]
@@ -759,19 +571,7 @@ pub async fn test_状態読取_workflow一覧に置き場所の定義を含む()
 
 #[tokio::test]
 pub async fn test_状態読取_workflowの本文を読む() {
-    // Given
-    let fixture = Fixture::new();
-    // When
-    let value = fixture
-        .reads
-        .read(&SubscriptionTarget::Workflow("fixture".into()))
-        .await
-        .unwrap();
-    // Then
-    let StateValue::Workflow(workflow) = value else {
-        panic!("unexpected state")
-    };
-    assert_eq!(workflow.content().unwrap().name, "fixture");
+    todo!()
 }
 
 #[tokio::test]

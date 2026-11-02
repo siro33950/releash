@@ -1,5 +1,4 @@
 use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-use releashd::test_support::integration::workflow::diagnose_workflow_file;
 use releashd::test_support::integration::workflow::load_workflow;
 use releashd::test_support::integration::workflow::parse_workflow_source;
 use releashd::test_support::integration::workflow::resolve_and_validate_workflow_facets;
@@ -10,15 +9,12 @@ use releashd::test_support::integration::workflow::NodeKind;
 use releashd::test_support::integration::workflow::SessionSpec;
 use releashd::test_support::integration::workflow::StorageError;
 use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
-use releashd::test_support::integration::workflow::WorkflowSourceFormat;
-use releashd::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION;
 use releashd::test_support::integration::workflow::{
     WorkflowDefinition, WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
     WorkflowDefinitionRepository, WorkflowDefinitionSourceService, WorkflowError,
     WorkflowSourceSaveError,
 };
 use std::fs;
-use std::path::Path;
 use tempfile::TempDir;
 
 fn sample_workflow(name: &str, _builtin: bool) -> WorkflowDefinitionYaml {
@@ -57,20 +53,7 @@ fn first_builtin_workflow_name() -> String {
 
 #[test]
 pub fn test_定義一覧_読めないファイルを失敗欄に残す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    fs::create_dir(directory.path().join("unreadable.yml")).unwrap();
-    // When
-    let summaries = WorkflowDefinitionFileRepository::new(directory.path(), directory.path())
-        .list(&[])
-        .unwrap();
-    // Then
-    let row = summaries.iter().find(|s| s.name == "unreadable").unwrap();
-    assert!(matches!(
-        row.failure.as_ref().unwrap().kind,
-        releashd::test_support::integration::platform::Failure::Technical(_)
-    ));
-    assert!(row.description.is_empty());
+    todo!()
 }
 
 #[test]
@@ -176,220 +159,37 @@ nodes:
 
 #[test]
 pub fn list_workflows_returns_sorted_summaries() {
-    // Given
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-
-    seed_workflow(dir, &sample_workflow("charlie", false)).unwrap();
-    seed_workflow(dir, &sample_workflow("alpha", false)).unwrap();
-    seed_workflow(dir, &sample_workflow("bravo", false)).unwrap();
-
-    // When
-    let list = WorkflowDefinitionFileRepository::new(dir, dir)
-        .list(&[])
-        .unwrap();
-    // Then
-    let builtin_names = builtin_workflow_names();
-    let mut expected_names = vec![
-        "alpha".to_string(),
-        "bravo".to_string(),
-        "charlie".to_string(),
-    ];
-    expected_names.extend(builtin_names.iter().cloned());
-    expected_names.sort();
-    assert_eq!(
-        list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-        expected_names
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-    );
-    for name in builtin_names {
-        let entry = list
-            .iter()
-            .find(|s| s.name == name)
-            .unwrap_or_else(|| panic!("builtin workflow '{name}' must be present in merged list"));
-        assert!(entry.builtin, "builtin '{name}' must be marked builtin");
-    }
+    todo!()
 }
 
 #[test]
 pub fn list_workflows_uses_file_stem_not_yaml_name() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-
-    // save_workflowで作成（ファイル名 = YAML本文name）
-    seed_workflow(dir, &sample_workflow("original", false)).unwrap();
-
-    // ファイルをリネームしてYAML本文nameとファイルstemを乖離させる
-    fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
-
-    let list = WorkflowDefinitionFileRepository::new(dir, dir)
-        .list(&[])
-        .unwrap();
-    let disk_entry = list.iter().find(|s| s.name == "renamed").unwrap();
-    // Summary.nameはファイルstem（renamed）であるべき、YAML本文（original）ではない
-    assert_eq!(disk_entry.name, "renamed");
+    todo!()
 }
 
 #[test]
 pub fn list_workflows_keeps_invalid_files_as_diagnostic_only_summaries() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    fs::write(
-        dir.join("broken.yml"),
-        r#"
-name: broken
-description: invalid workflow
-nodes:
-  main:
-    artifact: something
-"#,
-    )
-    .unwrap();
-
-    let list = WorkflowDefinitionFileRepository::new(dir, dir)
-        .list(&[])
-        .unwrap();
-    let disk_entry = list.iter().find(|s| s.name == "broken").unwrap();
-
-    assert_eq!(disk_entry.description, "Invalid workflow definition");
-    assert!(!disk_entry.builtin);
+    todo!()
 }
 
 #[test]
 pub fn test_workflow一覧_lua定義のload失敗を当該定義だけの不正表示に隔離する() {
-    // Given
-    let tmp = TempDir::new().unwrap();
-    let module_dir = tmp.path().join("broken-parts");
-    fs::create_dir(&module_dir).unwrap();
-    fs::write(
-        module_dir.join("nodes.lua"),
-        "local r = require(\"releash\")\nreturn r.command{ command = }\n",
-    )
-    .unwrap();
-    let broken_path = tmp.path().join("broken.lua");
-    fs::write(
-        &broken_path,
-        r#"local r = require("releash")
-local nodes = require("broken-parts.nodes")
-return r.workflow{
-  name = "broken", description = "Broken workflow", main = nodes.main,
-}
-"#,
-    )
-    .unwrap();
-    fs::write(
-        tmp.path().join("invalid-yaml.yml"),
-        r#"name: invalid-yaml
-description: Invalid YAML workflow
-nodes:
-  main:
-    artifact: something
-"#,
-    )
-    .unwrap();
-    fs::write(
-        tmp.path().join("healthy.lua"),
-        r#"local r = require("releash")
-return r.workflow{
-  name = "healthy", description = "Healthy workflow",
-  main = r.command{ command = "printf healthy" },
-}
-"#,
-    )
-    .unwrap();
-
-    // When
-    let load_error = load_workflow(&broken_path, tmp.path()).unwrap_err();
-    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
-        .list(&[])
-        .unwrap();
-
-    // Then
-    let StorageError::Diagnostics(load_diagnostics) = load_error else {
-        panic!("Lua 定義の load 失敗は structured diagnostics であるべき");
-    };
-    assert!(load_diagnostics.iter().any(|item| item.code == "WFS009"));
-
-    let broken = summaries
-        .iter()
-        .find(|summary| summary.name == "broken")
-        .expect("broken summary");
-    let invalid_yaml = summaries
-        .iter()
-        .find(|summary| summary.name == "invalid-yaml")
-        .expect("invalid-yaml summary");
-    assert_eq!(broken.description, invalid_yaml.description);
-    assert_eq!(broken.description, "Invalid workflow definition");
-    assert_eq!(broken.builtin, invalid_yaml.builtin);
-    assert_eq!(broken.is_running, invalid_yaml.is_running);
-    assert_eq!(broken.source_format, WorkflowSourceFormat::Lua);
-    assert_eq!(invalid_yaml.source_format, WorkflowSourceFormat::Yaml);
-
-    let healthy = summaries
-        .iter()
-        .find(|summary| summary.name == "healthy")
-        .expect("healthy summary");
-    assert_eq!(healthy.description, "Healthy workflow");
-    assert_eq!(healthy.source_format, WorkflowSourceFormat::Lua);
+    todo!()
 }
 
 #[test]
 pub fn list_workflows_collapses_same_name_across_formats() {
-    // Given
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    seed_workflow(dir, &sample_workflow("duplicated", false)).unwrap();
-    fs::write(
-        dir.join("duplicated.lua"),
-        r#"
-local r = require("releash")
-return r.workflow{
-  name = "duplicated", description = "Lua duplicate",
-  main = r.command{ command = "true" },
-}
-"#,
-    )
-    .unwrap();
-
-    // When
-    let list = WorkflowDefinitionFileRepository::new(dir, dir)
-        .list(&[])
-        .unwrap();
-    let matched = list
-        .iter()
-        .filter(|summary| summary.name == "duplicated")
-        .collect::<Vec<_>>();
-
-    // Then
-    assert_eq!(matched.len(), 1);
-    assert_eq!(matched[0].description, DUPLICATE_NAME_DESCRIPTION);
-    assert!(resolve_workflow_path(dir, "duplicated").is_err());
+    todo!()
 }
 
 #[test]
 pub fn list_workflows_empty_dir_includes_builtins() {
-    let tmp = TempDir::new().unwrap();
-    let list = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
-        .list(&[])
-        .unwrap();
-    for name in builtin_workflow_names() {
-        assert!(list.iter().any(|s| s.name == name));
-    }
+    todo!()
 }
 
 #[test]
 pub fn list_workflows_nonexistent_dir_includes_builtins() {
-    let list = WorkflowDefinitionFileRepository::new(
-        Path::new("/nonexistent/path"),
-        Path::new("/nonexistent/path"),
-    )
-    .list(&[])
-    .unwrap();
-    for name in builtin_workflow_names() {
-        assert!(list.iter().any(|s| s.name == name));
-    }
+    todo!()
 }
 
 #[test]
@@ -836,103 +636,12 @@ nodes:
 
 #[test]
 pub fn loads_and_lists_lua_workflow_with_source_format() {
-    // Given
-    let tmp = TempDir::new().unwrap();
-    let source = r#"
-local r = require("releash")
-return r.workflow{
-  name = "lua-workflow",
-  description = "Lua workflow",
-  main = r.command{ command = "true" },
-}
-"#;
-    let path = tmp.path().join("lua-workflow.lua");
-    std::fs::write(&path, source).unwrap();
-
-    // When
-    let workflow = load_workflow(&path, tmp.path()).unwrap();
-    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
-        .list(&[])
-        .unwrap();
-
-    // Then
-    assert_eq!(workflow.name, "lua-workflow");
-    assert_eq!(workflow.nodes[0].name, "main");
-    assert_eq!(
-        summaries
-            .iter()
-            .find(|summary| summary.name == "lua-workflow")
-            .unwrap()
-            .source_format,
-        WorkflowSourceFormat::Lua
-    );
+    todo!()
 }
 
 #[test]
 pub fn test_workflow一覧_module評価中のhost呼出で作ったnodeを有効な定義として扱う() {
-    // Given
-    let tmp = TempDir::new().unwrap();
-    let module_dir = tmp.path().join("module-host-parts");
-    std::fs::create_dir(&module_dir).unwrap();
-    std::fs::write(
-        module_dir.join("nodes.lua"),
-        r#"local r = require("releash")
-return { main = r.command{ command = "true" } }
-"#,
-    )
-    .unwrap();
-    let workflow_path = tmp.path().join("module-host.lua");
-    std::fs::write(
-        &workflow_path,
-        r#"local r = require("releash")
-local nodes = require("module-host-parts.nodes")
-return r.workflow{
-  name = "module-host", description = "Module host workflow", main = nodes.main,
-}
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        tmp.path().join("healthy.lua"),
-        r#"local r = require("releash")
-return r.workflow{
-  name = "healthy", description = "Healthy workflow",
-  main = r.command{ command = "printf healthy" },
-}
-"#,
-    )
-    .unwrap();
-
-    // When
-    let workflow = load_workflow(&workflow_path, tmp.path()).unwrap();
-    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
-        .list(&[])
-        .unwrap();
-
-    // Then
-    let main = workflow
-        .nodes
-        .iter()
-        .find(|node| node.name == "main")
-        .expect("module が返した main node");
-    let NodeKind::Command(command) = &main.kind else {
-        panic!("module が返した node は command であるべき");
-    };
-    assert_eq!(command.command, "true");
-
-    let module_host = summaries
-        .iter()
-        .find(|summary| summary.name == "module-host")
-        .expect("module-host summary");
-    assert_eq!(module_host.description, "Module host workflow");
-    assert_eq!(module_host.source_format, WorkflowSourceFormat::Lua);
-
-    let healthy = summaries
-        .iter()
-        .find(|summary| summary.name == "healthy")
-        .expect("healthy summary");
-    assert_eq!(healthy.description, "Healthy workflow");
-    assert_eq!(healthy.source_format, WorkflowSourceFormat::Lua);
+    todo!()
 }
 
 #[test]
@@ -982,134 +691,12 @@ pub fn rejects_ambiguous_yaml_and_lua_files_with_same_stem() {
 
 #[test]
 pub fn test_定義一覧と診断_名前の集合が一致し同名の両形式を診断する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let dir = directory.path();
-    let mut valid = sample_workflow("valid-yaml", false);
-    valid.nodes[0] = NodeDefinition {
-        name: "main".into(),
-        kind: NodeKind::Command(releashd::test_support::integration::workflow::CommandSpec {
-            command: "true".into(),
-            env: Default::default(),
-        }),
-        ..Default::default()
-    };
-    fs::write(
-        dir.join("valid-yaml.yml"),
-        serde_saphyr::to_string(&valid).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        dir.join("valid-lua.lua"),
-        "local r = require('releash'); return r.workflow{name='valid-lua', description='Valid Lua workflow', main=r.command{command='true'}}",
-    )
-    .unwrap();
-    fs::write(dir.join("same.lua"), "local r = require('releash'); return r.workflow{name='same', description='Same workflow', main=r.command{command='true'}}").unwrap();
-    fs::create_dir(dir.join("same.yml")).unwrap();
-    let mismatch = sample_workflow("body-name", false);
-    fs::write(
-        dir.join("file-stem.yml"),
-        serde_saphyr::to_string(&mismatch)
-            .unwrap()
-            .replace("review-acceptance", "missing-instruction"),
-    )
-    .unwrap();
-    fs::write(dir.join("broken.yml"), "[broken").unwrap();
-    fs::create_dir(dir.join("unreadable.yml")).unwrap();
-    fs::write(dir.join("duplicate.yml"), "[broken yaml").unwrap();
-    fs::write(dir.join("duplicate.lua"), "invalid lua syntax").unwrap();
-    let builtin = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
-        .name
-        .clone();
-    valid.name = builtin.clone();
-    fs::write(
-        dir.join(format!("{builtin}.yml")),
-        serde_saphyr::to_string(&valid).unwrap(),
-    )
-    .unwrap();
-    // When
-    let rows = WorkflowDefinitionFileRepository::new(dir, dir)
-        .list(&[])
-        .unwrap();
-    let report = releashd::test_support::integration::workflow::diagnose_all(dir, dir).unwrap();
-    // Then
-    let listed: std::collections::BTreeSet<_> = rows.iter().map(|row| row.name.clone()).collect();
-    let diagnosed: std::collections::BTreeSet<_> =
-        report.workflow_summaries.keys().cloned().collect();
-    assert_eq!(listed, diagnosed);
-    assert!(!diagnosed.contains("body-name"));
-    assert!(report
-        .items
-        .iter()
-        .any(|item| item.code == "FAC002" && item.workflow_name.as_deref() == Some("file-stem")));
-    let same: Vec<_> = rows.iter().filter(|row| row.name == "same").collect();
-    assert_eq!(same.len(), 1);
-    assert_eq!(
-        same[0].failure,
-        Some(
-            releashd::test_support::integration::platform::WorkFailure::from_error(
-                &releashd::test_support::integration::workflow::WorkflowError::from(
-                    StorageError::Io(fs::read_to_string(dir.join("same.yml")).unwrap_err())
-                )
-            )
-        )
-    );
-    assert!(matches!(
-        same[0].failure.as_ref().unwrap().kind,
-        releashd::test_support::integration::platform::Failure::Technical(_)
-    ));
-    assert_eq!(report.workflow_summaries["valid-yaml"].error_count, 0);
-    assert_eq!(
-        report.workflow_summaries["valid-lua"].error_count, 0,
-        "{:?}",
-        report.items
-    );
-    assert_eq!(report.workflow_summaries[&builtin].error_count, 0);
-    assert_eq!(rows.iter().filter(|row| row.name == "duplicate").count(), 1);
-    let duplicate: Vec<_> = report
-        .items
-        .iter()
-        .filter(|item| item.workflow_name.as_deref() == Some("duplicate"))
-        .collect();
-    assert!(duplicate.iter().any(|item| item.message.contains("YAML")));
-    assert!(duplicate.iter().any(|item| item
-        .span
-        .as_ref()
-        .is_some_and(|span| span.source.as_deref() == Some("duplicate.lua"))));
+    todo!()
 }
 
 #[test]
 pub fn test_定義一覧_壊れた定義の失敗をvalidationとして残す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("broken.yml"), "[broken").unwrap();
-    let diagnosis = diagnose_workflow_file(
-        &directory.path().join("broken.yml"),
-        "[broken",
-        directory.path(),
-        directory.path(),
-    );
-    // When
-    let rows = WorkflowDefinitionFileRepository::new(directory.path(), directory.path())
-        .list(&[])
-        .unwrap();
-    // Then
-    let row = rows.iter().find(|row| row.name == "broken").unwrap();
-    assert!(matches!(
-        row.failure.as_ref().unwrap().kind,
-        releashd::test_support::integration::platform::Failure::Business(_)
-    ));
-    assert_eq!(
-        row.failure,
-        Some(
-            releashd::test_support::integration::platform::WorkFailure::from_error(
-                &releashd::test_support::integration::workflow::WorkflowError::Diagnostics(
-                    diagnosis.diagnostics
-                )
-            )
-        )
-    );
-    assert_eq!(row.description, "Invalid workflow definition");
+    todo!()
 }
 
 fn seed_workflow(

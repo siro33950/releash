@@ -3,9 +3,7 @@
 //! Implementations live in `adaptor/gateway/workflow/`; durable execution reads
 //! are provided by the canonical workspace query port.
 
-use crate::domain::workflow::value_objects::{
-    ExecutionTreeId, FacetKind, FacetSummary, WorkflowSummary,
-};
+use crate::domain::workflow::value_objects::{ExecutionTreeId, FacetKind};
 use crate::domain::workflow::{Facet, WorkflowDefinition, WorkflowError};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,11 +86,8 @@ pub struct ExecutionTreeArchiveSnapshot {
 
 /// workflow 定義を取得し、Entity が認めた変更を保存する。
 pub trait WorkflowDefinitionRepository: Send + Sync {
-    /// 定義と実行状況を取得し、一覧の項目を返す。
-    fn list(
-        &self,
-        running: &[crate::domain::workflow::WorkflowExecutionSummary],
-    ) -> Result<Vec<WorkflowSummary>, WorkflowError>;
+    /// 保存先の重複を検証するため、既存の定義名を取得する。
+    fn list_names(&self) -> Result<Vec<String>, WorkflowError>;
     /// 指定された定義を取得し、存在しなければ失敗を返す。
     fn get(&self, file_stem: &str) -> Result<WorkflowDefinition, WorkflowError>;
     /// 検証済みの定義を保存する。
@@ -126,8 +121,6 @@ pub trait FacetRepository: Send + Sync {
     fn get_or_new(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError>;
     /// 利用者の Facet を削除する。
     fn delete(&self, facet: &Facet) -> Result<(), WorkflowError>;
-    /// 指定された種類の Facet の一覧項目を取得する。
-    fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError>;
 }
 
 pub struct WorkflowStartupRecord {

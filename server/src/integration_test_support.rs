@@ -830,7 +830,6 @@ pub mod transport {
 }
 pub mod workflow {
     pub use crate::adaptor::controller::client::workflow::get_facet_inner;
-    pub use crate::adaptor::controller::client::workflow::list_facet_summaries_inner;
     pub use crate::adaptor::controller::client::workflow::list_facets_inner;
     pub use crate::adaptor::controller::client::workflow::shared::register_shared;
     pub use crate::adaptor::gateway::workflow::directory_service::WorkflowDirectoryFileService;
@@ -881,7 +880,6 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::execution_archive_repository::ExecutionTreeArchiveFactRepository;
     pub use crate::adaptor::gateway::workflow::execution_projection_repository::WorkflowExecutionProjectionLogRepository;
     pub use crate::adaptor::gateway::workflow::facet::delete_facet;
-    pub use crate::adaptor::gateway::workflow::facet::list_facet_summaries;
     pub use crate::adaptor::gateway::workflow::facet::list_facets;
     pub use crate::adaptor::gateway::workflow::facet::load_facet;
     pub use crate::adaptor::gateway::workflow::facet::resolve_facet_path;
@@ -1047,7 +1045,6 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::SessionPermission;
     pub use crate::domain::workflow::value_objects::definition::SessionSpec;
     pub use crate::domain::workflow::value_objects::definition::WorkflowSourceFormat;
-    pub use crate::domain::workflow::value_objects::definition::WorkflowSummary;
     pub use crate::domain::workflow::value_objects::definition::WorktreeMode;
     pub use crate::domain::workflow::value_objects::execution::Artifact;
     pub use crate::domain::workflow::value_objects::execution::ExecutionOrigin;
@@ -1108,7 +1105,6 @@ pub mod workflow {
     pub use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
     pub use crate::usecase::workflow::diagnostic_dto::DiagnosticStage;
     pub use crate::usecase::workflow::diagnostic_dto::Severity;
-    pub use crate::usecase::workflow::WorkflowReadUsecase;
     pub use crate::usecase::workflow::WorkflowUsecase;
 
     pub use crate::domain::workflow::WorkflowDefinitionSourceService;

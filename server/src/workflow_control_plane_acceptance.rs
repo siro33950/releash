@@ -444,7 +444,7 @@ pub struct WorkflowControlPlaneAcceptanceHost {
     local_api: Arc<LocalApiServer>,
     local_api_base_url: String,
     local_api_token: String,
-    workflow_read: Arc<crate::usecase::workflow::WorkflowReadUsecase>,
+    workflow_read: Arc<crate::usecase::workflow::WorkflowUsecase>,
 }
 
 impl WorkflowControlPlaneAcceptanceHost {
@@ -1243,7 +1243,7 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
 #[path = "workflow_control_plane_acceptance_test.rs"]
 mod workflow_control_plane_acceptance_tests;
 
-struct AcceptanceWorkflowStateReads(Arc<crate::usecase::workflow::WorkflowReadUsecase>);
+struct AcceptanceWorkflowStateReads(Arc<crate::usecase::workflow::WorkflowUsecase>);
 #[async_trait::async_trait]
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceWorkflowStateReads {
     async fn read(

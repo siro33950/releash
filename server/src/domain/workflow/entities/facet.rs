@@ -105,23 +105,6 @@ impl Facet {
         }
     }
 
-    /// Facet の取得元と本文から一覧の項目を決める。
-    pub fn summary(&self) -> crate::domain::workflow::FacetSummary {
-        let description = self
-            .content
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map(|line| line.strip_prefix("# ").unwrap_or(line).trim().to_string())
-            .unwrap_or_default();
-        crate::domain::workflow::FacetSummary {
-            key: self.key().as_str().to_string(),
-            kind: self.kind().canonical_name().to_string(),
-            description,
-            builtin: self.source().is_builtin(),
-        }
-    }
-
     /// builtin を拒否し、外部編集に使うフォルダとファイルを決める。
     pub fn editor_paths(&self) -> Result<[PathBuf; 2], WorkflowError> {
         Ok([self.directory.clone(), self.file_path()?.to_path_buf()])

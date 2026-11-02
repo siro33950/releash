@@ -45,14 +45,9 @@ pub(crate) mod workflow_host;
 pub(crate) mod worktree_context;
 pub(crate) mod worktree_gateway;
 
-pub(crate) use definition_repository::{
-    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-};
-pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
+pub(crate) use definition_repository::WorkflowDefinitionFileRepository;
 pub(crate) use event_repository::WorkflowEventLogRepository;
 pub(crate) use execution_archive_repository::ExecutionTreeArchiveFactRepository;
-pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
-pub(crate) use facet_repository::WorkflowFacetFileRepository;
 pub(crate) use runtime_command_gateway::{
     WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
 };

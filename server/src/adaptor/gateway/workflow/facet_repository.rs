@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use super::{facet as gateway_facet, storage};
 use crate::domain::workflow::{
-    Facet, FacetKey, FacetKind, FacetRepository, FacetSummary, WorkflowError, WorkflowSource,
+    Facet, FacetKey, FacetKind, FacetRepository, WorkflowError, WorkflowSource,
 };
 
 #[derive(Debug, Clone)]
@@ -77,10 +77,5 @@ impl FacetRepository for WorkflowFacetFileRepository {
             log::warn!("Lua editor support generation failed after facet delete: {error}");
         }
         Ok(())
-    }
-
-    fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-        gateway_facet::list_facet_summaries(kind, &self.base_dir)
-            .map_err(|error| WorkflowError::external(error.to_string()))
     }
 }

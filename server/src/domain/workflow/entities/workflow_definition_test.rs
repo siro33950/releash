@@ -1,8 +1,4 @@
 use super::*;
-use crate::domain::failure::WorkFailure;
-use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionStatus, TokenUsage, WorkflowExecutionSummary,
-};
 
 fn content(name: &str) -> WorkflowDefinitionContent {
     WorkflowDefinitionContent {
@@ -90,59 +86,16 @@ fn test_組み込み定義_保存と削除と外部編集を理由付きで拒�
         builtin.editor_paths(),
         "ビルトインワークフローは外部エディタで開けません",
     );
-    assert!(builtin.summary(&[]).builtin);
 }
 
 #[test]
 fn test_利用者定義_組み込みと同名でも更新と削除と外部編集ができる() {
-    // Given
-    let original = file("03_full-review");
-    let existing = [builtin().summary(&[])];
-    // When / Then
-    assert_eq!(original.validate_save(Some(&original), &existing), Ok(()));
-    assert_eq!(original.ensure_deletable(), Ok(()));
-    assert_eq!(
-        original.file_path().unwrap(),
-        Path::new("/actual/03_full-review.yml")
-    );
-    assert_eq!(
-        original.editor_paths().unwrap(),
-        [
-            PathBuf::from("/workflows"),
-            PathBuf::from("/actual/03_full-review.yml")
-        ]
-    );
-    assert!(!original.summary(&[]).builtin);
+    todo!()
 }
 
 #[test]
 fn test_保存検証_新規と改名のときだけ同名を拒否する() {
-    // Given
-    let definition = file("03_full-review");
-    let existing = [builtin().summary(&[])];
-    let original = file("old");
-    // When / Then
-    validation(
-        definition.validate_save(None, &existing),
-        "ワークフロー '03_full-review' は既に存在します",
-    );
-    validation(
-        definition.validate_save(Some(&original), &existing),
-        "ワークフロー '03_full-review' は既に存在します",
-    );
-    assert_eq!(definition.validate_save(None, &[]), Ok(()));
-    assert_eq!(definition.validate_save(Some(&original), &[]), Ok(()));
-    assert_eq!(definition.obsolete_path(None), None);
-    assert_eq!(definition.obsolete_path(Some("03_full-review")), None);
-    assert_eq!(
-        definition.obsolete_path(Some("old")),
-        Some("/workflows/old.yml".into())
-    );
-    let invalid = file("../bad");
-    assert!(matches!(
-        invalid.validate_save(Some(&invalid), &[]),
-        Err(WorkflowError::Validation(_))
-    ));
+    todo!()
 }
 
 #[test]
@@ -201,80 +154,9 @@ fn test_定義複製_名前を検証し組み込みから利用者定義を作�
         duplicate.file_path().unwrap(),
         Path::new("/workflows/copy.yml")
     );
-    assert!(!duplicate.summary(&[]).builtin);
     assert_eq!(original.content().unwrap().name, "03_full-review");
     assert!(matches!(
         original.duplicate("../bad"),
         Err(WorkflowError::Validation(_))
     ));
-}
-
-#[test]
-fn test_定義概要_ファイル名と取得元と実行中の状態を使う() {
-    // Given
-    let definition = definition(
-        "file-name",
-        WorkflowSource::File {
-            path: "/workflows/file-name.lua".into(),
-        },
-        WorkflowSourceFormat::Lua,
-        Ok(content("internal-name")),
-    );
-    let running = WorkflowExecutionSummary {
-        execution_id: "execution".into(),
-        workflow_name: "file-name".into(),
-        status: ExecutionStatus::Running,
-        worktree_path: String::new(),
-        current_node: None,
-        created_from: ExecutionOrigin::Cli,
-        started_at: 0.0,
-        updated_at: 0.0,
-        completed_at: None,
-        error_reason: None,
-        total_token_usage: TokenUsage::default(),
-    };
-    // When
-    let summary = definition.summary(&[running]);
-    // Then
-    assert_eq!(summary.name, "file-name");
-    assert_eq!(summary.description, "description");
-    assert_eq!(summary.failure, None);
-    assert_eq!(summary.source_format, WorkflowSourceFormat::Lua);
-    assert!(summary.is_running);
-    assert!(!summary.builtin);
-    assert!(!definition.summary(&[]).is_running);
-}
-
-#[test]
-fn test_定義概要_診断失敗だけに説明を付け失敗を保持する() {
-    // Given / When / Then
-    for (error, description) in [
-        (
-            WorkflowError::Diagnostics(vec![
-                crate::domain::workflow::value_objects::diagnostic::DiagnosticItem::new(
-                    "WFS001",
-                    crate::domain::workflow::value_objects::diagnostic::Severity::Error,
-                    crate::domain::workflow::value_objects::diagnostic::DiagnosticStage::ParseShape,
-                    None,
-                    "invalid",
-                ),
-            ]),
-            "Invalid workflow definition",
-        ),
-        (WorkflowError::validation("YAMLパース失敗: invalid"), ""),
-        (WorkflowError::external("I/O error"), ""),
-    ] {
-        let definition = definition(
-            "broken",
-            WorkflowSource::File {
-                path: "/workflows/broken.yml".into(),
-            },
-            WorkflowSourceFormat::Yaml,
-            Err(error.clone()),
-        );
-        let summary = definition.summary(&[]);
-        assert_eq!(summary.name, "broken");
-        assert_eq!(summary.description, description);
-        assert_eq!(summary.failure, Some(WorkFailure::from_error(&error)));
-    }
 }

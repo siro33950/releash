@@ -25,14 +25,14 @@ pub use definition::{
     InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion, NodeDefinition, NodeKind,
     NodeKindName, NodeNamespace, NodeNamespaceError, Rule, SchemaDef, SequenceSpec,
     SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinitionContent,
-    WorkflowSourceFormat, WorkflowSummary, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
+    WorkflowSourceFormat, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
     MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{
     ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, ExecutionTree, Fanout,
 };
 pub use execution_metadata::{ExecutionStatusFilter, WorkflowExecutionSummary};
-pub use facet::{FacetContents, FacetKey, FacetKind, FacetSummary, WorkflowFacetContents};
+pub use facet::{FacetContents, FacetKey, FacetKind, WorkflowFacetContents};
 pub use failure::{
     FailureClassification, FailureDisposition, NodeExecutionFailureKind, TimeoutKind,
 };

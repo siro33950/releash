@@ -1759,16 +1759,6 @@ impl Serialize for Rule {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowSummary {
-    pub failure: Option<crate::domain::failure::WorkFailure>,
-    pub name: String,
-    pub description: String,
-    pub builtin: bool,
-    pub is_running: bool,
-    pub source_format: WorkflowSourceFormat,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowSourceFormat {

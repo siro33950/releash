@@ -70,14 +70,6 @@ impl FacetKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FacetSummary {
-    pub key: String,
-    pub kind: String,
-    pub description: String,
-    pub builtin: bool,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FacetContents {
     pub policy: Option<String>,

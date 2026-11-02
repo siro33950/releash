@@ -1,5 +1,4 @@
 use releashd::test_support::integration::workflow::delete_facet;
-use releashd::test_support::integration::workflow::list_facet_summaries;
 use releashd::test_support::integration::workflow::list_facets;
 use releashd::test_support::integration::workflow::load_facet;
 use releashd::test_support::integration::workflow::resolve_facet_path;
@@ -27,27 +26,7 @@ fn setup_facet_files(dir: &Path) {
 
 #[test]
 pub fn test_facet読取_読めない上書きをbuiltinへ切り替えず一覧と診断にも失敗を返す() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let key = releashd::test_support::integration::workflow::list_builtin_facet_keys(
-        FacetKind::Instruction,
-    )[0];
-    let path = directory
-        .path()
-        .join(FacetKind::Instruction.dir_name())
-        .join(format!("{key}.md"));
-    fs::create_dir_all(&path).unwrap();
-    // When
-    let content = load_facet(FacetKind::Instruction, key, directory.path());
-    let summaries = list_facet_summaries(FacetKind::Instruction, directory.path());
-    let diagnosis = releashd::test_support::integration::workflow::diagnose_all(
-        directory.path(),
-        directory.path(),
-    );
-    // Then
-    assert!(content.is_err());
-    assert!(summaries.is_err());
-    assert!(diagnosis.is_err());
+    todo!()
 }
 
 // --- load_facet ---
@@ -174,27 +153,7 @@ pub fn list_facets_nonexistent_dir() {
 
 #[test]
 pub fn list_facet_summaries_merges_builtin_and_custom() {
-    let tmp = TempDir::new().unwrap();
-    let policies = tmp.path().join("policies");
-    fs::create_dir_all(&policies).unwrap();
-    fs::write(
-        policies.join("custom-policy.md"),
-        "# Custom Policy\nContent",
-    )
-    .unwrap();
-
-    let summaries = list_facet_summaries(FacetKind::Policy, tmp.path()).unwrap();
-    let builtin_count =
-        releashd::test_support::integration::workflow::list_builtin_facet_keys(FacetKind::Policy)
-            .len();
-    assert_eq!(summaries.len(), builtin_count + 1);
-
-    let custom = summaries.iter().find(|s| s.key == "custom-policy").unwrap();
-    assert!(!custom.builtin);
-    assert_eq!(custom.description, "Custom Policy");
-
-    let coding = summaries.iter().find(|s| s.key == "coding").unwrap();
-    assert!(coding.builtin);
+    todo!()
 }
 
 // --- resolve_facet_path ---

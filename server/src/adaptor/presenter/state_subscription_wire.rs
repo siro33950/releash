@@ -144,7 +144,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 value: value.as_ref().map(|entries| entries.iter().cloned().map(wire::ReviewHistoryEntryDto::try_from).collect::<Result<Vec<_>, _>>().map(|items| wire::ListReviewHistoryEntryDto { items })).transpose().map_err(|error| crate::adaptor::presenter::connect::command_error(crate::adaptor::presenter::error::AppError::new(error).into()))?,
             }),
             StateValue::Workflows(value) => wire::state_payload::Value::Workflows(crate::adaptor::presenter::client::value(value.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
-            StateValue::Workflow(value) => wire::state_payload::Value::Workflow(wire::NullableWorkflowDto { value: value.content().ok().map(|_| crate::adaptor::presenter::client::value(value.clone())).transpose().map_err(crate::adaptor::presenter::connect::command_error)? }),
+            StateValue::Workflow(_) => todo!(),
             StateValue::WorkflowSource(value) => wire::state_payload::Value::WorkflowSource(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,

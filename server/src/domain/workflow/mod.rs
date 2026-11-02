@@ -31,8 +31,8 @@ pub use value_objects::{
     ContractType, ContractValidationResult, EnvironmentVariableName, EnvironmentVariableNameError,
     ExecutionOrigin, ExecutionParentRef, ExecutionStatus, ExecutionStatusFilter, ExecutionTree,
     ExecutionTreeId, ExecutionTreeLaunch, FacetContents, FacetKey, FacetKind, FacetRefs,
-    FacetSummary, FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec,
-    FieldPath, InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
+    FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec, FieldPath,
+    InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
     NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
     NodeExecution, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactMeta,
     NodeFactRecord, NodeKind, NodeKindName, NodeProcessPresence, Predicate, ProcessExitedFact,
@@ -42,8 +42,8 @@ pub use value_objects::{
     StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
     TreeRootFact, WorkflowDefinitionContent, WorkflowDefinitionName, WorkflowEvent,
     WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowSourceFormat,
-    WorkflowSummary, WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry,
-    WorktreeMode, NODE_STATUS_COMPLETED,
+    WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry, WorktreeMode,
+    NODE_STATUS_COMPLETED,
 };
 
 #[cfg(any(test, feature = "test-support"))]

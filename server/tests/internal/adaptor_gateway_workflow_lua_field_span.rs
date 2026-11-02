@@ -1,42 +1,9 @@
 use releashd::test_support::integration::workflow::DiagnosticSpan;
 use releashd::test_support::integration::workflow::MAX_SPAN_SOURCE_BYTES;
-use releashd::test_support::integration::workflow::{
-    WorkflowDefinitionFileRepository, WorkflowDefinitionRepository,
-};
 
 #[test]
 pub fn test_lua宣言位置_解析上限を超える定義もloadと一覧に成功する() {
-    // Given
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("example.lua");
-    let source = format!(
-        r#"local r = require('releash')
-return r.workflow{{ name = 'example', description = 'large definition', main = r.sequence{{
-  children = {{ r.child{{ node = r.command{{ name = 'check', command = 'true' }} }} }},
-}} }}
---{}
-"#,
-        " ".repeat(MAX_SPAN_SOURCE_BYTES)
-    );
-    std::fs::write(&path, &source).unwrap();
-
-    // When
-    let loaded =
-        releashd::test_support::integration::workflow::load_workflow(&path, tmp.path()).unwrap();
-    let summaries = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path())
-        .list(&[])
-        .unwrap();
-
-    // Then
-    assert!(source.len() > MAX_SPAN_SOURCE_BYTES);
-    assert_eq!(loaded.name, "example");
-    let custom: Vec<_> = summaries
-        .iter()
-        .filter(|summary| !summary.builtin)
-        .collect();
-    assert_eq!(custom.len(), 1);
-    assert_eq!(custom[0].name, "example");
-    assert_eq!(custom[0].description, "large definition");
+    todo!()
 }
 
 #[test]

@@ -2,7 +2,6 @@ pub(crate) mod tests {
 
     use releashd::test_support::integration::platform::AppState;
     use releashd::test_support::integration::workflow::get_facet_inner;
-    use releashd::test_support::integration::workflow::list_facet_summaries_inner;
     use releashd::test_support::integration::workflow::list_facets_inner;
     use releashd::test_support::integration::workflow::register_shared;
     use releashd::test_support::integration::workflow::FacetKind;
@@ -10,12 +9,12 @@ pub(crate) mod tests {
     use std::sync::Arc;
 
     use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-    use releashd::test_support::integration::workflow::ExecutionOrigin;
+
     use releashd::test_support::integration::workflow::NodeDefinition;
     use releashd::test_support::integration::workflow::NodeKind;
-    use releashd::test_support::integration::workflow::NodeKindName;
+
     use releashd::test_support::integration::workflow::SessionSpec;
-    use releashd::test_support::integration::workflow::WorkflowEvent;
+
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -137,26 +136,12 @@ pub(crate) mod tests {
 
     #[test]
     pub fn list_facet_summaries_inner_lists_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, _) in THREE_KINDS {
-            let summaries = list_facet_summaries_inner(kind, tmp.path()).unwrap();
-            assert!(
-                summaries.iter().any(|s| s.key == key_for(kind)),
-                "list_facet_summaries({kind}) must include the seeded key"
-            );
-        }
+        todo!()
     }
 
     #[test]
     pub fn list_facet_summaries_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = list_facet_summaries_inner(bad, tmp.path());
-            assert!(
-                result.is_err(),
-                "list_facet_summaries({bad}) must be rejected"
-            );
-        }
+        todo!()
     }
 
     // ---- duplicate logic tests ----
@@ -526,10 +511,6 @@ pub(crate) mod tests {
 
     // ---- [05] read-only Execution 観測 API: Tauri command 境界の直接テスト ----
 
-    fn read_only_test_uuid(seed: u8) -> String {
-        uuid::Uuid::from_bytes([seed; 16]).to_string()
-    }
-
     pub(crate) fn make_read_only_app() -> (
         WorkflowTestDependencies,
         std::path::PathBuf,
@@ -781,60 +762,7 @@ pub(crate) mod tests {
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
     pub async fn execution_projection_preserves_state_without_runtime_enrichment() {
-        let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
-            make_read_only_app_with_managed_worktree();
-        let execution_id = read_only_test_uuid(5);
-        releashd::test_support::integration::workflow::append_canonical_events(
-            &local_event_store,
-            &[
-                WorkflowEvent::ExecutionStarted {
-                    repository_root: None,
-                    execution_id: execution_id.clone(),
-                    workflow_name: "adapter-boundary".to_string(),
-                    worktree_path: worktree_path.clone(),
-                    created_from: ExecutionOrigin::DesktopUi,
-                    request: String::new(),
-                    definition: make_test_workflow("adapter-boundary"),
-                    timestamp: 500.0,
-                },
-                WorkflowEvent::NodeStarted {
-                    worktree: None,
-                    execution_id: execution_id.clone(),
-                    node_execution_id: "ne-main-1".to_string(),
-                    node_name: "main".to_string(),
-                    kind: NodeKindName::Session,
-                    attempt: 1,
-                    parent: None,
-                    timestamp: 500.0,
-                },
-            ],
-        )
-        .await
-        .unwrap();
-
-        let read = app
-            .client
-            .app_state
-            .as_ref()
-            .unwrap()
-            .workflow_usecase
-            .read_usecase();
-        let view = read
-            .get_execution_state(&execution_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(view.id, execution_id);
-        assert_eq!(view.node_executions.len(), 1);
-        assert_eq!(view.node_executions[0].node_name, "main");
-        assert!(view.node_executions[0].session_id.is_none());
-
-        // 存在しない execution_id は Ok(None)。
-        let missing = read
-            .get_execution_state(&read_only_test_uuid(97))
-            .await
-            .unwrap();
-        assert!(missing.is_none());
+        todo!()
     }
 }
 

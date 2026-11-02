@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::domain::workflow::{
-    WorkflowDefinitionContent, WorkflowError, WorkflowSource, WorkflowSourceFormat, WorkflowSummary,
+    WorkflowDefinitionContent, WorkflowError, WorkflowSource, WorkflowSourceFormat,
 };
 
 /// 編集元と解釈結果を所有する workflow 定義。
@@ -73,32 +73,10 @@ impl WorkflowDefinition {
     /// 取得元、形式、名前と保存先の重複から保存の可否を決める。
     pub fn validate_save(
         &self,
-        original: Option<&Self>,
-        existing: &[WorkflowSummary],
+        _original: Option<&Self>,
+        _existing_names: &[String],
     ) -> Result<(), WorkflowError> {
-        if self.source.is_builtin() || original.is_some_and(|original| original.source.is_builtin())
-        {
-            return Err(WorkflowError::validation(
-                "ビルトインワークフローは編集できません",
-            ));
-        }
-        if original.is_some_and(|original| original.format == WorkflowSourceFormat::Lua) {
-            return Err(WorkflowError::validation(
-                "Lua workflow は保存できません。外部エディタで編集してください",
-            ));
-        }
-        let content = self.content().map_err(Clone::clone)?;
-        crate::domain::workflow::validation::validate_name(&content.name)
-            .map_err(|error| WorkflowError::validation(error.to_string()))?;
-        if original.is_none_or(|original| original.file_stem != self.file_stem)
-            && existing.iter().any(|summary| summary.name == content.name)
-        {
-            return Err(WorkflowError::validation(format!(
-                "ワークフロー '{}' は既に存在します",
-                content.name
-            )));
-        }
-        Ok(())
+        todo!()
     }
 
     /// 保存の成功後に不要になる元のファイルを決める。
@@ -125,34 +103,6 @@ impl WorkflowDefinition {
                 "ビルトインワークフローは外部エディタで開けません",
             )),
             WorkflowSource::File { path } => Ok(path),
-        }
-    }
-
-    /// 定義の取得元、解釈結果と実行状況から一覧の項目を決め、診断による失敗を他の失敗と区別する。
-    pub fn summary(
-        &self,
-        running: &[crate::domain::workflow::WorkflowExecutionSummary],
-    ) -> WorkflowSummary {
-        let (description, failure) = match &self.content {
-            Ok(content) => (content.description.clone(), None),
-            Err(error) => (
-                if matches!(error, WorkflowError::Diagnostics(_)) {
-                    "Invalid workflow definition".to_string()
-                } else {
-                    String::new()
-                },
-                Some(crate::domain::failure::WorkFailure::from_error(error)),
-            ),
-        };
-        WorkflowSummary {
-            name: self.file_stem.clone(),
-            builtin: self.source.is_builtin(),
-            source_format: self.format,
-            is_running: running
-                .iter()
-                .any(|running| running.workflow_name == self.file_stem),
-            description,
-            failure,
         }
     }
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::adaptor::gateway::workflow::{
     builtin,
-    facet::{self, FacetError, FacetKind},
+    facet::{FacetError, FacetKind},
 };
 
 /// 編集支援ファイルの生成で発生しうるエラー。I/O 失敗と facet カタログの失敗を
@@ -238,35 +238,8 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
     fs::write(path, content)
 }
 
-fn generate_facet_stub(base_dir: &Path) -> Result<String, StubGenerationError> {
-    let mut output = String::from("---@meta\n\n---@class ReleashFacet\n\n");
-    for kind in [
-        FacetKind::Instruction,
-        FacetKind::Policy,
-        FacetKind::Knowledge,
-    ] {
-        let class_name = match kind {
-            FacetKind::Instruction => "ReleashInstructionFacets",
-            FacetKind::Policy => "ReleashPolicyFacets",
-            FacetKind::Knowledge => "ReleashKnowledgeFacets",
-        };
-        output.push_str(&format!("---@class {class_name}\n"));
-        let summaries = facet::list_facet_summaries(kind, base_dir)?;
-        for summary in summaries {
-            let path = facet_document_path(base_dir, kind, &summary.key, summary.builtin);
-            let description = summary.description.replace(['\r', '\n'], " ");
-            let key = lua_doc_field(&summary.key);
-            output.push_str(&format!(
-                "---@field {key} ReleashFacet {description} ([本文]({}))\n",
-                facet_document_url(&path)?
-            ));
-        }
-        output.push('\n');
-    }
-    output.push_str(
-        "---@class ReleashFacetModule\n---@field instruction ReleashInstructionFacets\n---@field policy ReleashPolicyFacets\n---@field knowledge ReleashKnowledgeFacets\n\n---@type ReleashFacetModule\nlocal facets = {}\nreturn facets\n",
-    );
-    Ok(output)
+fn generate_facet_stub(_base_dir: &Path) -> Result<String, StubGenerationError> {
+    todo!()
 }
 
 fn generate_builtin_facet_documents(base_dir: &Path) -> Result<(), StubGenerationError> {
@@ -305,36 +278,3 @@ pub fn facet_document_url(path: &Path) -> Result<String, StubGenerationError> {
         .map(|url| url.to_string())
         .map_err(|_| StubGenerationError::InvalidDocumentPath { path: absolute })
 }
-
-fn facet_document_path(
-    base_dir: &Path,
-    kind: FacetKind,
-    key: &str,
-    builtin_facet: bool,
-) -> PathBuf {
-    let custom = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    if !builtin_facet || custom.exists() {
-        return custom;
-    }
-    base_dir
-        .join(".releash/facets")
-        .join(kind.dir_name())
-        .join(format!("{key}.md"))
-}
-
-fn lua_doc_field(key: &str) -> String {
-    let mut chars = key.chars();
-    if chars
-        .next()
-        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
-    {
-        key.to_string()
-    } else {
-        format!("[\"{}\"]", key.replace('"', "\\\""))
-    }
-}
-
-#[cfg(test)]
-#[path = "stubs_test.rs"]
-mod stubs_tests;

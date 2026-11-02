@@ -159,12 +159,7 @@ impl FacetRepository for FakeFacetRepository {
             .remove(&(facet.kind(), facet.key().as_str().into()));
         Ok(())
     }
-    fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-        self.list(kind)?
-            .iter()
-            .map(|key| self.get(kind, key).map(|facet| facet.summary()))
-            .collect()
-    }
+
     fn get_or_new(
         &self,
         kind: FacetKind,
@@ -404,7 +399,7 @@ pub(crate) mod startup {
     }
 }
 
-use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository, WorkflowSummary};
+use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository};
 #[derive(Default)]
 pub struct FakeDefinitionRepository {
     pub definitions: Mutex<HashMap<String, WorkflowDefinition>>,
@@ -423,19 +418,8 @@ impl FakeDefinitionRepository {
 }
 
 impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-    fn list(
-        &self,
-        running: &[crate::domain::workflow::WorkflowExecutionSummary],
-    ) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        let mut summaries = self
-            .definitions
-            .lock()
-            .unwrap()
-            .values()
-            .map(|definition| definition.summary(running))
-            .collect::<Vec<_>>();
-        summaries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(summaries)
+    fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
+        todo!()
     }
     fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {
         if let Some(message) = self.read_error.lock().unwrap().as_ref() {

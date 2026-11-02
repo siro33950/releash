@@ -45,7 +45,6 @@ fn test_組み込みファセット_変更と外部編集を理由付きで拒�
         "ビルトインファセットは外部エディタで開けません",
     );
     assert_eq!(facet.content(), "original");
-    assert!(facet.summary().builtin);
 }
 
 #[test]
@@ -66,7 +65,6 @@ fn test_利用者ファセット_組み込みと同名でも更新と削除と�
             path: "/actual/coding.md".into()
         }
     );
-    assert!(!facet.summary().builtin);
     assert_eq!(facet.ensure_deletable(), Ok(()));
     assert_eq!(facet.file_path().unwrap(), Path::new("/actual/coding.md"));
     assert_eq!(
@@ -98,22 +96,6 @@ fn test_本文更新_未定義変数と新規の重複を拒否し本文を保�
 }
 
 #[test]
-fn test_ファセット概要_最初の非空行から説明を作る() {
-    // Given / When / Then
-    for (content, description) in [
-        ("\n  # Heading  \nbody", "Heading"),
-        ("\n text \n# later", "text"),
-        ("\n \t", ""),
-        ("## Heading", "## Heading"),
-    ] {
-        let summary = file_facet(content).summary();
-        assert_eq!(summary.key, "coding");
-        assert_eq!(summary.kind, "policy");
-        assert_eq!(summary.description, description);
-    }
-}
-
-#[test]
 fn test_ファセット複製_識別子と重複を検証し組み込みから利用者ファイルを作る() {
     // Given
     let original = facet(WorkflowSource::Builtin, "body");
@@ -137,6 +119,5 @@ fn test_ファセット複製_識別子と重複を検証し組み込みから�
             PathBuf::from("/workflows/policies/copy.md")
         ]
     );
-    assert!(!duplicate.summary().builtin);
     assert_eq!(original.content(), "body");
 }

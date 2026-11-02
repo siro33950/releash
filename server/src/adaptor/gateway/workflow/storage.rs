@@ -266,27 +266,6 @@ pub fn workflow_files(dir: &Path) -> Result<Vec<(String, std::path::PathBuf)>, S
     Ok(files)
 }
 
-/// 同じ名前を複数の形式が宣言した状態は `resolve_workflow_path` が `WFS006` として
-/// 拒否する。一覧でも 1 件へ畳み込み、選べる行と実行できる定義を一致させる。
-pub(crate) fn collapse_duplicate_names(
-    summaries: Vec<crate::domain::workflow::WorkflowSummary>,
-) -> Vec<crate::domain::workflow::WorkflowSummary> {
-    let mut collapsed: Vec<crate::domain::workflow::WorkflowSummary> =
-        Vec::with_capacity(summaries.len());
-    for summary in summaries {
-        match collapsed.last_mut() {
-            Some(previous) if previous.name == summary.name => {
-                previous.description = DUPLICATE_NAME_DESCRIPTION.to_string();
-                if previous.failure.is_none() {
-                    previous.failure = summary.failure;
-                }
-            }
-            _ => collapsed.push(summary),
-        }
-    }
-    collapsed
-}
-
 pub fn resolve_and_validate_workflow_facets(
     workflow: &WorkflowDefinitionYaml,
     facets_base_dir: &Path,
