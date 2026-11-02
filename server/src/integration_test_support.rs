@@ -829,6 +829,11 @@ pub mod transport {
     pub use crate::test_support::client_api_deps;
 }
 pub mod workflow {
+    pub use crate::adaptor::gateway::workflow::summary_query::{
+        FacetFileQueryService, WorkflowDefinitionFileQueryService,
+    };
+    pub use crate::usecase::workflow::{FacetQueryService, WorkflowDefinitionQueryService};
+
     pub use crate::adaptor::controller::client::workflow::get_facet_inner;
     pub use crate::adaptor::controller::client::workflow::list_facets_inner;
     pub use crate::adaptor::controller::client::workflow::shared::register_shared;

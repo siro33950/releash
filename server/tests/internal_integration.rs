@@ -152,6 +152,8 @@ mod adaptor_gateway_workflow_secret_source_gateway;
 mod adaptor_gateway_workflow_startup_repository;
 #[path = "internal/adaptor_gateway_workflow_storage.rs"]
 mod adaptor_gateway_workflow_storage;
+#[path = "internal/adaptor_gateway_workflow_summary_query.rs"]
+mod adaptor_gateway_workflow_summary_query;
 #[path = "internal/adaptor_gateway_workflow_workflow_host.rs"]
 mod adaptor_gateway_workflow_workflow_host;
 #[path = "internal/adaptor_gateway_workflow_workflow_host_delegate.rs"]

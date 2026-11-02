@@ -508,8 +508,13 @@ impl TryFrom<crate::domain::workflow::FacetRefs> for wire::FacetRefsDto {
 
 impl TryFrom<crate::usecase::workflow::FacetSummaryDto> for wire::FacetSummaryDto {
     type Error = String;
-    fn try_from(_value: crate::usecase::workflow::FacetSummaryDto) -> Result<Self, String> {
-        todo!()
+    fn try_from(value: crate::usecase::workflow::FacetSummaryDto) -> Result<Self, String> {
+        Ok(Self {
+            key: Some(cv(value.key)?),
+            kind: Some(cv(value.kind)?),
+            description: Some(cv(value.description)?),
+            builtin: Some(cv(value.builtin)?),
+        })
     }
 }
 
@@ -1839,8 +1844,18 @@ impl TryFrom<wire::WorkflowSubmitArtifactInput>
 
 impl TryFrom<crate::usecase::workflow::WorkflowSummaryDto> for wire::WorkflowSummaryDto {
     type Error = String;
-    fn try_from(_value: crate::usecase::workflow::WorkflowSummaryDto) -> Result<Self, String> {
-        todo!()
+    fn try_from(value: crate::usecase::workflow::WorkflowSummaryDto) -> Result<Self, String> {
+        Ok(Self {
+            read_error: value
+                .failure
+                .as_ref()
+                .map(|failure| format!("Workflow read failed: {failure}")),
+            name: Some(cv(value.name)?),
+            description: Some(cv(value.description)?),
+            builtin: Some(cv(value.builtin)?),
+            is_running: Some(cv(value.is_running)?),
+            source_format: Some(cv(value.source_format)?),
+        })
     }
 }
 

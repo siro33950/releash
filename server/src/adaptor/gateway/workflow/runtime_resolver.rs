@@ -69,30 +69,34 @@ pub fn resolve_workflow_by_name(
         paths.sort();
 
         for path in paths {
-            let name = read_workflow_name(&path, workflows_dir, facets_base_dir);
-            match name {
-                Ok(name) if name == workflow_name => {
-                    match super::storage::load_workflow(&path, facets_base_dir) {
-                        Ok(workflow) => matches.push((path.display().to_string(), workflow)),
-                        Err(error) => {
-                            if path.file_stem().and_then(|stem| stem.to_str())
-                                == Some(workflow_name)
-                            {
-                                exact_file_error = Some(error.to_string());
-                            }
-                            log::warn!("workflow definition skipped: {}: {error}", path.display());
-                        }
-                    }
+            let result = (|| {
+                let content =
+                    std::fs::read_to_string(&path).map_err(super::storage::StorageError::from)?;
+                let diagnosis = super::storage::diagnose_workflow_file(
+                    &path,
+                    &content,
+                    workflows_dir,
+                    facets_base_dir,
+                );
+                let workflow = super::storage::diagnosed_workflow(diagnosis)?;
+                if workflow.name != workflow_name {
+                    return Ok(None);
+                }
+                super::storage::resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
+                Ok::<_, super::storage::StorageError>(Some(workflow))
+            })();
+            match result {
+                Ok(Some(workflow)) if workflow.name == workflow_name => {
+                    matches.push((path.display().to_string(), workflow))
                 }
                 Ok(_) => {}
-                Err(error)
-                    if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) =>
-                {
-                    log::warn!("workflow definition skipped: {}: {error}", path.display());
-                    exact_file_error = Some(error);
-                }
                 Err(error) => {
-                    log::debug!("workflow definition skipped: {}: {error}", path.display())
+                    if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) {
+                        log::warn!("workflow definition skipped: {}: {error}", path.display());
+                        exact_file_error = Some(error.to_string());
+                    } else {
+                        log::debug!("workflow definition skipped: {}: {error}", path.display());
+                    }
                 }
             }
         }
@@ -131,42 +135,17 @@ pub fn resolve_workflow_by_name(
                 .map(|(source, _)| source.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
-                "workflow_diagnostics: WFS006: workflow name '{workflow_name}' is duplicated: {sources}"
-            )))
-        }
-    }
-}
-
-fn read_workflow_name(
-    path: &Path,
-    workflows_dir: &Path,
-    facets_base_dir: &Path,
-) -> Result<String, String> {
-    let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-    match super::storage::workflow_source_format(path) {
-        Some(crate::domain::workflow::WorkflowSourceFormat::Lua) => {
-            let catalog =
-                super::lua::facet_catalog(facets_base_dir).map_err(|error| error.to_string())?;
-            super::lua::load_lua_workflow(
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("<unknown>.lua"),
-                &content,
-                workflows_dir,
-                catalog,
-            )
-            .map(|definition| definition.workflow.name)
-            .map_err(|error| error.to_string())
-        }
-        _ => {
-            #[derive(serde::Deserialize)]
-            struct Name {
-                name: String,
-            }
-            serde_saphyr::from_str::<Name>(&content)
-                .map(|value| value.name)
-                .map_err(|error| error.to_string())
+            Err(WorkflowDefinitionResolverError::InvalidWorkflow(
+                crate::domain::workflow::WorkflowError::Diagnostics(vec![
+                    crate::domain::workflow::value_objects::diagnostic::DiagnosticItem::new(
+                        "WFS006",
+                        crate::domain::workflow::value_objects::diagnostic::Severity::Error,
+                        crate::domain::workflow::value_objects::diagnostic::DiagnosticStage::ParseShape,
+                        None,
+                        format!("workflow name '{workflow_name}' is duplicated: {sources}"),
+                    ),
+                ]).to_string(),
+            ))
         }
     }
 }

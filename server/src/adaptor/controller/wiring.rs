@@ -8,6 +8,17 @@
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
 //! query service や gateway 協力者は対応する usecase の構築時に注入する。
 
+use crate::adaptor::gateway::workflow::{
+    definition_repository::{
+        WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    },
+    diagnostics_gateway::WorkflowDiagnosticsFileGateway,
+    execution_projection_repository::WorkflowExecutionProjectionLogRepository,
+    facet_repository::WorkflowFacetFileRepository,
+    summary_query::{FacetFileQueryService, WorkflowDefinitionFileQueryService},
+    WorkflowEventLogRepository,
+};
+use crate::usecase::workflow::query_service::WorkflowQueryService;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
@@ -244,16 +255,81 @@ pub fn build_workflow_services_with_repository_worktrees(
 /// acceptance harness の双方がこの一箇所を通る。
 #[allow(clippy::too_many_arguments)]
 pub fn build_workflow_services_with_gateways(
-    _failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
-    _data_dir: impl Into<std::path::PathBuf>,
-    _worktrees: Arc<dyn ManagedWorktreeGateway>,
-    _editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
-    _editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
-    _store: Arc<LocalEventStore>,
-    _processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
-    _workflows_dir: Option<std::path::PathBuf>,
+    failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
+    data_dir: impl Into<std::path::PathBuf>,
+    worktrees: Arc<dyn ManagedWorktreeGateway>,
+    editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
+    editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
+    store: Arc<LocalEventStore>,
+    processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
+    workflows_dir: Option<std::path::PathBuf>,
 ) -> (WorkflowUsecase, Arc<dyn WorkspaceQueryService>) {
-    todo!()
+    let data_dir = data_dir.into();
+    let workflows_dir =
+        workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
+    let facets_base_dir = workflows_dir.clone();
+    let execution_archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
+        store.clone(),
+        data_dir.clone(),
+    ));
+    let mut workspace_nodes =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store.clone());
+    Arc::get_mut(&mut workspace_nodes)
+        .expect("new workspace repository")
+        .processes = processes.clone();
+    let workspace_query: Arc<dyn WorkspaceQueryService> =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
+            workspace_nodes.clone(),
+        );
+    let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
+        workflows_dir.clone(),
+        facets_base_dir.clone(),
+    ));
+    let definition_sources = Arc::new(WorkflowDefinitionFileSourceGateway::new(
+        workflows_dir.clone(),
+        facets_base_dir.clone(),
+    ));
+    let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
+    let events = Arc::new(WorkflowEventLogRepository::with_store(store.clone()));
+    let mut projection = WorkflowExecutionProjectionLogRepository::new(store.clone());
+    projection.processes = processes;
+    let execution_projection = Arc::new(projection);
+    let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
+        workflows_dir.clone(),
+        facets_base_dir.clone(),
+    ));
+    let query = WorkflowQueryService::new(
+        definitions.clone(),
+        definition_sources.clone(),
+        facets.clone(),
+        events,
+        execution_projection,
+    );
+    let workflow_usecase = WorkflowUsecase::new(
+        query.clone(),
+        Arc::new(WorkflowDefinitionFileQueryService::new(
+            workflows_dir.clone(),
+            facets_base_dir.clone(),
+        )),
+        Arc::new(FacetFileQueryService::new(facets_base_dir.clone())),
+        definitions,
+        definition_sources,
+        facets,
+        worktrees.clone(),
+        editor_settings,
+        editor_launcher,
+        Arc::new(
+            crate::adaptor::gateway::workflow::directory_service::WorkflowDirectoryFileService::new(
+                workflows_dir,
+            ),
+        ),
+        diagnostics,
+        execution_archives.clone(),
+        workspace_nodes,
+        workspace_query.clone(),
+        failures,
+    );
+    (workflow_usecase, workspace_query)
 }
 
 pub fn build_workflow_runtime_usecase(

@@ -7,6 +7,9 @@ use releashd::test_support::integration::workflow::IsolatedWorktree;
 use releashd::test_support::integration::workflow::NodeFactMeta;
 use releashd::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery;
 use releashd::test_support::integration::workflow::WorktreeContextReadError;
+use releashd::test_support::integration::workflow::{
+    NodeExecutionFailureKind, RuntimeFailureObservedFact,
+};
 
 use releashd::test_support::integration::workflow::ArtifactProducedFact;
 use releashd::test_support::integration::workflow::ExecutionOrigin;
@@ -202,7 +205,52 @@ pub async fn test_隔離読み取り_sessionの起動先を直近の隔離祖先
 
 #[tokio::test]
 pub async fn test_隔離読み取り_実体なしでも実行中と失敗後とabort後のbranchとpathを再構築する() {
-    todo!()
+    // Given
+    for terminal in [
+        None,
+        Some(NodeFact::RuntimeFailureObserved(
+            RuntimeFailureObservedFact {
+                reason: "creation failed".into(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            },
+        )),
+        Some(NodeFact::AbortRequested(Default::default())),
+    ] {
+        let fixture = Fixture::new(true).await;
+        let expected = IsolatedWorktree::for_attempt("/repo", &fixture.child.node_execution_id, 2);
+        if let Some(fact) = terminal {
+            fixture.append_child(fact).await;
+        }
+
+        // When
+        let state = fixture
+            .read()
+            .get_execution_state(TREE)
+            .await
+            .unwrap()
+            .unwrap();
+        let node = state
+            .node_executions
+            .iter()
+            .find(|node| node.id == fixture.child.node_execution_id)
+            .unwrap();
+        let dto = releashd::test_support::integration::workflow::workflow_execution_to_view(
+            state.clone(),
+        );
+
+        // Then
+        assert_eq!(node.worktree.as_ref(), Some(&expected));
+        assert!(node.artifact.is_none());
+        let value = serde_json::to_value(dto).unwrap();
+        let nodes = value["nodeExecutions"].as_array().unwrap();
+        let node = nodes
+            .iter()
+            .find(|node| node["id"] == fixture.child.node_execution_id)
+            .unwrap();
+        assert_eq!(node["attempt"], fixture.child.attempt);
+        assert_eq!(node["worktree"]["branch"], expected.branch);
+        assert_eq!(node["worktree"]["path"], expected.path);
+    }
 }
 
 #[tokio::test]

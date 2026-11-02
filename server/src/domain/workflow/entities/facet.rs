@@ -57,7 +57,7 @@ impl Facet {
         is_new: bool,
         existing_keys: &[String],
     ) -> Result<(), WorkflowError> {
-        if self.source.is_builtin() {
+        if self.source().is_builtin() {
             return Err(WorkflowError::validation(
                 "ビルトインファセットは編集できません",
             ));
@@ -75,7 +75,7 @@ impl Facet {
                 undefined.join(", ")
             )));
         }
-        if is_new && existing_keys.iter().any(|key| key == self.key.as_str()) {
+        if is_new && existing_keys.iter().any(|key| key == self.key().as_str()) {
             return Err(WorkflowError::validation(format!(
                 "ファセット '{}' は既に存在します",
                 self.key.as_str()
@@ -126,7 +126,7 @@ impl Facet {
             )));
         }
         Ok(Self {
-            kind: self.kind,
+            kind: self.kind(),
             key,
             directory: self.directory.clone(),
             source: WorkflowSource::File {

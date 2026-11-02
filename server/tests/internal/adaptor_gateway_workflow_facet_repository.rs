@@ -1,4 +1,7 @@
+use releashd::test_support::integration::workflow::{FacetFileQueryService, FacetQueryService};
 pub(crate) mod tests {
+    use super::{FacetFileQueryService, FacetQueryService};
+    use releashd::test_support::integration::workflow::WorkflowSource;
 
     use releashd::test_support::integration::workflow::FacetRepository;
     use std::fs;
@@ -38,7 +41,20 @@ pub(crate) mod tests {
 
     #[test]
     pub fn list_summaries_preserves_existing_shape_fields() {
-        todo!()
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let repo = WorkflowFacetFileRepository::new(tmp.path());
+        save(&repo, "impl", "# Title\nBody", true).unwrap();
+
+        // When
+        let summaries = FacetFileQueryService::new(tmp.path())
+            .list_facet_summaries(FacetKind::Instruction)
+            .unwrap();
+
+        // Then
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.key == "impl" && summary.kind == "instruction"));
     }
 
     #[test]
@@ -83,12 +99,64 @@ pub(crate) mod tests {
 
     #[test]
     fn test_facet取得と一覧_builtinと同名の利用者ファイルはfile由来() {
-        todo!()
+        // Given
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("policies")).unwrap();
+        let path = dir.path().join("policies/coding.md");
+        fs::write(&path, "# User coding\nBody").unwrap();
+        let repository = WorkflowFacetFileRepository::new(dir.path());
+        // When
+        let mut facet = repository.get(FacetKind::Policy, "coding").unwrap();
+        let summaries = FacetFileQueryService::new(dir.path())
+            .list_facet_summaries(FacetKind::Policy)
+            .unwrap();
+        // Then
+        assert!(matches!(facet.source(), WorkflowSource::File { path: source } if source == &path));
+        let row = summaries
+            .iter()
+            .find(|summary| summary.key == "coding")
+            .unwrap();
+        assert!(!row.builtin);
+        assert_eq!(row.description, "User coding");
+        assert_eq!(
+            summaries
+                .iter()
+                .filter(|summary| summary.key == "coding")
+                .count(),
+            1
+        );
+        facet
+            .update_content(
+                "# Updated",
+                false,
+                &repository.list(FacetKind::Policy).unwrap(),
+            )
+            .unwrap();
+        repository.save(facet.clone(), false).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# Updated");
+        repository.delete(&facet).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]
     fn test_facet取得_同梱facetはbuiltin由来() {
-        todo!()
+        // Given
+        let dir = TempDir::new().unwrap();
+        let repository = WorkflowFacetFileRepository::new(dir.path());
+        // When
+        let facet = repository.get(FacetKind::Policy, "coding").unwrap();
+        // Then
+        assert_eq!(facet.source(), &WorkflowSource::Builtin);
+        assert!(!facet.content().is_empty());
+        assert!(
+            FacetFileQueryService::new(dir.path())
+                .list_facet_summaries(FacetKind::Policy)
+                .unwrap()
+                .iter()
+                .find(|summary| summary.key == "coding")
+                .unwrap()
+                .builtin
+        );
     }
 
     #[test]
@@ -115,11 +183,57 @@ pub(crate) mod tests {
 
     #[test]
     fn test_facet入出力_利用者ファイルの読み書き失敗を返す() {
-        todo!()
+        // Given
+        let dir = TempDir::new().unwrap();
+        let repository = WorkflowFacetFileRepository::new(dir.path());
+        fs::create_dir_all(dir.path().join("policies/coding.md")).unwrap();
+        let facet = repository
+            .get_or_new(FacetKind::Instruction, "write-failure")
+            .unwrap();
+        fs::create_dir_all(facet.file_path().unwrap()).unwrap();
+        // When / Then
+        assert!(repository.get(FacetKind::Policy, "coding").is_err());
+        assert!(repository.get_or_new(FacetKind::Policy, "coding").is_err());
+        assert!(FacetFileQueryService::new(dir.path())
+            .list_facet_summaries(FacetKind::Policy)
+            .is_err());
+        assert!(repository.save(facet.clone(), true).is_err());
+        assert!(repository.delete(&facet).is_err());
+        assert_eq!(
+            fs::read_dir(dir.path().join("instructions"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }
 
 #[test]
 fn test_facet一覧_不正なキーも診断とともに残す() {
-    todo!()
+    use releashd::test_support::integration::workflow::FacetKind;
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("policies")).unwrap();
+    std::fs::write(dir.path().join("policies/valid.md"), "# Valid").unwrap();
+    std::fs::write(dir.path().join("policies/bad key!.md"), "# Invalid").unwrap();
+    // When
+    let list = FacetFileQueryService::new(dir.path())
+        .list_facet_summaries(FacetKind::Policy)
+        .unwrap();
+    // Then
+    assert!(list
+        .iter()
+        .any(|row| row.key == "valid" && row.description == "Valid" && !row.builtin));
+    let invalid = list.iter().find(|row| row.key == "bad key!").unwrap();
+    assert_eq!(invalid.kind, "policy");
+    assert!(invalid.description.is_empty());
+    assert!(!invalid.builtin);
+    let report =
+        releashd::test_support::integration::workflow::diagnose_all(dir.path(), dir.path())
+            .unwrap();
+    assert_eq!(report.facet_summaries["policy/bad key!"].error_count, 1);
+    assert!(report
+        .items
+        .iter()
+        .any(|item| item.code == "FAC001" && item.facet_key.as_deref() == Some("bad key!")));
 }

@@ -60,7 +60,7 @@ pub fn workflow_read(
     _data_dir: impl Into<std::path::PathBuf>,
     _workflows_dir: Option<std::path::PathBuf>,
 ) -> crate::usecase::workflow::WorkflowUsecase {
-    todo!()
+    workflow_services(_store, _data_dir, _workflows_dir)
 }
 
 pub fn workflow_services(
