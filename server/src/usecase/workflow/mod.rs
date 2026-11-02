@@ -9,7 +9,6 @@ pub(crate) mod command;
 pub(crate) mod control_plane;
 mod definition;
 pub(crate) mod delegate;
-pub(crate) mod dto;
 pub(crate) mod event_draft;
 pub(crate) mod execution_archive;
 pub(crate) mod facet;
@@ -25,7 +24,7 @@ pub(crate) mod runtime_resolver;
 pub(crate) mod runtime_snapshot;
 pub(crate) mod runtime_start_guard;
 pub(crate) mod startup;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 mod workspace_node_command;
 pub(crate) mod workspace_tree;

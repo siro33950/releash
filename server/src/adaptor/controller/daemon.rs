@@ -443,6 +443,12 @@ pub async fn compose(
             terminal_surface.clone(),
         ),
     );
+    let editor_settings = Arc::new(
+        adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
+            config_repository.clone(),
+        ),
+    );
+    let editor_launcher = Arc::new(adaptor::gateway::external_editor::NativeEditorLauncherGateway);
     let (workflow_usecase, workspace_query_service) =
         adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
             failure_store.clone(),
@@ -451,7 +457,11 @@ pub async fn compose(
             config_repository.clone(),
             local_event_store.clone(),
             node_processes.clone(),
-            workflows_dir.clone(),
+            adaptor::controller::wiring::WorkflowEditorDependencies {
+                settings: editor_settings.clone(),
+                launcher: editor_launcher.clone(),
+                workflows_dir: workflows_dir.clone(),
+            },
         );
     let workflow_usecase = Arc::new(workflow_usecase);
 
@@ -592,7 +602,7 @@ pub async fn compose(
         config_mutation: config_mutation.clone(),
         app_config_usecase: Some(app_config_usecase.clone()),
         workflow_runtime_usecase: Some(workflow_runtime_usecase.clone()),
-        editor_launcher: Arc::new(adaptor::gateway::external_editor::NativeEditorLauncherGateway),
+        editor_launcher,
         watcher: Arc::new(usecase::watcher::WatcherUsecase::new(
             Some(repository_state_for_watcher),
             Arc::new(
@@ -650,11 +660,7 @@ pub async fn compose(
                         .unwrap()
                         .notion_usecase
                         .clone(),
-                    editor_settings: Arc::new(
-                        adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
-                            config_repository,
-                        ),
-                    ),
+                    editor_settings,
                     editor_scanner: Arc::new(
                         adaptor::gateway::external_editor::MacInstalledEditorGateway,
                     ),

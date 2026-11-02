@@ -1,5 +1,6 @@
 use super::builtin;
 use super::schema::{FacetRefs, WorkflowDefinitionYaml};
+#[cfg(any(test, feature = "test-support"))]
 use super::storage;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -110,6 +111,7 @@ pub(crate) fn facet_exists(
             .try_exists()?)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn save_facet(
     kind: FacetKind,
     key: &str,
@@ -124,6 +126,7 @@ pub fn save_facet(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn delete_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<(), FacetError> {
     validate_facet_key(key)?;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
@@ -164,8 +167,9 @@ pub fn list_facet_summaries(
     use crate::domain::workflow::{Facet, FacetKey};
     let mut summaries = Vec::new();
     for key in list_facets(kind, base_dir)? {
-        let facet_key =
-            FacetKey::new(key.clone()).map_err(|_| FacetError::InvalidKey { key: key.clone() })?;
+        let Ok(facet_key) = FacetKey::new(key.clone()) else {
+            continue;
+        };
         let (source, content) = load_facet_with_source(kind, &key, base_dir)?;
         let summary =
             Facet::restore(kind, facet_key, base_dir.to_path_buf(), source, content).summary();
@@ -179,6 +183,7 @@ pub fn list_facet_summaries(
     Ok(summaries)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_facet_path(
     kind: FacetKind,
     key: &str,

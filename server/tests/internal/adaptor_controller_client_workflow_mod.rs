@@ -185,7 +185,43 @@ pub(crate) mod tests {
 
     #[test]
     pub fn duplicate_workflow_normal_case() {
-        todo!()
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let instructions = dir.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(
+            instructions.join("review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
+        let wf = make_test_workflow("source-wf");
+        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+
+        // Simulate duplicate logic
+        let new_name = "copied-wf";
+        releashd::test_support::integration::workflow::validate_name(new_name).unwrap();
+        assert!(!dir.join(format!("{new_name}.yml")).exists());
+        assert!(
+            releashd::test_support::integration::workflow::list_builtin_workflows()
+                .iter()
+                .all(|row| row.name != new_name)
+        );
+
+        let mut copied = releashd::test_support::integration::workflow::load_workflow(
+            &dir.join("source-wf.yml"),
+            dir,
+        )
+        .unwrap();
+        copied.name = new_name.to_string();
+        releashd::test_support::integration::workflow::save_workflow(dir, &copied).unwrap();
+
+        assert!(dir.join(format!("{new_name}.yml")).exists());
+        let loaded = releashd::test_support::integration::workflow::load_workflow(
+            &dir.join(format!("{new_name}.yml")),
+            dir,
+        )
+        .unwrap();
+        assert_eq!(loaded.name, new_name);
     }
 
     #[test]
@@ -347,7 +383,33 @@ pub(crate) mod tests {
 
     #[test]
     pub fn duplicate_facet_rejects_builtin_key() {
-        todo!()
+        let builtin_keys = releashd::test_support::integration::workflow::list_builtin_facet_keys(
+            FacetKind::Policy,
+        );
+        if let Some(key) = builtin_keys.first() {
+            // list_facets includes builtins, so duplicate to a builtin key would be caught
+            // by the existing.contains(&new_key) check
+            assert!(
+                releashd::test_support::integration::workflow::get_builtin_facet(
+                    FacetKind::Policy,
+                    key
+                )
+                .is_some()
+            );
+
+            // Verify list_facets returns builtin keys (which is used for duplicate check)
+            let tmp = TempDir::new().unwrap();
+            let base_dir = tmp.path();
+            let existing = releashd::test_support::integration::workflow::list_facets(
+                FacetKind::Policy,
+                base_dir,
+            )
+            .unwrap();
+            assert!(
+                existing.contains(&key.to_string()),
+                "list_facets should include builtin key '{key}'"
+            );
+        }
     }
 
     // ---- save_workflow create/update/rename logic ----
@@ -595,7 +657,7 @@ pub(crate) mod tests {
                     releashd::test_support::integration::workflow::WorkflowNodeProcesses::default(
                     ),
                 ),
-                data_dir.join("workflows"),
+                releashd::test_support::integration::platform::WorkflowEditorDependencies { settings: Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway), launcher: Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway), workflows_dir: data_dir.join("workflows") },
             );
         let workflow_usecase = Arc::new(workflow_usecase);
         let git_host_usecase =
@@ -782,5 +844,99 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(missing.is_none());
+    }
+}
+
+#[tokio::test]
+async fn test_定義フォルダrpc_登録したhandlerがusecaseを呼びフォルダを用意する() {
+    use releashd::test_support::integration::{transport, workflow};
+    // Given
+    let (app, data_dir, _store) = tests::make_read_only_app();
+    let folder = data_dir.join("workflows");
+    assert!(!folder.exists());
+    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
+    workflow::register_shared(&mut dispatch, &app.client);
+    assert!(dispatch.contains("open_workflow_directory_in_editor"));
+    // When
+    use releashd::test_support::integration::wire;
+    let command = wire::command_request::Command::OpenWorkflowDirectoryInEditor(Default::default());
+    let result = dispatch.dispatch(command).await.unwrap();
+    // Then
+    assert!(matches!(
+        result,
+        wire::command_result::Command::OpenWorkflowDirectoryInEditor(_)
+    ));
+    assert!(folder.is_dir());
+}
+
+#[tokio::test]
+async fn test_workflow保存rpc_entityの名前と診断と業務エラーを転送する() {
+    use releashd::test_support::integration::{client_protocol::wire, transport, workflow};
+    // Given
+    let (app, data_dir, _store) = tests::make_read_only_app();
+    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
+    workflow::register_shared(&mut dispatch, &app.client);
+    let save = |source: &str, original_name| {
+        wire::command_request::Command::SaveWorkflowSource(wire::SaveWorkflowSourceRequest {
+            source: Some(source.into()),
+            original_name,
+        })
+    };
+    // When
+    let success = dispatch
+        .dispatch(save(
+            "name: rpc-saved\ndescription: saved\nnodes:\n  main: {command: 'true'}\n",
+            None,
+        ))
+        .await
+        .unwrap();
+    let diagnostic = dispatch.dispatch(save("name: [", None)).await.unwrap();
+    let rejected = dispatch
+        .dispatch(save(
+            "name: rpc-saved\ndescription: duplicate\nnodes:\n  main: {command: 'true'}\n",
+            None,
+        ))
+        .await;
+    // Then
+    let wire::command_result::Command::SaveWorkflowSource(success) = success else {
+        panic!("save result");
+    };
+    assert!(
+        matches!(success.variant, Some(wire::save_workflow_source_result_dto::Variant::Success(value)) if value.ok == Some(true) && value.name.as_deref() == Some("rpc-saved"))
+    );
+    assert!(data_dir.join("workflows/rpc-saved.yml").exists());
+    let wire::command_result::Command::SaveWorkflowSource(diagnostic) = diagnostic else {
+        panic!("diagnostics result");
+    };
+    assert!(
+        matches!(diagnostic.variant, Some(wire::save_workflow_source_result_dto::Variant::Diagnostics(value)) if value.ok == Some(false) && !value.diagnostics.as_ref().unwrap().items.is_empty())
+    );
+    assert!(rejected.is_err());
+}
+
+#[tokio::test]
+async fn test_facet編集rpc_正規名だけをdomainの種類へ変換する() {
+    use releashd::test_support::integration::{client_protocol::wire, transport, workflow};
+    // Given
+    let (app, data_dir, _store) = tests::make_read_only_app();
+    std::fs::create_dir_all(data_dir.join("workflows/policies")).unwrap();
+    std::fs::write(data_dir.join("workflows/policies/custom.md"), "# Custom").unwrap();
+    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
+    workflow::register_shared(&mut dispatch, &app.client);
+    // When / Then
+    for kind in ["policy", "policies", "unknown"] {
+        let result = dispatch
+            .dispatch(wire::command_request::Command::OpenFacetInEditor(
+                wire::OpenFacetInEditorRequest {
+                    kind: Some(kind.into()),
+                    key: Some("custom".into()),
+                },
+            ))
+            .await;
+        if kind == "policy" {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
     }
 }

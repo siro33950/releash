@@ -128,6 +128,7 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::{run_startup_gc, GcStopCause};
 }
 pub mod platform {
+    pub use crate::adaptor::controller::wiring::WorkflowEditorDependencies;
     pub fn find_review_threads_by_ids(
         app_data_dir: &std::path::Path,
         workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
@@ -712,6 +713,7 @@ pub mod settings {
     pub use crate::usecase::test_helpers::repository_config_usecase;
 }
 pub mod subscriptions {
+    pub use crate::adaptor::presenter::state_subscription_wire::payload;
     pub use crate::test_support::state_subscription::test_subscriptions;
     pub use crate::test_support::state_subscription::CapturingNotifier;
 
@@ -850,10 +852,12 @@ pub mod workflow {
     pub use crate::domain::workflow::{
         WorkflowDirectory, WorkflowDirectoryService, WorkflowSource,
     };
-    pub use crate::usecase::workflow::dto::facet_summary_to_dto;
     pub use crate::usecase::workflow::node_startup::NodeStartupGateway;
     pub use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
     pub use crate::usecase::workflow::test_helpers::NoopArchiveRepository;
+    pub use crate::usecase::workflow::test_support::{
+        NoopEditorLauncherGateway, NoopEditorSettingsGateway,
+    };
 
     pub use crate::adaptor::gateway::workflow::builtin::get_builtin_facet;
     pub use crate::adaptor::gateway::workflow::builtin::list_builtin_facet_keys;

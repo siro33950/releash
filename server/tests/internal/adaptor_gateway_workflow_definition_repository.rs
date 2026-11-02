@@ -517,3 +517,73 @@ fn test_定義一覧_実行中の定義を取得元にかかわらず示す() {
         .iter()
         .all(|summary| !summary.is_running));
 }
+
+#[test]
+fn test_workflow一覧_同名のyamlとluaを一行に畳む() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("duplicated.yml"),
+        "name: duplicated\ndescription: YAML duplicate\nnodes:\n  main: {command: 'true'}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("duplicated.lua"),
+        r#"
+local r = require("releash")
+return r.workflow{
+  name = "duplicated", description = "Lua duplicate",
+  main = r.command{ command = "true" },
+}
+"#,
+    )
+    .unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    // When
+    let list = repository.list(&[]).unwrap();
+    let matches = list
+        .iter()
+        .filter(|row| row.name == "duplicated")
+        .collect::<Vec<_>>();
+    // Then
+    assert_eq!(matches.len(), 1);
+    assert_eq!(
+        matches[0].description,
+        releashd::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION
+    );
+}
+
+#[test]
+fn test_builtin解決失敗_entityと一覧の失敗に保持し他の定義を返す() {
+    use releashd::test_support::integration::platform::WorkFailure;
+    // Given
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("policies")).unwrap();
+    fs::write(dir.path().join("policies/coding.md"), "Use {{ missing }}").unwrap();
+    fs::write(
+        dir.path().join("healthy.yml"),
+        "name: healthy\ndescription: Healthy\nnodes:\n  main: {command: 'true'}\n",
+    )
+    .unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    // When
+    let definition = repository.get("02_implement-existing-spec").unwrap();
+    let summaries = repository.list(&[]).unwrap();
+    // Then
+    assert_eq!(definition.source(), &WorkflowSource::Builtin);
+    let failure = WorkFailure::from_error(definition.content().unwrap_err());
+    assert!(failure.message.contains("missing"), "{failure:?}");
+    let builtin = summaries
+        .iter()
+        .find(|row| row.name == "02_implement-existing-spec")
+        .unwrap();
+    assert!(builtin.builtin);
+    assert_eq!(builtin.failure.as_ref(), Some(&failure));
+    assert!(summaries
+        .iter()
+        .any(|row| row.name == "healthy" && row.failure.is_none()));
+    assert_eq!(
+        summaries.len(),
+        releashd::test_support::integration::workflow::list_builtin_workflows().len() + 1
+    );
+}

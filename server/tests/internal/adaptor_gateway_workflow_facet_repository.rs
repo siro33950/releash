@@ -195,3 +195,23 @@ pub(crate) mod tests {
         );
     }
 }
+
+#[test]
+fn test_facet一覧_不正なキーを除いて有効な項目を返す() {
+    use releashd::test_support::integration::workflow::{
+        FacetKind, FacetRepository, WorkflowFacetFileRepository,
+    };
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("policies")).unwrap();
+    std::fs::write(dir.path().join("policies/valid.md"), "# Valid").unwrap();
+    std::fs::write(dir.path().join("policies/bad key!.md"), "# Invalid").unwrap();
+    let repository = WorkflowFacetFileRepository::new(dir.path());
+    // When
+    let list = repository.list_summaries(FacetKind::Policy).unwrap();
+    // Then
+    assert!(list
+        .iter()
+        .any(|row| row.key == "valid" && row.description == "Valid" && !row.builtin));
+    assert!(!list.iter().any(|row| row.key == "bad key!"));
+}

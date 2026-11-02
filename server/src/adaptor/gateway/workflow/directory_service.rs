@@ -17,8 +17,9 @@ impl WorkflowDirectoryFileService {
 
 impl WorkflowDirectoryService for WorkflowDirectoryFileService {
     fn prepare(&self) -> Result<WorkflowDirectory, WorkflowError> {
-        super::storage::ensure_dir(&self.workflows_dir)
+        let directory = WorkflowDirectory::new(self.workflows_dir.clone());
+        super::storage::ensure_dir(directory.path())
             .map_err(|error| WorkflowError::external(error.to_string()))?;
-        Ok(WorkflowDirectory::new(self.workflows_dir.clone()))
+        Ok(directory)
     }
 }

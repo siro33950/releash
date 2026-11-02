@@ -115,10 +115,10 @@ impl Facet {
             .map(|line| line.strip_prefix("# ").unwrap_or(line).trim().to_string())
             .unwrap_or_default();
         crate::domain::workflow::FacetSummary {
-            key: self.key.as_str().to_string(),
+            key: self.key().as_str().to_string(),
             kind: self.kind.canonical_name().to_string(),
             description,
-            builtin: self.source.is_builtin(),
+            builtin: self.source().is_builtin(),
         }
     }
 

@@ -357,8 +357,8 @@ fn format_notion_tasks(request: &NotionTaskListRequest) -> (&'static str, Vec<St
     ("notion-tasks", args)
 }
 
-fn facet_kind(_raw: &str) -> Result<FacetKind, SubscriptionError> {
-    todo!()
+fn facet_kind(kind: &str) -> Result<FacetKind, SubscriptionError> {
+    kind.parse().map_err(|_| SubscriptionError::InvalidId)
 }
 
 fn facet_kind_name(kind: FacetKind) -> &'static str {

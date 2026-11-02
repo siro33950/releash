@@ -1571,7 +1571,135 @@ pub async fn test_node_artifact購読_同名の周回と再提出をnode実行id
 
 #[tokio::test]
 pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色を読み別workspaceを拒否する() {
-    todo!()
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let workspace = WorkspaceIdentity::new("workspace-session-tab");
+    let session_id = "session-tab";
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
+    sessions
+        .create(
+            session_id,
+            workspace.clone(),
+            "/repo/session-tab".into(),
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root(session_id).unwrap(),
+            "create-session-tab",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+
+    use releashd::test_support::integration::sessions::{
+        AgentSessionQueryService, LocalAgentSessionQueryService,
+    };
+    let item = LocalAgentSessionQueryService::new(store.clone())
+        .get(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    // When / Then
+    for (activity, expected) in [
+        (AgentSessionActivity::Working, "active"),
+        (AgentSessionActivity::AwaitingAnswer, "attention"),
+        (AgentSessionActivity::AwaitingInstruction, "idle"),
+    ] {
+        sessions
+            .observe_activity(session_id, activity, &format!("observe-{expected}"))
+            .await
+            .unwrap();
+        let detail = session_detail(
+            &*repository,
+            &workspace,
+            &item.tree_location.tree_id,
+            &item.tree_location.node_execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(detail.classification, expected);
+        let tree = load_tree(&repository, &workspace).await;
+        let visible = tree.visible();
+        let row = visible.roots()[0];
+        assert_eq!(detail.title, row.title());
+        assert_eq!(
+            detail.classification,
+            row.node().status_classification.as_public_str()
+        );
+        assert!(detail.capabilities.can_rename);
+        assert!(
+            matches!(detail.content, WorkspaceNodeContentDto::Session(ref value) if value.session_id.as_deref() == Some(session_id))
+        );
+    }
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, TechnicalFailureNature, WorkFailure,
+    };
+    let failures = Arc::new(FailureRecordStore::default());
+    let workflow =
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            failures.clone(),
+            directory.path(),
+            Arc::new(
+                releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway,
+            ),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
+            store,
+            None,
+            None,
+        )
+        .0;
+    // When
+    failures.observe(
+        &FailureKey::new("session-tab", &item.tree_location.node_execution_id),
+        WorkFailure {
+            kind: Failure::Technical(TechnicalFailureNature::Other),
+            message: "background failure".into(),
+        },
+    );
+    let detail = workflow
+        .get_session_node_detail(&item)
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(detail.0.status_classification.as_public_str(), "attention");
+    assert!(session_detail(
+        &*repository,
+        &WorkspaceIdentity::new("other-workspace"),
+        &item.tree_location.tree_id,
+        &item.tree_location.node_execution_id,
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert!(session_detail(
+        &*repository,
+        &workspace,
+        "missing",
+        &item.tree_location.node_execution_id,
+    )
+    .await
+    .unwrap()
+    .is_none());
+    assert!(session_detail(
+        &*repository,
+        &workspace,
+        &item.tree_location.tree_id,
+        "missing",
+    )
+    .await
+    .unwrap()
+    .is_none());
 }
 
 #[tokio::test]
