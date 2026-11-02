@@ -11,6 +11,8 @@ struct SettingsView: View {
         .tabItem { Label("Repositories", systemImage: "folder") }
       ProvidersSettingsView(model: model)
         .tabItem { Label("Providers", systemImage: "terminal") }
+      WorkflowsSettingsView(model: model)
+        .tabItem { Label("Workflows", systemImage: "arrow.triangle.branch") }
       SystemSettingsView(model: model)
         .tabItem { Label("System", systemImage: "desktopcomputer") }
     }
