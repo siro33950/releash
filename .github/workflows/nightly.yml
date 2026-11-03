@@ -16,6 +16,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       run: ${{ steps.changes.outputs.run }}
       sha: ${{ steps.changes.outputs.sha }}
@@ -28,35 +31,35 @@ jobs:
               ...context.repo, ref: 'heads/main',
             });
             core.setOutput('sha', main.sha);
-            if (context.eventName === 'workflow_dispatch') {
-              core.setOutput('run', true);
-              return;
+            if (context.eventName !== 'workflow_dispatch') {
+              const releases = await github.paginate(github.rest.repos.listReleases, {
+                ...context.repo, per_page: 100,
+              });
+              const latest = releases
+                .filter(release => !release.draft && release.prerelease && /^v\d+\.\d+\.\d+-nightly\.\d{8}\.[1-9]\d*$/.test(release.tag_name))
+                .sort((a, b) => b.published_at.localeCompare(a.published_at) || b.id - a.id)[0];
+              const previous = latest && (await github.rest.repos.getCommit({
+                ...context.repo, ref: latest.tag_name,
+              })).data.sha;
+              if (previous === main.sha) {
+                core.setOutput('run', false);
+                return;
+              }
             }
-            const releases = await github.paginate(github.rest.repos.listReleases, {
-              ...context.repo, per_page: 100,
+            // PR 層の検証は main push の CI が済ませている。Nightly では繰り返さず、成功した run があることだけ確かめる
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo, workflow_id: 'ci.yml', branch: 'main', event: 'push', head_sha: main.sha, per_page: 100,
             });
-            const latest = releases
-              .filter(release => !release.draft && release.prerelease && /^v\d+\.\d+\.\d+-nightly\.\d{8}\.[1-9]\d*$/.test(release.tag_name))
-              .sort((a, b) => b.published_at.localeCompare(a.published_at) || b.id - a.id)[0];
-            const previous = latest && (await github.rest.repos.getCommit({
-              ...context.repo, ref: latest.tag_name,
-            })).data.sha;
-            core.setOutput('run', previous !== main.sha);
+            if (!runs.some(run => run.conclusion === 'success')) {
+              const states = runs.map(run => `${run.id}: ${run.status}/${run.conclusion}`).join(', ') || 'none';
+              throw new Error(`No successful CI run on main for ${main.sha} (${states}). Wait for CI or fix main before starting Nightly.`);
+            }
+            core.setOutput('run', true);
       - name: Verify workflow commit
         if: steps.changes.outputs.run == 'true' && github.workflow_sha != steps.changes.outputs.sha
         run: |
           echo "::error::Workflow commit differs from main HEAD. Start a new Nightly run from main."
           exit 1
-
-  validation:
-    needs: check
-    if: needs.check.outputs.run == 'true'
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      ref: ${{ needs.check.outputs.sha }}
 
   macos-e2e:
     needs: check
@@ -371,7 +374,7 @@ jobs:
           if-no-files-found: error
 
   create-release:
-    needs: [check, validation, macos-e2e, tauri-build, swift-build]
+    needs: [check, macos-e2e, tauri-build, swift-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
