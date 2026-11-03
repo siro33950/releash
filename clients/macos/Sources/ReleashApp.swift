@@ -17,7 +17,7 @@ import SwiftUI
             .disabled(!model.connected || model.selectedWorktree == nil)
           Button("すべてアンステージ") { model.unstageAll() }
             .disabled(!model.connected || model.selectedWorktree == nil)
-          Button("ブランチを作成…") { model.creatingBranch = true }
+          Button("ブランチを作成…") { windows.createBranch() }
             .disabled(!model.connected || model.selectedWorktree == nil)
         }
         CommandMenu("タブ") {
@@ -40,6 +40,7 @@ import SwiftUI
 struct RootView: View {
   @Bindable var model: AppModel
   @State private var creating = false
+  @State private var creatingBranch = false
   @State private var sidebarWidth = UIStyle.sidebarWidth
   @State private var rightPanelWidth = UIStyle.centerInitialWidth
   @State private var rightPanelExpanded = true
@@ -150,7 +151,7 @@ struct RootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $creating) { CreateWorktreeView(model: model) }
-        .sheet(isPresented: $model.creatingBranch) { CreateBranchView(model: model) }
+        .sheet(isPresented: $creatingBranch) { CreateBranchView(model: model) }
       }
     }
     .frame(
@@ -159,7 +160,7 @@ struct RootView: View {
     )
     .overlay(alignment: .topLeading) {
       HStack(spacing: UIStyle.spacing) {
-        WindowControls().frame(width: UIStyle.windowControlsWidth)
+        WindowControls { creatingBranch = true }.frame(width: UIStyle.windowControlsWidth)
         Color.clear.contentShape(Rectangle()).gesture(WindowDragGesture())
           .pointerStyle(.grabIdle)
       }
@@ -289,12 +290,23 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
 }
 
 struct WindowControls: NSViewRepresentable {
-  func makeNSView(context: Context) -> ControlsView { ControlsView() }
-  func updateNSView(_ nsView: ControlsView, context: Context) {}
+  var onCreateBranch: () -> Void = {}
+  func makeNSView(context: Context) -> ControlsView {
+    let view = ControlsView()
+    view.onCreateBranch = onCreateBranch
+    return view
+  }
+  func updateNSView(_ nsView: ControlsView, context: Context) {
+    nsView.onCreateBranch = onCreateBranch
+  }
 
   final class ControlsView: NSView {
+    var onCreateBranch: () -> Void = {}
     override init(frame: NSRect) {
       super.init(frame: frame)
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(createBranch(_:)),
+        name: WorkspaceWindows.createBranchNotification, object: nil)
       let actions: [(NSWindow.ButtonType, Selector, String)] = [
         (.closeButton, #selector(NSWindow.close), "閉じる"),
         (.miniaturizeButton, #selector(NSWindow.miniaturize(_:)), "しまう"),
@@ -308,6 +320,10 @@ struct WindowControls: NSViewRepresentable {
       }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func createBranch(_ notification: Notification) {
+      guard let target = notification.object as? NSWindow, target === window else { return }
+      onCreateBranch()
+    }
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       window?.setAccessibilitySubrole(.standardWindow)
