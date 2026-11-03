@@ -46,6 +46,7 @@ import SwiftTerm
     screen.nativeForegroundColor = .textColor
     screen.setAccessibilityIdentifier("terminal:\(id)")
     screen.clearAction = { [weak self] in self?.clear() }
+    screen.dropPaths = { [weak self] in self?.writePaths($0) ?? false }
     subscriber = model.subscribe(target, [path, id]) { [weak self] payload in
       guard case .terminal(let event) = payload.value else { return }
       self?.receive(event)
@@ -173,6 +174,18 @@ import SwiftTerm
     }
   }
 
+  func writePaths(_ paths: [String]) -> Bool {
+    guard let attachment, !exited, !paths.isEmpty else { return false }
+    var request = Releash_Client_V1_WritePathsToTerminalSurfaceRequest()
+    request.owner = owner
+    request.paths.items = paths
+    enqueue(attachment) { client, headers in
+      _ = try await client.writePathsToTerminalSurface(request: request, headers: headers).result
+        .get()
+    }
+    return true
+  }
+
   private func enqueue(
     _ attachment: String,
     operation:
@@ -231,6 +244,32 @@ import SwiftTerm
 final class TerminalScreen: TerminalView {
   private var focused = false
   var clearAction: (() -> Void)?
+  var dropPaths: (([String]) -> Bool)?
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    guard dropPaths != nil, sender.draggingSourceOperationMask.contains(.copy),
+      !filePaths(sender.draggingPasteboard).isEmpty
+    else { return [] }
+    return .copy
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    draggingEntered(sender) == .copy
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    guard sender.draggingSourceOperationMask.contains(.copy) else { return false }
+    let paths = filePaths(sender.draggingPasteboard)
+    guard !paths.isEmpty else { return false }
+    return dropPaths?(paths) ?? false
+  }
+
+  private func filePaths(_ pasteboard: NSPasteboard) -> [String] {
+    let urls =
+      pasteboard.readObjects(
+        forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    return urls.map(\.path)
+  }
   override func menu(for event: NSEvent) -> NSMenu? {
     let menu = NSMenu()
     menu.addItem(withTitle: "コピー", action: #selector(copy(_:)), keyEquivalent: "")
@@ -255,6 +294,7 @@ final class TerminalScreen: TerminalView {
   }
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    registerForDraggedTypes([.fileURL])
     if focused { window?.makeFirstResponder(self) }
   }
   override func isAccessibilityElement() -> Bool { true }
