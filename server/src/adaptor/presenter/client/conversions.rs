@@ -2117,7 +2117,7 @@ impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::Worksp
         }
         Ok(Self {
             panes: value.pane_layout.map(cv).transpose()?,
-            version: cv(req(value.version, "version")?)?,
+            version: 1,
             tabs: value.tabs.map(cv).transpose()?,
             layout: value.layout.map(cv).transpose()?,
         })

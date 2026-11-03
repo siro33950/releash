@@ -90,7 +90,7 @@ impl SessionTabsUsecase {
             conflict_progress,
             |_| async {
                 let (version, saved) = self.repository.read(workspace).await?;
-                let mut state = saved.unwrap_or_default().initialize_panes();
+                let mut state = saved.unwrap_or_else(WorkspaceState::new).initialize_panes();
                 change(&mut state);
                 self.repository.save(workspace, state, version).await
             },
@@ -103,10 +103,7 @@ impl SessionTabsUsecase {
 }
 
 fn conflict_progress(error: &WorkspaceStateError) -> Option<AttemptProgress> {
-    match error {
-        WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
-        _ => None,
-    }
+    super::usecase::conflict_progress(error)
 }
 
 fn workflow_error(error: WorkspaceStateError) -> WorkflowError {

@@ -572,6 +572,117 @@ mod memory_tests {
     }
 
     #[tokio::test]
+    pub async fn test_agent_session_launch_タブ保存失敗では一次エラーを保ち起動済み資源をrollbackする(
+    ) {
+        // Given
+        let seed = AgentSession::create(
+            "seed",
+            WorkspaceIdentity::new("/seed"),
+            "/seed",
+            ProviderKind::Claude,
+            session_location("seed"),
+        )
+        .unwrap();
+        let repository = Arc::new(FailingSaveRepository::new(seed));
+        *repository.stored.lock().unwrap() = None;
+        let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+        let terminal = Arc::new(RecordingTerminal::default());
+        let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
+        let execution_trees = started_execution_trees();
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        let failure = crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "tab save failed".into(),
+        };
+        *tabs.next_save_error.lock() =
+            Some(crate::domain::workspace_state::WorkspaceStateError::Technical(failure.clone()));
+        let usecase = AgentSessionLaunchUsecase::new(
+            std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
+            Arc::new(ProviderLifecycleUsecase::new(
+                Arc::new(crate::usecase::test_helpers::TestCredentials),
+                lifecycle_events.clone(),
+            )),
+            provider_runtime(
+                Arc::new(FixedAvailability {
+                    available: true,
+                    checks: Mutex::new(Vec::new()),
+                }),
+                launch_gateway.clone(),
+                terminal.clone(),
+            ),
+            Arc::new(FixedHistory {
+                entries: Vec::new(),
+            }),
+            hook_health_usecase(),
+            execution_trees.clone(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+                tabs.clone(),
+                crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+                crate::test_support::state_subscription::test_subscriptions(),
+            ),
+        );
+
+        // When
+        let error = usecase
+            .launch_standalone(AgentSessionLaunchRequest {
+                workspace: WorkspaceIdentity::new("/repo"),
+                worktree_path: "/repo/worktree".to_string(),
+                provider: ProviderKind::Codex,
+                rows: 24,
+                cols: 80,
+                caller_request_id: "tab-save-failure".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        // Then
+        assert_eq!(error, AgentSessionLaunchUsecaseError::Technical(failure));
+        assert!(repository.stored.lock().unwrap().is_none());
+        assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 1);
+        let expected_id = execution_trees.tree_ids.lock().unwrap()[0].clone();
+        assert_eq!(
+            execution_trees.releases.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected_id)
+        );
+        assert_eq!(
+            launch_gateway.cleanups.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected_id)
+        );
+        assert_eq!(*terminal.deletes.lock().unwrap(), 1);
+        assert_eq!(launch_gateway.launches.lock().unwrap().len(), 1);
+        assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
+        assert_eq!(
+            terminal.spawns.lock().unwrap()[0].owner,
+            TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), &expected_id).unwrap()
+        );
+        use crate::domain::workspace_state::WorkspaceStateRepository;
+        let (_, state) = tabs.read("/repo").await.unwrap();
+        assert_eq!(
+            state.unwrap(),
+            crate::domain::workspace_state::WorkspaceState::default()
+        );
+        assert!(lifecycle_events.events.lock().unwrap().iter().any(|event| {
+        matches!(
+            event.clone().into_parts().1,
+            crate::domain::provider_lifecycle::value_objects::provider_lifecycle_event::ProviderLifecycleEvent::BindingExpired { .. }
+        )
+    }));
+    }
+
+    #[tokio::test]
     pub async fn test_agent_session_launch_session作成とlifecycle_armを一回のrepository操作で永続化する(
     ) {
         let seed = AgentSession::create(
