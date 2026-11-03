@@ -50,7 +50,7 @@ struct RootListView: View {
   @Bindable var model: AppModel
   let path: String
   @State private var selected: String?
-  @State private var collapsed: Set<String> = []
+  @State private var expandedRows: [String: Bool] = [:]
   @State private var expandedPastAttempts: Set<String> = []
   @State private var history = false
   @State private var archive: String?
@@ -60,6 +60,18 @@ struct RootListView: View {
   var roots: [Releash_Client_V1_WorkspaceTreeItem] {
     model.repositories.flatMap(\.worktrees.items).first { $0.path == path }?.snapshot.nodes.items
       ?? []
+  }
+  private var defaultExpansion: [String: Bool] {
+    var values: [String: Bool] = [:]
+    func collect(_ items: [Releash_Client_V1_WorkspaceTreeItem]) {
+      for item in items {
+        if !item.children.isEmpty { values[item.rootID] = item.rootStatus.value != .idle }
+        collect(item.children)
+        collect(item.pastAttempts)
+      }
+    }
+    collect(roots)
+    return values
   }
   var body: some View {
     let rootIDs = Set(roots.map(\.rootID))
@@ -106,7 +118,8 @@ struct RootListView: View {
           TableColumn("ART") { item in artifactCell(item) }.width(24)
         } rows: {
           WorkspaceTableRows(
-            items: roots, collapsed: $collapsed, expandedPastAttempts: $expandedPastAttempts)
+            items: roots, isExpanded: isExpanded, setExpanded: setExpanded,
+            expandedPastAttempts: $expandedPastAttempts)
         }.scrollContentBackground(.hidden).alternatingRowBackgrounds(.disabled).frame(
           minHeight: 120)
         if let selected {
@@ -116,6 +129,11 @@ struct RootListView: View {
           Text("Nodeを選択").foregroundStyle(.secondary).frame(
             maxWidth: .infinity, maxHeight: .infinity)
         }
+      }
+    }
+    .onChange(of: defaultExpansion) { oldValues, newValues in
+      for (id, value) in newValues where oldValues[id] != nil && oldValues[id] != value {
+        setExpanded(id, value)
       }
     }
     .sheet(isPresented: $history) { SessionHistoryView(model: model, path: path) }
@@ -243,10 +261,17 @@ struct RootListView: View {
       .contentShape(Rectangle())
   }
   func select(_ item: Releash_Client_V1_WorkspaceTreeItem) {
-    if item.rootKind != nil { selected = item.rootID } else { toggle(item.rootID) }
+    if item.rootKind != nil {
+      selected = item.rootID
+    } else {
+      setExpanded(item.rootID, !isExpanded(item))
+    }
   }
-  func toggle(_ id: String) {
-    if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
+  private func isExpanded(_ item: Releash_Client_V1_WorkspaceTreeItem) -> Bool {
+    expandedRows[item.rootID] ?? (item.rootStatus.value != .idle)
+  }
+  private func setExpanded(_ id: String, _ value: Bool) {
+    expandedRows[id] = value
   }
   func approve(_ id: String) {
     guard let client = model.client else { return }
@@ -321,7 +346,8 @@ extension Releash_Client_V1_WorkspaceTreeItem {
 private struct WorkspaceTableRows: TableRowContent {
   typealias TableRowValue = Releash_Client_V1_WorkspaceTreeItem
   let items: [Releash_Client_V1_WorkspaceTreeItem]
-  @Binding var collapsed: Set<String>
+  let isExpanded: (Releash_Client_V1_WorkspaceTreeItem) -> Bool
+  let setExpanded: (String, Bool) -> Void
   @Binding var expandedPastAttempts: Set<String>
 
   @TableRowBuilder<Releash_Client_V1_WorkspaceTreeItem>
@@ -333,19 +359,18 @@ private struct WorkspaceTableRows: TableRowContent {
         DisclosureTableRow(
           item,
           isExpanded: Binding(
-            get: { !collapsed.contains(item.rootID) },
-            set: { value in
-              if value { collapsed.remove(item.rootID) } else { collapsed.insert(item.rootID) }
-            })
+            get: { isExpanded(item) },
+            set: { setExpanded(item.rootID, $0) })
         ) {
           WorkspaceTableRows(
-            items: item.children, collapsed: $collapsed, expandedPastAttempts: $expandedPastAttempts
+            items: item.children, isExpanded: isExpanded, setExpanded: setExpanded,
+            expandedPastAttempts: $expandedPastAttempts
           )
         }
       }
       if expandedPastAttempts.contains(item.rootID) {
         WorkspaceTableRows(
-          items: item.pastAttempts, collapsed: $collapsed,
+          items: item.pastAttempts, isExpanded: isExpanded, setExpanded: setExpanded,
           expandedPastAttempts: $expandedPastAttempts)
       }
     }
