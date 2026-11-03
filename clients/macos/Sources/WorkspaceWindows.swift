@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate {
   let model = AppModel()
+
   private var windows: [NSWindow] = []
 
   func applicationDidFinishLaunching(_ notification: Notification) {

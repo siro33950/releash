@@ -3,12 +3,23 @@ import SwiftUI
 @main struct ReleashApp: App {
   @NSApplicationDelegateAdaptor(WorkspaceWindows.self) private var windows
   private var model: AppModel { windows.model }
+  @FocusedValue(\.createBranch) private var createBranch
 
   var body: some Scene {
     Settings { SettingsView(model: model) }
       .commands {
         CommandGroup(replacing: .newItem) {
           Button("New Releash Window") { windows.openWindow() }.keyboardShortcut("n")
+          Button("フォルダを開く…") { model.addRepository() }
+            .keyboardShortcut("o").disabled(!model.connected)
+        }
+        CommandMenu("Git") {
+          Button("すべてステージ") { model.stageAll() }
+            .disabled(!model.connected || model.selectedWorktree == nil)
+          Button("すべてアンステージ") { model.unstageAll() }
+            .disabled(!model.connected || model.selectedWorktree == nil)
+          Button("ブランチを作成…") { createBranch?() }
+            .disabled(!model.connected || model.selectedWorktree == nil || createBranch == nil)
         }
         CommandMenu("タブ") {
           Button("タブを閉じる") { model.panes.closeCurrentTab() }
@@ -27,9 +38,21 @@ import SwiftUI
   }
 }
 
+private struct CreateBranchKey: FocusedValueKey {
+  typealias Value = () -> Void
+}
+
+extension FocusedValues {
+  var createBranch: (() -> Void)? {
+    get { self[CreateBranchKey.self] }
+    set { self[CreateBranchKey.self] = newValue }
+  }
+}
+
 struct RootView: View {
   @Bindable var model: AppModel
   @State private var creating = false
+  @State private var branchDestination: BranchDestination?
   @State private var sidebarWidth = UIStyle.sidebarWidth
   @State private var rightPanelWidth = UIStyle.centerInitialWidth
   @State private var rightPanelExpanded = true
@@ -146,6 +169,12 @@ struct RootView: View {
       minWidth: UIStyle.windowMinimumWidth, maxWidth: .infinity,
       minHeight: UIStyle.windowMinimumHeight, maxHeight: .infinity
     )
+    .sheet(item: $branchDestination) { destination in
+      CreateBranchView(model: model, path: destination.id)
+    }
+    .focusedSceneValue(\.createBranch) {
+      if let path = model.selectedWorktree { branchDestination = BranchDestination(id: path) }
+    }
     .overlay(alignment: .topLeading) {
       HStack(spacing: UIStyle.spacing) {
         WindowControls().frame(width: UIStyle.windowControlsWidth)
@@ -173,6 +202,10 @@ struct RootView: View {
       Text(model.failure ?? "")
     }
   }
+}
+
+private struct BranchDestination: Identifiable {
+  let id: String
 }
 
 private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable {

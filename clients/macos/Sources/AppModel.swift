@@ -641,6 +641,31 @@ import SwiftProtobuf
     guard panel.runModal() == .OK, let path = panel.url?.path else { return }
     addRepository(path)
   }
+  func stageAll() {
+    guard let path = selectedWorktree, let client else { return }
+    var request = Releash_Client_V1_GitStageRequest()
+    request.repoPath = path
+    request.paths = .init()
+    perform {
+      _ = try await client.gitStage(request: request, headers: self.headers).result.get()
+    }
+  }
+  func unstageAll() {
+    guard let path = selectedWorktree, let client else { return }
+    var request = Releash_Client_V1_GitUnstageRequest()
+    request.repoPath = path
+    request.paths = .init()
+    perform {
+      _ = try await client.gitUnstage(request: request, headers: self.headers).result.get()
+    }
+  }
+  func createBranch(_ name: String, path: String) async throws {
+    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
+    var request = Releash_Client_V1_GitCreateBranchRequest()
+    request.repoPath = path
+    request.branchName = name
+    _ = try await client.gitCreateBranch(request: request, headers: headers).result.get()
+  }
   func addRepository(_ path: String) {
     guard let client else { return }
     var request = Releash_Client_V1_AddRepoPathRequest()

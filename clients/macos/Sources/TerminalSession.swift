@@ -13,6 +13,7 @@ import SwiftTerm
   var hasForegroundProcess: Bool?
   var exited = false
   var failure: String?
+  var dropFailure: String?
   @ObservationIgnored private weak var model: AppModel?
   @ObservationIgnored private var subscriber: UUID?
   @ObservationIgnored private var attachment: String?
@@ -46,6 +47,8 @@ import SwiftTerm
     screen.nativeForegroundColor = .textColor
     screen.setAccessibilityIdentifier("terminal:\(id)")
     screen.clearAction = { [weak self] in self?.clear() }
+    screen.dropPaths = { [weak self] in self?.writePaths($0) ?? false }
+    screen.canDropPaths = { [weak self] in self?.canWritePaths ?? false }
     subscriber = model.subscribe(target, [path, id]) { [weak self] payload in
       guard case .terminal(let event) = payload.value else { return }
       self?.receive(event)
@@ -173,8 +176,44 @@ import SwiftTerm
     }
   }
 
+  var canWritePaths: Bool { attachment != nil && !exited }
+
+  func writePaths(_ paths: [String]) -> Bool {
+    guard let attachment, !exited, !paths.isEmpty else { return false }
+    var request = Releash_Client_V1_WritePathsToTerminalSurfaceRequest()
+    request.owner = owner
+    request.paths.items = paths
+    let names = paths.joined(separator: ", ")
+    let report = { [weak self] (message: String) in
+      guard let self else { return }
+      dropFailure = [dropFailure, message].compactMap { $0 }.joined(separator: "\n")
+    }
+    enqueue(
+      attachment,
+      onDiscard: {
+        report("接続が変わったため、ドロップしたパスを入力できませんでした: \(names)")
+      },
+      operation: { [weak self] client, headers in
+        guard let self else { return }
+        guard !exited else {
+          report("端末が終了したため、ドロップしたパスを入力できませんでした: \(names)")
+          return
+        }
+        do {
+          _ = try await client.writePathsToTerminalSurface(request: request, headers: headers)
+            .result
+            .get()
+        } catch {
+          report("ドロップしたパスが入力されたか確認できませんでした: \(names)。端末の内容を確認してください。")
+          throw error
+        }
+      })
+    return true
+  }
+
   private func enqueue(
     _ attachment: String,
+    onDiscard: (() -> Void)? = nil,
     operation:
       @escaping @MainActor (any Releash_Client_V1_ClientServiceClientInterface, Connect.Headers)
       async throws -> Void
@@ -182,9 +221,13 @@ import SwiftTerm
     let prior = tail
     tail = Task { [weak self] in
       await prior?.value
-      guard let self, !Task.isCancelled, self.attachment == attachment,
+      guard let self, !Task.isCancelled else { return }
+      guard self.attachment == attachment,
         let model, let client = model.client
-      else { return }
+      else {
+        onDiscard?()
+        return
+      }
       do { try await operation(client, model.headers) } catch {
         guard self.attachment == attachment else { return }
         failure = model.failureMessage(error)
@@ -231,6 +274,31 @@ import SwiftTerm
 final class TerminalScreen: TerminalView {
   private var focused = false
   var clearAction: (() -> Void)?
+  var dropPaths: (([String]) -> Bool)?
+  var canDropPaths: (() -> Bool)?
+
+  override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+    acceptedFilePaths(sender) != nil ? .copy : []
+  }
+
+  override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    acceptedFilePaths(sender) != nil
+  }
+
+  override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+    guard let paths = acceptedFilePaths(sender) else { return false }
+    return dropPaths?(paths) ?? false
+  }
+
+  private func acceptedFilePaths(_ sender: any NSDraggingInfo) -> [String]? {
+    guard dropPaths != nil, canDropPaths?() == true,
+      sender.draggingSourceOperationMask.contains(.copy)
+    else { return nil }
+    let urls =
+      sender.draggingPasteboard.readObjects(
+        forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    return urls.isEmpty ? nil : urls.map(\.path)
+  }
   override func menu(for event: NSEvent) -> NSMenu? {
     let menu = NSMenu()
     menu.addItem(withTitle: "コピー", action: #selector(copy(_:)), keyEquivalent: "")
@@ -255,6 +323,7 @@ final class TerminalScreen: TerminalView {
   }
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    registerForDraggedTypes([.fileURL])
     if focused { window?.makeFirstResponder(self) }
   }
   override func isAccessibilityElement() -> Bool { true }

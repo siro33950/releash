@@ -10,6 +10,7 @@ use crate::domain::code::{CodeError, StagingRepository};
 
 pub fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
     let repo = git_operation::run(|| Repository::open(repo_path))?;
+    let _lock = crate::infrastructure::file_lock::acquire(&repo.path().join("releash-index.lock"))?;
     let mut index = git_operation::run(|| repo.index())?;
 
     let targets: Vec<String> = if paths.is_empty() {
@@ -33,6 +34,11 @@ pub fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
                     None
                 }
             })
+            .filter(|path| {
+                index.get_path(Path::new(path), 0).is_none_or(|entry| {
+                    entry.flags_extended & git2::IndexEntryExtendedFlag::SKIP_WORKTREE.bits() == 0
+                })
+            })
             .collect()
     } else {
         paths
@@ -44,10 +50,12 @@ pub fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
 
     for p in &targets {
         let full_path = workdir.join(p);
-        if full_path.exists() {
-            git_operation::run(|| index.add_path(Path::new(p)))?;
-        } else {
-            git_operation::run(|| index.remove_path(Path::new(p)))?;
+        match full_path.symlink_metadata() {
+            Ok(_) => git_operation::run(|| index.add_path(Path::new(p)))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                git_operation::run(|| index.remove_path(Path::new(p)))?;
+            }
+            Err(error) => return Err(error.into()),
         }
     }
 
@@ -57,6 +65,7 @@ pub fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
 
 pub fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
     let repo = git_operation::run(|| Repository::open(repo_path))?;
+    let _lock = crate::infrastructure::file_lock::acquire(&repo.path().join("releash-index.lock"))?;
 
     let head_result = git_operation::run(|| repo.head());
     let is_unborn = matches!(&head_result, Err(e) if e.code() == ErrorCode::UnbornBranch);
@@ -75,31 +84,50 @@ pub fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>
         let head_ref = head_result?;
         let head_obj = git_operation::run(|| head_ref.peel(git2::ObjectType::Any))?;
 
-        let targets: Vec<String> = if paths.is_empty() {
-            let mut opts = StatusOptions::new();
-            opts.include_untracked(true).recurse_untracked_dirs(true);
-            let statuses = git_operation::run(|| repo.statuses(Some(&mut opts)))?;
-            statuses
-                .iter()
-                .filter_map(|entry| {
-                    let s = entry.status();
-                    if s.contains(git2::Status::INDEX_NEW)
-                        || s.contains(git2::Status::INDEX_MODIFIED)
-                        || s.contains(git2::Status::INDEX_DELETED)
-                        || s.contains(git2::Status::INDEX_RENAMED)
-                    {
-                        entry.path().ok().map(|p| p.to_string())
-                    } else {
-                        None
+        if paths.is_empty() {
+            let tree = git_operation::run(|| head_obj.peel_to_tree())?;
+            let mut index = git_operation::run(|| repo.index())?;
+            let mut options = git2::DiffOptions::new();
+            options.reverse(true).include_typechange(true);
+            let diff = git_operation::run(|| {
+                repo.diff_tree_to_index(Some(&tree), Some(&index), Some(&mut options))
+            })?;
+            for delta in diff.deltas() {
+                let file = delta.new_file();
+                let path = file
+                    .path()
+                    .ok_or_else(|| CodeError::Rule("missing index path".into()))?;
+                if let Err(error) = git_operation::run(|| index.conflict_remove(path)) {
+                    if error.code() != ErrorCode::NotFound {
+                        return Err(error.into());
                     }
-                })
-                .collect()
+                }
+                if !file.exists() {
+                    if index.get_path(path, 0).is_some() {
+                        git_operation::run(|| index.remove_path(path))?;
+                    }
+                } else {
+                    let entry = git2::IndexEntry {
+                        ctime: git2::IndexTime::new(0, 0),
+                        mtime: git2::IndexTime::new(0, 0),
+                        dev: 0,
+                        ino: 0,
+                        mode: file.mode().into(),
+                        uid: 0,
+                        gid: 0,
+                        file_size: 0,
+                        id: file.id(),
+                        flags: 0,
+                        flags_extended: 0,
+                        path: file.path_bytes().unwrap().to_vec(),
+                    };
+                    git_operation::run(|| index.add(&entry))?;
+                }
+            }
+            git_operation::run(|| index.write())?;
         } else {
-            paths
-        };
-
-        let path_specs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-        git_operation::run(|| repo.reset_default(Some(&head_obj), &path_specs))?;
+            git_operation::run(|| repo.reset_default(Some(&head_obj), &paths))?;
+        }
     }
 
     Ok(())
@@ -114,7 +142,10 @@ pub async fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeEr
 }
 
 async fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
-    git_operation::run(|| Repository::open(repo_path))?;
+    let repo = git_operation::run(|| Repository::open(repo_path))?;
+    let _lock =
+        crate::infrastructure::file_lock::acquire_async(&repo.path().join("releash-index.lock"))
+            .await?;
     #[cfg(any(test, feature = "test-support"))]
     let program = crate::adaptor::gateway::code::test_helpers::git_program();
     #[cfg(not(any(test, feature = "test-support")))]
