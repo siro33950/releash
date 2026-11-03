@@ -59,6 +59,7 @@ impl WorkflowDefinitionQueryService for WorkflowDefinitionFileQueryService {
         for summary in summaries {
             match collapsed.last_mut() {
                 Some(previous) if previous.name == summary.name => {
+                    previous.is_running = previous.is_running || summary.is_running;
                     previous.description = storage::DUPLICATE_NAME_DESCRIPTION.to_string();
                     if previous.failure.is_none() {
                         previous.failure = summary.failure;

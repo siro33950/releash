@@ -72,3 +72,34 @@ fn test_保存先一覧_利用者とbuiltinの名前を重複なく返す() {
     assert!(names.contains(&builtin));
     assert_eq!(names.len(), list_builtin_workflows().len() + 1);
 }
+
+#[test]
+fn test_定義一覧_同じstemの後続定義が実行中なら統合後も実行中になる() {
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("same.lua"),
+        r#"
+local r = require("releash")
+return r.workflow{
+  name = "same", description = "Lua workflow",
+  main = r.command{ command = "true" },
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("same.yml"), yaml("target")).unwrap();
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+
+    // When
+    let items = query.list_workflows(&[running("target")]).unwrap();
+
+    // Then
+    let merged = items
+        .iter()
+        .filter(|item| item.name == "same")
+        .collect::<Vec<_>>();
+    assert_eq!(merged.len(), 1);
+    assert!(merged[0].failure.is_none(), "{:?}", merged[0].failure);
+    assert!(merged[0].is_running);
+}
