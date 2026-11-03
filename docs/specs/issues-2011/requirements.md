@@ -60,6 +60,7 @@ RPC `OpenWorkflowInEditor` と `OpenFacetInEditor` は、定義または Facet �
 - 「builtin の定義と Facet は外部エディタで開けない」という判断と Facet の種類の解釈を domain へ移し、usecase から gateway への受け渡しを `FacetKind` にし、テスト専用の `open_facet_in_editor_inner` とそのテストを消す。
 - 定義と Facet を扱う既存処理の責務の修正。取得した Entity が業務の判断を持つ形にし、既存の保存・複製・削除などの経路も対象にする。
 - 「定義の一覧が表示され、定義を選ぶと詳細と診断が表示される」を確かめる回帰の E2E（XCUITest）。
+- 診断における builtin 定義の読み込みの扱い。利用者の定義と同じく、解釈できる builtin 定義は Facet の参照検証に失敗しても診断付きの定義として残す。
 
 変更しない対象:
 
@@ -69,7 +70,7 @@ RPC `OpenWorkflowInEditor` と `OpenFacetInEditor` は、定義または Facet �
 - RPC `OpenFolderInEditor` と `OpenInEditor`。
 - React の画面（#1765 で撤去する）。React は変更後の RPC をそのまま呼び続ける。
 - 購読 `workflows`、`workflow`、`workflow-source`、`facets`、`facet`、`diagnostics` の形。
-- 診断の内容と判定の規則。
+- 診断の内容と判定の規則。builtin 定義の読み込みの扱い（「変更する対象」参照）を除く。
 
 # Requirements
 
