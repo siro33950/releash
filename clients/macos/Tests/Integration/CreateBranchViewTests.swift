@@ -49,10 +49,10 @@ final class CreateBranchViewTests: XCTestCase {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.selectedWorktree = "/repo/linked"
-    let host = await ViewHarness(RootView(model: model))
+    let host = await ViewHarness(RootView(model: model).overlay { BranchMenuButton() })
     defer { host.close() }
     try await makeKey(host)
-    WorkspaceWindows().createBranch()
+    try await host.press("open-branch-sheet")
     try await eventuallyView(host) { host.element("create-branch-name") != nil }
     // When
     try await host.press("キャンセル")
@@ -66,14 +66,13 @@ final class CreateBranchViewTests: XCTestCase {
     // Given
     let model = try await testModel(TestHTTPClient())
     model.selectedWorktree = "/repo/linked"
-    let first = await ViewHarness(RootView(model: model))
+    let first = await ViewHarness(RootView(model: model).overlay { BranchMenuButton() })
     defer { first.close() }
-    let second = await ViewHarness(RootView(model: model))
+    let second = await ViewHarness(RootView(model: model).overlay { BranchMenuButton() })
     defer { second.close() }
-    let windows = WorkspaceWindows()
     // When
     try await makeKey(first)
-    windows.createBranch()
+    try await first.press("open-branch-sheet")
     // Then
     try await eventuallyView(first) { first.element("create-branch-name") != nil }
     XCTAssertNil(second.window.attachedSheet)
@@ -81,7 +80,7 @@ final class CreateBranchViewTests: XCTestCase {
     try focusSheet(first)
     try await first.setTextField("feature/first")
     try await makeKey(second)
-    windows.createBranch()
+    try await second.press("open-branch-sheet")
     // Then
     try await eventuallyView(second) { second.element("create-branch-name") != nil }
     // When
@@ -99,17 +98,27 @@ final class CreateBranchViewTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func testBranchCommandIsDisabledOutsideWorkspaceWindow() async throws {
+    // Given
+    let host = await ViewHarness(BranchMenuButton())
+    defer { host.close() }
+    // When
+    try await makeKey(host)
+    // Then
+    try await eventuallyView(host) { host.element("open-branch-sheet")?.enabled == false }
+  }
+
   @MainActor func testFailedCreationKeepsNameAndSheetUntilSuccessfulRetry() async throws {
     // Given
     let http = TestHTTPClient()
     http.state.withLock { $0.failedMethod = "GitCreateBranch" }
     let model = try await testModel(http)
     model.selectedWorktree = "/repo/linked"
-    let host = await ViewHarness(RootView(model: model))
+    let host = await ViewHarness(RootView(model: model).overlay { BranchMenuButton() })
     defer { host.close() }
     // When
     try await makeKey(host)
-    WorkspaceWindows().createBranch()
+    try await host.press("open-branch-sheet")
     // Then
     try await eventuallyView(host) { host.element("create-branch-name") != nil }
     // When
@@ -155,5 +164,15 @@ final class CreateBranchViewTests: XCTestCase {
       host.window.makeKeyAndOrderFront(nil)
       return NSApp.keyWindow === host.window
     }
+  }
+}
+
+private struct BranchMenuButton: View {
+  @FocusedValue(\.createBranch) private var createBranch
+
+  var body: some View {
+    Button("Open branch sheet") { createBranch?() }
+      .disabled(createBranch == nil)
+      .accessibilityIdentifier("open-branch-sheet")
   }
 }
