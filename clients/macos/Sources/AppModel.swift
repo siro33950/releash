@@ -10,6 +10,7 @@ import SwiftProtobuf
   var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
   var collapsed: [String: Bool] = [:]
   var selectedWorktree: String?
+  var creatingBranch = false
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
   private enum Failure {
@@ -640,6 +641,33 @@ import SwiftProtobuf
     panel.canChooseFiles = false
     guard panel.runModal() == .OK, let path = panel.url?.path else { return }
     addRepository(path)
+  }
+  func stageAll() {
+    guard let path = selectedWorktree, let client else { return }
+    var request = Releash_Client_V1_GitStageRequest()
+    request.repoPath = path
+    request.paths = .init()
+    perform {
+      _ = try await client.gitStage(request: request, headers: self.headers).result.get()
+    }
+  }
+  func unstageAll() {
+    guard let path = selectedWorktree, let client else { return }
+    var request = Releash_Client_V1_GitUnstageRequest()
+    request.repoPath = path
+    request.paths = .init()
+    perform {
+      _ = try await client.gitUnstage(request: request, headers: self.headers).result.get()
+    }
+  }
+  func createBranch(_ name: String) {
+    guard let path = selectedWorktree, let client else { return }
+    var request = Releash_Client_V1_GitCreateBranchRequest()
+    request.repoPath = path
+    request.branchName = name
+    perform {
+      _ = try await client.gitCreateBranch(request: request, headers: self.headers).result.get()
+    }
   }
   func addRepository(_ path: String) {
     guard let client else { return }

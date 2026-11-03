@@ -9,6 +9,16 @@ import SwiftUI
       .commands {
         CommandGroup(replacing: .newItem) {
           Button("New Releash Window") { windows.openWindow() }.keyboardShortcut("n")
+          Button("フォルダを開く…") { model.addRepository() }
+            .keyboardShortcut("o").disabled(!model.connected)
+        }
+        CommandMenu("Git") {
+          Button("すべてステージ") { model.stageAll() }
+            .disabled(!model.connected || model.selectedWorktree == nil)
+          Button("すべてアンステージ") { model.unstageAll() }
+            .disabled(!model.connected || model.selectedWorktree == nil)
+          Button("ブランチを作成…") { model.creatingBranch = true }
+            .disabled(!model.connected || model.selectedWorktree == nil)
         }
         CommandMenu("タブ") {
           Button("タブを閉じる") { model.panes.closeCurrentTab() }
@@ -140,6 +150,7 @@ struct RootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $creating) { CreateWorktreeView(model: model) }
+        .sheet(isPresented: $model.creatingBranch) { CreateBranchView(model: model) }
       }
     }
     .frame(

@@ -18,6 +18,82 @@ private func workspaceFailures(_ messages: [String])
 }
 
 final class AppModelTests: XCTestCase {
+  @MainActor func testGitMenuActionsSendSelectedWorktreeAndEmptyPaths() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo/linked"
+    // When
+    model.stageAll()
+    model.unstageAll()
+    model.createBranch("feature/menu")
+    model.selectedWorktree = "/repo/other"
+    // Then
+    try await eventually {
+      ["GitStage", "GitUnstage", "GitCreateBranch"].allSatisfy { !http.requests($0).isEmpty }
+    }
+    let stage = try Releash_Client_V1_GitStageRequest(
+      serializedBytes: XCTUnwrap(http.requests("GitStage").first?.message))
+    let unstage = try Releash_Client_V1_GitUnstageRequest(
+      serializedBytes: XCTUnwrap(http.requests("GitUnstage").first?.message))
+    let branch = try Releash_Client_V1_GitCreateBranchRequest(
+      serializedBytes: XCTUnwrap(http.requests("GitCreateBranch").first?.message))
+    XCTAssertEqual(stage.repoPath, "/repo/linked")
+    XCTAssertTrue(stage.hasPaths)
+    XCTAssertTrue(stage.paths.items.isEmpty)
+    XCTAssertEqual(unstage.repoPath, "/repo/linked")
+    XCTAssertTrue(unstage.hasPaths)
+    XCTAssertTrue(unstage.paths.items.isEmpty)
+    XCTAssertEqual(branch.repoPath, "/repo/linked")
+    XCTAssertEqual(branch.branchName, "feature/menu")
+    XCTAssertNil(model.failure)
+    await model.stop()
+  }
+
+  @MainActor func testGitMenuActionsWithoutSelectionOrClientDoNotSendRequests() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    // When
+    model.stageAll()
+    model.unstageAll()
+    model.createBranch("feature/menu")
+    await model.stop()
+    // Given
+    let disconnected = AppModel(httpClient: http)
+    disconnected.selectedWorktree = "/repo/linked"
+    // When
+    disconnected.stageAll()
+    disconnected.unstageAll()
+    disconnected.createBranch("feature/menu")
+    // Then
+    await Task.yield()
+    for method in ["GitStage", "GitUnstage", "GitCreateBranch"] {
+      XCTAssertTrue(http.requests(method).isEmpty)
+    }
+  }
+
+  @MainActor func testGitMenuFailuresUseOperationFailure() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo/linked"
+    for method in ["GitStage", "GitUnstage", "GitCreateBranch"] {
+      // Given
+      http.state.withLock { $0.failedMethod = method }
+      // When
+      switch method {
+      case "GitStage": model.stageAll()
+      case "GitUnstage": model.unstageAll()
+      default: model.createBranch("invalid branch")
+      }
+      // Then
+      try await eventually { model.failure == "\(method) failed" }
+      model.dismissFailure()
+    }
+    await model.stop()
+  }
+
   @MainActor func testDeletingSelectedWorktreeClearsLayoutWithoutChangingAnotherSelection() {
     let model = AppModel()
     model.selectedWorktree = "/repo/current"
