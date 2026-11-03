@@ -101,7 +101,10 @@ struct SessionHistoryView: View {
     request.cols = UIStyle.terminalColumns
     request.callerRequestID = UUID().uuidString
     perform {
-      try await client.restoreAgentSession(request: request, headers: model.headers).result.get()
+      _ = try await client.restoreAgentSession(request: request, headers: model.headers).result
+        .get()
+      dismiss()
+      return nil
     }
   }
   func delete(_ session: Releash_Client_V1_AgentSessionItemDto) {
