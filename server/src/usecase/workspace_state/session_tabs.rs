@@ -102,10 +102,21 @@ impl SessionTabsUsecase {
     }
 }
 
-fn conflict_progress(_error: &WorkspaceStateError) -> Option<AttemptProgress> {
-    todo!()
+fn conflict_progress(error: &WorkspaceStateError) -> Option<AttemptProgress> {
+    match error {
+        WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
+        _ => None,
+    }
 }
 
-fn workflow_error(_error: WorkspaceStateError) -> WorkflowError {
-    todo!()
+fn workflow_error(error: WorkspaceStateError) -> WorkflowError {
+    match error {
+        WorkspaceStateError::Technical(error) => WorkflowError::Technical(error),
+        WorkspaceStateError::VersionConflict => WorkflowError::Conflict(error.to_string()),
+        WorkspaceStateError::InvalidLayout => WorkflowError::CorruptStoredState(error.to_string()),
+    }
 }
+
+#[cfg(test)]
+#[path = "session_tabs_test.rs"]
+mod session_tabs_tests;

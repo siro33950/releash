@@ -35,7 +35,33 @@ impl crate::usecase::workflow::WorkflowRuntimeUsecase {
         runtime: Arc<dyn crate::usecase::workflow::ports::WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
     ) -> Self {
-        todo!()
+        Self::new_with_workspace_trees(
+            runtime,
+            execution_archives,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        )
+    }
+
+    pub fn new_with_workspace_trees(
+        runtime: Arc<dyn crate::usecase::workflow::ports::WorkflowRuntimeCommandGateway>,
+        execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
+        trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
+    ) -> Self {
+        #[cfg(test)]
+        let retrying = crate::usecase::test_helpers::retry::test_retrying();
+        #[cfg(not(test))]
+        let retrying = shared().clone();
+        Self::new_with_worktree_operations(
+            retrying,
+            runtime,
+            execution_archives,
+            Default::default(),
+            crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+                Arc::new(crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default()),
+                trees,
+                crate::test_support::state_subscription::test_subscriptions(),
+            ),
+        )
     }
 }
 
