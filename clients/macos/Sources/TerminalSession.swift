@@ -183,16 +183,30 @@ import SwiftTerm
     var request = Releash_Client_V1_WritePathsToTerminalSurfaceRequest()
     request.owner = owner
     request.paths.items = paths
+    let names = paths.joined(separator: ", ")
+    let report = { [weak self] (message: String) in
+      guard let self else { return }
+      dropFailure = [dropFailure, message].compactMap { $0 }.joined(separator: "\n")
+    }
     enqueue(
       attachment,
-      onDiscard: { [weak self] in
-        guard let self else { return }
-        let message = "接続が変わったため、ドロップしたパスを入力できませんでした: \(paths.joined(separator: ", "))"
-        dropFailure = [dropFailure, message].compactMap { $0 }.joined(separator: "\n")
+      onDiscard: {
+        report("接続が変わったため、ドロップしたパスを入力できませんでした: \(names)")
       },
-      operation: { client, headers in
-        _ = try await client.writePathsToTerminalSurface(request: request, headers: headers).result
-          .get()
+      operation: { [weak self] client, headers in
+        guard let self else { return }
+        guard !exited else {
+          report("端末が終了したため、ドロップしたパスを入力できませんでした: \(names)")
+          return
+        }
+        do {
+          _ = try await client.writePathsToTerminalSurface(request: request, headers: headers)
+            .result
+            .get()
+        } catch {
+          report("ドロップしたパスが入力されたか確認できませんでした: \(names)。端末の内容を確認してください。")
+          throw error
+        }
       })
     return true
   }

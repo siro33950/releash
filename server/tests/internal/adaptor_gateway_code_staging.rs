@@ -52,14 +52,14 @@ async fn test_index更新_排他待機中は期限で停止し解除後に更新
     StagingGateway
         .stage(dir.path().to_str().unwrap(), vec![])
         .unwrap();
+    let mut index = repo.index().unwrap();
+    index.read(true).unwrap();
+    assert!(index.get_path(std::path::Path::new("new.txt"), 0).is_some());
     StagingGateway
         .unstage(dir.path().to_str().unwrap(), vec![])
         .unwrap();
-    assert!(repo
-        .index()
-        .unwrap()
-        .get_path(std::path::Path::new("new.txt"), 0)
-        .is_none());
+    index.read(true).unwrap();
+    assert!(index.get_path(std::path::Path::new("new.txt"), 0).is_none());
 }
 
 #[cfg(unix)]
@@ -76,7 +76,7 @@ pub async fn test_hunk変更_実行中のprocessを期限と取消で回収し�
     // Given
     for reverse in [false, true] {
         for expire in [false, true] {
-            let (dir, _repo) = crate::test_support_git::create_test_repo();
+            let (dir, repo) = crate::test_support_git::create_test_repo();
             let program = dir.path().join("fake-git");
             std::fs::write(
                 &program,
@@ -86,6 +86,32 @@ pub async fn test_hunk変更_実行中のprocessを期限と取消で回収し�
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
             set_git_program(Some(program));
             let _reset = Reset;
+            if expire {
+                let lock = std::fs::File::create(repo.path().join("releash-index.lock")).unwrap();
+                fs2::FileExt::lock_exclusive(&lock).unwrap();
+                let waiting = OperationContext::new(
+                    Some(Deadline::new(Instant::now() + Duration::from_millis(30))),
+                    Arc::new(tokio_util::sync::CancellationToken::new()),
+                );
+                let result = releashd::test_support::integration::platform::scope(waiting, async {
+                    if reverse {
+                        StagingGateway
+                            .unstage_hunk(dir.path().to_str().unwrap(), "patch")
+                            .await
+                    } else {
+                        StagingGateway
+                            .stage_hunk(dir.path().to_str().unwrap(), "patch")
+                            .await
+                    }
+                })
+                .await;
+                assert!(
+                    matches!(result, Err(CodeError::Technical(error)) if error == OperationStopped::Expired.into())
+                );
+                assert!(!dir.path().join("pid").exists());
+                assert!(!dir.path().join("args").exists());
+                drop(lock);
+            }
             let token = tokio_util::sync::CancellationToken::new();
             let context = OperationContext::new(
                 expire.then(|| Deadline::new(Instant::now() + Duration::from_secs(1))),
@@ -197,6 +223,12 @@ pub(crate) mod staging_gateway_tests {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "link", "original", "file");
+        add_and_commit(&repo, "modified", "before", "file");
+        add_and_commit(&repo, "deleted", "deleted", "file");
+        add_and_commit(&repo, "renamed", "renamed", "file");
+        fs::write(dir.path().join("modified"), "after").unwrap();
+        fs::remove_file(dir.path().join("deleted")).unwrap();
+        fs::rename(dir.path().join("renamed"), dir.path().join("destination")).unwrap();
         fs::remove_file(dir.path().join("link")).unwrap();
         std::os::unix::fs::symlink("missing", dir.path().join("link")).unwrap();
         fs::write(dir.path().join("new.txt"), "new").unwrap();
@@ -205,11 +237,103 @@ pub(crate) mod staging_gateway_tests {
         git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
         // Then
         assert_eq!(index_file_content(&repo, "link"), "original");
+        assert_eq!(index_file_content(&repo, "modified"), "before");
+        assert_eq!(index_file_content(&repo, "deleted"), "deleted");
+        assert_eq!(index_file_content(&repo, "renamed"), "renamed");
         let mut index = repo.index().unwrap();
         index.read(true).unwrap();
         assert_eq!(index.get_path(Path::new("link"), 0).unwrap().mode, 0o100644);
         assert!(index.get_path(Path::new("new.txt"), 0).is_none());
+        assert!(index.get_path(Path::new("destination"), 0).is_none());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("modified")).unwrap(),
+            "after"
+        );
+        assert!(!dir.path().join("deleted").exists());
+        assert!(dir.path().join("destination").exists());
         git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
+    }
+
+    #[test]
+    fn test_全アンステージ_変更のないskip_worktreeを保持する() {
+        // Given
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "excluded.txt", "excluded", "file");
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("excluded.txt"), 0).unwrap();
+        entry.flags |= git2::IndexEntryFlag::EXTENDED.bits();
+        entry.flags_extended |= git2::IndexEntryExtendedFlag::SKIP_WORKTREE.bits();
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+        let loaded = Repository::open(dir.path()).unwrap();
+        assert_eq!(
+            loaded
+                .index()
+                .unwrap()
+                .get_path(Path::new("excluded.txt"), 0)
+                .unwrap()
+                .flags_extended,
+            entry.flags_extended
+        );
+        fs::remove_file(dir.path().join("excluded.txt")).unwrap();
+        fs::write(dir.path().join("new.txt"), "new").unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        // When
+        index.read(true).unwrap();
+        assert_eq!(
+            index
+                .get_path(Path::new("excluded.txt"), 0)
+                .unwrap()
+                .flags_extended,
+            entry.flags_extended,
+            "stage must preserve excluded entry"
+        );
+        git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        index.read(true).unwrap();
+        assert_eq!(
+            index
+                .get_path(Path::new("excluded.txt"), 0)
+                .unwrap()
+                .flags_extended,
+            entry.flags_extended
+        );
+        git_stage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        // Then
+        index.read(true).unwrap();
+        let retained = index.get_path(Path::new("excluded.txt"), 0).unwrap();
+        assert_eq!(retained.flags_extended, entry.flags_extended);
+        assert_eq!(retained.id, entry.id);
+        assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+        assert!(!repo
+            .status_file(Path::new("excluded.txt"))
+            .unwrap()
+            .is_index_deleted());
+    }
+
+    #[test]
+    fn test_全アンステージ_競合エントリをheadの有無に従って戻す() {
+        // Given
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "tracked", "original", "file");
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("tracked"), 0).unwrap();
+        index.remove_path(Path::new("tracked")).unwrap();
+        entry.flags = (entry.flags & !0x3000) | 0x2000;
+        entry.id = repo.blob(b"conflicted").unwrap();
+        index.add(&entry).unwrap();
+        entry.path = b"new-conflict".to_vec();
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+        assert!(index.has_conflicts());
+        // When
+        git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        // Then
+        index.read(true).unwrap();
+        assert!(!index.has_conflicts());
+        assert_eq!(index_file_content(&repo, "tracked"), "original");
+        assert!(index.get_path(Path::new("new-conflict"), 0).is_none());
     }
 
     fn diff_hunks_and_groups(original: &str, modified: &str) -> (Vec<Hunk>, Vec<ChangeGroup>) {

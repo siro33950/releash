@@ -70,6 +70,66 @@ final class TerminalSessionTests: XCTestCase {
     }
     XCTAssertEqual(http.requests("WritePathsToTerminalSurface").count, 1)
     XCTAssertTrue(session.failure?.contains("WritePathsToTerminalSurface failed") == true)
+    XCTAssertTrue(session.dropFailure?.contains("/tmp/file") == true)
+    let stream = http.state.withLock { $0.streams.last! }
+    stream.receiveClose(
+      .unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    try await eventually { session.hasForegroundProcess != nil && session.failure == nil }
+    XCTAssertTrue(session.dropFailure?.contains("確認できませんでした") == true)
+    session.stop()
+    await model.stop()
+  }
+
+  @MainActor func testQueuedDropAfterExitDoesNotSendOrRestartSubscription() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "exit-before-drop")
+    try await eventually { session.hasForegroundProcess != nil }
+    http.state.withLock { $0.deferredTerminalMethod = "WriteTerminalSurface" }
+    session.input("before")
+    try await eventually { http.state.withLock { $0.pendingTerminal != nil } }
+    XCTAssertTrue(session.writePaths(["/tmp/queued"]))
+    let attachment = model.terminalAttachment(path: "/repo", id: "exit-before-drop")
+    var event = Releash_Client_V1_TerminalEvent()
+    event.exit.exitCode = 0
+    session.receive(event)
+    let pending = try XCTUnwrap(http.state.withLock { $0.pendingTerminal })
+    pending(
+      HTTPResponse(
+        code: .ok, headers: ["content-type": ["application/proto"]], message: Data(),
+        trailers: [:], error: nil, tracingInfo: .init(httpStatus: 200)))
+    try await eventually { session.dropFailure?.contains("端末が終了") == true }
+    XCTAssertTrue(http.requests("WritePathsToTerminalSurface").isEmpty)
+    XCTAssertEqual(model.terminalAttachment(path: "/repo", id: "exit-before-drop"), attachment)
+    XCTAssertNil(session.failure)
+    session.stop()
+    await model.stop()
+  }
+
+  @MainActor func testInFlightDropFailureAfterReconnectRetainsUncertainResultWithoutResend()
+    async throws
+  {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "in-flight-drop")
+    try await eventually { session.hasForegroundProcess != nil }
+    http.state.withLock { $0.deferredTerminalMethod = "WritePathsToTerminalSurface" }
+    XCTAssertTrue(session.writePaths(["/tmp/in-flight"]))
+    try await eventually { http.state.withLock { $0.pendingTerminal != nil } }
+    let previous = model.terminalAttachment(path: "/repo", id: "in-flight-drop")
+    model.restartTerminalSubscription(path: "/repo", id: "in-flight-drop", agent: false)
+    try await eventually {
+      model.terminalAttachment(path: "/repo", id: "in-flight-drop") != previous
+        && session.hasForegroundProcess != nil
+    }
+    let current = model.terminalAttachment(path: "/repo", id: "in-flight-drop")
+    let pending = try XCTUnwrap(http.state.withLock { $0.pendingTerminal })
+    pending(TestHTTPClient.failure("connection changed"))
+    try await eventually { session.dropFailure?.contains("/tmp/in-flight") == true }
+    XCTAssertTrue(session.dropFailure?.contains("確認できませんでした") == true)
+    XCTAssertNil(session.failure)
+    XCTAssertEqual(model.terminalAttachment(path: "/repo", id: "in-flight-drop"), current)
+    XCTAssertEqual(http.requests("WritePathsToTerminalSurface").count, 1)
     session.stop()
     await model.stop()
   }

@@ -34,6 +34,11 @@ pub fn git_stage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
                     None
                 }
             })
+            .filter(|path| {
+                index.get_path(Path::new(path), 0).is_none_or(|entry| {
+                    entry.flags_extended & git2::IndexEntryExtendedFlag::SKIP_WORKTREE.bits() == 0
+                })
+            })
             .collect()
     } else {
         paths
@@ -82,7 +87,43 @@ pub fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>
         if paths.is_empty() {
             let tree = git_operation::run(|| head_obj.peel_to_tree())?;
             let mut index = git_operation::run(|| repo.index())?;
-            git_operation::run(|| index.read_tree(&tree))?;
+            let mut options = git2::DiffOptions::new();
+            options.reverse(true).include_typechange(true);
+            let diff = git_operation::run(|| {
+                repo.diff_tree_to_index(Some(&tree), Some(&index), Some(&mut options))
+            })?;
+            for delta in diff.deltas() {
+                let file = delta.new_file();
+                let path = file
+                    .path()
+                    .ok_or_else(|| CodeError::Rule("missing index path".into()))?;
+                if let Err(error) = git_operation::run(|| index.conflict_remove(path)) {
+                    if error.code() != ErrorCode::NotFound {
+                        return Err(error.into());
+                    }
+                }
+                if !file.exists() {
+                    if index.get_path(path, 0).is_some() {
+                        git_operation::run(|| index.remove_path(path))?;
+                    }
+                } else {
+                    let entry = git2::IndexEntry {
+                        ctime: git2::IndexTime::new(0, 0),
+                        mtime: git2::IndexTime::new(0, 0),
+                        dev: 0,
+                        ino: 0,
+                        mode: file.mode().into(),
+                        uid: 0,
+                        gid: 0,
+                        file_size: 0,
+                        id: file.id(),
+                        flags: 0,
+                        flags_extended: 0,
+                        path: file.path_bytes().unwrap().to_vec(),
+                    };
+                    git_operation::run(|| index.add(&entry))?;
+                }
+            }
             git_operation::run(|| index.write())?;
         } else {
             git_operation::run(|| repo.reset_default(Some(&head_obj), &paths))?;

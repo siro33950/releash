@@ -157,6 +157,24 @@ async fn receive_until(
     .unwrap_or_else(|_| panic!("timed out waiting for Terminal Surface output: {needle}"))
 }
 
+async fn receive_resynchronization(attachment: &mut TerminalSurfaceWireAttachment) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let item = attachment.next().await;
+            if matches!(item, Some(TerminalSurfaceStreamItemV1::Status { .. })) {
+                continue;
+            }
+            assert!(
+                matches!(item, Some(TerminalSurfaceStreamItemV1::Snapshot { .. })),
+                "expected resynchronization snapshot, got {item:?}"
+            );
+            break;
+        }
+    })
+    .await
+    .expect("fault must produce a resynchronization snapshot");
+}
+
 async fn receive_exit(
     attachment: &mut TerminalSurfaceWireAttachment,
 ) -> Vec<TerminalSurfaceStreamItemV1> {
@@ -475,12 +493,7 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
     runtime
         .write(owner.clone(), "after-gap\r")
         .expect("write after dropped production event");
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(10), attached.next())
-            .await
-            .expect("gap must produce a resynchronization item"),
-        Some(TerminalSurfaceStreamItemV1::Snapshot { .. })
-    ));
+    receive_resynchronization(&mut attached).await;
     runtime
         .write(owner.clone(), "after-gap-resync\r")
         .expect("write continuity marker after gap resynchronization");
@@ -494,12 +507,7 @@ async fn test_atui_010_実ptyのproduction_attachが注入された欠落重複�
     runtime
         .write(owner.clone(), "fault-reversal-second\r")
         .expect("publish second reversed production output through real PTY");
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(10), attached.next())
-            .await
-            .expect("reversal must produce a resynchronization item"),
-        Some(TerminalSurfaceStreamItemV1::Snapshot { .. })
-    ));
+    receive_resynchronization(&mut attached).await;
 
     runtime.kill(owner).expect("kill fault-injection PTY");
 }

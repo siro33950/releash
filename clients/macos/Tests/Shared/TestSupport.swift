@@ -55,6 +55,8 @@ final class TestHTTPClient: HTTPClientInterface {
     var deferCreation = false
     var deferSave = false
     var pendingSave: (@Sendable (HTTPResponse) -> Void)?
+    var deferredTerminalMethod: String?
+    var pendingTerminal: (@Sendable (HTTPResponse) -> Void)?
   }
   let state = Mutex(State())
   let discoveryFile = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -88,6 +90,10 @@ final class TestHTTPClient: HTTPClientInterface {
             error: ConnectError(
               code: failureCode, message: "\(method) failed", details: detail.map { [$0] } ?? []),
             tracingInfo: nil))
+        return Cancelable(cancel: {})
+      }
+      if state.withLock({ $0.deferredTerminalMethod == method }) {
+        state.withLock { $0.pendingTerminal = onResponse }
         return Cancelable(cancel: {})
       }
       if method == "OpenAgentSession", state.withLock({ $0.deferOpenSession }) {

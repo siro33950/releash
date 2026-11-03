@@ -1,11 +1,14 @@
 import ApplicationServices
+import Connect
 import SwiftUI
 import XCTest
 
 @testable import Releash
 
 final class CreateBranchViewTests: XCTestCase {
-  @MainActor func testBranchSheetRetainsDestinationAndInputAcrossConnectionChanges() async throws {
+  @MainActor func testBranchSheetRetainsDestinationAndInputAcrossDaemonConnectionChanges()
+    async throws
+  {
     // Given
     let http = TestHTTPClient()
     let model = try await testModel(http)
@@ -34,6 +37,30 @@ final class CreateBranchViewTests: XCTestCase {
       serializedBytes: XCTUnwrap(http.requests("GitCreateBranch").first?.message))
     XCTAssertEqual(request.repoPath, "/repo/original")
     XCTAssertEqual(request.branchName, "feature/original")
+    await model.stop()
+  }
+
+  @MainActor func testBranchSheetRetainsInputDuringStreamRecovery() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectedWorktree = "/repo"
+    let host = await ViewHarness(RootView(model: model).overlay { BranchMenuButton() })
+    defer { host.close() }
+    try await makeKey(host)
+    try await host.press("open-branch-sheet")
+    try await eventuallyView(host) { host.element("create-branch-name") != nil }
+    try focusSheet(host)
+    try await host.setTextField("feature/recover")
+    let stream = http.state.withLock { $0.streams.last! }
+    stream.receiveClose(
+      .unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
+    try await eventually { model.reconnecting }
+    XCTAssertTrue(model.connected)
+    XCTAssertNotNil(host.window.attachedSheet)
+    XCTAssertEqual(host.value(host.element("create-branch-name")), "feature/recover")
+    try await eventually { !model.reconnecting }
+    try await eventuallyView(host) { host.element("作成")?.enabled == true }
+    XCTAssertEqual(host.value(host.element("create-branch-name")), "feature/recover")
     await model.stop()
   }
 

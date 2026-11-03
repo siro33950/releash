@@ -17,6 +17,7 @@ WHEN 開発者が Git の Stage All を選ぶ
 THEN その worktree の変更がすべて index に入っている
 
 リンク先が存在しない symlink も対象に含む。
+skip-worktree が設定されたパスは全件ステージの対象から除外する。
 サーバは同じ worktree のステージ・アンステージ処理による index 更新を排他で実行する。
 
 ## B-004: Unstage All
@@ -26,6 +27,7 @@ WHEN 開発者が Git の Unstage All を選ぶ
 THEN その worktree の index から変更がすべて外れている
 
 通常ファイルから symlink への型変更も対象に含む。
+変更のない index エントリの skip-worktree を保持する。
 
 ## B-005: Create Branch…
 
@@ -44,7 +46,9 @@ WHEN 開発者が Finder からファイルをその terminal の上に落とす
 THEN その terminal の入力にファイルの path が現れる
 
 attachment が未確立の terminal と終了済みの terminal は、ドラッグ中からドロップを拒否する。
-受理後、送信前に attachment が変わった場合は、送信できなかったパスを表示する。
+受理後、送信前に attachment が変わった場合や terminal が終了した場合は、送信せずに対象のパスと理由を表示する。
+送信後に RPC が失敗した場合は、入力結果を確認できないことと対象のパスを表示する。
+入力済みの可能性があるため自動再送せず、端末の内容を確認するよう利用者に伝える。
 この通知は再接続後も保持し、利用者が閉じる。
 
 ## 要件IDとBehavior IDの対応表
