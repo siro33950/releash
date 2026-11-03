@@ -35,7 +35,9 @@ final class SessionHistoryViewTests: XCTestCase {
       let model = try await testModel(http)
       model.selectWorktree("/repo")
       try await eventually { model.layoutLoaded }
-      if method != "DeleteAgentSession" {
+      if method == "RestoreAgentSession" {
+        model.panes.openNode(.command, id: "command", title: "Command")
+      } else if method == "ResumeAgentSessionHistoryCandidate" {
         model.panes.openPendingSession(id: "session-tree", title: "Preparing")
       }
       let originalTabs = model.panes.controller.allTabIds
@@ -80,16 +82,32 @@ final class SessionHistoryViewTests: XCTestCase {
           serializedBytes: XCTUnwrap(http.requests(method).last?.message))
         XCTAssertEqual(request.agentSessionID, "archived")
       } else {
+        if method == "RestoreAgentSession" {
+          let current = try model.panes.layout()
+          guard case .pane(let id, let tabs, let active) = current else {
+            return XCTFail("Expected a single pane")
+          }
+          let restored = PaneTab(
+            kind: .session, agentSessionID: "agent-session")
+          let layout = PaneLayout.pane(id: id, tabs: tabs + [restored], active: active)
+          var state = Releash_Client_V1_StatePayload()
+          state.workspaceState.value.version = 1
+          state.workspaceState.value.paneLayout = layout.message
+          try http.publish(state, target: "workspace-state")
+          try await eventually { (try? model.panes.layout()) == layout }
+          let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+          XCTAssertEqual(model.panes.controller.selectedTab(inPane: pane)?.id, originalTabs.first)
+        }
         try await eventually {
           (try? model.panes.layout().tabs.last?.agentSessionID) == "agent-session"
         }
         XCTAssertEqual(try model.panes.layout().tabs.last?.kind, .session)
-        XCTAssertEqual(model.panes.controller.allTabIds, originalTabs)
         if method == "RestoreAgentSession" {
           let request = try Releash_Client_V1_RestoreAgentSessionRequest(
             serializedBytes: XCTUnwrap(http.requests(method).last?.message))
           XCTAssertEqual(request.agentSessionID, "archived")
         } else {
+          XCTAssertEqual(model.panes.controller.allTabIds, originalTabs)
           let request = try Releash_Client_V1_ResumeAgentSessionHistoryCandidateRequest(
             serializedBytes: XCTUnwrap(http.requests(method).last?.message))
           XCTAssertEqual(request.provider, "codex")
@@ -138,6 +156,45 @@ final class SessionHistoryViewTests: XCTestCase {
 }
 
 extension SessionHistoryViewTests {
+  @MainActor func testSessionRestoreDismissesSheetOnlyOnSuccessWithoutChangingSelection()
+    async throws
+  {
+    let http = TestHTTPClient()
+    var session = Releash_Client_V1_AgentSessionItemDto()
+    session.id = "archived"
+    session.provider.value = .claude
+    session.providerSessionID = "archived-provider"
+    var tree = Releash_Client_V1_WorkspaceWorktreeList()
+    tree.path = "/repo"
+    tree.snapshot.archivedSessions.items = [session]
+    var repo = Releash_Client_V1_WorkspaceRepositoryList()
+    repo.worktrees.items = [tree]
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    model.panes.openSession(id: "agent-session", nodeID: "session-tree", title: "Session")
+    model.panes.openNode(.command, id: "command", title: "Command")
+    let layout = model.panes.layoutInput
+    let host = await ViewHarness(HistoryRestoreSheet(model: model))
+    defer { host.close() }
+    try await host.press("Show history")
+    try await eventually { !host.window.sheets.isEmpty }
+    try await eventuallyView(host) { host.element("Claude · archived-provider") != nil }
+    http.state.withLock { $0.failedMethod = "RestoreAgentSession" }
+    try await host.press("Claude · archived-provider")
+    try await eventuallyView(host) { host.texts().contains("RestoreAgentSession failed") }
+    XCTAssertFalse(host.window.sheets.isEmpty)
+    XCTAssertEqual(model.panes.layoutInput, layout)
+
+    http.state.withLock { $0.failedMethod = nil }
+    try await host.press("Claude · archived-provider")
+    try await eventually { host.window.sheets.isEmpty }
+    XCTAssertEqual(http.requests("RestoreAgentSession").count, 2)
+    XCTAssertEqual(model.panes.layoutInput, layout)
+    await model.stop()
+  }
+
   @MainActor func testWorkflowHistoryRestoresExecutionAndReportsFailure() async throws {
     let http = TestHTTPClient()
     var history = Releash_Client_V1_WorkspaceWorkflowHistoryItem()
@@ -180,5 +237,15 @@ extension SessionHistoryViewTests {
     nodes.close()
     host.close()
     await model.stop()
+  }
+}
+
+private struct HistoryRestoreSheet: View {
+  let model: AppModel
+  @State private var showing = false
+
+  var body: some View {
+    Button("Show history") { showing = true }
+      .sheet(isPresented: $showing) { SessionHistoryView(model: model, path: "/repo") }
   }
 }
