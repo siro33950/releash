@@ -587,7 +587,12 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace.initialize_panes()), Vec::new(), None),
+            StateValue::WorkspaceState(
+                releashd::test_support::integration::platform::StreamVersion::new(1).unwrap(),
+                Some(workspace.initialize_panes()),
+                Vec::new(),
+                None,
+            ),
         ),
         (
             T::Workflows,
@@ -1699,7 +1704,12 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     react.panes = state.panes;
     assert_eq!(
         actual,
-        StateValue::WorkspaceState(Some(react), Vec::new(), None)
+        StateValue::WorkspaceState(
+            releashd::test_support::integration::platform::StreamVersion::new(2).unwrap(),
+            Some(react),
+            Vec::new(),
+            None
+        )
     );
 }
 
@@ -2018,7 +2028,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .await
         .unwrap();
     // Then
-    let StateValue::WorkspaceState(Some(actual), failures, None) = actual else {
+    let StateValue::WorkspaceState(_, Some(actual), failures, None) = actual else {
         panic!("Missing workspace state")
     };
     let mut expected = state;
@@ -2251,10 +2261,17 @@ async fn test_workspace状態購読_sessionタブ追加を設定未保存のま�
         .await
         .unwrap()
         .unwrap();
+    let (version, _) =
+        releashd::test_support::integration::repository::WorkspaceStateRepository::read(
+            fixture.reads.workspace_state.as_ref(),
+            &fixture.path,
+        )
+        .await
+        .unwrap();
     // Then
     assert!(
         matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value))
-        if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::WorkspaceState(Some(expected.clone()), vec![], None)))
+        if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::WorkspaceState(version, Some(expected.clone()), vec![], None)))
     );
     let value = fixture.reads.read(&target).await.unwrap();
     let Some(wire::state_payload::Value::WorkspaceState(value)) = payload(&value).unwrap().value

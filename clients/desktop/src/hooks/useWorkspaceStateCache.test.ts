@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceStateDto as WorkspaceState } from "@/generated/client_types";
@@ -27,6 +28,7 @@ function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
 			rightCollapsed: false,
 			rightBottomCollapsed: false,
 		},
+		etag: "1",
 		...overrides,
 	};
 }
@@ -35,7 +37,7 @@ describe("useWorkspaceStateCache", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		states.clear();
-		mockInvoke.mockResolvedValue(undefined);
+		mockInvoke.mockResolvedValue(makeState({ etag: "2" }));
 		vi.useFakeTimers();
 	});
 
@@ -90,7 +92,7 @@ describe("useWorkspaceStateCache", () => {
 		for (const [index, path] of paths.entries()) {
 			expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
 				worktreeName: path,
-				state: values[index],
+				state: { ...values[index], etag: "0" },
 			});
 			states.publish(
 				{ kind: "workspace-state", args: [path, path] },
@@ -152,7 +154,7 @@ describe("useWorkspaceStateCache", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 		expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
 			worktreeName: "/repo",
-			state: state2,
+			state: { ...state2, etag: "0" },
 		});
 	});
 
@@ -172,7 +174,7 @@ describe("useWorkspaceStateCache", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 		expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
 			worktreeName: "/repo",
-			state,
+			state: { ...state, etag: "0" },
 		});
 
 		// Advancing timers should not trigger another save
@@ -183,9 +185,9 @@ describe("useWorkspaceStateCache", () => {
 	});
 
 	it("未応答の保存はflushで再送し、成功後はflushとunmountで再送しない", async () => {
-		let resolveSave!: () => void;
+		let resolveSave!: (saved: WorkspaceState) => void;
 		mockInvoke.mockReturnValueOnce(
-			new Promise<void>((resolve) => {
+			new Promise<WorkspaceState>((resolve) => {
 				resolveSave = resolve;
 			}),
 		);
@@ -203,18 +205,18 @@ describe("useWorkspaceStateCache", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
 			worktreeName: "/repo",
-			state,
+			state: { ...state, etag: "0" },
 		});
-		await act(async () => resolveSave());
+		await act(async () => resolveSave(makeState({ etag: "2" })));
 		act(() => result.current.flushState("/repo"));
 		unmount();
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 	});
 
 	it("先行保存の成功は、後続の保存が失敗した最新状態の未保存マークを消さない", async () => {
-		let resolveSave!: () => void;
+		let resolveSave!: (saved: WorkspaceState) => void;
 		mockInvoke.mockReturnValueOnce(
-			new Promise<void>((resolve) => {
+			new Promise<WorkspaceState>((resolve) => {
 				resolveSave = resolve;
 			}),
 		);
@@ -242,15 +244,52 @@ describe("useWorkspaceStateCache", () => {
 			error.message,
 		);
 		window.removeEventListener("releash-client-error", notice);
-		await act(async () => resolveSave());
+		await act(async () => resolveSave(makeState({ etag: "5" })));
 		await act(async () => result.current.flushState("/repo"));
 		expect(mockInvoke).toHaveBeenCalledTimes(3);
 		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
 			worktreeName: "/repo",
-			state: latest,
+			state: { ...latest, etag: "5" },
 		});
 		unmount();
 		expect(mockInvoke).toHaveBeenCalledTimes(3);
+	});
+
+	it("保存が拒否されたら編集を捨てて購読の最新を読み直し、次の保存はその版で送る", async () => {
+		const { result } = renderHook(() => useWorkspaceStateCache());
+		const received = vi.fn();
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		const target = {
+			kind: "workspace-state" as const,
+			args: ["/repo", "/repo"],
+		};
+		act(() => {
+			result.current.loadState("/repo", received, vi.fn());
+			states.publish(target, makeState({ etag: "1" }));
+		});
+		const edited = makeState({ tabs: { editors: [], activeEditorPath: null } });
+		const latest = makeState({ etag: "2", layout: undefined });
+		mockInvoke.mockRejectedValueOnce(new ConnectError("stale", Code.Aborted));
+		await act(async () => {
+			result.current.updateState("/repo", edited);
+			states.publish(target, latest);
+			result.current.flushState("/repo");
+		});
+		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
+			worktreeName: "/repo",
+			state: { ...edited, etag: "1" },
+		});
+		expect(result.current.getState("/repo")).toEqual(latest);
+		expect(received).toHaveBeenLastCalledWith(latest);
+		expect(log).not.toHaveBeenCalled();
+		await act(async () => {
+			result.current.updateState("/repo", edited);
+			result.current.flushState("/repo");
+		});
+		expect(mockInvoke).toHaveBeenLastCalledWith("save_workspace_state", {
+			worktreeName: "/repo",
+			state: { ...edited, etag: "2" },
+		});
 	});
 
 	it("loadState subscribes and caches current and changed values", async () => {
@@ -299,11 +338,11 @@ describe("useWorkspaceStateCache", () => {
 			result.current.loadState("/repo", received, failed);
 			states.publish(
 				{ kind: "workspace-state", args: ["/repo", "/repo"] },
-				{ version: 1 },
+				{ version: 1, etag: "3" },
 			);
 		});
-		expect(received).toHaveBeenLastCalledWith({ version: 1 });
-		expect(result.current.getState("/repo")).toEqual({ version: 1 });
+		expect(received).toHaveBeenLastCalledWith({ version: 1, etag: "3" });
+		expect(result.current.getState("/repo")).toEqual({ version: 1, etag: "3" });
 		expect(failed).not.toHaveBeenCalled();
 		expect(mockInvoke).not.toHaveBeenCalled();
 		const state = makeState();
@@ -313,7 +352,7 @@ describe("useWorkspaceStateCache", () => {
 		});
 		expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
 			worktreeName: "/repo",
-			state,
+			state: { ...state, etag: "3" },
 		});
 	});
 

@@ -1036,7 +1036,7 @@ async fn wait_for_ui_writes(
 }
 
 #[tokio::test]
-async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと後続の状態を復元する() {
+async fn test_ui状態の並行保存_groupは再読取で後続を反映しworkspaceは版競合で後続を捨てる() {
     use releashd::test_support::integration::persistence::{
         LocalEventStore, LocalEventStoreConfig,
     };
@@ -1090,20 +1090,26 @@ async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと�
         stall.release();
         append.await.unwrap();
         first.await.unwrap().unwrap();
-        second.await.unwrap().unwrap();
+        let second = second.await.unwrap();
         drop(store);
         let restored = WorkspaceStateStore::with_store(dir.path().into(), events.clone());
         // Then
         if group {
+            second.unwrap();
             assert!(!restored.load_repository_group("/repo").await.unwrap());
+            assert_eq!(event_count(dir.path()), 2);
         } else {
+            assert!(matches!(
+                second,
+                Err(releashd::test_support::integration::platform::WorkspaceStateError::VersionConflict)
+            ));
             let (version, state) = restored.read("/repo/wt").await.unwrap();
-            assert_eq!(version.value(), 2);
+            assert_eq!(version.value(), 1);
             let state = state.unwrap();
-            assert!(state.layout.as_ref().unwrap().left_nav_collapsed);
+            assert!(!state.layout.as_ref().unwrap().left_nav_collapsed);
             assert_eq!(state.panes, Some(panes));
+            assert_eq!(event_count(dir.path()), 1);
         }
-        assert_eq!(event_count(dir.path()), 2);
     }
 }
 
@@ -1371,11 +1377,10 @@ async fn test_ui状態gateway_両方の読取と保存で停止の種別を保�
                 match operation {
                     0 => store.read("/repo/wt").await.map(|_| ()),
                     1 => store.read_repository_group("/repo").await.map(|_| ()),
-                    2 => {
-                        store
-                            .save("/repo/wt", make_state(), StreamVersion::new(0).unwrap())
-                            .await
-                    }
+                    2 => store
+                        .save("/repo/wt", make_state(), StreamVersion::new(0).unwrap())
+                        .await
+                        .map(|_| ()),
                     _ => {
                         store
                             .save_repository_group("/repo", true, StreamVersion::new(0).unwrap())

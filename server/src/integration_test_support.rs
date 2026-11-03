@@ -432,9 +432,26 @@ pub mod platform {
     pub use crate::usecase::test_helpers::watcher::SubscriptionFiles;
     pub use crate::usecase::watcher::UsecaseError as watcher_UsecaseError;
     pub use crate::usecase::watcher::WatcherUsecase;
-    pub use crate::usecase::workspace_state::usecase::{
-        save_repository_group_state, save_workspace_state,
-    };
+    pub use crate::usecase::workspace_state::usecase::save_repository_group_state;
+
+    /// 今の版に対して workspace state を保存する。テストの前提を作るために使う。
+    pub async fn save_workspace_state(
+        repository: &dyn crate::domain::workspace_state::WorkspaceStateRepository,
+        publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
+        worktree_name: &str,
+        state: crate::domain::workspace_state::WorkspaceState,
+    ) -> Result<(), crate::domain::workspace_state::WorkspaceStateError> {
+        let (version, _) = repository.read(worktree_name).await?;
+        crate::usecase::workspace_state::usecase::save_workspace_state(
+            repository,
+            publisher,
+            worktree_name,
+            state,
+            version,
+        )
+        .await
+        .map(|_| ())
+    }
 
     pub use crate::usecase::worktree_operation::WorktreeMutationGuard;
     pub use crate::usecase::worktree_operation::WorktreeOperations;

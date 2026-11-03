@@ -114,6 +114,7 @@ final class TestHTTPClient: HTTPClientInterface {
         state.withLock { $0.pendingSave = onResponse }
         return Cancelable(cancel: {})
       }
+      var savedWorkspaceState = Data()
       if method == "StartStateSubscription" {
         let subscription = try Releash_Client_V1_StartStateSubscriptionRequest(
           serializedBytes: request.message ?? Data())
@@ -199,13 +200,29 @@ final class TestHTTPClient: HTTPClientInterface {
       } else if method == "SaveWorkspaceState" {
         let save = try Releash_Client_V1_SaveWorkspaceStateRequest(
           serializedBytes: request.message ?? Data())
-        state.withLock { $0.layouts[save.worktreeName] = save.state }
+        let saved: Releash_Client_V1_WorkspaceStateDto? = state.withLock { state in
+          let current = state.layouts[save.worktreeName]?.etag ?? "0"
+          guard save.state.etag == current else { return nil }
+          var stored = save.state
+          stored.etag = String((Int(current) ?? 0) + 1)
+          state.layouts[save.worktreeName] = stored
+          return stored
+        }
+        guard let saved else {
+          onResponse(
+            HTTPResponse(
+              code: .aborted, headers: [:], message: nil, trailers: [:],
+              error: ConnectError(code: .aborted, message: "stale workspace state"),
+              tracingInfo: nil))
+          return Cancelable(cancel: {})
+        }
+        savedWorkspaceState = try saved.serializedData()
         if state.withLock({ $0.deferSave }) {
           state.withLock { $0.pendingSave = onResponse }
           return Cancelable(cancel: {})
         }
       }
-      var response = Data()
+      var response = savedWorkspaceState
       if ["CreateAgentSession", "RestoreAgentSession", "ResumeAgentSessionHistoryCandidate"]
         .contains(method)
       {

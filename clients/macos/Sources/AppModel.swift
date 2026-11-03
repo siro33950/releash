@@ -71,6 +71,8 @@ import SwiftProtobuf
   @ObservationIgnored private(set) var headers: Headers = [:]
   @ObservationIgnored var pendingSaves: [String: Int] = [:]
   @ObservationIgnored private var saves: [String: Task<Void, Never>] = [:]
+  @ObservationIgnored private var etags: [String: String] = [:]
+  @ObservationIgnored private var staleSaves: Set<String> = []
 
   @ObservationIgnored private let httpClient: any HTTPClientInterface
 
@@ -473,6 +475,7 @@ import SwiftProtobuf
     let previous = layoutLoaded ? layout : nil
     var received = previous ?? .empty()
     var unset = false
+    etags[path] = value.hasValue ? value.value.etag : "0"
     if value.hasValue {
       workspaceState = value.value
       workspaceState.readFailures = []
@@ -524,13 +527,22 @@ import SwiftProtobuf
     pendingSaves[path, default: 0] += 1
     saves[path] = Task {
       await prior?.value
-      do {
-        _ = try await client.saveWorkspaceState(request: request, headers: headers).result.get()
-      } catch { failure = failureMessage(error) }
+      if !staleSaves.contains(path) {
+        var request = request
+        request.state.etag = etags[path] ?? "0"
+        do {
+          let saved = try await client.saveWorkspaceState(request: request, headers: headers)
+            .result.get()
+          etags[path] = saved.etag
+        } catch let error as ConnectError where error.code == .aborted {
+          staleSaves.insert(path)
+        } catch { failure = failureMessage(error) }
+      }
       pendingSaves[path, default: 0] -= 1
       if pendingSaves[path] == 0 {
         pendingSaves.removeValue(forKey: path)
         saves.removeValue(forKey: path)
+        staleSaves.remove(path)
         if let clientID {
           let key = subscriptionKey("workspace-state", [path, path])
           do { try await register(key, clientID: clientID) } catch {

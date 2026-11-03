@@ -55,8 +55,9 @@ Swift.app がタブを増減しても、開発者が見ているタブは変わ�
 # Requirements
 
 - R-001: Session が消えると（開発者が Archive する）、Swift.app はその Session のタブを消す。
-- R-002: Session が増えると、Swift.app はその Session のタブをその worktree の中央のカラムに増やす。Session は、誰かが起動したとき、開発者が Archive 済みの Session を Restore したときに増える。Session を起動したのがこの画面、Workflow の Node、CLI、別のウィンドウのどれであっても同じである。
+- R-002: Session が増えると、Swift.app はその Session のタブをその worktree の中央のカラムに増やす。Session は、誰かが起動したとき、開発者が Archive 済みの Session を Restore したときに増える。Session を起動したのがこの画面、Workflow の Node、CLI、別のウィンドウのどれであっても同じである。Restore で増える Session に、retry で置き換えられた過去の試行の Session は含めない。
 - R-003: Swift.app が R-001、R-002 でタブを増減しても、Swift.app は選択中のタブと、各 pane が表示しているタブを変えない。
+- R-004: サーバは、画面が観測していないタブ配置を画面の保存で上書きしない。画面は配信で受け取った配置の `etag` を保存要求に入れ、サーバは `etag` が最新の配置と一致しない保存を `ABORTED` で拒否する。拒否された画面は、その編集と同じ配置を基にした後続の保存を捨て、サーバの配置を読み直す。
 
 # Assumptions
 

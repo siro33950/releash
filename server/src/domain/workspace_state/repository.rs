@@ -31,12 +31,13 @@ pub trait WorkspaceStateRepository: Send + Sync {
         &self,
         worktree_name: &str,
     ) -> Result<(StreamVersion, Option<WorkspaceState>), WorkspaceStateError>;
+    /// 保存後の版を返す。
     async fn save(
         &self,
         worktree_name: &str,
         state: WorkspaceState,
         expected: StreamVersion,
-    ) -> Result<(), WorkspaceStateError>;
+    ) -> Result<StreamVersion, WorkspaceStateError>;
     async fn states(&self) -> Result<Vec<(WorkspaceStateKey, StreamVersion)>, WorkspaceStateError>;
     async fn invalidate(
         &self,

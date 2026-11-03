@@ -31,7 +31,7 @@ impl WorkspaceStateRepository for MemoryWorkspaceStateRepository {
         workspace: &str,
         state: WorkspaceState,
         expected: StreamVersion,
-    ) -> Result<(), WorkspaceStateError> {
+    ) -> Result<StreamVersion, WorkspaceStateError> {
         if let Some(error) = self.next_save_error.lock().take() {
             return Err(error);
         }
@@ -42,11 +42,9 @@ impl WorkspaceStateRepository for MemoryWorkspaceStateRepository {
         if version != expected.value() {
             return Err(WorkspaceStateError::VersionConflict);
         }
-        states.insert(
-            workspace.into(),
-            (StreamVersion::new(version + 1).unwrap(), state),
-        );
-        Ok(())
+        let saved = StreamVersion::new(version + 1).unwrap();
+        states.insert(workspace.into(), (saved, state));
+        Ok(saved)
     }
 
     async fn filter_missing_files(

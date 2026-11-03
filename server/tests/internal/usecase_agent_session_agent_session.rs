@@ -1391,3 +1391,102 @@ pub async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     assert!(sessions.find(&expected_id).await.unwrap().is_some());
     assert_eq!(*terminal.deletes.lock().unwrap(), 0);
 }
+
+#[tokio::test]
+pub async fn test_agent_session_history_resume_sessionタブ保存失敗でもpausedへ収束する() {
+    use releashd::test_support::integration::platform::{
+        TechnicalFailure, TechnicalFailureNature, WorkspaceStateError,
+    };
+    use releashd::test_support::integration::repository::WorkspaceStateRepository;
+    use releashd::test_support::integration::workspace::{
+        MemoryWorkspaceStateRepository, SessionTabsUsecase, TestWorkspaceTreeRepository,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = releashd::test_support::integration::persistence::LocalEventStore::open(
+        releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
+            directory.path().to_path_buf(),
+            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        ),
+    )
+    .unwrap();
+    let sessions = Arc::new(test_sessions(
+        Arc::new(
+            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
+                store.clone(),
+            ),
+        ),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
+    let workspace_states = Arc::new(MemoryWorkspaceStateRepository::default());
+    *workspace_states.next_save_error.lock() =
+        Some(WorkspaceStateError::Technical(TechnicalFailure {
+            nature: TechnicalFailureNature::Other,
+            message: "tab save failed".into(),
+        }));
+    let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+    let terminal = Arc::new(RecordingTerminal::default());
+    let usecase = AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
+        sessions.clone(),
+        Arc::new(ProviderLifecycleUsecase::new(
+            Arc::new(
+                releashd::test_support::integration::providers::LocalProviderLifecycleCredentialGateway,
+            ),
+            Arc::new(RecordingLifecycleEvents::default()),
+        )),
+        provider_runtime(
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launch_gateway.clone(),
+            terminal.clone(),
+        ),
+        Arc::new(FixedHistory {
+            entries: vec![AgentSessionHistoryMetadata {
+                provider: ProviderKind::Codex,
+                provider_session_id: "provider-history-tab-failure".to_string(),
+                worktree_path: "/repo/worktree".to_string(),
+                updated_at_ms: 10,
+            }],
+        }),
+        hook_health_usecase(),
+        started_execution_trees(),
+        tokio::sync::mpsc::unbounded_channel().0,
+        TestWorkspaceTreeRepository::new(),
+        SessionTabsUsecase::new(
+            workspace_states.clone(),
+            TestWorkspaceTreeRepository::new(),
+            releashd::test_support::integration::subscriptions::test_subscriptions(),
+        ),
+    );
+
+    let outcome = usecase
+        .resume_history(AgentSessionHistoryResumeRequest {
+            workspace: WorkspaceIdentity::new("/repo"),
+            worktree_path: "/repo/worktree".to_string(),
+            provider: ProviderKind::Codex,
+            provider_session_id: "provider-history-tab-failure".to_string(),
+            rows: 24,
+            cols: 80,
+            caller_request_id: "history-tab-failure".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let expected_id = match outcome {
+        AgentSessionHistoryResumeOutcome::Paused(session) => session.session().id().to_string(),
+        AgentSessionHistoryResumeOutcome::Open(_) => panic!("expected paused session"),
+    };
+    let saved = sessions.find(&expected_id).await.unwrap().unwrap();
+    assert_eq!(saved.session().lifecycle(), AgentSessionLifecycle::Paused);
+    assert_eq!(
+        saved.session().provider_session_id(),
+        Some("provider-history-tab-failure")
+    );
+    assert!(launch_gateway.launches.lock().unwrap().is_empty());
+    assert!(terminal.spawns.lock().unwrap().is_empty());
+    assert_eq!(workspace_states.read("/repo").await.unwrap().1, None);
+}

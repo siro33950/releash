@@ -1,5 +1,5 @@
 mod conversions;
-pub(crate) use conversions::session_selection;
+pub(crate) use conversions::{etag, session_selection, stream_version};
 pub(crate) mod descriptor;
 pub(crate) mod errors;
 mod workspace;

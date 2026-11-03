@@ -20,9 +20,12 @@ import { clientJson } from "./clientJson";
 import { decodeTerminalEvent } from "./clientProtocol";
 
 it("tabsとlayoutが未保存のworkspace stateを省略したまま復号する", () => {
-	expect(clientJson(WorkspaceStateDtoSchema, { version: 1 }, false)).toEqual({
+	expect(
+		clientJson(WorkspaceStateDtoSchema, { version: 1, etag: "0" }, false),
+	).toEqual({
 		readFailures: [],
 		version: 1,
+		etag: "0",
 	});
 });
 

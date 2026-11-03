@@ -1,25 +1,22 @@
 use crate::common::retry::{self, AttemptProgress, RetryBackoff, RetryLimiter};
+use crate::domain::local_event::StreamVersion;
 use crate::domain::workspace_state::{
     WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
 };
 
+/// client が観測した版 `expected` に対して保存する。版が進んでいれば保存せず版競合を返す。
 pub async fn save_workspace_state(
     repository: &dyn WorkspaceStateRepository,
     publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: &str,
     state: WorkspaceState,
-) -> Result<(), WorkspaceStateError> {
-    retry::attempts(
-        RetryBackoff::CONFLICT,
-        &RetryLimiter::new(),
-        conflict_progress,
-        |_| async {
-            let (version, previous) = repository.read(worktree_name).await?;
-            let next = state.clone().preserve_omitted_fields(previous);
-            repository.save(worktree_name, next, version).await
-        },
-    )
-    .await?;
+    expected: StreamVersion,
+) -> Result<(StreamVersion, WorkspaceState), WorkspaceStateError> {
+    let (_, previous) = repository.read(worktree_name).await?;
+    let next = state.preserve_omitted_fields(previous);
+    let version = repository
+        .save(worktree_name, next.clone(), expected)
+        .await?;
     if let Some(publisher) = publisher {
         publisher.notify(
             crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
@@ -27,7 +24,7 @@ pub async fn save_workspace_state(
             ),
         );
     }
-    Ok(())
+    Ok((version, next))
 }
 
 pub async fn load_workspace_state(
@@ -37,6 +34,7 @@ pub async fn load_workspace_state(
     worktree_root: &str,
 ) -> Result<
     (
+        StreamVersion,
         Option<WorkspaceState>,
         Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
         Option<WorkspaceStateError>,
@@ -48,7 +46,7 @@ pub async fn load_workspace_state(
         &RetryLimiter::new(),
         conflict_progress,
         |_| async {
-            let (version, state) = repository.read(worktree_name).await?;
+            let (mut version, state) = repository.read(worktree_name).await?;
             let mut state = state.unwrap_or_default().initialize_panes();
             let mut failures = Vec::new();
             let mut migration_failure = None;
@@ -71,7 +69,7 @@ pub async fn load_workspace_state(
                     layout.resolve_legacy_sessions(&resolution.sessions);
                     if *layout != previous {
                         match repository.save(worktree_name, state.clone(), version).await {
-                            Ok(()) => {}
+                            Ok(saved) => version = saved,
                             Err(WorkspaceStateError::VersionConflict) => {
                                 return Err(WorkspaceStateError::VersionConflict);
                             }
@@ -83,7 +81,7 @@ pub async fn load_workspace_state(
             let state = repository
                 .filter_missing_files(state, worktree_root)
                 .await?;
-            Ok((Some(state), failures, migration_failure))
+            Ok((version, Some(state), failures, migration_failure))
         },
     )
     .await

@@ -480,6 +480,7 @@ export type WorkspaceStateDto = {
 	version: 1;
 	tabs?: WorkspaceTabsStateDto;
 	layout?: WorkspaceLayoutStateDto;
+	etag: string;
 };
 
 export type WorkspaceStateReadFailure = {
@@ -1759,6 +1760,7 @@ export type InputWorkspaceStateDto = {
 	version: 1;
 	tabs?: InputWorkspaceTabsStateDto;
 	layout?: InputWorkspaceLayoutStateDto;
+	etag: string;
 };
 
 export type InputWorkspaceStateReadFailure = {
@@ -2375,7 +2377,7 @@ export interface ClientCommands {
 	): Promise<SaveWorkflowSourceResultDto>;
 	save_workspace_state(
 		args: ClientCommandArgs["save_workspace_state"],
-	): Promise<void>;
+	): Promise<WorkspaceStateDto>;
 	set_branch_base(args: ClientCommandArgs["set_branch_base"]): Promise<void>;
 	set_releash_base(args: ClientCommandArgs["set_releash_base"]): Promise<void>;
 	start_workflow(

@@ -42,6 +42,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                     if let Ok(crate::usecase::state_subscription::StateValue::WorkspaceState(
                         _,
                         _,
+                        _,
                         Some(error),
                     )) = result
                     {

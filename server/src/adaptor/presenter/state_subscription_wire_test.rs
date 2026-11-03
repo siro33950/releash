@@ -573,6 +573,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::WorkspaceState(
+                crate::domain::local_event::StreamVersion::new(7).unwrap(),
                 Some(WorkspaceState {
                     panes: None,
                     version: 1,
@@ -610,6 +611,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     read_failures: vec![wire::WorkspaceStateReadFailure { reference_id: "session-node".into(), message: "Session lookup failed".into() }],
                     pane_layout: None,
                     version: Some(1),
+                    etag: Some("7".into()),
                     tabs: Some(wire::WorkspaceTabsStateDto {
                         editors: Some(wire::ListWorkspaceTabEntryDto { items: vec![] }),
                         active_editor_path: Some("/file".into()),
@@ -1256,6 +1258,7 @@ fn test_workspace購読payload_設定未保存のsession配置を転送する() 
     state.add_session_tab("session", "node");
     // When
     let actual = payload(&StateValue::WorkspaceState(
+        crate::domain::local_event::StreamVersion::zero(),
         Some(state.clone()),
         vec![],
         None,

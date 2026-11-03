@@ -988,10 +988,10 @@ impl AgentSessionLaunchUsecase {
             )
             .await
             .map_err(map_session_error)?;
-        self.session_tabs
-            .add_session(associated.session())
-            .await
-            .map_err(map_tab_error)?;
+        if let Err(error) = self.session_tabs.add_session(associated.session()).await {
+            log::warn!("failed to save the Session tab after history resume: {error:?}");
+            return self.pause_history_resume(&request, &agent_session_id).await;
+        }
         let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(associated.session().id())
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;

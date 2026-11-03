@@ -233,12 +233,22 @@ async fn test_実行木のarchiveとrestore_対象sessionの配置を保存し�
         )
         .unwrap(),
     );
-    assert_eq!(restored, Some(state));
+    assert_eq!(restored, Some(state.clone()));
     assert_eq!(changes.try_recv().unwrap(), expected);
+    assert!(changes.try_recv().is_err());
+    // When
+    usecase
+        .restore_execution("workspace", "execution")
+        .await
+        .unwrap();
+    // Then
+    let (version, unchanged) = repository.read("workspace").await.unwrap();
+    assert_eq!(version.value(), 3);
+    assert_eq!(unchanged, Some(state));
     assert!(changes.try_recv().is_err());
     assert_eq!(
         *trees.calls.lock(),
-        vec![("workspace".into(), "execution".into()); 2]
+        vec![("workspace".into(), "execution".into()); 3]
     );
 }
 

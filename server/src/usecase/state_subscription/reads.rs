@@ -296,12 +296,13 @@ impl WorkspaceStateReads {
                 ))
             }
             T::WorkspaceState(name, path) => {
-                let (state, failures, migration_failure) = self
+                let (version, state, failures, migration_failure) = self
                     .workflow
                     .load_workspace_state(self.workspace_state.as_ref(), name, path)
                     .await
                     .map_err(error)?;
                 return Ok(StateValue::WorkspaceState(
+                    version,
                     state,
                     failures,
                     migration_failure,

@@ -669,11 +669,9 @@ mod memory_tests {
             TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), &expected_id).unwrap()
         );
         use crate::domain::workspace_state::WorkspaceStateRepository;
-        let (_, state) = tabs.read("/repo").await.unwrap();
-        assert_eq!(
-            state.unwrap(),
-            crate::domain::workspace_state::WorkspaceState::default()
-        );
+        let (version, state) = tabs.read("/repo").await.unwrap();
+        assert_eq!(version.value(), 0);
+        assert_eq!(state, None);
         assert!(lifecycle_events.events.lock().unwrap().iter().any(|event| {
         matches!(
             event.clone().into_parts().1,

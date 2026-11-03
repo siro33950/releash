@@ -38,7 +38,7 @@ impl WorkspaceState {
 
     /// 実行木に属する Session のタブを、既存の選択を変えずに追加する。
     pub fn add_execution_tabs(&mut self, tree: &crate::domain::workspace_tree::WorkspaceTree) {
-        for node in tree.nodes() {
+        for node in tree.nodes().iter().filter(|node| !node.is_retry_history) {
             if let Some(session_id) = &node.session_id {
                 self.add_session_tab(session_id, &node.id);
             }

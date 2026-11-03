@@ -796,16 +796,17 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
         },
     );
     // Then
-    assert_eq!(
-        releashd::test_support::integration::transport::request_client(
-            &client,
-            "save_workspace_state",
-            json!({"worktreeName":"workspace","state":state})
-        )
-        .await
-        .unwrap(),
-        Value::Null
-    );
+    let mut requested = state.clone();
+    requested["etag"] = json!("0");
+    let saved = releashd::test_support::integration::transport::request_client(
+        &client,
+        "save_workspace_state",
+        json!({"worktreeName":"workspace","state":requested}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved["etag"], json!("1"));
+    assert_eq!(saved["version"], json!(1));
     drop(client);
     shutdown_sender.send(()).unwrap();
     server.await.unwrap();
@@ -837,9 +838,11 @@ pub async fn test_workspace保存_connectがui追加fieldを受理し既存項�
             restored.clone(),
         )))
         .unwrap();
-    let restored = wire::WorkspaceStateDto::try_from(restored).unwrap();
+    let mut restored = wire::WorkspaceStateDto::try_from(restored).unwrap();
+    restored.etag = Some("1".into());
     let mut restored =
         wire::from_message("releash.client.v1.WorkspaceStateDto", &restored).unwrap();
+    restored.as_object_mut().unwrap().remove("etag");
     restored["layout"]
         .as_object_mut()
         .unwrap()

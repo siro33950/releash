@@ -48,6 +48,7 @@ pub enum StateValue {
     Worktrees(Vec<WorktreeEntryDto>),
     StartupRepository(Option<crate::usecase::repository_dto::StartupWorktree>),
     WorkspaceState(
+        crate::domain::local_event::StreamVersion,
         Option<crate::domain::workspace_state::WorkspaceState>,
         Vec<crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto>,
         Option<crate::domain::workspace_state::WorkspaceStateError>,

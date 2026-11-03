@@ -368,14 +368,33 @@ fn execution_tree() -> crate::domain::workspace_tree::WorkspaceTree {
             attempt: Some(1),
             session_id: session.map(Into::into),
             activity: Some(AgentSessionActivity::Working),
+            retry_predecessor_id: (index == 0).then(|| "node-old".into()),
             ..root.clone()
         });
     }
-    WorkspaceTree::restore("workspace", nodes).unwrap()
+    nodes.push(WorkspaceTreeNode {
+        id: "node-old".into(),
+        parent_id: Some(root.id.clone()),
+        sibling_order: 3,
+        kind: WorkspaceNodeKind::WorkflowSession,
+        status: WorkspaceNodeStatus::Completed,
+        node_execution_id: Some("node-old".into()),
+        node_name: Some("node-0".into()),
+        attempt: Some(1),
+        session_id: Some("old".into()),
+        activity: Some(AgentSessionActivity::Working),
+        ..root.clone()
+    });
+    let tree = WorkspaceTree::restore("workspace", nodes).unwrap();
+    assert!(tree
+        .nodes()
+        .iter()
+        .any(|node| node.is_retry_history && node.session_id.as_deref() == Some("old")));
+    tree
 }
 
 #[test]
-fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() {
+fn test_実行木のタブ増減_retry履歴を除くsessionを持つnodeだけ追加し全nodeを削除する() {
     use crate::domain::workspace_tree::WorkspaceTree;
     // Given
     let tree = execution_tree();
@@ -426,6 +445,7 @@ fn test_実行木のタブ削除_旧node参照とsession未確定のタブも消
         tab("legacy", PaneTabKind::Session, Some("node-0"), None),
         tab("pending", PaneTabKind::Session, Some("node-1"), None),
         tab("session", PaneTabKind::Session, None, Some("two")),
+        tab("history", PaneTabKind::Session, None, Some("old")),
     ]);
     let mut state = WorkspaceState {
         panes: Some(pane("pane", tabs, Some("command"))),

@@ -549,3 +549,94 @@ async fn test_実行木archiveとrestore_sessionタブを増減して選択を�
         .unwrap();
     assert_eq!(restored, Some(state));
 }
+
+#[tokio::test]
+async fn test_実行木archiveとrestore_sessionタブ保存に失敗しても所属worktreeの購読を更新し失敗を返す(
+) {
+    use releashd::test_support::integration::platform::{
+        StreamVersion, TechnicalFailure, TechnicalFailureNature, WorkspaceState,
+        WorkspaceStateError,
+    };
+    use releashd::test_support::integration::repository::WorkspaceStateRepository;
+    use releashd::test_support::integration::workspace::{
+        WorkspaceIdentity, WorkspaceTreeRepository,
+    };
+    // Given
+    let mut fixture = archive_fixture();
+    let execution_id = archive_workflow(&fixture).await;
+    let target = fixture.repository.target(&execution_id).await.unwrap();
+    let tree = fixture
+        .trees
+        .load_execution_tree(
+            &WorkspaceIdentity::new(&target.workspace_identity),
+            &execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut with_tabs = WorkspaceState::default();
+    with_tabs.add_execution_tabs(&tree);
+    assert_ne!(with_tabs, WorkspaceState::default());
+    fixture
+        .workspace_states
+        .save(
+            &target.workspace_identity,
+            with_tabs.clone(),
+            StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+    let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
+    let mut changes = releashd::test_support::integration::subscriptions::changes(&publisher);
+    fixture.runtime = fixture.runtime.with_state_publisher(publisher);
+    let tab_failure = || {
+        WorkspaceStateError::Technical(TechnicalFailure {
+            nature: TechnicalFailureNature::Other,
+            message: "tab save failed".into(),
+        })
+    };
+    // When
+    *fixture.workspace_states.next_save_error.lock() = Some(tab_failure());
+    let archived = fixture
+        .runtime
+        .archive_execution_tree(&execution_id, "manual")
+        .await;
+    // Then
+    assert!(matches!(archived, Err(WorkflowError::Technical(_))));
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::Worktree(target.worktree_path.clone())
+    );
+    let (version, unchanged) = fixture
+        .workspace_states
+        .read(&target.workspace_identity)
+        .await
+        .unwrap();
+    assert_eq!(unchanged, Some(with_tabs));
+    // Given
+    fixture
+        .workspace_states
+        .save(
+            &target.workspace_identity,
+            WorkspaceState::default(),
+            version,
+        )
+        .await
+        .unwrap();
+    // When
+    *fixture.workspace_states.next_save_error.lock() = Some(tab_failure());
+    let restored = fixture.runtime.restore_execution_tree(&execution_id).await;
+    // Then
+    assert!(matches!(restored, Err(WorkflowError::Technical(_))));
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::Worktree(target.worktree_path)
+    );
+    let (_, unchanged) = fixture
+        .workspace_states
+        .read(&target.workspace_identity)
+        .await
+        .unwrap();
+    assert_eq!(unchanged, Some(WorkspaceState::default()));
+    assert!(changes.try_recv().is_err());
+}

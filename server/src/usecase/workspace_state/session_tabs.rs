@@ -84,20 +84,27 @@ impl SessionTabsUsecase {
         workspace: &str,
         change: impl Fn(&mut WorkspaceState),
     ) -> Result<(), WorkspaceStateError> {
-        retry::attempts(
+        let changed = retry::attempts(
             RetryBackoff::CONFLICT,
             &RetryLimiter::new(),
             conflict_progress,
             |_| async {
                 let (version, saved) = self.repository.read(workspace).await?;
                 let mut state = saved.unwrap_or_default().initialize_panes();
+                let before = state.clone();
                 change(&mut state);
-                self.repository.save(workspace, state, version).await
+                if state == before {
+                    return Ok(false);
+                }
+                self.repository.save(workspace, state, version).await?;
+                Ok(true)
             },
         )
         .await?;
-        self.publisher
-            .notify(StateChangeSource::WorkspaceState(workspace.into()));
+        if changed {
+            self.publisher
+                .notify(StateChangeSource::WorkspaceState(workspace.into()));
+        }
         Ok(())
     }
 }
