@@ -126,7 +126,147 @@ fn test_review転送_最初のcommentの作者を保持しcommentがなければ
 
 #[test]
 fn test_pane転送_分割と全タブを往復して欠落と未知の種類を拒否する() {
-    todo!()
+    use crate::domain::workspace_state::value_objects::pane_layout::{
+        PaneLayout, PaneTab, PaneTabKind, SplitAxis,
+    };
+    let pane = PaneLayout::pane(
+        "a".into(),
+        vec![
+            PaneTab {
+                agent_session_id: None,
+                node_id: None,
+                id: "terminal".into(),
+                kind: PaneTabKind::Terminal,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
+            },
+            PaneTab {
+                agent_session_id: None,
+                node_id: None,
+                id: "workflow".into(),
+                kind: PaneTabKind::Command,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
+            },
+            PaneTab {
+                agent_session_id: None,
+                node_id: None,
+                id: "file".into(),
+                kind: PaneTabKind::File,
+                file_path: Some("src/file.rs".into()),
+                file_mode: Some(crate::domain::code::value_objects::review::FileMode::Diff),
+                file_base: Some(crate::domain::code::ReviewBase::BranchBase),
+            },
+            PaneTab {
+                agent_session_id: Some("agent-session".into()),
+                node_id: None,
+                id: "session".into(),
+                kind: PaneTabKind::Session,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
+            },
+            PaneTab {
+                agent_session_id: None,
+                node_id: Some("command-node".into()),
+                id: "command".into(),
+                kind: PaneTabKind::Command,
+                file_path: None,
+                file_mode: None,
+                file_base: None,
+            },
+        ],
+        Some("file".into()),
+    )
+    .unwrap();
+    for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
+        let layout = PaneLayout::split(
+            "split".into(),
+            axis,
+            0.7,
+            pane.clone(),
+            PaneLayout::pane("b".into(), vec![], None).unwrap(),
+        )
+        .unwrap();
+        let message = wire::PaneLayout::try_from(layout.clone()).unwrap();
+        assert_eq!(PaneLayout::try_from(message).unwrap(), layout);
+    }
+    let mut state = crate::domain::workspace_state::WorkspaceState {
+        version: 1,
+        panes: None,
+        tabs: Some(
+            crate::domain::workspace_state::value_objects::WorkspaceTabsState {
+                editors: vec![],
+                active_editor_path: None,
+            },
+        ),
+        layout: Some(
+            crate::domain::workspace_state::value_objects::WorkspaceLayoutState {
+                center_tab: "agent".into(),
+                active_view: "git".into(),
+                left_nav_collapsed: true,
+                right_collapsed: false,
+                right_bottom_collapsed: false,
+                right_bottom_active_tab: None,
+                selected_diff_file: None,
+            },
+        ),
+    };
+    state.panes = Some(pane.clone());
+    let message = wire::WorkspaceStateDto::try_from(state.clone()).unwrap();
+    assert!(message.pane_layout.is_some());
+    assert_eq!(
+        crate::domain::workspace_state::WorkspaceState::try_from(message).unwrap(),
+        state
+    );
+    for tabs in [false, true] {
+        for layout in [false, true] {
+            // Given
+            let mut expected = state.clone();
+            if !tabs {
+                expected.tabs = None;
+            }
+            if !layout {
+                expected.layout = None;
+            }
+            // When
+            let message = wire::WorkspaceStateDto::try_from(expected.clone()).unwrap();
+            // Then
+            assert_eq!(message.tabs.is_some(), tabs);
+            assert_eq!(message.layout.is_some(), layout);
+            assert_eq!(
+                crate::domain::workspace_state::WorkspaceState::try_from(message).unwrap(),
+                expected
+            );
+        }
+    }
+    for version in [None, Some(0), Some(2), Some(u32::MAX)] {
+        let mut message = wire::WorkspaceStateDto::try_from(state.clone()).unwrap();
+        message.version = version;
+        assert_eq!(
+            crate::domain::workspace_state::WorkspaceState::try_from(message).unwrap_err(),
+            "Expected workspace state version 1"
+        );
+    }
+    assert!(PaneLayout::try_from(wire::PaneLayout::default()).is_err());
+    let mut message = wire::PaneLayout::try_from(pane).unwrap();
+    for kind in [2, 999] {
+        if let Some(wire::pane_layout::Node::Pane(pane)) = &mut message.node {
+            pane.tabs[0].kind = kind;
+        }
+        assert!(PaneLayout::try_from(message.clone()).is_err());
+    }
+    for axis in [0, 999, wire::SplitAxis::Horizontal as i32] {
+        assert!(PaneLayout::try_from(wire::PaneLayout {
+            node: Some(wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {
+                axis,
+                ..Default::default()
+            })))
+        })
+        .is_err());
+    }
 }
 
 #[test]
@@ -650,5 +790,24 @@ nodes:
             &wire::WorkflowDto::try_from(definition).unwrap(),
         )
         .unwrap()
+    }
+}
+
+#[test]
+fn test_workspace転送_省略されていない不正な設定を拒否する() {
+    use crate::domain::workspace_state::WorkspaceState;
+    // Given
+    for (tabs, layout) in [
+        (Some(wire::WorkspaceTabsStateDto::default()), None),
+        (None, Some(wire::WorkspaceLayoutStateDto::default())),
+    ] {
+        let message = wire::WorkspaceStateDto {
+            version: Some(1),
+            tabs,
+            layout,
+            ..Default::default()
+        };
+        // When / Then
+        assert!(WorkspaceState::try_from(message).is_err());
     }
 }
