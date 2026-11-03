@@ -101,7 +101,7 @@ fn test_sessionタブ追加_別paneのpendingへ束ね選択と順序を保持�
         ],
         Some("pending"),
     );
-    let mut state = WorkspaceState::new();
+    let mut state = WorkspaceState::default();
     state.panes = Some(
         PaneLayout::split(
             "split".into(),
@@ -143,7 +143,7 @@ fn test_sessionタブ追加_別paneのpendingへ束ね選択と順序を保持�
 #[test]
 fn test_sessionタブ追加_既存sessionが別paneにあればpendingも変更しない() {
     // Given
-    let mut state = WorkspaceState::new();
+    let mut state = WorkspaceState::default();
     state.panes = Some(
         PaneLayout::split(
             "split".into(),
@@ -174,7 +174,7 @@ fn test_sessionタブ追加_末尾に追加し全paneの選択と既存タブを
     // Given
     let original = tab("session-new", PaneTabKind::Terminal, None, None);
     let second = pane("second", vec![], None);
-    let mut state = WorkspaceState::new();
+    let mut state = WorkspaceState::default();
     state.panes = Some(
         PaneLayout::split(
             "split".into(),
@@ -224,7 +224,7 @@ fn test_sessionタブ削除_全paneから消し選択中なら隣へ移す() {
         (vec!["gone", "right"], Some("right"), Some("right")),
         (vec!["gone", "right"], None, None),
     ] {
-        let mut state = WorkspaceState::new();
+        let mut state = WorkspaceState::default();
         state.panes = Some(
             PaneLayout::split(
                 "split".into(),
@@ -285,7 +285,7 @@ fn test_sessionタブ削除_全paneから消し選択中なら隣へ移す() {
 #[test]
 fn test_配置初期化_未保存だけ空paneを作り設定を保持する() {
     // Given
-    let mut state = WorkspaceState::new();
+    let mut state = WorkspaceState::default();
     assert_eq!(pane_tabs(state.panes.as_ref().unwrap()), (&[][..], None));
     assert!(state.tabs.is_none());
     assert!(state.layout.is_none());
@@ -373,7 +373,7 @@ fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() 
         });
     }
     let tree = WorkspaceTree::restore("workspace", nodes).unwrap();
-    let mut state = WorkspaceState::new();
+    let mut state = WorkspaceState::default();
     let unrelated = tab("unrelated", PaneTabKind::Session, None, Some("other"));
     state.panes = Some(pane(
         "pane",

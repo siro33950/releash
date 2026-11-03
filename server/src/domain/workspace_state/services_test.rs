@@ -104,7 +104,7 @@ fn test_表示状態のファイル整理_消えた選択を直し全件消失�
 #[test]
 fn test_表示状態のファイル整理_未保存設定と未選択状態を保持する() {
     // Given
-    let state = WorkspaceState::new();
+    let state = WorkspaceState::default();
     // When / Then
     assert_eq!(
         filter_missing_files(state.clone(), |_| panic!("no file reference")),
