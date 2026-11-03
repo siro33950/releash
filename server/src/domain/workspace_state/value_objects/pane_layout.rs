@@ -141,13 +141,16 @@ impl PaneLayout {
             PaneLayoutNode::Pane {
                 tabs, active_tab, ..
             } => {
-                let removed = |tab: &PaneTab| {
+                let matches_session = |tab: &PaneTab| {
                     session_id.is_some() && tab.agent_session_id.as_deref() == session_id
-                        || tab.kind == PaneTabKind::Session
-                            && tab.agent_session_id.is_none()
-                            && node_id.is_some()
-                            && tab.node_id.as_deref() == node_id
                 };
+                let matches_legacy_node = |tab: &PaneTab| {
+                    tab.kind == PaneTabKind::Session
+                        && tab.agent_session_id.is_none()
+                        && node_id.is_some()
+                        && tab.node_id.as_deref() == node_id
+                };
+                let removed = |tab: &PaneTab| matches_session(tab) || matches_legacy_node(tab);
                 if let Some(index) = tabs
                     .iter()
                     .position(|tab| active_tab.as_ref() == Some(&tab.id) && removed(tab))
