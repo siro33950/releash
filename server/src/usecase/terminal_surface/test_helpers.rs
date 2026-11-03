@@ -247,9 +247,22 @@ impl TerminalSurfaceGateway for FakePtyGateway {
         session_key: &str,
         rows: u16,
         cols: u16,
-    ) -> Result<(), TerminalSurfaceGatewayError> {
-        self.resizes.lock().push((session_key.into(), rows, cols));
-        Ok(())
+    ) -> Result<
+        crate::domain::terminal_surface::gateway::TerminalResizeOutcome,
+        TerminalSurfaceGatewayError,
+    > {
+        use crate::domain::terminal_surface::gateway::TerminalResizeOutcome;
+        let mut resizes = self.resizes.lock();
+        if resizes
+            .iter()
+            .rev()
+            .find(|(key, _, _)| key == session_key)
+            .is_some_and(|(_, last_rows, last_cols)| (*last_rows, *last_cols) == (rows, cols))
+        {
+            return Ok(TerminalResizeOutcome::Unchanged);
+        }
+        resizes.push((session_key.into(), rows, cols));
+        Ok(TerminalResizeOutcome::Resized)
     }
 
     fn request_runtime_stop(

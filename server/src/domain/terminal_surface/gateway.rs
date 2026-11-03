@@ -19,6 +19,13 @@ pub struct TerminalRuntimeSpawnRequest {
     pub initial_terminal_surface: Option<TerminalSurfaceCheckpoint>,
 }
 
+/// resize で Terminal Surface の寸法が変わったかどうか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalResizeOutcome {
+    Resized,
+    Unchanged,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalSurfaceGatewayError {
     NotFound(String),
@@ -178,12 +185,13 @@ pub trait TerminalSurfaceGateway: TerminalSurfaceRepository {
         data: &str,
     ) -> Result<(), TerminalSurfaceGatewayError>;
     fn write(&self, session_key: &str, data: &str) -> Result<(), TerminalSurfaceGatewayError>;
+    /// 寸法が変わらない resize は何もせず `Unchanged` を返す。
     fn resize(
         &self,
         session_key: &str,
         rows: u16,
         cols: u16,
-    ) -> Result<(), TerminalSurfaceGatewayError>;
+    ) -> Result<TerminalResizeOutcome, TerminalSurfaceGatewayError>;
     fn request_runtime_stop(
         &self,
         runtime_generation: u64,

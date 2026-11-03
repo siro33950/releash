@@ -33,7 +33,7 @@ pub fn resize<G: TerminalSurfaceGateway + ?Sized>(
     owner: &TerminalSurfaceOwner,
     rows: u16,
     cols: u16,
-) -> Result<(), UsecaseError> {
+) -> Result<crate::domain::terminal_surface::gateway::TerminalResizeOutcome, UsecaseError> {
     manager
         .resize(&owner.stable_key(), rows, cols)
         .map_err(UsecaseError::from)

@@ -26,6 +26,7 @@ import SwiftTerm
   @ObservationIgnored private var size = (
     cols: Int(UIStyle.terminalColumns), rows: Int(UIStyle.terminalRows)
   )
+  @ObservationIgnored private var programmaticSize: (cols: Int, rows: Int)?
   @ObservationIgnored private let openLink: (URL) -> Void
   @ObservationIgnored private var tail: Task<Void, Never>?
 
@@ -89,7 +90,8 @@ import SwiftTerm
     defer { applying = false }
     switch event.item {
     case .snapshot(let snapshot):
-      if attachment != current { sequence = 0 }
+      let attached = attachment != current
+      if attached { sequence = 0 }
       attachment = current
       processed = 0
       reportUnits = Int(snapshot.processedReportUnits)
@@ -103,7 +105,9 @@ import SwiftTerm
       exited = snapshot.isExited
       apply(snapshot.hasStatus ? snapshot.status : nil)
       if exited { showExit(snapshot.hasExitCode ? snapshot.exitCode : nil) }
-      resize()
+      if attached, Int(snapshot.cols) != size.cols || Int(snapshot.rows) != size.rows {
+        resize()
+      }
       flushInput()
       failure = nil
       screen.needsDisplay = true
@@ -144,6 +148,7 @@ import SwiftTerm
   private func resizeScreen(cols: Int, rows: Int) {
     let current = screen.terminalDimensions
     guard current.cols != cols || current.rows != rows else { return }
+    programmaticSize = (cols, rows)
     screen.resize(cols: cols, rows: rows)
     screen.needsDisplay = true
   }
@@ -250,6 +255,10 @@ import SwiftTerm
 
   func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
     guard !applying, newCols > 0, newRows > 0 else { return }
+    if let programmaticSize, programmaticSize == (newCols, newRows) {
+      self.programmaticSize = nil
+      return
+    }
     size = (newCols, newRows)
     resize()
   }

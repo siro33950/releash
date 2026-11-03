@@ -46,6 +46,15 @@ impl NativeTerminalEmulator {
         self.terminal.resize(usize::from(cols), usize::from(rows));
     }
 
+    /// 今の寸法を (cols, rows) で返す。
+    pub fn size(&self) -> (u16, u16) {
+        let (cols, rows) = self.terminal.size();
+        (
+            u16::try_from(cols).expect("Terminal Surface columns originated as u16"),
+            u16::try_from(rows).expect("Terminal Surface rows originated as u16"),
+        )
+    }
+
     pub fn snapshot(&self, sequence: u64) -> NativeTerminalCheckpoint {
         let (cols, rows) = self.terminal.size();
         NativeTerminalCheckpoint {

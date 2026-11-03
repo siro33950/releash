@@ -1217,3 +1217,59 @@ async fn test_terminal_surfaceのresizeが購読中のattachmentへ新しい寸�
     );
     runtime.kill(owner).expect("kill PTY");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_terminal_surfaceの同じ寸法のresizeは購読中のattachmentへsnapshotを再送しない() {
+    // Given
+    let queue =
+        releashd::test_support::terminal_surface::initialize_background_work_for_acceptance();
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let cwd = tempfile::TempDir::new().unwrap();
+    let path = cwd.path().to_string_lossy().into_owned();
+    let owner = workspace_owner(&path);
+    let runtime = TerminalSurfaceRuntime::new(
+        queue.clone(),
+        data_dir.path().to_path_buf(),
+        releashd::test_support::terminal_config(""),
+    );
+    runtime
+        .get_or_spawn(
+            24,
+            80,
+            Some(path.clone()),
+            owner.clone(),
+            Some("same size resize".to_string()),
+        )
+        .expect("spawn PTY");
+    let mut monitor = runtime
+        .subscribe("same-size-monitor".to_string(), owner.clone())
+        .await
+        .expect("attach monitor");
+    let initial = snapshot(&[monitor.next().await.expect("initial snapshot")]);
+    assert_eq!(
+        (initial.terminal_surface.cols, initial.terminal_surface.rows),
+        (80, 24)
+    );
+
+    // When
+    runtime
+        .resize(owner.clone(), 24, 80)
+        .expect("resize Terminal Surface to the same size");
+
+    // Then
+    let resent = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match monitor.next().await {
+                Some(TerminalSurfaceStreamItemV1::Snapshot { surface }) => break Some(surface),
+                Some(_) => continue,
+                None => break None,
+            }
+        }
+    })
+    .await;
+    assert!(
+        resent.is_err(),
+        "same-size resize must not resend a snapshot to the attachment: {resent:?}"
+    );
+    runtime.kill(owner).expect("kill PTY");
+}

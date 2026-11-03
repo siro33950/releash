@@ -503,7 +503,44 @@ fn test_ターミナル画面入力_provider_process終了後はwriterが残っ�
 fn test_ターミナル画面_寸法変更_存在するptyと画面再現器を変更する() {
     let gateway = TerminalSurfaceRuntimeGateway::default();
     insert_test_session(&gateway, 1, "key", Some("/repo"), None);
-    assert!(gateway.resize("key", 30, 100).is_ok());
+    assert_eq!(
+        gateway.resize("key", 30, 100),
+        Ok(crate::domain::terminal_surface::gateway::TerminalResizeOutcome::Resized)
+    );
+}
+
+#[test]
+fn test_ターミナル画面_寸法変更_同じ寸法ではptyへ送らず記録も配信もしない() {
+    // Given: 画面再現器は 80x24 で始まる
+    struct RecordingResizer(Arc<StdMutex<Vec<(u16, u16)>>>);
+    impl NativePtyResizer for RecordingResizer {
+        fn resize(
+            &mut self,
+            rows: u16,
+            cols: u16,
+        ) -> Result<(), crate::infrastructure::terminal::native_pty::NativePtyError> {
+            self.0.lock().unwrap().push((rows, cols));
+            Ok(())
+        }
+    }
+    let gateway = TerminalSurfaceRuntimeGatewayFor::default();
+    let sent = Arc::new(StdMutex::new(Vec::new()));
+    insert_test_session_with_resizer(
+        &gateway,
+        1,
+        "key",
+        Some("/repo"),
+        None,
+        Box::new(RecordingResizer(sent.clone())),
+    );
+    // When
+    let outcome = gateway.resize("key", 24, 80);
+    // Then
+    assert_eq!(
+        outcome,
+        Ok(crate::domain::terminal_surface::gateway::TerminalResizeOutcome::Unchanged)
+    );
+    assert!(sent.lock().unwrap().is_empty());
 }
 
 #[test]

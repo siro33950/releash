@@ -245,11 +245,13 @@ extension TerminalSessionTests {
       else { return false }
       return resize.cols == 120 && resize.rows == 40
     }
+    let count = http.requests("ResizeTerminalSurface").count
     var empty = Releash_Client_V1_TerminalEvent()
     empty.snapshot.processedReportUnits = 5000
     session.receive(empty)
-    let count = http.requests("ResizeTerminalSurface").count
-    try await eventually { http.requests("ResizeTerminalSurface").count == count + 1 }
+    session.input("after resend")
+    try await eventually { http.requests("WriteTerminalSurface").count == 1 }
+    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, count)
     for request in http.requests("ResizeTerminalSurface") {
       let resize = try Releash_Client_V1_ResizeTerminalSurfaceRequest(
         serializedBytes: request.message ?? Data())
@@ -265,7 +267,7 @@ extension TerminalSessionTests {
     received.resize.rows = 25
     session.receive(received)
     await Task.yield()
-    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, count + 1)
+    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, count)
     session.stop()
     await model.stop()
   }
@@ -304,6 +306,69 @@ extension TerminalSessionTests {
     let kill = try Releash_Client_V1_KillTerminalSurfaceRequest(
       serializedBytes: http.requests("KillTerminalSurface").last?.message ?? Data())
     XCTAssertEqual(kill.owner, session.owner)
+    await model.stop()
+  }
+
+  @MainActor func testSnapshotWithTheDisplayedSizeDoesNotResizeTheTerminalSurface() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "same-size", agent: true)
+    try await eventually { session.hasForegroundProcess != nil }
+    session.input("first")
+    try await eventually { http.requests("WriteTerminalSurface").count == 1 }
+    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, 0)
+
+    // When
+    var resent = Releash_Client_V1_TerminalEvent()
+    resent.snapshot.cols = UIStyle.terminalColumns
+    resent.snapshot.rows = UIStyle.terminalRows
+    resent.snapshot.processedReportUnits = 5000
+    session.receive(resent)
+    session.input("second")
+    try await eventually { http.requests("WriteTerminalSurface").count == 2 }
+
+    // Then
+    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, 0)
+    session.stop()
+    await model.stop()
+  }
+
+  @MainActor func testOnlyDisplayChangesAndNewAttachmentsReportTheDisplayedSize() async throws {
+    // Given: 表示領域が 125x78 に変わり、PTY へ一度だけ報告している
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "report-size", agent: true)
+    try await eventually { session.hasForegroundProcess != nil }
+    session.sizeChanged(source: session.screen, newCols: 125, newRows: 78)
+    try await eventually { http.requests("ResizeTerminalSurface").count == 1 }
+
+    // When: 同じ接続のまま、別の寸法の snapshot が送り直される
+    var resent = Releash_Client_V1_TerminalEvent()
+    resent.snapshot.replay = "resent"
+    resent.snapshot.cols = 100
+    resent.snapshot.rows = 40
+    resent.snapshot.processedReportUnits = 5000
+    session.receive(resent)
+    session.input("after resend")
+    try await eventually { http.requests("WriteTerminalSurface").count == 1 }
+
+    // Then: 送り直しには応答しない
+    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, 1)
+
+    // When: 接続を作り直し、新しい接続の最初の snapshot（80x24）が届く
+    model.restartTerminalSubscription(path: "/repo", id: "report-size", agent: true)
+    try await eventually { http.requests("ResizeTerminalSurface").count == 2 }
+
+    // Then: 表示領域の寸法を一度だけ報告する
+    let request = try Releash_Client_V1_ResizeTerminalSurfaceRequest(
+      serializedBytes: XCTUnwrap(http.requests("ResizeTerminalSurface").last?.message))
+    XCTAssertEqual(request.cols, 125)
+    XCTAssertEqual(request.rows, 78)
+    session.input("after reattach")
+    try await eventually { http.requests("WriteTerminalSurface").count == 2 }
+    XCTAssertEqual(http.requests("ResizeTerminalSurface").count, 2)
+    session.stop()
     await model.stop()
   }
 
