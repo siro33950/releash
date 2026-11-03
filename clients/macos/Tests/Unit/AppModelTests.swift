@@ -26,7 +26,7 @@ final class AppModelTests: XCTestCase {
     // When
     model.stageAll()
     model.unstageAll()
-    model.createBranch("feature/menu")
+    try await model.createBranch("feature/menu")
     model.selectedWorktree = "/repo/other"
     // Then
     try await eventually {
@@ -57,7 +57,12 @@ final class AppModelTests: XCTestCase {
     // When
     model.stageAll()
     model.unstageAll()
-    model.createBranch("feature/menu")
+    do {
+      try await model.createBranch("feature/menu")
+      XCTFail("Missing worktree must fail")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "Worktreeを選択してください")
+    }
     await model.stop()
     // Given
     let disconnected = AppModel(httpClient: http)
@@ -65,7 +70,12 @@ final class AppModelTests: XCTestCase {
     // When
     disconnected.stageAll()
     disconnected.unstageAll()
-    disconnected.createBranch("feature/menu")
+    do {
+      try await disconnected.createBranch("feature/menu")
+      XCTFail("Missing client must fail")
+    } catch {
+      XCTAssertEqual(error.localizedDescription, "サーバに接続されていません")
+    }
     // Then
     await Task.yield()
     for method in ["GitStage", "GitUnstage", "GitCreateBranch"] {
@@ -78,19 +88,27 @@ final class AppModelTests: XCTestCase {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.selectedWorktree = "/repo/linked"
-    for method in ["GitStage", "GitUnstage", "GitCreateBranch"] {
+    for method in ["GitStage", "GitUnstage"] {
       // Given
       http.state.withLock { $0.failedMethod = method }
       // When
       switch method {
       case "GitStage": model.stageAll()
       case "GitUnstage": model.unstageAll()
-      default: model.createBranch("invalid branch")
+      default: XCTFail("Unexpected method")
       }
       // Then
       try await eventually { model.failure == "\(method) failed" }
       model.dismissFailure()
     }
+    http.state.withLock { $0.failedMethod = "GitCreateBranch" }
+    do {
+      try await model.createBranch("invalid branch")
+      XCTFail("RPC failure must be thrown")
+    } catch {
+      XCTAssertEqual((error as? ConnectError)?.message, "GitCreateBranch failed")
+    }
+    XCTAssertNil(model.failure)
     await model.stop()
   }
 

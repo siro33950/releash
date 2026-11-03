@@ -10,7 +10,6 @@ import SwiftProtobuf
   var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
   var collapsed: [String: Bool] = [:]
   var selectedWorktree: String?
-  var creatingBranch = false
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
   private enum Failure {
@@ -660,14 +659,15 @@ import SwiftProtobuf
       _ = try await client.gitUnstage(request: request, headers: self.headers).result.get()
     }
   }
-  func createBranch(_ name: String) {
-    guard let path = selectedWorktree, let client else { return }
+  func createBranch(_ name: String) async throws {
+    guard let path = selectedWorktree else {
+      throw CLIFailure(message: "Worktreeを選択してください")
+    }
+    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
     var request = Releash_Client_V1_GitCreateBranchRequest()
     request.repoPath = path
     request.branchName = name
-    perform {
-      _ = try await client.gitCreateBranch(request: request, headers: self.headers).result.get()
-    }
+    _ = try await client.gitCreateBranch(request: request, headers: headers).result.get()
   }
   func addRepository(_ path: String) {
     guard let client else { return }
