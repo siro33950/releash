@@ -340,7 +340,26 @@ pub(crate) mod tests {
     }
 
     fn ui_state() -> releashd::test_support::integration::platform::WorkspaceState {
-        todo!()
+        use releashd::test_support::integration::platform::{
+            PaneLayout, WorkspaceLayoutState, WorkspaceState, WorkspaceTabsState,
+        };
+        WorkspaceState {
+            panes: Some(PaneLayout::pane("old-pane".into(), vec![], None).unwrap()),
+            version: 1,
+            tabs: Some(WorkspaceTabsState {
+                editors: vec![],
+                active_editor_path: None,
+            }),
+            layout: Some(WorkspaceLayoutState {
+                center_tab: "agent".into(),
+                active_view: "git".into(),
+                left_nav_collapsed: false,
+                right_collapsed: false,
+                right_bottom_collapsed: false,
+                right_bottom_active_tab: None,
+                selected_diff_file: None,
+            }),
+        }
     }
 
     async fn assert_facts_appended_at_sweep_boundary_are_protected(
