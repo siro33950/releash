@@ -2,13 +2,8 @@ import SwiftUI
 
 @MainActor
 final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate {
-  static let createBranchNotification = Notification.Name("ReleashCreateBranch")
   let model = AppModel()
 
-  func createBranch() {
-    guard let window = NSApp.keyWindow else { return }
-    NotificationCenter.default.post(name: Self.createBranchNotification, object: window)
-  }
   private var windows: [NSWindow] = []
 
   func applicationDidFinishLaunching(_ notification: Notification) {
