@@ -2916,6 +2916,37 @@ nodes:
     }
 
     #[test]
+    pub fn test_診断_facet本文の参照エラーでもbuiltinの参照元を保持する() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "policies", "coding", "Use {{ missing }}");
+
+        // When
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
+
+        // Then
+        let usages = report.facet_usage.get("policy/coding").unwrap();
+        for (workflow, node) in [
+            ("02_implement-existing-spec", "implement_task"),
+            ("05_review-fix", "implement_fix_plan"),
+        ] {
+            assert!(usages.iter().any(|usage| usage.workflow_name == workflow
+                && usage.node_name == node
+                && usage.slot == "policy"));
+            assert!(report.workflow_summaries[workflow].error_count > 0);
+            assert!(report
+                .items
+                .iter()
+                .any(|item| item.severity == Severity::Error
+                    && item.workflow_name.as_deref() == Some(workflow)
+                    && item.node_name.as_deref() == Some(node)
+                    && item.facet_kind.as_deref() == Some("policy")
+                    && item.facet_key.as_deref() == Some("coding")));
+        }
+    }
+
+    #[test]
     pub fn diagnose_facet_usage_tracked() {
         // Given
         let tmp = TempDir::new().unwrap();
