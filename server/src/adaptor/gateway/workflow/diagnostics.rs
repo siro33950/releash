@@ -1758,9 +1758,17 @@ pub fn load_workflows_in_scope(
         // ビルトインワークフロー
         for summary in builtin::list_builtin_workflows() {
             if !seen.contains(&summary.name) {
-                match builtin::load_builtin_workflow_resolved(&summary.name, facets_base_dir) {
-                    Ok(Some(wf)) => results.push((summary.name, Ok((wf, Vec::new(), true)))),
-                    Ok(None) => results.push((
+                match builtin::builtin_workflow_source(&summary.name) {
+                    Some(source) => {
+                        let diagnosis = diagnose_workflow_source(source, Some(&summary.name));
+                        let result = if let Some(workflow) = diagnosis.workflow {
+                            Ok((workflow, diagnosis.diagnostics, true))
+                        } else {
+                            Err(diagnosis.diagnostics)
+                        };
+                        results.push((summary.name, result));
+                    }
+                    None => results.push((
                         summary.name.clone(),
                         Err(vec![DiagnosticItem::new(
                             "WFS001",
@@ -1768,20 +1776,6 @@ pub fn load_workflows_in_scope(
                             DiagnosticStage::ParseShape,
                             None,
                             format!("ビルトインワークフロー '{}' の読み込みに失敗", summary.name),
-                        )
-                        .workflow(summary.name.clone())]),
-                    )),
-                    Err(err) => results.push((
-                        summary.name.clone(),
-                        Err(vec![DiagnosticItem::new(
-                            "WFS001",
-                            Severity::Error,
-                            DiagnosticStage::ParseShape,
-                            None,
-                            format!(
-                                "ビルトインワークフロー '{}' の読み込みに失敗: {err}",
-                                summary.name
-                            ),
                         )
                         .workflow(summary.name.clone())]),
                     )),
