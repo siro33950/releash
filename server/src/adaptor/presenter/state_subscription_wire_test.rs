@@ -191,7 +191,483 @@ fn test_購読事象_対象の定期印の旧転送形式を保つ() {
 
 #[test]
 fn test_購読payload_全種類を旧wire型とフィールドへ変換する() {
-    todo!()
+    use crate::domain::workspace_state::{
+        value_objects::{WorkspaceLayoutState, WorkspaceTabsState},
+        WorkspaceState,
+    };
+    use crate::usecase::agent_session::{
+        AgentSessionHistoryCandidateDto, AgentSessionHistoryPageDto, AgentSessionItemDto,
+        AgentSessionLifecycleDto, AgentSessionOperationsDto, AgentSessionTreeLocationDto,
+    };
+    use crate::usecase::provider_dto::AgentSessionProviderDto;
+    use crate::usecase::repository_dto::{BranchDto, WorktreeEntryDto};
+    use crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem;
+    use crate::usecase::workflow::{
+        WorkspaceNodeCapabilitiesDto, WorkspaceNodeContentDto, WorkspaceNodeDetailDto,
+        WorkspaceSessionNodeContentDto,
+    };
+    use crate::usecase::workspace_tree::WorkspaceList;
+    use wire::state_payload::Value as W;
+
+    // Given
+    let provider = wire::AgentSessionProviderDto {
+        value: Some(wire::agent_session_provider_dto::Value::Codex as i32),
+    };
+    let values = vec![
+        (
+            StateValue::Terminal(
+                TerminalSurfaceStreamItem::Output {
+                    session_key: "terminal".into(),
+                    data: Arc::from("output"),
+                    sequence: 6,
+                },
+            ),
+            W::Terminal(wire::TerminalEvent {
+                item: Some(wire::terminal_event::Item::Output(wire::TerminalOutput {
+                    session_key: "terminal".into(),
+                    data: "output".into(),
+                    sequence: 6,
+                })),
+            }),
+        ),
+        (
+            StateValue::RepositoryPaths(vec!["/repo".into()]),
+            W::RepositoryPaths(wire::Liststring {
+                items: vec!["/repo".into()],
+            }),
+        ),
+        (
+            StateValue::Workspaces(WorkspaceList {
+                repositories: vec![],
+            }),
+            W::Workspaces(wire::WorkspaceListSnapshot {
+                status: Some(wire::WorkspaceListStatus {
+                    loaded: Some(true),
+                    state: Some("empty".into()),
+                    error: None,
+                }),
+                repositories: Some(wire::ListWorkspaceRepositoryList { items: vec![] }),
+            }),
+        ),
+        (
+            StateValue::Selection(
+                crate::domain::workspace_tree::WorkspaceTree::empty("/repo"),
+                true,
+            ),
+            W::Selection(wire::WorkspaceTreeSelectionSnapshot {
+                snapshot: Some(wire::WorkspaceTreeSnapshot {
+                    nodes: Some(wire::ListWorkspaceTreeItem { items: vec![] }),
+                    archived_sessions: Some(wire::ListAgentSessionItemDto { items: vec![] }),
+                    preferred_node_id: None,
+                }),
+                reconciliation: Some(wire::WorkspaceSelectionReconciliation {
+                    selection_in_snapshot: Some(true),
+                }),
+            }),
+        ),
+        (
+            StateValue::NodeDetail(Some(WorkspaceNodeDetailDto {
+                classification: "active".into(),
+                node_execution_id: None,
+                node_name: None,
+                model: None,
+                past_attempts: Vec::new(),
+                execution_id: None,
+                can_abort: false,
+                process_presence: "live",
+                worktree: None,
+                id: "node".into(),
+                title: "Main".into(),
+                status: "running".into(),
+                submit_received: false,
+                stop_received: false,
+                waiting_for: None,
+                has_artifact: true,
+                error_reason: None,
+                capabilities: WorkspaceNodeCapabilitiesDto {
+                    can_rename: true,
+                    can_approve: false,
+                    can_retry: false,
+                    can_resume_session: true,
+                },
+                updated_at: 1.5,
+                content: WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
+                    session_id: Some("session".into()),
+                }),
+            })),
+            W::NodeDetail(wire::NullableWorkspaceNodeDetailDto {
+                value: Some(wire::WorkspaceNodeDetailDto {
+                    classification: Some(wire::WorkspaceStatusClassification {
+                        value: Some(wire::workspace_status_classification::Value::Active as i32),
+                    }),
+                    node_execution_id: None,
+                    node_name: None,
+                    model: None,
+                    past_attempts: Vec::new(),
+                    execution_id: None,
+                    can_abort: Some(false),
+                    process_presence: Some(wire::NodeProcessPresence {
+                        value: Some(wire::node_process_presence::Value::Live as i32),
+                    }),
+                    worktree: None,
+                    id: Some("node".into()),
+                    title: Some("Main".into()),
+                    status: Some(wire::WorkspaceNodeStatus {
+                        value: Some(wire::workspace_node_status::Value::Running as i32),
+                    }),
+                    submit_received: Some(false),
+                    stop_received: Some(false),
+                    waiting_for: None,
+                    has_artifact: Some(true),
+                    error_reason: None,
+                    capabilities: Some(wire::WorkspaceNodeCapabilitiesDto {
+                        can_rename: Some(true),
+                        can_approve: Some(false),
+                        can_retry: Some(false),
+                        can_resume_session: Some(true),
+                    }),
+                    updated_at: Some(1.5),
+                    content: Some(wire::WorkspaceNodeContentDto {
+                        variant: Some(wire::workspace_node_content_dto::Variant::Session(
+                            wire::WorkspaceSessionNodeContentDto {
+                                session_id: Some("session".into()),
+                            },
+                        )),
+                    }),
+                }),
+            }),
+        ),
+        (
+            StateValue::AgentSession(Some((
+                AgentSessionItemDto {
+                    id: "session".into(),
+                    workspace_identity: "/repo".into(),
+                    worktree_path: "/repo/worktree".into(),
+                    workspace_worktree_path: "/repo/worktree".into(),
+                    provider: AgentSessionProviderDto::Codex,
+                    tree_location: AgentSessionTreeLocationDto {
+                        tree_id: "tree".into(),
+                        node_execution_id: "node".into(),
+                    },
+                    lifecycle: AgentSessionLifecycleDto::Open,
+                    provider_session_id: Some("provider-session".into()),
+                    transcript_ref: None,
+                    operations: AgentSessionOperationsDto {
+                        can_archive: true,
+                        can_restore: false,
+                        can_delete: false,
+                    },
+                    last_exit_abnormal: false,
+                    terminal_presence: None,
+                },
+                crate::domain::agent_session::aggregates::AgentSessionAvailability::Open,
+            ))),
+            W::AgentSession(wire::NullableAgentSessionItemDto {
+                value: Some(wire::AgentSessionItemDto {
+                    id: Some("session".into()),
+                    workspace_identity: Some("/repo".into()),
+                    worktree_path: Some("/repo/worktree".into()),
+                    workspace_worktree_path: Some("/repo/worktree".into()),
+                    provider: Some(provider),
+                    tree_location: Some(wire::AgentSessionTreeLocationDto {
+                        tree_id: Some("tree".into()),
+                        node_execution_id: Some("node".into()),
+                    }),
+                    lifecycle: Some(wire::AgentSessionLifecycleDto {
+                        value: Some(wire::agent_session_lifecycle_dto::Value::Open as i32),
+                    }),
+                    provider_session_id: Some("provider-session".into()),
+                    transcript_ref: None,
+                    operations: Some(wire::AgentSessionOperationsDto {
+                        can_archive: Some(true),
+                        can_restore: Some(false),
+                        can_delete: Some(false),
+                    }),
+                    last_exit_abnormal: Some(false),
+                    terminal_presence: None,
+                    availability: Some(wire::AgentSessionAvailability::Open as i32),
+                }),
+            }),
+        ),
+        (
+            StateValue::SessionHistory(AgentSessionHistoryPageDto {
+                items: vec![AgentSessionHistoryCandidateDto {
+                    provider: AgentSessionProviderDto::Codex,
+                    provider_session_id: "provider-session".into(),
+                    label: "session".into(),
+                    updated_at_ms: 11,
+                }],
+                has_more: true,
+            }),
+            W::SessionHistory(wire::AgentSessionHistoryPageDto {
+                items: Some(wire::ListAgentSessionHistoryCandidateDto {
+                    items: vec![wire::AgentSessionHistoryCandidateDto {
+                        provider: Some(provider),
+                        provider_session_id: Some("provider-session".into()),
+                        label: Some("session".into()),
+                        updated_at_ms: Some(11),
+                    }],
+                }),
+                has_more: Some(true),
+            }),
+        ),
+        (
+            StateValue::Providers(vec![AgentSessionProviderDto::Codex]),
+            W::Providers(wire::ListAgentSessionProviderDto {
+                items: vec![provider],
+            }),
+        ),
+        (
+            StateValue::Branches(vec![BranchDto {
+                name: "main".into(),
+                is_remote: false,
+            }]),
+            W::Branches(wire::ListBranchDto {
+                items: vec![wire::BranchDto {
+                    name: Some("main".into()),
+                    is_remote: Some(false),
+                }],
+            }),
+        ),
+        (
+            StateValue::BranchBase(Some("main".into())),
+            W::BranchBase(wire::Nullablestring {
+                value: Some("main".into()),
+            }),
+        ),
+        (
+            StateValue::BranchStatus(vec![(
+                crate::domain::git::Branch::local("main"),
+                true,
+            )]),
+            W::BranchStatus(wire::ListBranchStatus {
+                items: vec![wire::BranchStatus {
+                    name: Some("main".into()),
+                    has_worktree: Some(true),
+                }],
+            }),
+        ),
+        (
+            StateValue::CurrentBranch("feature".into()),
+            W::CurrentBranch(wire::ResultString {
+                value: Some("feature".into()),
+            }),
+        ),
+        (
+            StateValue::Issues(crate::usecase::fetched::Fetched::ready(
+                crate::usecase::git_host::git_host_usecase::IssueListing {
+                    issues: vec![crate::domain::git_host::IssueInfo {
+                        number: 13,
+                        title: "Fix".into(),
+                        state: "OPEN".into(),
+                        url: "https://example.test/13".into(),
+                        author: crate::domain::git_host::PrAuthor {
+                            login: "author".into(),
+                        },
+                        created_at: "created".into(),
+                        updated_at: "updated".into(),
+                        labels: vec![crate::domain::git_host::IssueLabel {
+                            name: "bug".into(),
+                            color: "red".into(),
+                        }],
+                        assignees: vec![crate::domain::git_host::PrAuthor {
+                            login: "assignee".into(),
+                        }],
+                        body: "body".into(),
+                        milestone: Some(crate::domain::git_host::Milestone {
+                            title: "next".into(),
+                        }),
+                    }],
+                    options: crate::domain::git_host::IssueOptions::from_issues(&[
+                        crate::domain::git_host::IssueInfo {
+                            number: 13,
+                            title: "Fix".into(),
+                            state: "OPEN".into(),
+                            url: "https://example.test/13".into(),
+                            author: crate::domain::git_host::PrAuthor {
+                                login: "author".into(),
+                            },
+                            created_at: "created".into(),
+                            updated_at: "updated".into(),
+                            labels: vec![crate::domain::git_host::IssueLabel {
+                                name: "bug".into(),
+                                color: "red".into(),
+                            }],
+                            assignees: vec![crate::domain::git_host::PrAuthor {
+                                login: "assignee".into(),
+                            }],
+                            body: "body".into(),
+                            milestone: Some(crate::domain::git_host::Milestone {
+                                title: "next".into(),
+                            }),
+                        },
+                    ]),
+                },
+            )),
+            W::Issues(wire::IssuesSnapshot {
+                labels: vec!["bug".into()],
+                milestones: vec!["next".into()],
+                read_error: None,
+                issues: Some(wire::ListIssueInfoDto {
+                    items: vec![wire::IssueInfoDto {
+                        number: Some(13),
+                        default_branch_name: Some("feat/issues/13".into()),
+                        title: Some("Fix".into()),
+                        state: Some("OPEN".into()),
+                        url: Some("https://example.test/13".into()),
+                        author: Some(wire::PrAuthorDto {
+                            login: Some("author".into()),
+                        }),
+                        created_at: Some("created".into()),
+                        updated_at: Some("updated".into()),
+                        labels: Some(wire::ListIssueLabelDto {
+                            items: vec![wire::IssueLabelDto {
+                                name: Some("bug".into()),
+                                color: Some("red".into()),
+                            }],
+                        }),
+                        assignees: Some(wire::ListPrAuthorDto {
+                            items: vec![wire::PrAuthorDto {
+                                login: Some("assignee".into()),
+                            }],
+                        }),
+                        body: Some("body".into()),
+                        milestone: Some(wire::MilestoneDto {
+                            title: Some("next".into()),
+                        }),
+                    }],
+                }),
+            }),
+        ),
+        (
+            StateValue::Worktrees(vec![WorktreeEntryDto {
+                name: "main".into(),
+                path: "/repo".into(),
+                branch: "main".into(),
+                is_main: true,
+                is_locked: false,
+            }]),
+            W::Worktrees(wire::ListWorktreeEntryDto {
+                items: vec![wire::WorktreeEntryDto {
+                    name: Some("main".into()),
+                    path: Some("/repo".into()),
+                    branch: Some("main".into()),
+                    is_main: Some(true),
+                    is_locked: Some(false),
+                }],
+            }),
+        ),
+        (
+            StateValue::StartupRepository(Some(crate::usecase::repository_dto::StartupWorktree {
+                path: "/startup".into(),
+                branch: "main".into(),
+                repository_name: "startup".into(),
+            })),
+            W::StartupRepository(wire::NullableStartupWorktree {
+                value: Some(wire::StartupWorktree {
+                    path: Some("/startup".into()),
+                    branch: Some("main".into()),
+                    repository_name: Some("startup".into()),
+                }),
+            }),
+        ),
+        (
+            StateValue::WorkspaceState(
+                Some(WorkspaceState {
+                    panes: None,
+                    version: 1,
+                    tabs: Some(WorkspaceTabsState {
+                        editors: vec![],
+                        active_editor_path: Some("/file".into()),
+                    }),
+                    layout: Some(WorkspaceLayoutState {
+                        center_tab: "agent".into(),
+                        active_view: "git".into(),
+                        left_nav_collapsed: true,
+                        right_collapsed: false,
+                        right_bottom_collapsed: true,
+                        right_bottom_active_tab: None,
+                        selected_diff_file: None,
+                    }),
+                }),
+                vec![crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
+                    reference_id: "session-node".into(),
+                    failure: crate::domain::failure::WorkFailure {
+                    kind: crate::domain::failure::Failure::Technical(
+                        crate::domain::failure::TechnicalFailureNature::Other,
+                    ),
+                    message: "Session lookup failed".into(),
+                }}],
+                Some(crate::domain::workspace_state::WorkspaceStateError::Technical(
+                    crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: "Session tab migration write failed".into(),
+                    },
+                )),
+            ),
+            W::WorkspaceState(wire::NullableWorkspaceStateDto {
+                value: Some(wire::WorkspaceStateDto {
+                    read_failures: vec![wire::WorkspaceStateReadFailure { reference_id: "session-node".into(), message: "Session lookup failed".into() }],
+                    pane_layout: None,
+                    version: Some(1),
+                    tabs: Some(wire::WorkspaceTabsStateDto {
+                        editors: Some(wire::ListWorkspaceTabEntryDto { items: vec![] }),
+                        active_editor_path: Some("/file".into()),
+                    }),
+                    layout: Some(wire::WorkspaceLayoutStateDto {
+                        center_tab: Some(wire::WorkspaceCenterTab {
+                            value: Some(wire::workspace_center_tab::Value::Agent as i32),
+                        }),
+                        active_view: Some("git".into()),
+                        left_nav_collapsed: Some(true),
+                        right_collapsed: Some(false),
+                        right_bottom_collapsed: Some(true),
+                        right_bottom_active_tab: None,
+                        selected_diff_file: None,
+                        review_collapsed: None,
+                        diff_only_mode: None,
+                    }),
+                }),
+            }),
+        ),
+
+
+
+        (
+            StateValue::WorkflowSource(Some("name: dev".into())),
+            W::WorkflowSource(wire::Nullablestring {
+                value: Some("name: dev".into()),
+            }),
+        ),
+
+        (
+            StateValue::Facet(crate::usecase::workflow::test_helpers::facet(crate::domain::workflow::FacetKind::Policy, "guide", "# guide".into())),
+            W::Facet(wire::ResultString {
+                value: Some("# guide".into()),
+            }),
+        ),
+        (
+            StateValue::Diagnostics(crate::usecase::workflow::diagnostic_dto::DiagnosticReport {
+                items: vec![],
+                workflow_summaries: Default::default(),
+                facet_summaries: Default::default(),
+                facet_usage: Default::default(),
+            }),
+            W::Diagnostics(wire::DiagnosticReport {
+                items: Some(Default::default()),
+                workflow_summaries: Some(Default::default()),
+                facet_summaries: Some(Default::default()),
+                facet_usage: Some(Default::default()),
+            }),
+        ),
+    ];
+
+    // When
+    for (value, expected) in values {
+        let actual = payload(&value).unwrap().value;
+        // Then
+        assert_eq!(actual, Some(expected), "{value:?}");
+    }
 }
 
 #[test]
@@ -770,4 +1246,27 @@ fn test_sessionタブ購読_不在snapshotを専用payloadで配る() {
             wire::SessionTabSnapshot::default()
         ))
     );
+}
+
+#[test]
+fn test_workspace購読payload_設定未保存のsession配置を転送する() {
+    use crate::domain::workspace_state::WorkspaceState;
+    // Given
+    let mut state = WorkspaceState::default();
+    state.add_session_tab("session", "node");
+    // When
+    let actual = payload(&StateValue::WorkspaceState(
+        Some(state.clone()),
+        vec![],
+        None,
+    ))
+    .unwrap();
+    // Then
+    let Some(wire::state_payload::Value::WorkspaceState(actual)) = actual.value else {
+        panic!("workspace state payload")
+    };
+    let actual = actual.value.unwrap();
+    assert!(actual.tabs.is_none());
+    assert!(actual.layout.is_none());
+    assert_eq!(WorkspaceState::try_from(actual).unwrap(), state);
 }

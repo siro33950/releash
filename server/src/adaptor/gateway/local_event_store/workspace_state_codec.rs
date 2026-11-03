@@ -138,8 +138,10 @@ pub(crate) struct StoredWorkspaceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     panes: Option<StoredPaneLayout>,
     version: u32,
-    tabs: StoredWorkspaceTabsState,
-    layout: StoredWorkspaceLayoutState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tabs: Option<StoredWorkspaceTabsState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout: Option<StoredWorkspaceLayoutState>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -170,15 +172,25 @@ struct StoredWorkspaceLayoutState {
 }
 
 impl From<&WorkspaceState> for StoredWorkspaceState {
-    fn from(_state: &WorkspaceState) -> Self {
-        todo!()
+    fn from(state: &WorkspaceState) -> Self {
+        Self {
+            panes: state.panes.as_ref().map(Into::into),
+            version: state.version,
+            tabs: state.tabs.clone().map(Into::into),
+            layout: state.layout.clone().map(Into::into),
+        }
     }
 }
 
 impl TryFrom<StoredWorkspaceState> for WorkspaceState {
     type Error = WorkspaceStateError;
-    fn try_from(_dto: StoredWorkspaceState) -> Result<Self, Self::Error> {
-        todo!()
+    fn try_from(dto: StoredWorkspaceState) -> Result<Self, Self::Error> {
+        Ok(Self {
+            panes: dto.panes.map(TryInto::try_into).transpose()?,
+            version: dto.version,
+            tabs: dto.tabs.map(Into::into),
+            layout: dto.layout.map(Into::into),
+        })
     }
 }
 

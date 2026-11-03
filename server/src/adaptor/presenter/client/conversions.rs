@@ -2098,15 +2098,29 @@ impl TryFrom<crate::usecase::workflow::WorkspaceSessionNodeContentDto>
 
 impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::WorkspaceStateDto {
     type Error = String;
-    fn try_from(_value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
-        todo!()
+    fn try_from(value: crate::domain::workspace_state::WorkspaceState) -> Result<Self, String> {
+        Ok(Self {
+            read_failures: Vec::new(),
+            pane_layout: value.panes.map(cv).transpose()?,
+            version: Some(cv(value.version)?),
+            tabs: value.tabs.map(cv).transpose()?,
+            layout: value.layout.map(cv).transpose()?,
+        })
     }
 }
 
 impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::WorkspaceState {
     type Error = String;
-    fn try_from(_value: wire::WorkspaceStateDto) -> Result<Self, String> {
-        todo!()
+    fn try_from(value: wire::WorkspaceStateDto) -> Result<Self, String> {
+        if value.version != Some(1) {
+            return Err("Expected workspace state version 1".into());
+        }
+        Ok(Self {
+            panes: value.pane_layout.map(cv).transpose()?,
+            version: cv(req(value.version, "version")?)?,
+            tabs: value.tabs.map(cv).transpose()?,
+            layout: value.layout.map(cv).transpose()?,
+        })
     }
 }
 

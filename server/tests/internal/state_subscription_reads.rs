@@ -458,7 +458,192 @@ impl Fixture {
 
 #[tokio::test]
 pub async fn test_状態読取_全対象を対応するサービスへ引数付きで振り分ける() {
-    todo!()
+    // Given
+    use SubscriptionTarget as T;
+    let fixture = Fixture::new();
+    let r = &fixture.reads;
+    let p = &fixture.path;
+    let branch = r.repository.get_current_branch(p).unwrap();
+    r.repository_config
+        .set_branch_base_override(p, "feature", Some(&branch))
+        .unwrap();
+    let workspace = releashd::test_support::integration::platform::WorkspaceState {
+        version: 1,
+        panes: None,
+        tabs: Some(
+            releashd::test_support::integration::platform::WorkspaceTabsState {
+                editors: vec![],
+                active_editor_path: None,
+            },
+        ),
+        layout: Some(
+            releashd::test_support::integration::platform::WorkspaceLayoutState {
+                center_tab: "agent".into(),
+                active_view: "git".into(),
+                left_nav_collapsed: true,
+                right_collapsed: false,
+                right_bottom_collapsed: false,
+                right_bottom_active_tab: None,
+                selected_diff_file: None,
+            },
+        ),
+    };
+    releashd::test_support::integration::platform::save_workspace_state(
+        r.workspace_state.as_ref(),
+        None,
+        "repo",
+        workspace.clone(),
+    )
+    .await
+    .unwrap();
+    r.workspaces.refresh().await;
+    let (tree, selected) = r
+        .workflow
+        .workspace_tree_selection(p, "missing")
+        .await
+        .unwrap();
+    let cases = vec![
+        (
+            T::RepositoryPaths,
+            StateValue::RepositoryPaths(vec![p.clone()]),
+        ),
+        (
+            T::Workspaces,
+            StateValue::Workspaces(r.workspaces.read().await.unwrap()),
+        ),
+        (
+            T::Selection(p.clone(), "missing".into()),
+            StateValue::Selection(tree, selected),
+        ),
+        (
+            T::NodeDetail(p.clone(), "missing".into()),
+            StateValue::NodeDetail(None),
+        ),
+        (
+            T::AgentSession("missing-session".into()),
+            StateValue::AgentSession(None),
+        ),
+        (
+            T::SessionHistory(p.clone(), 120),
+            StateValue::SessionHistory(AgentSessionHistoryPageDto {
+                items: vec![AgentSessionHistoryCandidateDto {
+                    provider: AgentSessionProviderDto::Codex,
+                    provider_session_id: "history-session".into(),
+                    label: "history".into(),
+                    updated_at_ms: 10,
+                }],
+                has_more: true,
+            }),
+        ),
+        (
+            T::Providers,
+            StateValue::Providers(vec![
+                AgentSessionProviderDto::Claude,
+                AgentSessionProviderDto::Codex,
+            ]),
+        ),
+        (
+            T::Branches(p.clone(), Some("feature".into())),
+            StateValue::Branches(vec![
+                releashd::test_support::integration::platform::BranchDto {
+                    name: branch.clone(),
+                    is_remote: false,
+                },
+            ]),
+        ),
+        (
+            T::BranchBase(p.clone(), "feature".into()),
+            StateValue::BranchBase(Some(branch.clone())),
+        ),
+        (
+            T::BranchStatus(p.clone()),
+            StateValue::BranchStatus(r.repository.list_branches_with_worktree(p).unwrap()),
+        ),
+        (
+            T::CurrentBranch(p.clone()),
+            StateValue::CurrentBranch(branch),
+        ),
+        (
+            T::Issues(p.clone()),
+            StateValue::Issues(
+                releashd::test_support::integration::platform::Fetched::ready(
+                    releashd::test_support::integration::platform::IssueListing {
+                        options:
+                            releashd::test_support::integration::platform::IssueOptions::from_issues(
+                                &[issue(1)],
+                            ),
+                        issues: vec![issue(1)],
+                    },
+                ),
+            ),
+        ),
+        (
+            T::Worktrees(p.clone()),
+            StateValue::Worktrees(r.repository.list_worktrees(p).unwrap()),
+        ),
+        (
+            T::StartupRepository,
+            StateValue::StartupRepository(r.repository.startup_worktree().unwrap()),
+        ),
+        (
+            T::WorkspaceState("repo".into(), p.clone()),
+            StateValue::WorkspaceState(Some(workspace.initialize_panes()), Vec::new(), None),
+        ),
+        (
+            T::Workflows,
+            StateValue::Workflows(r.workflow.list_workflow_summaries().await.unwrap()),
+        ),
+        (
+            T::Workflow("fixture".into()),
+            StateValue::Workflow(r.workflow.get_workflow("fixture").unwrap()),
+        ),
+        (
+            T::WorkflowSource("fixture".into()),
+            StateValue::WorkflowSource(r.workflow.get_workflow_source("fixture").unwrap()),
+        ),
+        (
+            T::Facets(FacetKind::Instruction),
+            StateValue::Facets(
+                r.workflow
+                    .list_facet_summaries(FacetKind::Instruction)
+                    .unwrap(),
+            ),
+        ),
+        (
+            T::Facet(FacetKind::Instruction, "fixture-instruction".into()),
+            StateValue::Facet(
+                r.workflow
+                    .get_facet(FacetKind::Instruction, "fixture-instruction")
+                    .unwrap(),
+            ),
+        ),
+        (
+            T::Diagnostics,
+            StateValue::Diagnostics(
+                r.workflow
+                    .diagnose_all(WorkflowDiagnosticsTarget::AppliedConfigDirectory)
+                    .unwrap(),
+            ),
+        ),
+    ];
+    // When
+    let mut actual = Vec::new();
+    for (target, expected) in cases {
+        let value = r
+            .read(&target)
+            .await
+            .unwrap_or_else(|error| panic!("{target}: {error}"));
+        actual.push((target, value, expected));
+    }
+    // Then
+    for (target, value, expected) in actual {
+        assert_eq!(value, expected, "{target}");
+    }
+    assert_eq!(
+        *fixture.sessions.calls.lock(),
+        ["missing-session".to_string(), format!("{p}:120")]
+    );
+    assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -1447,7 +1632,75 @@ pub async fn test_issue手動更新失敗_回復時に新しい一覧を届け�
 
 #[tokio::test]
 pub async fn test_workspace購読の値_reactが配置を省略して保存した後もswiftの配置を含む() {
-    todo!()
+    use releashd::test_support::integration::platform::{
+        save_workspace_state, PaneLayout, PaneTab, PaneTabKind, WorkspaceLayoutState,
+        WorkspaceState, WorkspaceTabsState,
+    };
+    // Given
+    let fixture = Fixture::new();
+    let reads = &fixture.reads;
+    let key = &fixture.path;
+    let panes = PaneLayout::pane(
+        "pane".into(),
+        vec![PaneTab {
+            agent_session_id: None,
+            node_id: None,
+            id: "workflow".into(),
+            kind: PaneTabKind::Command,
+            file_path: None,
+            file_mode: None,
+            file_base: None,
+        }],
+        Some("workflow".into()),
+    )
+    .unwrap();
+    let state = WorkspaceState {
+        panes: Some(panes),
+        version: 1,
+        tabs: Some(WorkspaceTabsState {
+            editors: vec![],
+            active_editor_path: None,
+        }),
+        layout: Some(WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        }),
+    };
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        key,
+        state.clone(),
+    )
+    .await
+    .unwrap();
+    let mut react = state.clone();
+    react.panes = None;
+    react.layout.as_mut().unwrap().left_nav_collapsed = true;
+    // When
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        key,
+        react.clone(),
+    )
+    .await
+    .unwrap();
+    let actual = reads
+        .read(&T::WorkspaceState(key.clone(), key.clone()))
+        .await
+        .unwrap();
+    // Then
+    react.panes = state.panes;
+    assert_eq!(
+        actual,
+        StateValue::WorkspaceState(Some(react), Vec::new(), None)
+    );
 }
 
 #[tokio::test]
@@ -1513,7 +1766,319 @@ pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を�
 
 #[tokio::test]
 pub async fn test_保存済み会話タブの購読_旧参照を解決し一部の取得失敗でも配置と参照を保持する() {
-    todo!()
+    use releashd::test_support::integration::platform::{
+        save_workspace_state, PaneLayout, PaneTab, PaneTabKind, WorkspaceLayoutState,
+        WorkspaceState, WorkspaceTabsState,
+    };
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::{
+        AgentSessionTreeLocation, LocalAgentSessionRepository,
+    };
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+    // Given
+    let fixture = Fixture::new();
+    let archive = archive_fixture();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(archive.store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
+    for id in ["ready", "broken", "broken-root", "broken-root-alias"] {
+        sessions
+            .create(
+                id,
+                WorkspaceIdentity::new(&fixture.path),
+                &fixture.path,
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+                &format!("create-{id}"),
+            )
+            .await
+            .unwrap();
+    }
+    use releashd::test_support::integration::workspace::{
+        SqliteWorkspaceTreeRepository, WorkspaceTreeRepository,
+    };
+    let tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
+        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+        .await
+        .remove(0)
+        .unwrap();
+    let ready_node = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("ready"))
+        .unwrap()
+        .id
+        .clone();
+    let broken_root_alias = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("broken-root-alias"))
+        .unwrap()
+        .id
+        .clone();
+    let broken_node = tree
+        .nodes()
+        .iter()
+        .find(|node| node.session_id.as_deref() == Some("broken"))
+        .unwrap()
+        .id
+        .clone();
+    releashd::test_support::integration::workflow::seed_workflow_session_facts(
+        &archive.store,
+        releashd::test_support::integration::workflow::WorkflowSessionFactSeed {
+            workflow_name: "non-session-root",
+            request: "test",
+            worktree_path: &fixture.path,
+            provider: ProviderKind::Codex,
+            workflow_execution_id: "00000000-0000-4000-8000-000000002063",
+            node_execution_id: "workflow-session",
+            session_id: "other-agent",
+            initial_instruction_admitted: false,
+        },
+    )
+    .await
+    .unwrap();
+    sessions
+        .create(
+            "unrelated",
+            WorkspaceIdentity::new("/other"),
+            "/other",
+            ProviderKind::Codex,
+            AgentSessionTreeLocation::session_tree_root("unrelated").unwrap(),
+            "create-unrelated",
+        )
+        .await
+        .unwrap();
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, ExecutionOrigin, ExecutionTreeLaunch, NodeDefinition, NodeFact,
+        NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
+        WorkflowDefinitionContent,
+    };
+    let child_tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
+        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+        .await
+        .remove(0)
+        .unwrap();
+    let broken_child_alias = child_tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("workflow-session"))
+        .unwrap()
+        .id
+        .clone();
+    let public = "00000000-0000-4000-8000-000000002090";
+    let first = NodeFactMeta {
+        tree_id: public.into(),
+        node_execution_id: "00000000-0000-4000-8000-000000002091".into(),
+        node_name: "main".into(),
+        kind: NodeKindName::Session,
+        parent_id: None,
+        attempt: 1,
+    };
+    let next = NodeFactMeta {
+        node_execution_id: "00000000-0000-4000-8000-000000002092".into(),
+        attempt: 2,
+        ..first.clone()
+    };
+    let attach = |id: &str| {
+        NodeFact::SessionAttached(SessionAttachedFact {
+            session_id: id.into(),
+            provider_session_id: None,
+            transcript_ref: None,
+            initial_instruction_admitted: false,
+        })
+    };
+    for (meta, fact) in [
+        (
+            &first,
+            NodeFact::Started(StartedFact {
+                root: Some(Box::new(TreeRootFact {
+                    repository_root: None,
+                    workspace_identity: fixture.path.clone(),
+                    worktree_path: fixture.path.clone(),
+                    created_from: ExecutionOrigin::Cli,
+                    request: String::new(),
+                    workflow_name: "main".into(),
+                    definition: Some(WorkflowDefinitionContent {
+                        entry: "main".into(),
+                        nodes: vec![NodeDefinition {
+                            name: "main".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    launched_as: ExecutionTreeLaunch::Workflow,
+                })),
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&first, attach("first-agent")),
+        (&first, NodeFact::RetryRequested),
+        (
+            &next,
+            NodeFact::Started(StartedFact {
+                root: None,
+                parent: None,
+                worktree: None,
+            }),
+        ),
+        (&next, attach("next-agent")),
+    ] {
+        append_single_fact(&archive.store, meta, &fact, 1000)
+            .await
+            .unwrap();
+    }
+    let connection =
+        rusqlite::Connection::open(archive.directory.path().join("local-event-store.sqlite3"))
+            .unwrap();
+    let original_root: String = connection.query_row(
+        "SELECT detail FROM node_events WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [], |row| row.get(0),
+    ).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken' AND event_type = 'session_attached'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'broken-root' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'unrelated' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = '{}' WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", []).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = 'workflow-session' AND event_type = 'started'", []).unwrap();
+    let panes = PaneLayout::pane(
+        "pane".into(),
+        [
+            broken_child_alias.as_str(),
+            public,
+            first.node_execution_id.as_str(),
+            ready_node.as_str(),
+            broken_node.as_str(),
+            "missing",
+            "broken-root",
+            broken_root_alias.as_str(),
+            "00000000-0000-4000-8000-000000002063",
+        ]
+        .into_iter()
+        .map(|id| PaneTab {
+            id: id.into(),
+            kind: PaneTabKind::Session,
+            node_id: Some(id.into()),
+            agent_session_id: None,
+            file_path: None,
+            file_mode: None,
+            file_base: None,
+        })
+        .collect(),
+        Some(ready_node.clone()),
+    )
+    .unwrap();
+    let state = WorkspaceState {
+        panes: Some(panes),
+        version: 1,
+        tabs: Some(WorkspaceTabsState {
+            editors: Vec::new(),
+            active_editor_path: None,
+        }),
+        layout: Some(WorkspaceLayoutState {
+            center_tab: "agent".into(),
+            active_view: "git".into(),
+            left_nav_collapsed: false,
+            right_collapsed: false,
+            right_bottom_collapsed: false,
+            right_bottom_active_tab: None,
+            selected_diff_file: None,
+        }),
+    };
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    save_workspace_state(
+        reads.workspace_state.as_ref(),
+        None,
+        &fixture.path,
+        state.clone(),
+    )
+    .await
+    .unwrap();
+    // When
+    let actual = reads
+        .read(&T::WorkspaceState(
+            fixture.path.clone(),
+            fixture.path.clone(),
+        ))
+        .await
+        .unwrap();
+    // Then
+    let StateValue::WorkspaceState(Some(actual), failures, None) = actual else {
+        panic!("Missing workspace state")
+    };
+    let mut expected = state;
+    expected.panes.as_mut().unwrap().resolve_legacy_sessions(
+        &[
+            (ready_node.clone(), "ready".into()),
+            (public.into(), "next-agent".into()),
+            (first.node_execution_id.clone(), "first-agent".into()),
+        ]
+        .into(),
+    );
+    assert_eq!(actual, expected);
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    use releashd::test_support::integration::workspace::WorkspaceQueryService;
+    let mut individual_failures = Vec::new();
+    for (id, fails) in [
+        (broken_child_alias.as_str(), true),
+        (broken_node.as_str(), true),
+        ("broken-root", true),
+        (broken_root_alias.as_str(), true),
+        ("00000000-0000-4000-8000-000000002063", false),
+        ("missing", false),
+    ] {
+        let resolution = query
+            .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[id.into()])
+            .await;
+        assert_eq!(
+            resolution.failures.len(),
+            usize::from(fails),
+            "reference {id}"
+        );
+        if fails {
+            assert_eq!(resolution.failures[0].reference_id, id);
+        }
+        individual_failures.extend(
+            resolution
+                .failures
+                .into_iter()
+                .map(|failure| failure.failure.message),
+        );
+    }
+    individual_failures.sort();
+    let mut messages: Vec<_> = failures
+        .iter()
+        .map(|failure| failure.failure.message.clone())
+        .collect();
+    messages.sort();
+    assert_eq!(failures.len(), 4, "{messages:?}");
+    assert_eq!(messages, individual_failures);
+    // When: a structurally valid header with an empty workspace is also corrupt.
+    connection.execute(
+        "UPDATE node_events SET detail = json_set(?1, '$.root.worktreePath', '') WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [&original_root],
+    ).unwrap();
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let resolution = query
+        .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[broken_root_alias])
+        .await;
+    // Then
+    assert!(resolution.sessions.is_empty());
+    assert_eq!(resolution.failures.len(), 1);
 }
 
 #[tokio::test]
@@ -1652,4 +2217,52 @@ async fn test_builtin解決失敗_workflows購読と無関係な定義の保存�
             .any(|row| row.name.as_deref() == Some(name) && row.read_error.is_none()));
         assert!(dir.join(format!("{name}.yml")).is_file());
     }
+}
+
+#[tokio::test]
+async fn test_workspace状態購読_sessionタブ追加を設定未保存のまま配信する() {
+    use releashd::test_support::integration::{
+        platform::{save_workspace_state, WorkspaceState},
+        subscriptions::payload,
+        wire,
+    };
+    // Given
+    let fixture = Fixture::new();
+    let target = T::WorkspaceState(fixture.path.clone(), fixture.path.clone());
+    let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
+    stream.next().await.unwrap();
+    start_read(&fixture.subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    let mut expected = WorkspaceState::default();
+    expected.add_session_tab("session", "node");
+    // When
+    save_workspace_state(
+        fixture.reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        &fixture.path,
+        expected.clone(),
+    )
+    .await
+    .unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value))
+        if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::WorkspaceState(Some(expected.clone()), vec![], None)))
+    );
+    let value = fixture.reads.read(&target).await.unwrap();
+    let Some(wire::state_payload::Value::WorkspaceState(value)) = payload(&value).unwrap().value
+    else {
+        panic!("workspace state payload")
+    };
+    let actual = value.value.unwrap();
+    assert!(actual.tabs.is_none());
+    assert!(actual.layout.is_none());
+    assert_eq!(WorkspaceState::try_from(actual).unwrap(), expected);
 }
