@@ -25,6 +25,7 @@ pub struct WorkflowRuntimeCommandGateway {
 }
 
 pub struct WorkflowRuntimeCommandGatewayDeps {
+    pub session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     pub node_processes: Arc<super::node_process::WorkflowNodeProcesses>,
     pub isolated_worktrees: Arc<dyn crate::domain::workflow::IsolatedWorktreeGateway>,
     pub git_usecase: Arc<GitUsecase>,
