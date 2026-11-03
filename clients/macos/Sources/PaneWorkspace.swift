@@ -26,6 +26,7 @@ import SwiftUI
   }
 
   func restore(_ layout: PaneLayout) throws {
+    if try applyToExistingPanes(layout) { return }
     var ids: [String: String] = [:]
     var restoredTabs: [String: PaneTab] = [:]
     var metadata: [Bonsplit.Tab] = []
@@ -75,6 +76,89 @@ import SwiftUI
     self.tabs = restoredTabs
     pendingSessionTabs = [:]
     nextTerminalNumber = terminalNumber
+  }
+
+  /// pane の構造が今と同じなら、pane の状態を作り直さずにタブの差分だけを適用する。
+  /// Bonsplit は復元で作り直した pane の状態を表示中の view へ渡さないため、
+  /// サーバがタブを増減した配置はこの経路で反映する。構造が違えば false を返す。
+  private func applyToExistingPanes(_ layout: PaneLayout) throws -> Bool {
+    var pairs: [(pane: PaneID, tabs: [PaneTab], active: String?)] = []
+    var dividers: [(split: UUID, ratio: Double, current: Double)] = []
+    func match(_ current: ExternalTreeNode, _ target: PaneLayout) -> Bool {
+      switch (current, target) {
+      case (.pane(let pane), .pane(let id, let tabs, let active)):
+        guard (identifiers[pane.id] ?? pane.id) == id,
+          let paneID = UUID(uuidString: pane.id).map({ PaneID(id: $0) })
+        else { return false }
+        pairs.append((paneID, tabs, active))
+        return true
+      case (.split(let split), .split(let id, let axis, let ratio, let first, let second)):
+        guard (identifiers[split.id] ?? split.id) == id, split.orientation == axis.rawValue,
+          let splitID = UUID(uuidString: split.id)
+        else { return false }
+        dividers.append((splitID, ratio, split.dividerPosition))
+        return match(split.first, first) && match(split.second, second)
+      default: return false
+      }
+    }
+    guard match(controller.treeSnapshot(), layout) else { return false }
+    for (_, tabs, active) in pairs {
+      guard active == nil || tabs.contains(where: { $0.id == active }) else {
+        throw CLIFailure(message: "Missing active pane tab")
+      }
+    }
+    let targetPanes = Dictionary(
+      pairs.flatMap { pair in pair.tabs.map { ($0.id, pair.pane) } },
+      uniquingKeysWith: { first, _ in first })
+    for tab in controller.allTabIds {
+      let original = identifiers[tab.id.uuidString] ?? tab.id.uuidString
+      guard
+        let pane = controller.allPaneIds.first(where: {
+          controller.tabs(inPane: $0).contains { $0.id == tab }
+        })
+      else { continue }
+      if let target = targetPanes[original], target != pane { return false }
+    }
+    for divider in dividers where divider.current != divider.ratio {
+      controller.setDividerPosition(
+        CGFloat(divider.ratio), forSplit: divider.split, fromExternal: true)
+    }
+    for (pane, targetTabs, active) in pairs {
+      let selectedBefore = controller.selectedTab(inPane: pane)?.id
+      var byOriginal: [String: TabID] = [:]
+      for tab in controller.tabs(inPane: pane) {
+        let key = tab.id.id.uuidString
+        let original = identifiers[key] ?? key
+        if targetTabs.contains(where: { $0.id == original }) {
+          byOriginal[original] = tab.id
+        } else {
+          approved.insert(tab.id)
+          controller.closeTab(tab.id, preservingPane: true)
+          identifiers.removeValue(forKey: key)
+        }
+      }
+      for target in targetTabs {
+        if let id = byOriginal[target.id] {
+          tabs[id.id.uuidString] = target
+          continue
+        }
+        let title = target.kind == .terminal ? "Terminal \(nextTerminalNumber)" : target.title
+        if target.kind == .terminal { nextTerminalNumber += 1 }
+        guard let id = controller.createTab(title: title, icon: target.kind.icon, inPane: pane)
+        else { continue }
+        identifiers[id.id.uuidString] = target.id
+        tabs[id.id.uuidString] = target
+        byOriginal[target.id] = id
+      }
+      let desired = active.flatMap { byOriginal[$0] } ?? selectedBefore
+      if let desired, controller.allTabIds.contains(desired),
+        controller.selectedTab(inPane: pane)?.id != desired
+      {
+        controller.selectTab(desired)
+      }
+    }
+    pendingSessionTabs = pendingSessionTabs.filter { controller.allTabIds.contains($0.value) }
+    return true
   }
 
   /// レイアウトを復元し、復元前にフォーカスされていた pane を保つ。
@@ -179,7 +263,8 @@ import SwiftUI
         controller.selectTab(selected)
       }
     } else {
-      if let selected = openNode(.session, id: sessionID, title: title) {
+      let selected = openNode(.session, id: sessionID, title: title)
+      if let selected {
         pendingSessionTabs[nodeID] = selected
       }
     }
