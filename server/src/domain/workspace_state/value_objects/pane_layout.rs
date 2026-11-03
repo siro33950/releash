@@ -132,12 +132,22 @@ impl PaneLayout {
         }
     }
 
-    pub(in crate::domain::workspace_state) fn remove_session_tab(&mut self, session_id: &str) {
+    pub(in crate::domain::workspace_state) fn remove_session_tab(
+        &mut self,
+        session_id: Option<&str>,
+        node_id: Option<&str>,
+    ) {
         match &mut self.0 {
             PaneLayoutNode::Pane {
                 tabs, active_tab, ..
             } => {
-                let removed = |tab: &PaneTab| tab.agent_session_id.as_deref() == Some(session_id);
+                let removed = |tab: &PaneTab| {
+                    session_id.is_some() && tab.agent_session_id.as_deref() == session_id
+                        || tab.kind == PaneTabKind::Session
+                            && tab.agent_session_id.is_none()
+                            && node_id.is_some()
+                            && tab.node_id.as_deref() == node_id
+                };
                 if let Some(index) = tabs
                     .iter()
                     .position(|tab| active_tab.as_ref() == Some(&tab.id) && removed(tab))
@@ -151,8 +161,8 @@ impl PaneLayout {
                 tabs.retain(|tab| !removed(tab));
             }
             PaneLayoutNode::Split { first, second, .. } => {
-                first.remove_session_tab(session_id);
-                second.remove_session_tab(session_id);
+                first.remove_session_tab(session_id, node_id);
+                second.remove_session_tab(session_id, node_id);
             }
         }
     }

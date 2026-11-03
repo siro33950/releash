@@ -306,8 +306,7 @@ fn test_配置初期化_未保存だけ空paneを作り設定を保持する() {
     assert_eq!(active, None);
 }
 
-#[test]
-fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() {
+fn execution_tree() -> crate::domain::workspace_tree::WorkspaceTree {
     use crate::domain::workflow::{
         AgentSessionActivity, NodeCompletionSignalState, NodeProcessPresence,
     };
@@ -315,7 +314,6 @@ fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() 
         WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTree,
         WorkspaceTreeNode,
     };
-    // Given
     let root = WorkspaceTreeNode {
         worktree: None,
         id: "execution".into(),
@@ -372,7 +370,14 @@ fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() 
             ..root.clone()
         });
     }
-    let tree = WorkspaceTree::restore("workspace", nodes).unwrap();
+    WorkspaceTree::restore("workspace", nodes).unwrap()
+}
+
+#[test]
+fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() {
+    use crate::domain::workspace_tree::WorkspaceTree;
+    // Given
+    let tree = execution_tree();
     let mut state = WorkspaceState::default();
     let unrelated = tab("unrelated", PaneTabKind::Session, None, Some("other"));
     state.panes = Some(pane(
@@ -404,4 +409,32 @@ fn test_実行木のタブ増減_sessionを持つnodeだけ追加削除する() 
     state.add_execution_tabs(&WorkspaceTree::empty("empty"));
     state.remove_execution_tabs(&WorkspaceTree::empty("empty"));
     assert_eq!(state, original);
+}
+
+#[test]
+fn test_実行木のタブ削除_旧node参照とsession未確定のタブも消す() {
+    // Given
+    let tree = execution_tree();
+    let kept = vec![
+        tab("command", PaneTabKind::Command, Some("node-0"), None),
+        tab("unrelated", PaneTabKind::Session, Some("other-node"), None),
+        tab("terminal", PaneTabKind::Terminal, None, None),
+    ];
+    let mut tabs = kept.clone();
+    tabs.extend([
+        tab("legacy", PaneTabKind::Session, Some("node-0"), None),
+        tab("pending", PaneTabKind::Session, Some("node-1"), None),
+        tab("session", PaneTabKind::Session, None, Some("two")),
+    ]);
+    let mut state = WorkspaceState {
+        panes: Some(pane("pane", tabs, Some("command"))),
+        ..WorkspaceState::default()
+    };
+    // When
+    state.remove_execution_tabs(&tree);
+    // Then
+    assert_eq!(
+        pane_tabs(state.panes.as_ref().unwrap()),
+        (kept.as_slice(), Some("command"))
+    );
 }
