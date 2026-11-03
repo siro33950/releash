@@ -119,6 +119,18 @@ import SwiftUI
       else { continue }
       if let target = targetPanes[original], target != pane { return false }
     }
+    for (pane, targetTabs, _) in pairs {
+      let current = controller.tabs(inPane: pane).map {
+        identifiers[$0.id.id.uuidString] ?? $0.id.id.uuidString
+      }
+      let kept = current.filter { id in targetTabs.contains { $0.id == id } }
+      let expected = targetTabs.map(\.id).filter { current.contains($0) }
+      if kept != expected { return false }
+    }
+    let focusedPane = controller.focusedPaneId
+    let newTabPosition = controller.configuration.newTabPosition
+    controller.configuration.newTabPosition = .end
+    defer { controller.configuration.newTabPosition = newTabPosition }
     for divider in dividers where divider.current != divider.ratio {
       controller.setDividerPosition(
         CGFloat(divider.ratio), forSplit: divider.split, fromExternal: true)
@@ -139,6 +151,11 @@ import SwiftUI
       }
       for target in targetTabs {
         if let id = byOriginal[target.id] {
+          if let old = tabs[id.id.uuidString],
+            old.kind != target.kind || old.nodeID != target.nodeID
+          {
+            pendingSessionTabs = pendingSessionTabs.filter { $0.value != id }
+          }
           tabs[id.id.uuidString] = target
           continue
         }
@@ -156,6 +173,9 @@ import SwiftUI
       {
         controller.selectTab(desired)
       }
+    }
+    if let focusedPane, controller.allPaneIds.contains(focusedPane) {
+      controller.focusPane(focusedPane)
     }
     pendingSessionTabs = pendingSessionTabs.filter { controller.allTabIds.contains($0.value) }
     return true

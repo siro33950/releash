@@ -31,6 +31,61 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertEqual(try workspace.layout(), layout)
   }
 
+  @MainActor func testServerAddedTabAppendsAtEndAndKeepsFocusAndSelection() throws {
+    let workspace = PaneWorkspace()
+    let first = PaneTab(id: "first", kind: .session, agentSessionID: "first")
+    let second = PaneTab(id: "second", kind: .session, agentSessionID: "second")
+    try workspace.restore(
+      .split(
+        id: "split", axis: .horizontal, ratio: 0.5,
+        first: .pane(id: "left", tabs: [first, second], active: first.id),
+        second: .pane(id: "right", tabs: [], active: nil)))
+    let left = workspace.controller.allPaneIds[0]
+    let right = workspace.controller.allPaneIds[1]
+    workspace.controller.focusPane(right)
+    let leftTabs = workspace.controller.tabs(inPane: left).map(\.id)
+    let selected = workspace.controller.selectedTab(inPane: left)?.id
+
+    let added = PaneTab(id: "session-added", kind: .session, agentSessionID: "added")
+    try workspace.restore(
+      .split(
+        id: "split", axis: .horizontal, ratio: 0.5,
+        first: .pane(id: "left", tabs: [first, second, added], active: first.id),
+        second: .pane(id: "right", tabs: [], active: nil)))
+
+    XCTAssertEqual(workspace.controller.allPaneIds, [left, right])
+    XCTAssertEqual(Array(workspace.controller.tabs(inPane: left).map(\.id).prefix(2)), leftTabs)
+    XCTAssertEqual(workspace.controller.tabs(inPane: left).count, 3)
+    XCTAssertEqual(workspace.controller.selectedTab(inPane: left)?.id, selected)
+    XCTAssertEqual(workspace.controller.focusedPaneId, right)
+    XCTAssertEqual(try workspace.layout().tabs.map(\.id), ["first", "second", "session-added"])
+  }
+
+  @MainActor func testReorderedTabsAreRestoredInTheReceivedOrder() throws {
+    let workspace = PaneWorkspace()
+    let first = PaneTab(id: "first", kind: .session, agentSessionID: "first")
+    let second = PaneTab(id: "second", kind: .session, agentSessionID: "second")
+    try workspace.restore(.pane(id: "pane", tabs: [first, second], active: first.id))
+
+    try workspace.restore(.pane(id: "pane", tabs: [second, first], active: first.id))
+
+    XCTAssertEqual(try workspace.layout().tabs.map(\.id), ["second", "first"])
+  }
+
+  @MainActor func testBoundSessionTabDropsItsPendingMapping() throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.pane(id: "pane", tabs: [], active: nil))
+    workspace.openPendingSession(id: "node", title: "Pending")
+    let pending = try XCTUnwrap(workspace.controller.allTabIds.first)
+    let bound = PaneTab(id: pending.id.uuidString, kind: .session, agentSessionID: "agent")
+
+    try workspace.restore(.pane(id: "pane", tabs: [bound], active: bound.id))
+    workspace.openPendingSession(id: "node", title: "Pending again")
+
+    XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+    XCTAssertEqual(workspace.tab(pending)?.agentSessionID, "agent")
+  }
+
   @MainActor func testRestorationPreservesFocusOnSecondPane() throws {
     let workspace = PaneWorkspace()
     try workspace.restore(.empty())
