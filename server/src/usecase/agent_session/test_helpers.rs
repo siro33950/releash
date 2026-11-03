@@ -825,7 +825,31 @@ pub fn launch_usecase_with_tree_registrar(
         dyn crate::usecase::agent_session::agent_session_launch::AgentSessionLaunchExecutionTrees,
     >,
 ) -> AgentSessionLaunchUsecase {
-    todo!()
+    let lifecycle = Arc::new(ProviderLifecycleUsecase::new(
+        Arc::new(crate::usecase::test_helpers::TestCredentials),
+        Arc::new(RecordingLifecycleEvents::default()),
+    ));
+    AgentSessionLaunchUsecase::new(
+        std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+        Arc::new(AgentSessionUsecase::new(
+            repository,
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+        )),
+        lifecycle,
+        provider_runtime(availability, launch_gateway, terminal),
+        Arc::new(FixedHistory {
+            entries: Vec::new(),
+        }),
+        hook_health,
+        execution_trees,
+        tokio::sync::mpsc::unbounded_channel().0,
+        crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        crate::usecase::workspace_state::test_support::test_session_tabs(),
+    )
 }
 
 pub struct FixedHistory {

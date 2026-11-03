@@ -599,12 +599,13 @@ pub(crate) fn archive_fixture_with_resolver(
         Arc::new(TestWorktrees::default()),
         releashd::test_support::integration::daemon::serving(),
     ));
-    let runtime = releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
+    let runtime = releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new_with_workspace_trees(
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             app.clone(),
             host.clone(),
         )),
         repository.clone(),
+        trees.clone(),
     );
     ArchiveFixture {
         directory,

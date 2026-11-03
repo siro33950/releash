@@ -3027,7 +3027,178 @@ impl releashd::test_support::integration::sessions::ProviderAgentTerminalInputGa
 
 #[tokio::test]
 pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し永続化と結果配送ができる() {
-    todo!()
+    use releashd::test_support::integration::workflow::ProviderWorkflowAgentSessionPort;
+    use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
+    // Given
+    let context = setup();
+    seed_workflow_session_facts(
+        &context.store,
+        WorkflowSessionFactSeed {
+            workflow_execution_id: "workflow-tree",
+            node_execution_id: "node-1",
+            worktree_path: "/repo",
+            workflow_name: "workflow",
+            request: "test",
+            initial_instruction_admitted: true,
+            session_id: "workflow-agent",
+            provider: ProviderKind::Claude,
+        },
+    )
+    .await
+    .unwrap();
+    context
+        .sessions
+        .create(
+            "workflow-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            workflow_location("workflow-tree", "node-1"),
+            "create",
+        )
+        .await
+        .unwrap();
+    context
+        .sessions
+        .associate_provider_session("workflow-agent", "provider-1", None, "associate")
+        .await
+        .unwrap();
+    let input = Arc::new(RecordingContinuationInput::default());
+    let port = ProviderWorkflowAgentSessionPort::new(
+        Arc::new(releashd::test_support::integration::sessions::AgentSessionLaunchUsecase::new(
+            std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
+            context.sessions.clone(),
+            context.provider_lifecycle.clone(),
+            ProviderAgentRuntime::new(
+                Arc::new(AlwaysProviderAvailable),
+                context.launches.clone(),
+                context.terminal.clone(),
+            ),
+            Arc::new(
+                releashd::test_support::integration::sessions::LocalAgentSessionHistoryGateway::new(
+                    context._directory.path().join("claude"),
+                    context._directory.path().join("codex"),
+                ),
+            ),
+            context.hook_health.clone(),
+            context.execution_trees.clone(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+        releashd::test_support::integration::workspace::test_session_tabs(),
+)),
+        Arc::new(releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
+            context.sessions.clone(),
+            input.clone(),
+        )),
+        context.lifecycle,
+        Arc::new(AlwaysProviderAvailable),
+    );
+    assert!(port
+        .has_recoverable_conversation("workflow-agent")
+        .await
+        .unwrap());
+    port.recover_workflow_agent_session_provider("workflow-agent", "node-1")
+        .await
+        .unwrap();
+    assert!(context.launches.launches.lock().unwrap().is_empty());
+    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::Unknown;
+    assert!(port
+        .recover_workflow_agent_session_provider("workflow-agent", "node-1")
+        .await
+        .is_err());
+    // When / Then
+    for round in 1..=2 {
+        context
+            .sessions
+            .observe_process_exit("workflow-agent", Some(1), &format!("exit-{round}"))
+            .await
+            .unwrap();
+        *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+        assert_eq!(
+            context
+                .sessions
+                .find("workflow-agent")
+                .await
+                .unwrap()
+                .unwrap()
+                .session()
+                .lifecycle(),
+            AgentSessionLifecycle::Paused
+        );
+        port.recover_workflow_agent_session_provider("workflow-agent", "node-1")
+            .await
+            .unwrap();
+        let persisted = context
+            .sessions
+            .find("workflow-agent")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.session().lifecycle(), AgentSessionLifecycle::Open);
+        assert_eq!(
+            persisted.session().provider_session_id(),
+            Some("provider-1")
+        );
+        port.dispatch_continuation("workflow-agent", &format!("child-{round}"), "child result")
+            .await
+            .unwrap();
+    }
+    assert_eq!(context.launches.launches.lock().unwrap().len(), 2);
+    assert_eq!(input.0.lock().unwrap().len(), 2);
+    seed_workflow_session_facts(
+        &context.store,
+        WorkflowSessionFactSeed {
+            workflow_name: "workflow",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Claude,
+            workflow_execution_id: "next-tree",
+            node_execution_id: "next-node",
+            session_id: "next-agent",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+    context
+        .sessions
+        .create(
+            "next-agent",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            workflow_location("next-tree", "next-node"),
+            "create-next",
+        )
+        .await
+        .unwrap();
+    port.dispatch_continuation("next-agent", "child-1", "child result")
+        .await
+        .unwrap();
+    port.dispatch_continuation("next-agent", "child-1", "child result")
+        .await
+        .unwrap();
+    port.dispatch_continuation("workflow-agent", "child-1", "child result")
+        .await
+        .unwrap();
+    assert_eq!(input.0.lock().unwrap().len(), 3);
+    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
+    *context.terminal.fail_spawn.lock().unwrap() = true;
+    assert!(port
+        .recover_workflow_agent_session_provider("workflow-agent", "node-1")
+        .await
+        .is_err());
+    assert_eq!(
+        context
+            .sessions
+            .find("workflow-agent")
+            .await
+            .unwrap()
+            .unwrap()
+            .session()
+            .lifecycle(),
+        AgentSessionLifecycle::Paused
+    );
 }
 
 #[tokio::test]
@@ -3244,7 +3415,80 @@ pub async fn test_sessionのarchiveとrestore_共通実行木操作のエラー�
 
 #[tokio::test]
 pub async fn test_workflow_session準備_入口から期限と取消の分類を保持する() {
-    todo!()
+    use releashd::test_support::integration::workflow::WorkflowSessionLaunchConfig;
+
+    use releashd::test_support::integration::platform::OperationStopped;
+    use releashd::test_support::integration::workflow::WorkflowRuntimeError;
+    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
+        // Given
+        let context = setup();
+        *context.launches.prepare_stopped.lock().unwrap() = Some(stopped);
+        let port = ProviderWorkflowAgentSessionPort::new(
+            Arc::new(releashd::test_support::integration::sessions::AgentSessionLaunchUsecase::new(
+                std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
+                context.sessions.clone(),
+                context.provider_lifecycle.clone(),
+                ProviderAgentRuntime::new(
+                    Arc::new(AlwaysProviderAvailable),
+                    context.launches.clone(),
+                    context.terminal.clone(),
+                ),
+                Arc::new(
+                    releashd::test_support::integration::sessions::LocalAgentSessionHistoryGateway::new(
+                        context._directory.path().join("claude"),
+                        context._directory.path().join("codex"),
+                    ),
+                ),
+                context.hook_health.clone(),
+                context.execution_trees.clone(),
+                tokio::sync::mpsc::unbounded_channel().0,
+                releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
+            releashd::test_support::integration::workspace::test_session_tabs(),
+)),
+            Arc::new(releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
+                context.sessions.clone(),
+                Arc::new(RecordingContinuationInput::default()),
+            )),
+            context.lifecycle.clone(),
+            Arc::new(AlwaysProviderAvailable),
+        );
+        // When
+        let result = port
+            .prepare_workflow_agent_session(
+                "/repo",
+                "/repo/worktree",
+                WorkflowSessionLaunchConfig {
+                    provider: ProviderKind::Claude,
+                    model: None,
+                    permission: None,
+                },
+                "workflow-tree",
+                "node-1",
+                "test",
+            )
+            .await;
+        // Then
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("prepare must stop"),
+        };
+        let source = releashd::test_support::integration::platform::TechnicalFailure::from(stopped);
+        let WorkflowRuntimeError::Technical(actual) = error else {
+            panic!("prepare must return a technical failure");
+        };
+        assert_eq!(
+            actual,
+            releashd::test_support::integration::platform::TechnicalFailure {
+                nature: source.nature,
+                message: format!(
+                    "launch Workflow AgentSession for NodeExecution 'node-1': {}",
+                    source.message,
+                ),
+            },
+        );
+
+        assert_eq!(*context.terminal.spawn_count.lock().unwrap(), 0);
+    }
 }
 
 #[tokio::test]

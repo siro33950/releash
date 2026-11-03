@@ -1299,9 +1299,16 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
 }
 
 fn map_tab_error(
-    _error: crate::domain::workspace_state::WorkspaceStateError,
+    error: crate::domain::workspace_state::WorkspaceStateError,
 ) -> AgentSessionLaunchUsecaseError {
-    todo!()
+    use crate::domain::workspace_state::WorkspaceStateError;
+    match error {
+        WorkspaceStateError::Technical(error) => AgentSessionLaunchUsecaseError::Technical(error),
+        WorkspaceStateError::VersionConflict => AgentSessionLaunchUsecaseError::Conflict(
+            crate::domain::workflow::WorkflowError::Conflict(error.to_string()).into(),
+        ),
+        WorkspaceStateError::InvalidLayout => AgentSessionLaunchUsecaseError::Corrupt,
+    }
 }
 
 fn map_execution_tree_registration_error(
