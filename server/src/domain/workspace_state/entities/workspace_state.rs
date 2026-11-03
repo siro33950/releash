@@ -13,6 +13,13 @@ pub struct WorkspaceState {
 /// 空のタブ配置。エディタ設定とパネル設定は未保存とする。
 impl Default for WorkspaceState {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorkspaceState {
+    /// 空のタブ配置を作る。エディタ設定とパネル設定は未保存とする。
+    pub fn new() -> Self {
         Self {
             panes: Some(empty_panes()),
             version: 1,
@@ -20,9 +27,7 @@ impl Default for WorkspaceState {
             layout: None,
         }
     }
-}
 
-impl WorkspaceState {
     /// 同じ Node の Session 未確定の Session タブに関連付け、無ければ追加する。既存の選択は変えない。
     pub fn add_session_tab(&mut self, session_id: &str, node_id: &str) {
         let panes = self.panes.get_or_insert_with(empty_panes);
