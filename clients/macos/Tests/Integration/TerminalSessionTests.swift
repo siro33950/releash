@@ -7,6 +7,74 @@ import XCTest
 @testable import Releash
 
 final class TerminalSessionTests: XCTestCase {
+  @MainActor func testFileDropSendsUnquotedPathsOnlyToTheDestinationOwner() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 720, height: 480), styleMask: .borderless,
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.close() }
+    let urls = [URL(fileURLWithPath: "/tmp/日本語 file.txt"), URL(fileURLWithPath: "/tmp/a'b;$x")]
+    let drag = TerminalFileDrag()
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    XCTAssertTrue(drag.draggingPasteboard.writeObjects(urls as [NSURL]))
+    for agent in [false, true] {
+      let session = model.terminal(path: "/repo", id: agent ? "agent" : "shell", agent: agent)
+      window.contentView?.addSubview(session.screen)
+      XCTAssertTrue(session.screen.registeredDraggedTypes.contains(.fileURL))
+      try await eventually { session.hasForegroundProcess != nil }
+      XCTAssertEqual(session.screen.draggingEntered(drag), .copy)
+      XCTAssertTrue(session.screen.prepareForDragOperation(drag))
+      XCTAssertTrue(session.screen.performDragOperation(drag))
+      try await eventually {
+        http.requests("WritePathsToTerminalSurface").count == (agent ? 2 : 1)
+      }
+      let request = try Releash_Client_V1_WritePathsToTerminalSurfaceRequest(
+        serializedBytes: XCTUnwrap(http.requests("WritePathsToTerminalSurface").last?.message))
+      XCTAssertEqual(request.owner, session.owner)
+      XCTAssertEqual(request.paths.items, urls.map(\.path))
+      session.screen.removeFromSuperview()
+      session.stop()
+    }
+    XCTAssertTrue(http.requests("WriteTerminalSurface").isEmpty)
+    await model.stop()
+  }
+
+  @MainActor func testFileDropRejectsTextRemoteURLsAndUnsupportedOperations() {
+    let screen = TerminalScreen(frame: .zero)
+    let drag = TerminalFileDrag()
+    defer { drag.draggingPasteboard.releaseGlobally() }
+    var dropped: [[String]] = []
+    screen.dropPaths = {
+      dropped.append($0)
+      return true
+    }
+    for contents in [
+      [], [NSString(string: "/tmp/plain text")], [NSURL(string: "https://example.com")!],
+    ]
+      as [[any NSPasteboardWriting]]
+    {
+      drag.draggingPasteboard.clearContents()
+      XCTAssertTrue(drag.draggingPasteboard.writeObjects(contents))
+      XCTAssertEqual(screen.draggingEntered(drag), [])
+      XCTAssertFalse(screen.prepareForDragOperation(drag))
+      XCTAssertFalse(screen.performDragOperation(drag))
+    }
+    drag.draggingPasteboard.clearContents()
+    XCTAssertTrue(drag.draggingPasteboard.writeObjects([NSURL(fileURLWithPath: "/tmp/file")]))
+    drag.draggingSourceOperationMask = .move
+    XCTAssertEqual(screen.draggingEntered(drag), [])
+    XCTAssertFalse(screen.performDragOperation(drag))
+    XCTAssertTrue(dropped.isEmpty)
+    drag.draggingSourceOperationMask = .copy
+    screen.dropPaths = { _ in false }
+    XCTAssertFalse(screen.performDragOperation(drag))
+    screen.dropPaths = nil
+    XCTAssertEqual(screen.draggingEntered(drag), [])
+    XCTAssertFalse(screen.performDragOperation(drag))
+  }
+
   @MainActor func testSnapshotRestoresSizeAndScreenAndReconnectResetsInputSequence() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
@@ -189,4 +257,30 @@ final class TerminalSessionTests: XCTestCase {
     screen.setFocused(false)
     XCTAssertTrue(window.firstResponder === other)
   }
+}
+
+@MainActor private final class TerminalFileDrag: NSObject, NSDraggingInfo {
+  let draggingPasteboard = NSPasteboard.withUniqueName()
+  var draggingSourceOperationMask: NSDragOperation = .copy
+  var draggingDestinationWindow: NSWindow? { nil }
+  var draggingLocation: NSPoint { .zero }
+  var draggedImageLocation: NSPoint { .zero }
+  nonisolated var draggedImage: NSImage? { nil }
+  var draggingSource: Any? { nil }
+  var draggingSequenceNumber: Int { 0 }
+  var draggingFormation: NSDraggingFormation = .none
+  var animatesToDestination = false
+  var numberOfValidItemsForDrop = 0
+  var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+  func slideDraggedImage(to screenPoint: NSPoint) {}
+  nonisolated override func namesOfPromisedFilesDropped(atDestination dropDestination: URL)
+    -> [String]?
+  { nil }
+  func resetSpringLoading() {}
+  func enumerateDraggingItems(
+    options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?,
+    classes classArray: [AnyClass],
+    searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+    using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+  ) {}
 }

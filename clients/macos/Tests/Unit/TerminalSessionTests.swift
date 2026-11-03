@@ -7,6 +7,71 @@ import XCTest
 @testable import Releash
 
 final class TerminalSessionTests: XCTestCase {
+  @MainActor func testDroppedPathsUseEachOwnerAndPreserveInputOrderAndSequence() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let paths = ["/tmp/日本語 file.txt", "/tmp/a'b;$file"]
+    for agent in [false, true] {
+      let session = model.terminal(path: "/repo", id: agent ? "agent" : "shell", agent: agent)
+      XCTAssertFalse(session.writePaths(paths))
+      try await eventually { session.hasForegroundProcess != nil }
+      session.input("before ")
+      XCTAssertTrue(session.writePaths(paths))
+      session.input(" after")
+      try await eventually {
+        http.requests("WriteTerminalSurface").count == (agent ? 4 : 2)
+      }
+      let drop = try Releash_Client_V1_WritePathsToTerminalSurfaceRequest(
+        serializedBytes: XCTUnwrap(http.requests("WritePathsToTerminalSurface").last?.message))
+      XCTAssertEqual(drop.owner, session.owner)
+      XCTAssertEqual(drop.paths.items, paths)
+      let writes = try http.requests("WriteTerminalSurface").suffix(2).map {
+        try Releash_Client_V1_WriteTerminalSurfaceRequest(serializedBytes: $0.message ?? Data())
+      }
+      XCTAssertEqual(writes.map(\.data), ["before ", " after"])
+      XCTAssertEqual(writes.map(\.sequence), [0, 1])
+      let methods = http.state.withLock {
+        $0.requests.map(\.url.lastPathComponent).filter {
+          ["WriteTerminalSurface", "WritePathsToTerminalSurface"].contains($0)
+        }
+      }
+      XCTAssertEqual(
+        Array(methods.suffix(3)),
+        ["WriteTerminalSurface", "WritePathsToTerminalSurface", "WriteTerminalSurface"])
+      XCTAssertFalse(session.writePaths([]))
+      XCTAssertTrue(session.writePaths(["/tmp/stale"]))
+      session.disconnect()
+      XCTAssertFalse(session.writePaths(paths))
+      var event = Releash_Client_V1_TerminalEvent()
+      event.snapshot.isExited = true
+      session.receive(event)
+      XCTAssertFalse(session.writePaths(paths))
+      session.stop()
+    }
+    await model.stop()
+    XCTAssertEqual(http.requests("WritePathsToTerminalSurface").count, 2)
+  }
+
+  @MainActor func testDroppedPathFailureRestartsAttachmentAndReportsError() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let session = model.terminal(path: "/repo", id: "drop-failure")
+    try await eventually { session.hasForegroundProcess != nil }
+    let previous = model.terminalAttachment(path: "/repo", id: "drop-failure")
+    http.state.withLock {
+      $0.failedMethod = "WritePathsToTerminalSurface"
+      $0.failedSubscriptionTargets["workspace-terminal"] = 1
+    }
+    XCTAssertTrue(session.writePaths(["/tmp/file"]))
+    try await eventually {
+      model.terminalAttachment(path: "/repo", id: "drop-failure") != previous
+    }
+    XCTAssertEqual(http.requests("WritePathsToTerminalSurface").count, 1)
+    XCTAssertTrue(session.failure?.contains("WritePathsToTerminalSurface failed") == true)
+    session.stop()
+    await model.stop()
+  }
+
   @MainActor func testStartupInputIsOrderedAndOutputReportsUTF16Units() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
