@@ -37,7 +37,6 @@ subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', sys.argv[1], *
 PYKEYS
 
 ./nx run macos:generate
-./nx run macos:helpers -c release
 for binary in "$ROOT/clients/macos/.build/Helpers/Release/releashd" "$ROOT/clients/macos/.build/Helpers/Release/releash"; do
   lipo -verify_arch arm64 "$binary"
   lipo -verify_arch x86_64 "$binary"

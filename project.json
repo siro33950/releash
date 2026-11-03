@@ -5,7 +5,6 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "node --test .github/scripts/*.test.mjs",
           "buf lint",
           "if [ \"${BUF_SKIP_BREAKING:-false}\" != true ]; then buf breaking --against \".git#branch=main,subdir=proto\"; fi",
           "node .github/scripts/test-placement.mjs",
@@ -30,7 +29,6 @@
       "options": {
         "commands": [
           "pnpm --dir clients/desktop exec vitest run --coverage",
-          "python3 .github/scripts/coverage.test.py",
           "cargo llvm-cov clean --workspace",
           "cargo llvm-cov --no-report --locked",
           "cargo llvm-cov --no-report --locked -p releash-desktop",

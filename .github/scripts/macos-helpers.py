@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -10,6 +11,12 @@ TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 
 
 def build_helpers(configuration, architectures):
+    output = ROOT / "clients/macos/.build/Helpers" / configuration
+    if os.environ.get("RELEASH_HELPERS_RESTORED") == "true":
+        for helper in ["releashd", "releash"]:
+            if not (output / helper).is_file():
+                raise SystemExit(f"RELEASH_HELPERS_RESTORED is set but {output / helper} is missing")
+        return
     profile = "debug" if configuration == "Debug" else "release"
     targets = [TARGETS[arch] for arch in architectures]
     directory = Path(json.loads(subprocess.check_output(
@@ -21,7 +28,6 @@ def build_helpers(configuration, architectures):
             "--target", target, "-p", "releashd", "--bin", "releashd", "-p", "releash", "--bin", "releash",
             *(["--features", "releashd/vendored-openssl"] if configuration == "Release" else []),
         ], cwd=ROOT, check=True)
-    output = ROOT / "clients/macos/.build/Helpers" / configuration
     output.mkdir(parents=True, exist_ok=True)
     for helper in ["releashd", "releash"]:
         subprocess.run([

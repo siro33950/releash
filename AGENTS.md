@@ -153,7 +153,7 @@ Nightly は macOS の回帰の E2E を全件実行する。失敗したテスト
 画面の機能を足す・変える PR で、手元の回帰 E2E の全件実行は必須としない。変更した機能の確認と証跡の記録は引き続き行う。
 
 `macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
-Cargo、pnpm、SwiftPM のキャッシュは GitHub Actions で再利用する。Nx のローカルキャッシュは runner 間で共有しない。
+Cargo、pnpm、SwiftPM、Nx の導入先 `.nx/installation`、macOS の Debug 用 helper binary（server・cli・proto・workflows の hash が鍵）のキャッシュは GitHub Actions で再利用する。Nx のタスクキャッシュは runner 間で共有しない。
 `workspace:lint` は buf、テスト配置、ast-grep、Qlty、cargo-deny を検査する。
 意図した proto の非互換には PR の `buf skip breaking` ラベルを使い、ラベルを付けた後に次の commit を push するか、PR を閉じて開き直す。
 
@@ -232,7 +232,7 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 対応プラットフォームは macOS。
 
 1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動する。main の HEAD を対象とし、日次は直近の公開済み nightly のタグが指す commit と同じならスキップする。手動起動は常に実行する。
-2. PR 層の検証一式と macOS の回帰 E2E がすべて成功したら、Tauri 版と Swift 版の署名・公証済み macOS universal ビルドを別々の job で作る。両方が揃ってから同じ prerelease を公開する。Swift 版は `Releash Preview.app` として配布し、Tauri 版の `Releash.app` と共存する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
+2. PR 層の検証一式と macOS の回帰 E2E と並行して、universal の helper binary（`releashd`、`releash`）を 1 つの job で作り、それを sidecar と helper に使う Tauri 版と Swift 版の署名・公証済み macOS universal ビルドを別々の job で作る。検証・E2E・両ビルドがすべて成功してからタグと draft の Release を作り、成果物と `latest.json` を載せて同じ prerelease を公開する。Swift 版は `Releash Preview.app` として配布し、Tauri 版の `Releash.app` と共存する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
 3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
 4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
 5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`clients/macos/project.yml` の `MARKETING_VERSION`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。

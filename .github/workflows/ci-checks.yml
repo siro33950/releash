@@ -46,6 +46,11 @@ jobs:
           fetch-depth: 0
       - uses: jdx/mise-action@v3
         if: inputs.affected
+      - uses: actions/cache@v6
+        if: inputs.affected
+        with:
+          path: .nx/installation
+          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
       - name: Prepare protocol comparison baseline
         if: ${{ inputs.affected && (inputs.group == 'quality') }}
         run: git branch --force main origin/main

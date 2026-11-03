@@ -36,6 +36,10 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - uses: jdx/mise-action@v3
+      - uses: actions/cache@v6
+        with:
+          path: .nx/installation
+          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
       - uses: nrwl/nx-set-shas@v5
       - run: ./nx --version
       - id: affected
@@ -119,6 +123,11 @@ jobs:
           fetch-depth: 0
       - uses: jdx/mise-action@v3
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
+      - uses: actions/cache@v6
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
+        with:
+          path: .nx/installation
+          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
       - name: Read Xcode version
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
         id: xcode
@@ -130,11 +139,18 @@ jobs:
       - name: Install Metal Toolchain
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
         run: xcodebuild -downloadComponent MetalToolchain
-      - name: Install Rust toolchain
+      # helper は server と cli からしか作られない。Swift だけの変更では cargo を走らせない
+      - uses: actions/cache@v6
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
+        id: helpers
+        with:
+          path: clients/macos/.build/Helpers/Debug
+          key: macos-helpers-debug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'proto/**', 'workflows/**', 'server/**', 'clients/cli/**', '.github/scripts/macos-helpers.py') }}
+      - name: Install Rust toolchain
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint' && steps.helpers.outputs.cache-hit != 'true'
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
+        if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint' && steps.helpers.outputs.cache-hit != 'true'
       - uses: actions/cache@v6
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos') && matrix.target != 'lint'
         with:
@@ -149,6 +165,7 @@ jobs:
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
         env:
           NX_TARGET: ${{ matrix.target }}
+          RELEASH_HELPERS_RESTORED: ${{ steps.helpers.outputs.cache-hit }}
         run: ./nx run "macos:$NX_TARGET" --parallel=2 --outputStyle=static
 
   frontend-required:
