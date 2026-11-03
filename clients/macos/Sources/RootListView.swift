@@ -65,7 +65,7 @@ struct RootListView: View {
     var values: [String: Bool] = [:]
     func collect(_ items: [Releash_Client_V1_WorkspaceTreeItem]) {
       for item in items {
-        if !item.children.isEmpty { values[item.rootID] = item.rootStatus.value != .idle }
+        if !item.children.isEmpty { values[item.rootID] = item.defaultExpanded }
         collect(item.children)
         collect(item.pastAttempts)
       }
@@ -132,6 +132,7 @@ struct RootListView: View {
       }
     }
     .onChange(of: defaultExpansion) { oldValues, newValues in
+      expandedRows = expandedRows.filter { newValues[$0.key] != nil }
       for (id, value) in newValues where oldValues[id] != nil && oldValues[id] != value {
         setExpanded(id, value)
       }
@@ -268,7 +269,7 @@ struct RootListView: View {
     }
   }
   private func isExpanded(_ item: Releash_Client_V1_WorkspaceTreeItem) -> Bool {
-    expandedRows[item.rootID] ?? (item.rootStatus.value != .idle)
+    expandedRows[item.rootID] ?? item.defaultExpanded
   }
   private func setExpanded(_ id: String, _ value: Bool) {
     expandedRows[id] = value
@@ -297,6 +298,7 @@ struct RootListView: View {
 }
 
 extension Releash_Client_V1_WorkspaceTreeItem {
+  var defaultExpanded: Bool { rootStatus.value != .idle }
   var compositeKind: String {
     if case .fanout = variant { return "FANOUT" }
     return "SEQ"

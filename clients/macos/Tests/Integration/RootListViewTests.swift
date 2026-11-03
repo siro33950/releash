@@ -36,9 +36,18 @@ final class RootListViewTests: XCTestCase {
     }
   }
 
+  @MainActor func testReinsertedRowsForgetManualExpansion() async throws {
+    for status in [Releash_Client_V1_WorkspaceStatusClassification.Value.idle, .active, .attention]
+    {
+      try await checkExpansion(
+        initial: status, manualExpansion: status == .idle, removeAndReinsert: true, updates: [])
+    }
+  }
+
   @MainActor private func checkExpansion(
     initial: Releash_Client_V1_WorkspaceStatusClassification.Value,
     manualExpansion: Bool? = nil,
+    removeAndReinsert: Bool = false,
     updates: [(Releash_Client_V1_WorkspaceStatusClassification.Value, Bool)]
   ) async throws {
     let http = TestHTTPClient()
@@ -105,6 +114,18 @@ final class RootListViewTests: XCTestCase {
         }
       }
       try await expectExpansion(manualExpansion, status: initial)
+    }
+    if removeAndReinsert {
+      tree.snapshot.nodes.items = []
+      repo.worktrees.items = [tree]
+      var removed = Releash_Client_V1_StatePayload()
+      removed.workspaces.repositories.items = [repo]
+      try http.publish(removed, target: "workspaces")
+      try await eventuallyView(host) {
+        ids.allSatisfy { host.element("root:\($0)") == nil }
+      }
+      try http.publish(payload(initial), target: "workspaces")
+      try await expectExpansion(initial != .idle, status: initial)
     }
     for (status, expanded) in updates {
       try http.publish(payload(status), target: "workspaces")
