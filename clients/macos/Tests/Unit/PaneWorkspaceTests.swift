@@ -4,6 +4,33 @@ import XCTest
 @testable import Releash
 
 final class PaneWorkspaceTests: XCTestCase {
+  @MainActor func testRestorationPreservesFocusAndTabIdentifiersOnNonUUIDSecondPane() throws {
+    let workspace = PaneWorkspace()
+    let layout = PaneLayout.split(
+      id: "split", axis: .horizontal, ratio: 0.5,
+      first: .pane(
+        id: "first", tabs: [PaneTab(id: "file", kind: .file)], active: "file"),
+      second: .pane(
+        id: "pane",
+        tabs: [
+          PaneTab(id: "terminal", kind: .terminal),
+          PaneTab(id: "session-example", kind: .session, agentSessionID: "example"),
+        ], active: "terminal"))
+    try workspace.restore(layout)
+    let second = workspace.controller.allPaneIds[1]
+    workspace.controller.focusPane(second)
+    let tabs = workspace.controller.allTabIds
+    let selected = try XCTUnwrap(workspace.controller.selectedTab(inPane: second)?.id)
+    XCTAssertEqual(workspace.controller.focusedPaneId, second)
+
+    try workspace.restore(layout)
+
+    XCTAssertEqual(workspace.controller.focusedPaneId, second)
+    XCTAssertEqual(workspace.controller.allTabIds, tabs)
+    XCTAssertEqual(workspace.controller.selectedTab(inPane: second)?.id, selected)
+    XCTAssertEqual(try workspace.layout(), layout)
+  }
+
   @MainActor func testRestorationPreservesFocusOnSecondPane() throws {
     let workspace = PaneWorkspace()
     try workspace.restore(.empty())
