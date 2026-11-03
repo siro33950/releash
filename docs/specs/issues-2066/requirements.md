@@ -43,7 +43,7 @@ Swift.app がタブを増減しても、開発者が見ているタブは変わ�
 - Session が消えたときに、Swift.app がその Session のタブを消すこと。
 - Session が増えたときに、Swift.app がその Session のタブを増やすこと。
 - Swift.app がタブを増減したときに、選択中のタブを変えないこと。
-- 開発者がこの画面から Session と Workflow を起動したときに、画面側がタブを開く処理の置き換え。
+- 開発者が History から Archive 済みの Session を Restore したときに、画面側がそのタブを開いて選択する処理をやめること。開発者がこの画面から Session と Workflow を起動したときに画面側がタブを開く処理は、開発者の操作として残す。
 
 変更しないもの:
 
