@@ -320,8 +320,11 @@ impl TerminalSurfaceGateway for MockGateway {
         _session_key: &str,
         _rows: u16,
         _cols: u16,
-    ) -> Result<(), TerminalSurfaceGatewayError> {
-        Ok(())
+    ) -> Result<
+        crate::domain::terminal_surface::gateway::TerminalResizeOutcome,
+        TerminalSurfaceGatewayError,
+    > {
+        Ok(crate::domain::terminal_surface::gateway::TerminalResizeOutcome::Resized)
     }
 
     fn request_runtime_stop(

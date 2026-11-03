@@ -584,6 +584,111 @@ final class SessionTabPaneTests: XCTestCase {
     }
   }
 
+  @MainActor func test_サーバが足した会話タブ_配信を受けると端末を購読して表示し起動応答後も保つ()
+    async throws
+  {
+    // Given: 会話 "agent" は開ける状態で、画面はまだタブを持たない
+    let http = TestHTTPClient()
+    var snapshot = Releash_Client_V1_SessionTabSnapshot()
+    snapshot.session.id = "agent"
+    snapshot.session.workspaceWorktreePath = "/repo"
+    snapshot.session.availability = .open
+    snapshot.node.title = "Ready"
+    http.state.withLock { $0.sessionTabs["agent"] = snapshot }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    let host = await ViewHarness(WorkspacePaneView(model: model))
+    defer { host.close() }
+    // When: サーバが会話タブを足した配置を配信する（タブ id はサーバの付ける session-<id>）
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(
+        id: "pane", tabs: [PaneTab(id: "session-agent", kind: .session, agentSessionID: "agent")],
+        active: nil
+      ).message
+    payload.workspaceState.value.etag = "1"
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    // Then: タブが 1 つ作られ、会話と端末を購読する（サーバは選択を付けないので中身はまだ見えない）
+    try await eventually { model.panes.controller.allTabIds.count == 1 }
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.contains { $0.target == "session-tab" && $0.args == ["agent"] }
+          && $0.subscriptions.contains { $0.target == "terminal" && $0.args == ["/repo", "agent"] }
+      }
+    }
+    // When: 起動の応答が届き、画面がその会話のタブを選ぶ（startSession の後半）
+    var selection = Releash_Client_V1_SessionSelection()
+    selection.agentSessionID = "agent"
+    selection.nodeID = "node"
+    model.openSession(selection)
+    try await eventually { model.pendingSaves["/repo"] == nil }
+    // Then: タブは増えず、端末が見え、枠を得た端末が自分の寸法を報告し、端末の購読は解放されていない
+    XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
+    try await eventuallyView(host) { host.element("terminal:agent") != nil }
+    try await eventually { !http.requests("ResizeTerminalSurface").isEmpty }
+    let terminalSubscriptions = http.state.withLock {
+      $0.subscriptions.filter { $0.target == "terminal" && $0.args == ["/repo", "agent"] }
+    }
+    XCTAssertEqual(terminalSubscriptions.count, 1)
+    XCTAssertFalse(
+      http.requests("StopStateSubscription").contains { request in
+        guard let data = request.message,
+          let stop = try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: data)
+        else { return false }
+        return terminalSubscriptions.contains { $0.subscriptionID == stop.subscriptionID }
+      })
+    await model.stop()
+  }
+
+  @MainActor func test_サーバが足した会話タブ_既にタブがあるpaneへの復元でも中身を表示する() async throws {
+    // Given: 会話 "agent" のタブを持つ配置が復元され、端末が表示されている
+    let http = TestHTTPClient()
+    for id in ["agent", "agent2"] {
+      var snapshot = Releash_Client_V1_SessionTabSnapshot()
+      snapshot.session.id = id
+      snapshot.session.workspaceWorktreePath = "/repo"
+      snapshot.session.availability = .open
+      snapshot.node.title = id
+      http.state.withLock { $0.sessionTabs[id] = snapshot }
+    }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    let host = await ViewHarness(WorkspacePaneView(model: model))
+    defer { host.close() }
+    let first = PaneTab(id: "session-agent", kind: .session, agentSessionID: "agent")
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(id: "pane", tabs: [first], active: first.id).message
+    payload.workspaceState.value.etag = "1"
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventuallyView(host) { host.element("terminal:agent") != nil }
+    // When: サーバが同じ pane に会話 "agent2" のタブを足した配置を配信し、起動の応答でそのタブを選ぶ
+    let second = PaneTab(id: "session-agent2", kind: .session, agentSessionID: "agent2")
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(id: "pane", tabs: [first, second], active: first.id).message
+    payload.workspaceState.value.etag = "2"
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventually { model.panes.controller.allTabIds.count == 2 }
+    var selection = Releash_Client_V1_SessionSelection()
+    selection.agentSessionID = "agent2"
+    selection.nodeID = "node2"
+    model.openSession(selection)
+    try await eventually { model.pendingSaves["/repo"] == nil }
+    // Then: 足されたタブの中身が作られ、会話を購読し、端末が表示される
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.contains { $0.target == "session-tab" && $0.args == ["agent2"] }
+      }
+    }
+    try await eventuallyView(host) { host.element("terminal:agent2") != nil }
+    await model.stop()
+  }
+
   @MainActor func test_準備中の会話タブ_一覧の紐付けが先に届いても同じタブを保存し購読する() async throws {
     // Given
     let http = TestHTTPClient()

@@ -1,3 +1,4 @@
+use crate::domain::terminal_surface::gateway::TerminalResizeOutcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
@@ -378,7 +379,7 @@ impl TerminalSurfaceApplication {
         owner: &TerminalSurfaceOwner,
         rows: u16,
         cols: u16,
-    ) -> Result<(), UsecaseError> {
+    ) -> Result<TerminalResizeOutcome, UsecaseError> {
         self.prepare_resize(owner.clone(), rows, cols)()
     }
 
@@ -387,7 +388,7 @@ impl TerminalSurfaceApplication {
         owner: TerminalSurfaceOwner,
         rows: u16,
         cols: u16,
-    ) -> impl FnOnce() -> Result<(), UsecaseError> + Send + 'static {
+    ) -> impl FnOnce() -> Result<TerminalResizeOutcome, UsecaseError> + Send + 'static {
         let (done, next) = std::sync::mpsc::channel();
         let previous = self
             .resize_tails

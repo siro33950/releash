@@ -198,6 +198,33 @@ async fn test_terminalサイズ更新_resize後に購読者へsnapshotの再送�
     assert!(receiver.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn test_terminalサイズ更新_寸法が変わらないresizeでは購読者へsnapshotの再送を求めない() {
+    use crate::usecase::terminal_surface::test_helpers::{workspace_owner, FakePtyGateway};
+    // Given
+    let owner = workspace_owner("/repo");
+    let gateway = Arc::new(FakePtyGateway::new());
+    let output = Arc::new(FakeOutput::default());
+    let (requests, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let usecase = TerminalSubscriptionUsecase::new(
+        output.clone(),
+        Some(resizable_terminal(gateway.clone())),
+        requests,
+    );
+    usecase.prepare_resize(owner.clone(), 30, 100).unwrap()().unwrap();
+    // When
+    usecase.prepare_resize(owner.clone(), 30, 100).unwrap()().unwrap();
+    // Then
+    assert_eq!(
+        gateway.resizes.lock().as_slice(),
+        [(owner.stable_key(), 30, 100)]
+    );
+    assert_eq!(
+        output.required.lock().as_slice(),
+        [SubscriptionTarget::Terminal(owner)]
+    );
+}
+
 async fn snapshot_shell_state(
     state: Option<crate::domain::terminal_surface::TerminalShellState>,
     exited: bool,

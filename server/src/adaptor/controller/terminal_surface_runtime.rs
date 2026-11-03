@@ -185,6 +185,7 @@ impl TerminalSurfaceRuntime {
     ) -> Result<(), String> {
         self.application
             .resize(&owner.try_into()?, rows, cols)
+            .map(|_| ())
             .map_err(|error| error.to_string())
     }
 

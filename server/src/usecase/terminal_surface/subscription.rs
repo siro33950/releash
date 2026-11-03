@@ -325,7 +325,11 @@ impl TerminalSubscriptionUsecase {
         let resize = terminal.prepare_resize(owner.clone(), rows, cols);
         let usecase = self.clone();
         Ok(move || {
-            resize()?;
+            if resize()?
+                == crate::domain::terminal_surface::gateway::TerminalResizeOutcome::Unchanged
+            {
+                return Ok(());
+            }
             usecase
                 .publisher
                 .require_snapshot(&SubscriptionTarget::Terminal(owner))

@@ -9,6 +9,7 @@ use crate::domain::terminal_surface::entities::{
     TerminalSurfaceRegistry, TerminalSurfaceSpawnReservation, TerminalSurfaceSpawnReservationError,
     TerminalSurfaceSummary,
 };
+use crate::domain::terminal_surface::gateway::TerminalResizeOutcome;
 use crate::domain::terminal_surface::gateway::{
     TerminalRuntimeSpawnRequest, TerminalSurfaceGateway, TerminalSurfaceGatewayError,
     TerminalSurfaceInputUnavailableCause, TerminalSurfaceRepository,
@@ -1195,9 +1196,9 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
         session_key: &str,
         rows: u16,
         cols: u16,
-    ) -> Result<(), TerminalSurfaceGatewayError> {
+    ) -> Result<TerminalResizeOutcome, TerminalSurfaceGatewayError> {
         if rows == 0 || cols == 0 {
-            return Ok(());
+            return Ok(TerminalResizeOutcome::Unchanged);
         }
         let runtime_generation = self
             .runtime_generation_for_session_key(session_key)
@@ -1231,6 +1232,9 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
             )
         };
         let _serialization = event_order.serialization.lock();
+        if terminal_surface.lock().size() == (cols, rows) {
+            return Ok(TerminalResizeOutcome::Unchanged);
+        }
         native_pty.resize(rows, cols).map_err(pty_failure)?;
         let sequence = {
             let mut terminal_surface = terminal_surface.lock();
@@ -1265,7 +1269,7 @@ impl TerminalSurfaceGateway for TerminalSurfaceRuntimeGatewayFor {
                 sequence,
             });
         }
-        Ok(())
+        Ok(TerminalResizeOutcome::Resized)
     }
 
     fn request_runtime_stop(
