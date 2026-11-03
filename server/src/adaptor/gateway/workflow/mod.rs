@@ -11,8 +11,8 @@ pub(crate) mod builtin;
 pub(crate) mod definition_repository;
 pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_gateway;
+pub(crate) mod directory_service;
 pub(crate) mod domain_mapping;
-pub(crate) mod editor_gateway;
 pub(crate) mod event;
 pub(crate) mod event_log_writer;
 pub(crate) mod event_repository;
@@ -39,23 +39,16 @@ pub(crate) mod startup_repository;
 pub(crate) mod state;
 pub(crate) mod storage;
 pub(crate) mod stored_definition;
+pub(crate) mod summary_query;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 pub(crate) mod workflow_host;
 pub(crate) mod worktree_context;
 pub(crate) mod worktree_gateway;
 
-pub(crate) use definition_repository::{
-    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-};
-pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;
-pub(crate) use editor_gateway::WorkflowExternalEditorGateway;
+pub(crate) use definition_repository::WorkflowDefinitionFileRepository;
 pub(crate) use event_repository::WorkflowEventLogRepository;
 pub(crate) use execution_archive_repository::ExecutionTreeArchiveFactRepository;
-pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
-pub(crate) use facet_repository::WorkflowFacetFileRepository;
 pub(crate) use runtime_command_gateway::{
     WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
 };

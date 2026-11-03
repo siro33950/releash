@@ -3121,3 +3121,12 @@ fn test_thread送信失敗_原因のconnect_codeと固定文言を返す() {
         assert_eq!(response.code, code);
     }
 }
+
+#[test]
+fn test_workflow診断失敗_invalid_argumentとして返す() {
+    // Given / When / Then
+    assert_eq!(
+        crate::domain::workflow::WorkflowError::Diagnostics(Vec::new()).connect_code(),
+        connectrpc::ErrorCode::InvalidArgument
+    );
+}

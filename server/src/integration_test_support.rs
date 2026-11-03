@@ -128,6 +128,7 @@ pub mod persistence {
     pub use crate::usecase::app_data_gc::{run_startup_gc, GcStopCause};
 }
 pub mod platform {
+    pub use crate::adaptor::controller::wiring::WorkflowEditorDependencies;
     pub fn find_review_threads_by_ids(
         app_data_dir: &std::path::Path,
         workspace: &crate::domain::workspace_tree::WorkspaceIdentity,
@@ -712,6 +713,7 @@ pub mod settings {
     pub use crate::usecase::test_helpers::repository_config_usecase;
 }
 pub mod subscriptions {
+    pub use crate::adaptor::presenter::state_subscription_wire::payload;
     pub use crate::test_support::state_subscription::test_subscriptions;
     pub use crate::test_support::state_subscription::CapturingNotifier;
 
@@ -827,16 +829,15 @@ pub mod transport {
     pub use crate::test_support::client_api_deps;
 }
 pub mod workflow {
-    pub use crate::adaptor::controller::client::workflow::delete_facet_inner;
-    pub use crate::adaptor::controller::client::workflow::duplicate_facet_inner;
+    pub use crate::adaptor::gateway::workflow::summary_query::{
+        FacetFileQueryService, WorkflowDefinitionFileQueryService,
+    };
+    pub use crate::usecase::workflow::{FacetQueryService, WorkflowDefinitionQueryService};
+
     pub use crate::adaptor::controller::client::workflow::get_facet_inner;
-    pub use crate::adaptor::controller::client::workflow::list_facet_summaries_inner;
     pub use crate::adaptor::controller::client::workflow::list_facets_inner;
-    pub use crate::adaptor::controller::client::workflow::open_facet_in_editor_inner;
-    pub use crate::adaptor::controller::client::workflow::save_facet_inner;
     pub use crate::adaptor::controller::client::workflow::shared::register_shared;
-    pub use crate::adaptor::gateway::workflow::builtin::is_builtin_facet;
-    pub use crate::adaptor::gateway::workflow::builtin::is_builtin_workflow;
+    pub use crate::adaptor::gateway::workflow::directory_service::WorkflowDirectoryFileService;
     pub use crate::adaptor::gateway::workflow::stored_definition::decode_started;
     pub use crate::adaptor::gateway::workflow::test_helpers::definition;
     pub use crate::adaptor::gateway::workflow::test_helpers::node_started;
@@ -852,10 +853,15 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::InputParameterRef;
     pub use crate::domain::workflow::value_objects::field_path::FieldPath;
     pub use crate::domain::workflow::ApprovalGrantedFact;
-    pub use crate::usecase::workflow::dto::facet_summary_to_dto;
+    pub use crate::domain::workflow::{
+        WorkflowDirectory, WorkflowDirectoryService, WorkflowSource,
+    };
     pub use crate::usecase::workflow::node_startup::NodeStartupGateway;
     pub use crate::usecase::workflow::test_helpers::FakeDefinitionRepository;
     pub use crate::usecase::workflow::test_helpers::NoopArchiveRepository;
+    pub use crate::usecase::workflow::test_support::{
+        NoopEditorLauncherGateway, NoopEditorSettingsGateway,
+    };
 
     pub use crate::adaptor::gateway::workflow::builtin::get_builtin_facet;
     pub use crate::adaptor::gateway::workflow::builtin::list_builtin_facet_keys;
@@ -874,16 +880,11 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::diagnostics::load_workflows_in_scope;
     pub use crate::adaptor::gateway::workflow::diagnostics::WorkflowSourceDiagnostics;
     pub use crate::adaptor::gateway::workflow::diagnostics_gateway::WorkflowDiagnosticsFileGateway;
-    pub use crate::adaptor::gateway::workflow::editor_gateway::NoopWorkflowExternalEditorGateway;
-    pub use crate::adaptor::gateway::workflow::editor_gateway::WorkflowExternalEditorGateway;
 
-    pub use crate::adaptor::gateway::workflow::editor_gateway::resolve_facet_editor_path;
-    pub use crate::adaptor::gateway::workflow::editor_gateway::resolve_workflow_editor_path;
     pub use crate::adaptor::gateway::workflow::event_repository::WorkflowEventLogRepository;
     pub use crate::adaptor::gateway::workflow::execution_archive_repository::ExecutionTreeArchiveFactRepository;
     pub use crate::adaptor::gateway::workflow::execution_projection_repository::WorkflowExecutionProjectionLogRepository;
     pub use crate::adaptor::gateway::workflow::facet::delete_facet;
-    pub use crate::adaptor::gateway::workflow::facet::list_facet_summaries;
     pub use crate::adaptor::gateway::workflow::facet::list_facets;
     pub use crate::adaptor::gateway::workflow::facet::load_facet;
     pub use crate::adaptor::gateway::workflow::facet::resolve_facet_path;
@@ -951,16 +952,11 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::span_map::YamlSpanMap;
     pub use crate::adaptor::gateway::workflow::startup_repository::HostWorkflowStartup;
     pub use crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository;
-    pub use crate::adaptor::gateway::workflow::storage::delete_workflow;
     pub use crate::adaptor::gateway::workflow::storage::diagnose_workflow_file;
-    pub use crate::adaptor::gateway::workflow::storage::list_workflows;
-    pub use crate::adaptor::gateway::workflow::storage::list_workflows_with_facets;
     pub use crate::adaptor::gateway::workflow::storage::load_workflow;
     pub use crate::adaptor::gateway::workflow::storage::parse_workflow_source;
     pub use crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets;
     pub use crate::adaptor::gateway::workflow::storage::resolve_workflow_path;
-    pub use crate::adaptor::gateway::workflow::storage::save_workflow;
-    pub use crate::adaptor::gateway::workflow::storage::save_workflow_source;
     pub use crate::adaptor::gateway::workflow::storage::workflow_files;
     pub use crate::adaptor::gateway::workflow::storage::StorageError;
     pub use crate::adaptor::gateway::workflow::storage::DUPLICATE_NAME_DESCRIPTION;
@@ -1053,9 +1049,7 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::SessionDelegate;
     pub use crate::domain::workflow::value_objects::definition::SessionPermission;
     pub use crate::domain::workflow::value_objects::definition::SessionSpec;
-    pub use crate::domain::workflow::value_objects::definition::WorkflowDefinition;
     pub use crate::domain::workflow::value_objects::definition::WorkflowSourceFormat;
-    pub use crate::domain::workflow::value_objects::definition::WorkflowSummary;
     pub use crate::domain::workflow::value_objects::definition::WorktreeMode;
     pub use crate::domain::workflow::value_objects::execution::Artifact;
     pub use crate::domain::workflow::value_objects::execution::ExecutionOrigin;
@@ -1065,6 +1059,8 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::execution_metadata::ExecutionStatusFilter;
     pub use crate::domain::workflow::value_objects::execution_metadata::WorkflowExecutionSummary;
     pub use crate::domain::workflow::value_objects::facet::FacetKind as facet_FacetKind;
+    pub use crate::domain::workflow::WorkflowDefinitionContent;
+    pub use crate::domain::workflow::{Facet, WorkflowDefinition};
 
     pub use crate::domain::workflow::value_objects::failure::NodeExecutionFailureKind;
     pub use crate::domain::workflow::value_objects::ids::ExecutionTreeId;
@@ -1114,15 +1110,13 @@ pub mod workflow {
     pub use crate::usecase::workflow::diagnostic_dto::DiagnosticSpan;
     pub use crate::usecase::workflow::diagnostic_dto::DiagnosticStage;
     pub use crate::usecase::workflow::diagnostic_dto::Severity;
-    pub use crate::usecase::workflow::WorkflowReadUsecase;
     pub use crate::usecase::workflow::WorkflowUsecase;
 
+    pub use crate::domain::workflow::WorkflowDefinitionSourceService;
     pub use crate::usecase::workflow::node_startup::FailedNodeStart;
     pub use crate::usecase::workflow::output::WorkflowOutputUsecase;
     pub use crate::usecase::workflow::ports::ExecutionTreeProcessGateway;
-    pub use crate::usecase::workflow::ports::ExternalEditorGateway;
     pub use crate::usecase::workflow::ports::WorkflowAbortExecutionGateway;
-    pub use crate::usecase::workflow::ports::WorkflowDefinitionSourceGateway;
     pub use crate::usecase::workflow::ports::WorkflowDiagnosticsGateway;
     pub use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
     pub use crate::usecase::workflow::ports::WorkflowEventDraft;

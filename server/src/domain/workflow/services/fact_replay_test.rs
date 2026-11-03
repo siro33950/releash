@@ -10,7 +10,7 @@ use crate::domain::workflow::{
     NodeCompletion, NodeCompletionSignal, NodeDefinition, NodeExecutionFailureKind, NodeFactMeta,
     NodeKind, RuntimeExecutionState, RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact,
     SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
-    WorkflowDefinition,
+    WorkflowDefinitionContent,
 };
 
 const TREE: &str = "root-exec";
@@ -96,18 +96,17 @@ fn fanout_node(name: &str, children: Vec<ChildEntry>) -> NodeDefinition {
     }
 }
 
-fn workflow_definition(nodes: Vec<NodeDefinition>, entry: &str) -> WorkflowDefinition {
-    WorkflowDefinition {
+fn workflow_definition(nodes: Vec<NodeDefinition>, entry: &str) -> WorkflowDefinitionContent {
+    WorkflowDefinitionContent {
         name: "wf".to_string(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes,
         entry: entry.to_string(),
     }
 }
 
-fn workflow_root(definition: WorkflowDefinition) -> TreeRootFact {
+fn workflow_root(definition: WorkflowDefinitionContent) -> TreeRootFact {
     TreeRootFact {
         repository_root: None,
         workspace_identity: "/repo".to_string(),
@@ -1122,7 +1121,7 @@ mod session_display_name_fact_tests {
 mod sequence_tests {
     use super::*;
 
-    fn two_step_definition() -> WorkflowDefinition {
+    fn two_step_definition() -> WorkflowDefinitionContent {
         workflow_definition(
             vec![
                 session_leaf("a"),
@@ -1465,7 +1464,7 @@ mod fanout_tests {
             ("items: [],", 0, 0),
             ("", 2, 0),
         ] {
-            let definition: WorkflowDefinition = serde_saphyr::from_str(&format!(
+            let definition: WorkflowDefinitionContent = serde_saphyr::from_str(&format!(
                 "name: usage\ndescription: test\nnodes:\n  main: {{fanout: {{children: [fan]}}}}\n  fan: {{worktree: isolated, fanout: {{{items} children: [first, second]}}}}\n  first: {{session: {{provider: codex}}}}\n  second: {{session: {{provider: codex}}}}"
             ))
             .unwrap();
@@ -1788,7 +1787,7 @@ mod approval_tests {
         );
     }
 
-    fn approval_definition() -> WorkflowDefinition {
+    fn approval_definition() -> WorkflowDefinitionContent {
         let mut reviewed = session_leaf("reviewed");
         reviewed.completion = NodeCompletion::require_approval();
         workflow_definition(
@@ -2229,7 +2228,7 @@ mod input_validation_tests {
 #[test]
 fn test_隔離成果選択_同名slotは開始順と完了順によらず最後に提出した成果を選ぶ() {
     // Given
-    let definition: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {fanout: {items: [x, y], children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}")
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {fanout: {items: [x, y], children: [work]}}\n  work: {worktree: isolated, session: {provider: codex}}")
         .unwrap();
     let mut root = workflow_root(definition);
     root.repository_root = Some("/repo".into());
@@ -2345,7 +2344,7 @@ fn test_終端事実_定義の変更や後続の事実に依存せず最初の�
         let root_meta = meta("main", None, "main", NodeKindName::Sequence, 1);
         log.push(
             root_meta.clone(),
-            started_root(workflow_root(WorkflowDefinition::default())),
+            started_root(workflow_root(WorkflowDefinitionContent::default())),
         );
         log.push(
             meta("child", Some("main"), "missing", NodeKindName::Command, 1),
@@ -2399,7 +2398,7 @@ fn test_終端復元_定義がなくても再試行関係と記録済みの表�
     let new = meta("new", Some("root"), "work", NodeKindName::Session, 2);
     log.push(
         root.clone(),
-        started_root(workflow_root(WorkflowDefinition::default())),
+        started_root(workflow_root(WorkflowDefinitionContent::default())),
     );
     log.push(
         old.clone(),
@@ -2694,7 +2693,9 @@ fn test_終端復元_定義なしworkflowの葉は完了条件を推定せず終
             let command = meta("command", Some("root"), "command", NodeKindName::Command, 1);
             log.push(
                 root.clone(),
-                started_root(workflow_root(WorkflowDefinition::default()).without_definition()),
+                started_root(
+                    workflow_root(WorkflowDefinitionContent::default()).without_definition(),
+                ),
             );
             log.push(
                 session.clone(),
@@ -2850,7 +2851,7 @@ fn test_事実復元_承認待ちからのretry事実で旧attemptを終了す�
     let new = meta("new", Some("root"), "work", NodeKindName::Session, 2);
     log.push(
         root.clone(),
-        started_root(workflow_root(WorkflowDefinition::default())),
+        started_root(workflow_root(WorkflowDefinitionContent::default())),
     );
     log.push(
         old.clone(),

@@ -1129,7 +1129,8 @@ pub async fn test_session選択_記録済みsessionとnodeのdtoを返し対象�
 #[tokio::test]
 pub async fn test_command詳細_記録から実行環境と過去attemptの出力を読める() {
     use releashd::test_support::integration::workflow::{
-        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinition, WorkflowEvent,
+        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinitionContent,
+        WorkflowEvent,
     };
     for child in [false, true] {
         // Given
@@ -1154,7 +1155,7 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
         } else {
             "name: retry\ndescription: test\nnodes:\n  main: {command: 'printf kept'}\n"
         };
-        let definition: WorkflowDefinition = serde_saphyr::from_str(source).unwrap();
+        let definition: WorkflowDefinitionContent = serde_saphyr::from_str(source).unwrap();
         let mut events = vec![
             WorkflowEvent::ExecutionStarted {
                 repository_root: None,
@@ -1299,7 +1300,7 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
 pub async fn test_command起動失敗_差分読取と再読込で詳細と過去attemptへ理由を配る() {
     use releashd::test_support::integration::workflow::{
         append_facts_for_events, ExecutionOrigin, NodeExecutionFailureKind, NodeKindName,
-        WorkflowDefinition, WorkflowEvent,
+        WorkflowDefinitionContent, WorkflowEvent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1311,7 +1312,7 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
     let tree_id = "00000000-0000-4000-8000-000000002053";
     let old_id = format!("{tree_id}-command");
     let new_id = format!("{tree_id}-retry");
-    let definition: WorkflowDefinition = serde_saphyr::from_str(
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str(
         "name: retry\ndescription: test\nnodes:\n  main: {command: 'true'}\n",
     )
     .unwrap();
@@ -1431,7 +1432,8 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
 #[tokio::test]
 pub async fn test_command詳細_完了済み実行のabort不可をrepositoryから配る() {
     use releashd::test_support::integration::workflow::{
-        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinition, WorkflowEvent,
+        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinitionContent,
+        WorkflowEvent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1442,7 +1444,7 @@ pub async fn test_command詳細_完了済み実行のabort不可をrepositoryか
     .unwrap();
     let tree_id = "00000000-0000-4000-8000-000000001205";
     let node_id = format!("{tree_id}-command");
-    let definition: WorkflowDefinition = serde_saphyr::from_str(
+    let definition: WorkflowDefinitionContent = serde_saphyr::from_str(
         "name: completed\ndescription: test\nnodes:\n  main: {command: 'printf kept'}\n",
     )
     .unwrap();
@@ -1649,9 +1651,8 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
             Arc::new(
                 releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway,
             ),
-            Arc::new(
-                releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway,
-            ),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             store,
             None,
             None,
@@ -1936,7 +1937,7 @@ pub async fn test_sessionタブ詳細_保存定義と異なる終了履歴を復
 pub async fn test_旧会話参照照会_追記された紐付けと再試行と削除を反映する() {
     use releashd::test_support::integration::workflow::{
         append_single_fact, ExecutionOrigin, NodeDefinition, NodeFactMeta, NodeKindName,
-        SessionAttachedFact, StartedFact, TreeRootFact, WorkflowDefinition,
+        SessionAttachedFact, StartedFact, TreeRootFact, WorkflowDefinitionContent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1968,7 +1969,7 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
                 created_from: ExecutionOrigin::Cli,
                 request: String::new(),
                 workflow_name: "main".into(),
-                definition: Some(WorkflowDefinition {
+                definition: Some(WorkflowDefinitionContent {
                     entry: "main".into(),
                     nodes: vec![NodeDefinition {
                         name: "main".into(),

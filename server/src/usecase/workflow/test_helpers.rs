@@ -95,6 +95,7 @@ use std::sync::Mutex;
 #[derive(Default)]
 pub struct FakeFacetRepository {
     pub facets: Mutex<HashMap<(FacetKind, String), String>>,
+    pub builtin_keys: Mutex<std::collections::HashSet<(FacetKind, String)>>,
 }
 
 #[cfg(test)]
@@ -120,52 +121,74 @@ impl FacetRepository for FakeFacetRepository {
             .map(|(_, key)| key.clone())
             .collect())
     }
-
-    fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-        self.facets
-            .lock()
-            .unwrap()
-            .get(&(kind, key.to_string()))
-            .cloned()
-            .ok_or_else(|| WorkflowError::NotFound(key.to_string()))
-    }
-
-    fn save(
+    fn get(
         &self,
         kind: FacetKind,
         key: &str,
-        content: &str,
-        _is_new: bool,
-    ) -> Result<(), WorkflowError> {
+    ) -> Result<crate::domain::workflow::Facet, WorkflowError> {
+        let content = self
+            .get_saved(kind, key)
+            .ok_or_else(|| WorkflowError::NotFound(key.into()))?;
+        if self
+            .builtin_keys
+            .lock()
+            .unwrap()
+            .contains(&(kind, key.into()))
+        {
+            return Ok(crate::domain::workflow::Facet::restore(
+                kind,
+                crate::domain::workflow::FacetKey::new(key)?,
+                "/workflows".into(),
+                crate::domain::workflow::WorkflowSource::Builtin,
+                content,
+            ));
+        }
+        Ok(facet(kind, key, content))
+    }
+    fn save(&self, facet: crate::domain::workflow::Facet, _: bool) -> Result<(), WorkflowError> {
+        self.facets.lock().unwrap().insert(
+            (facet.kind(), facet.key().as_str().into()),
+            facet.content().into(),
+        );
+        Ok(())
+    }
+    fn delete(&self, facet: &crate::domain::workflow::Facet) -> Result<(), WorkflowError> {
         self.facets
             .lock()
             .unwrap()
-            .insert((kind, key.to_string()), content.to_string());
+            .remove(&(facet.kind(), facet.key().as_str().into()));
         Ok(())
     }
 
-    fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        self.facets.lock().unwrap().remove(&(kind, key.to_string()));
-        Ok(())
+    fn get_or_new(
+        &self,
+        kind: FacetKind,
+        key: &str,
+    ) -> Result<crate::domain::workflow::Facet, WorkflowError> {
+        match self.get(kind, key) {
+            Err(WorkflowError::NotFound(_)) => {
+                crate::domain::workflow::FacetKey::new(key)?;
+                Ok(facet(kind, key, String::new()))
+            }
+            result => result,
+        }
     }
+}
 
-    fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-        Ok(self
-            .list(kind)?
-            .into_iter()
-            .map(|key| FacetSummary {
-                key,
-                kind: match kind {
-                    FacetKind::Policy => "policy",
-                    FacetKind::Knowledge => "knowledge",
-                    FacetKind::Instruction => "instruction",
-                }
-                .into(),
-                description: String::new(),
-                builtin: false,
-            })
-            .collect())
-    }
+#[cfg(test)]
+pub(crate) fn facet(kind: FacetKind, key: &str, content: String) -> crate::domain::workflow::Facet {
+    use crate::domain::workflow::{Facet, FacetKey, WorkflowSource};
+    Facet::restore(
+        kind,
+        FacetKey::new(key).unwrap(),
+        "/workflows".into(),
+        WorkflowSource::File {
+            path: std::path::PathBuf::from("/workflows")
+                .join(kind.dir_name())
+                .join(format!("{key}.md")),
+        },
+        content,
+    )
 }
 
 #[cfg(test)]
@@ -376,12 +399,13 @@ pub(crate) mod startup {
     }
 }
 
-use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository, WorkflowSummary};
+use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository};
 #[derive(Default)]
 pub struct FakeDefinitionRepository {
     pub definitions: Mutex<HashMap<String, WorkflowDefinition>>,
     pub read_error: Mutex<Option<String>>,
     pub deleted: Mutex<Vec<String>>,
+    pub saved_sources: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl FakeDefinitionRepository {
@@ -389,53 +413,64 @@ impl FakeDefinitionRepository {
         self.definitions
             .lock()
             .unwrap()
-            .insert(definition.name.clone(), definition);
+            .insert(definition.file_stem().to_owned(), definition);
     }
 }
 
 impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-    fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        let mut summaries = self
-            .definitions
-            .lock()
-            .unwrap()
-            .values()
-            .map(|definition| WorkflowSummary {
-                failure: None,
-                name: definition.name.clone(),
-                description: definition.description.clone(),
-                builtin: definition.builtin,
-                is_running: running_names.contains(&definition.name),
-                source_format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
-            })
-            .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(summaries)
+    fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
+        Ok(self.definitions.lock().unwrap().keys().cloned().collect())
     }
-
-    fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
+    fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {
         if let Some(message) = self.read_error.lock().unwrap().as_ref() {
             return Err(WorkflowError::external(message));
         }
-        Ok(self.definitions.lock().unwrap().get(file_stem).cloned())
-    }
-
-    fn save(
-        &self,
-        definition: WorkflowDefinition,
-        _original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
         self.definitions
             .lock()
             .unwrap()
-            .insert(definition.name.clone(), definition);
+            .get(name)
+            .cloned()
+            .ok_or_else(|| WorkflowError::NotFound(name.into()))
+    }
+    fn save(
+        &self,
+        definition: WorkflowDefinition,
+        original_name: Option<&str>,
+    ) -> Result<(), WorkflowError> {
+        if let Some(original) = original_name {
+            self.definitions.lock().unwrap().remove(original);
+        }
+        self.insert(definition);
         Ok(())
     }
-
-    fn delete(&self, name: &str) -> Result<(), WorkflowError> {
-        self.deleted.lock().unwrap().push(name.to_string());
-        self.definitions.lock().unwrap().remove(name);
+    fn delete(&self, definition: &WorkflowDefinition) -> Result<(), WorkflowError> {
+        self.definitions
+            .lock()
+            .unwrap()
+            .remove(definition.file_stem());
+        self.deleted
+            .lock()
+            .unwrap()
+            .push(definition.file_stem().into());
         Ok(())
+    }
+    fn find(&self, name: Option<&str>) -> Result<Option<WorkflowDefinition>, WorkflowError> {
+        match name.map(|name| self.get(name)) {
+            None | Some(Err(WorkflowError::NotFound(_))) => Ok(None),
+            Some(result) => result.map(Some),
+        }
+    }
+    fn save_source(
+        &self,
+        definition: &WorkflowDefinition,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<(), WorkflowError> {
+        self.saved_sources
+            .lock()
+            .unwrap()
+            .push((source.into(), original_name.map(str::to_string)));
+        self.save(definition.clone(), original_name)
     }
 }
 
@@ -447,4 +482,11 @@ impl FakeDefinitionRepository {
     pub fn get_saved(&self, name: &str) -> Option<crate::domain::workflow::WorkflowDefinition> {
         self.definitions.lock().unwrap().get(name).cloned()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn definition(
+    content: crate::domain::workflow::WorkflowDefinitionContent,
+) -> WorkflowDefinition {
+    WorkflowDefinition::new("/workflows".into(), content).unwrap()
 }

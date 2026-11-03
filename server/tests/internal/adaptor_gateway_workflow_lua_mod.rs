@@ -17,7 +17,7 @@ use releashd::test_support::integration::workflow::Predicate;
 use releashd::test_support::integration::workflow::RuleDraft;
 use releashd::test_support::integration::workflow::SourceDraft;
 use releashd::test_support::integration::workflow::SourceRoot;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowLuaHost;
 use releashd::test_support::integration::workflow::FN_ALL;
 use releashd::test_support::integration::workflow::FN_ANY;
@@ -744,7 +744,11 @@ fn diagnose_delegate_lua(
     )
 }
 
-fn assert_delegate_equivalent(lua: &str, yaml: &str, accepted: bool) -> Option<WorkflowDefinition> {
+fn assert_delegate_equivalent(
+    lua: &str,
+    yaml: &str,
+    accepted: bool,
+) -> Option<WorkflowDefinitionContent> {
     let lua = diagnose_delegate_lua(lua);
     let yaml = releashd::test_support::integration::workflow::diagnose_workflow_source(yaml, None);
     let signature =
@@ -1267,7 +1271,8 @@ pub fn test_completion_delegate_無名sessionの自己artifactを正準名で配
                     &format!("inputs: {{result: {source}}}"),
                 )
                 .replace("work", &owner.name);
-            let mut expected_workflow: WorkflowDefinition = serde_saphyr::from_str(&yaml).unwrap();
+            let mut expected_workflow: WorkflowDefinitionContent =
+                serde_saphyr::from_str(&yaml).unwrap();
             expected_workflow
                 .nodes
                 .iter_mut()
@@ -1280,7 +1285,7 @@ pub fn test_completion_delegate_無名sessionの自己artifactを正準名で配
                 .inputs[0]
                 .1 = InputSourceRef::node_artifact(source.replace("work", "main#0"));
             assert_eq!(workflow, expected_workflow);
-            let restored: WorkflowDefinition =
+            let restored: WorkflowDefinitionContent =
                 serde_json::from_str(&serde_json::to_string(&workflow).unwrap()).unwrap();
             releashd::test_support::integration::workflow::validate(&restored).unwrap();
             let bindings = releashd::test_support::integration::workflow::resolve_entry_bindings(
@@ -1401,11 +1406,11 @@ pub fn test_completion_delegate_複数inputsの記述順が異なってもyaml�
         ("when: child.complete", "when: done"),
         ("max_iterations: 3", "max_iterations: 2"),
     ] {
-        let different: WorkflowDefinition =
+        let different: WorkflowDefinitionContent =
             serde_saphyr::from_str(&yaml.replace(old, new)).unwrap();
         assert_ne!(workflow, different, "{new}");
     }
-    let yaml: WorkflowDefinition = serde_saphyr::from_str(&yaml).unwrap();
+    let yaml: WorkflowDefinitionContent = serde_saphyr::from_str(&yaml).unwrap();
     assert_eq!(
         yaml.node_by_name("work")
             .unwrap()
@@ -1463,7 +1468,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::workflow::NodeCompletion;
     use releashd::test_support::integration::workflow::Rule;
     use releashd::test_support::integration::workflow::SessionPermission;
-    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
     use std::collections::HashMap;
 
     fn load(source: &str) -> Result<LuaWorkflowDefinition, LuaWorkflowError> {
@@ -2204,7 +2209,7 @@ return r.workflow{
 "#,
         )
         .unwrap();
-        let yaml: WorkflowDefinition = serde_saphyr::from_str(
+        let yaml: WorkflowDefinitionContent = serde_saphyr::from_str(
             r#"
 name: review
 description: Review

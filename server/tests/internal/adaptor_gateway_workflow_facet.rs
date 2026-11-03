@@ -1,11 +1,11 @@
 use releashd::test_support::integration::workflow::delete_facet;
-use releashd::test_support::integration::workflow::list_facet_summaries;
 use releashd::test_support::integration::workflow::list_facets;
 use releashd::test_support::integration::workflow::load_facet;
 use releashd::test_support::integration::workflow::resolve_facet_path;
 use releashd::test_support::integration::workflow::save_facet;
 use releashd::test_support::integration::workflow::FacetError;
 use releashd::test_support::integration::workflow::FacetKind;
+use releashd::test_support::integration::workflow::{FacetFileQueryService, FacetQueryService};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -39,7 +39,8 @@ pub fn test_facet読取_読めない上書きをbuiltinへ切り替えず一覧�
     fs::create_dir_all(&path).unwrap();
     // When
     let content = load_facet(FacetKind::Instruction, key, directory.path());
-    let summaries = list_facet_summaries(FacetKind::Instruction, directory.path());
+    let summaries =
+        FacetFileQueryService::new(directory.path()).list_facet_summaries(FacetKind::Instruction);
     let diagnosis = releashd::test_support::integration::workflow::diagnose_all(
         directory.path(),
         directory.path(),
@@ -174,6 +175,7 @@ pub fn list_facets_nonexistent_dir() {
 
 #[test]
 pub fn list_facet_summaries_merges_builtin_and_custom() {
+    // Given
     let tmp = TempDir::new().unwrap();
     let policies = tmp.path().join("policies");
     fs::create_dir_all(&policies).unwrap();
@@ -183,10 +185,14 @@ pub fn list_facet_summaries_merges_builtin_and_custom() {
     )
     .unwrap();
 
-    let summaries = list_facet_summaries(FacetKind::Policy, tmp.path()).unwrap();
+    // When
+    let summaries = FacetFileQueryService::new(tmp.path())
+        .list_facet_summaries(FacetKind::Policy)
+        .unwrap();
     let builtin_count =
         releashd::test_support::integration::workflow::list_builtin_facet_keys(FacetKind::Policy)
             .len();
+    // Then
     assert_eq!(summaries.len(), builtin_count + 1);
 
     let custom = summaries.iter().find(|s| s.key == "custom-policy").unwrap();
@@ -233,17 +239,13 @@ pub fn list_facets_includes_builtin_keys() {
 }
 
 #[test]
-pub fn delete_builtin_facet_is_protected() {
+pub fn test_facet削除_利用者ファイルのないbuiltin名はnot_found() {
     let tmp = TempDir::new().unwrap();
-    // ビルトインキーの削除はBuiltinProtectedエラー
     let builtin_keys =
         releashd::test_support::integration::workflow::list_builtin_facet_keys(FacetKind::Policy);
     if let Some(key) = builtin_keys.first() {
         let result = delete_facet(FacetKind::Policy, key, tmp.path());
-        assert!(matches!(
-            result.unwrap_err(),
-            FacetError::BuiltinProtected { .. }
-        ));
+        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 }
 

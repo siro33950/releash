@@ -3,7 +3,7 @@ pub(crate) mod tests {
 
     use super::super::*;
     use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
-    use crate::domain::workflow::WorkflowDefinition;
+    use crate::domain::workflow::WorkflowDefinitionContent;
     use crate::domain::workflow::{NodeKindName, RuntimeExecutionState, TokenUsage};
     use crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot;
 
@@ -20,7 +20,7 @@ pub(crate) mod tests {
             current_node_name: Some("approval".to_string()),
             current_session_id: None,
             node_history: Vec::new(),
-            workflow_definition: WorkflowDefinition::default(),
+            workflow_definition: WorkflowDefinitionContent::default(),
             total_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: node_is_waiting_approval

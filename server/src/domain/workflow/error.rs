@@ -5,6 +5,7 @@
 //! filesystem-specific error types.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// workflow の操作を拒否する理由、診断による失敗、または外部の失敗。
 pub enum WorkflowError {
     Technical(crate::domain::failure::TechnicalFailure),
     Store(crate::domain::failure::StorageFailure),
@@ -13,6 +14,8 @@ pub enum WorkflowError {
     CorruptStoredState(String),
     IncompatibleStoredEvent(String),
     Validation(String),
+    /// 定義の検証で検出された診断による失敗。
+    Diagnostics(Vec<crate::domain::workflow::value_objects::diagnostic::DiagnosticItem>),
     Conflict(String),
     InvalidState(String),
     NotFound(String),
@@ -33,6 +36,14 @@ impl std::fmt::Display for WorkflowError {
                 write!(f, "incompatible_stored_event: {message}")
             }
             Self::Validation(msg) => write!(f, "validation_error: {msg}"),
+            Self::Diagnostics(items) => {
+                let messages = items
+                    .iter()
+                    .map(|item| format!("{}: {}", item.code, item.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "workflow_diagnostics: {messages}")
+            }
             Self::Conflict(msg) => write!(f, "conflict: {msg}"),
             Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
             Self::NotFound(msg) => write!(f, "not_found: {msg}"),

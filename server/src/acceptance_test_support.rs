@@ -56,11 +56,11 @@ pub fn build_client_dependencies(
 }
 
 pub fn workflow_read(
-    store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-    data_dir: impl Into<std::path::PathBuf>,
-    workflows_dir: Option<std::path::PathBuf>,
-) -> crate::usecase::workflow::WorkflowReadUsecase {
-    workflow_services(store, data_dir, workflows_dir).read_usecase()
+    _store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    _data_dir: impl Into<std::path::PathBuf>,
+    _workflows_dir: Option<std::path::PathBuf>,
+) -> crate::usecase::workflow::WorkflowUsecase {
+    workflow_services(_store, _data_dir, _workflows_dir)
 }
 
 pub fn workflow_services(
@@ -72,7 +72,8 @@ pub fn workflow_services(
         Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         data_dir,
         Arc::new(crate::adaptor::gateway::workflow::PassthroughManagedWorktreeGateway),
-        Arc::new(crate::adaptor::gateway::workflow::NoopWorkflowExternalEditorGateway),
+        Arc::new(crate::usecase::workflow::test_support::NoopEditorSettingsGateway),
+        Arc::new(crate::usecase::workflow::test_support::NoopEditorLauncherGateway),
         store,
         None,
         workflows_dir,

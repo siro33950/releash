@@ -2,7 +2,7 @@
 
 use crate::domain::workflow::entities::workflow_execution::ExecutionTree as DomainExecutionTree;
 use crate::domain::workflow::services::{contract as workflow_contract, secret_masker};
-use crate::domain::workflow::WorkflowDefinition;
+use crate::domain::workflow::WorkflowDefinitionContent;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::{ContractType, ContractValidationResult};
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
@@ -64,7 +64,7 @@ pub(crate) fn validate_submit_target_context(
 }
 
 pub(crate) fn validate_artifact_contract_for_workflow(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node_name: &str,
     contract: &str,
 ) -> Result<(), WorkflowRuntimeError> {
@@ -86,7 +86,7 @@ pub(crate) fn validate_artifact_contract_for_workflow(
 }
 
 pub(crate) fn validate_submission_output_with_secrets(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     contract: &str,
     artifact: serde_json::Value,
     secrets: &[String],

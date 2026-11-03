@@ -1,12 +1,16 @@
 use super::*;
 
 #[test]
-fn lua_doc_field_quotes_keys_that_are_not_plain_identifiers() {
-    assert_eq!(lua_doc_field("coding"), "coding");
-    assert_eq!(lua_doc_field("_private"), "_private");
-    assert_eq!(
-        lua_doc_field("releash-thread-cli"),
-        "[\"releash-thread-cli\"]"
-    );
-    assert_eq!(lua_doc_field("with\"quote"), "[\"with\\\"quote\"]");
+fn test_lua補完_識別子以外のkeyを引用する() {
+    // Given
+    let cases = [
+        ("coding", "coding"),
+        ("_private", "_private"),
+        ("releash-thread-cli", "[\"releash-thread-cli\"]"),
+        ("with\"quote", "[\"with\\\"quote\"]"),
+    ];
+    // When
+    let fields = cases.map(|(key, _)| lua_doc_field(key));
+    // Then
+    assert_eq!(fields, cases.map(|(_, expected)| expected.to_string()));
 }

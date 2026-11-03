@@ -9,7 +9,7 @@ use serde::Serialize;
 pub use crate::domain::workflow::NodeCompletion;
 pub use crate::domain::workflow::{
     CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, Rule, SchemaDef,
-    SequenceSpec, SessionSpec, WorkflowDefinition as WorkflowDefinitionYaml,
+    SequenceSpec, SessionSpec, WorkflowDefinitionContent as WorkflowDefinitionYaml,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -21,12 +21,4 @@ pub struct Summary {
     pub builtin: bool,
     pub is_running: bool,
     pub source_format: crate::domain::workflow::WorkflowSourceFormat,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct FacetSummary {
-    pub key: String,
-    pub kind: String,
-    pub description: String,
-    pub builtin: bool,
 }

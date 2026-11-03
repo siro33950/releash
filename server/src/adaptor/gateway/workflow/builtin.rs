@@ -135,7 +135,7 @@ impl fmt::Display for BuiltinError {
 
 impl std::error::Error for BuiltinError {}
 
-/// 共通 load パイプライン: parse → builtin flag 設定 → validation → facet 解決後参照検証。
+/// 共通 load パイプライン: parse → validation → facet 解決後参照検証。
 ///
 /// [02] schema 境界: built-in と user-authored YAML の load 経路を統一する。
 /// 解決済み facet 本文は gateway 側 read model として検証し、Workflow definition には
@@ -164,12 +164,10 @@ pub fn load_builtin_workflow_resolved(
             diagnostics: diagnosis.diagnostics,
         });
     }
-    let mut wf: WorkflowDefinitionYaml =
-        diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
-            filename: entry.filename,
-            message: "workflow source could not be parsed".to_string(),
-        })?;
-    wf.builtin = true;
+    let wf: WorkflowDefinitionYaml = diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
+        filename: entry.filename,
+        message: "workflow source could not be parsed".to_string(),
+    })?;
     validation::validate(&workflow_definition_to_domain(&wf)).map_err(|err| {
         BuiltinError::Validation {
             filename: entry.filename,
@@ -559,23 +557,11 @@ pub fn list_builtin_facet_keys(kind: FacetKind) -> Vec<&'static str> {
         .collect()
 }
 
-pub fn is_builtin_workflow(name: &str) -> bool {
-    BUILTINS
-        .iter()
-        .any(|e| e.filename.strip_suffix(".yml") == Some(name))
-}
-
 pub fn builtin_workflow_source(name: &str) -> Option<&'static str> {
     BUILTINS
         .iter()
         .find(|e| e.filename.strip_suffix(".yml") == Some(name))
         .map(|e| e.content)
-}
-
-pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
-    BUILTIN_FACETS
-        .iter()
-        .any(|e| e.kind == kind && e.key == key)
 }
 
 #[cfg(test)]

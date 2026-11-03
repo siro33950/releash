@@ -1,25 +1,25 @@
 pub(crate) mod tests {
+    use releashd::test_support::integration::workflow::{
+        ExecutionOrigin, FacetFileQueryService, FacetQueryService, NodeKindName, WorkflowEvent,
+    };
+
+    use std::str::FromStr;
 
     use releashd::test_support::integration::platform::AppState;
-    use releashd::test_support::integration::workflow::delete_facet_inner;
-    use releashd::test_support::integration::workflow::duplicate_facet_inner;
     use releashd::test_support::integration::workflow::get_facet_inner;
-    use releashd::test_support::integration::workflow::list_facet_summaries_inner;
     use releashd::test_support::integration::workflow::list_facets_inner;
-    use releashd::test_support::integration::workflow::open_facet_in_editor_inner;
     use releashd::test_support::integration::workflow::register_shared;
-    use releashd::test_support::integration::workflow::save_facet_inner;
     use releashd::test_support::integration::workflow::FacetKind;
-    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
     use std::sync::Arc;
 
     use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
-    use releashd::test_support::integration::workflow::ExecutionOrigin;
+
     use releashd::test_support::integration::workflow::NodeDefinition;
     use releashd::test_support::integration::workflow::NodeKind;
-    use releashd::test_support::integration::workflow::NodeKindName;
+
     use releashd::test_support::integration::workflow::SessionSpec;
-    use releashd::test_support::integration::workflow::WorkflowEvent;
+
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -140,60 +140,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn save_facet_inner_writes_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let key = format!("created-{dir_name}");
-            save_facet_inner(kind, &key, "WRITTEN_BODY", true, tmp.path()).unwrap();
-            let path = tmp.path().join(dir_name).join(format!("{key}.md"));
-            assert!(path.exists(), "save_facet({kind}) must create {path:?}");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "WRITTEN_BODY");
-        }
-    }
-
-    #[test]
-    pub fn save_facet_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = save_facet_inner(bad, "anything", "BODY", true, tmp.path());
-            assert!(result.is_err(), "save_facet({bad}) must be rejected");
-        }
-    }
-
-    #[test]
-    pub fn delete_facet_inner_removes_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let key = key_for(kind);
-            let path = tmp.path().join(dir_name).join(format!("{key}.md"));
-            assert!(path.exists());
-            delete_facet_inner(kind, &key, tmp.path()).unwrap();
-            assert!(!path.exists(), "delete_facet({kind}) must remove {path:?}");
-        }
-    }
-
-    #[test]
-    pub fn delete_facet_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = delete_facet_inner(bad, "sample-policies", tmp.path());
-            assert!(result.is_err(), "delete_facet({bad}) must be rejected");
-        }
-        // 3種のサンプルは温存されている
-        for (_, dir_name) in THREE_KINDS {
-            assert!(tmp
-                .path()
-                .join(dir_name)
-                .join(format!("sample-{dir_name}.md"))
-                .exists());
-        }
-    }
-
-    #[test]
     pub fn list_facet_summaries_inner_lists_for_each_kind() {
+        // Given
         let tmp = setup_tmp_facets_base();
         for (kind, _) in THREE_KINDS {
-            let summaries = list_facet_summaries_inner(kind, tmp.path()).unwrap();
+            // When
+            let summaries = FacetFileQueryService::new(tmp.path())
+                .list_facet_summaries(FacetKind::from_str(kind).unwrap())
+                .unwrap();
+            // Then
             assert!(
                 summaries.iter().any(|s| s.key == key_for(kind)),
                 "list_facet_summaries({kind}) must include the seeded key"
@@ -203,90 +158,17 @@ pub(crate) mod tests {
 
     #[test]
     pub fn list_facet_summaries_inner_rejects_unknown_without_io() {
+        // Given
         let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = list_facet_summaries_inner(bad, tmp.path());
-            assert!(
-                result.is_err(),
-                "list_facet_summaries({bad}) must be rejected"
-            );
-        }
-    }
-
-    #[test]
-    pub fn duplicate_facet_inner_creates_new_file_for_each_kind() {
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let source = key_for(kind);
-            let new_key = format!("copied-{dir_name}");
-            duplicate_facet_inner(kind, &source, &new_key, tmp.path()).unwrap();
-            let path = tmp.path().join(dir_name).join(format!("{new_key}.md"));
-            assert!(
-                path.exists(),
-                "duplicate_facet({kind}) must create {path:?}"
-            );
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "SAMPLE_BODY");
-        }
-    }
-
-    #[test]
-    pub fn duplicate_facet_inner_rejects_unknown_without_io() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let result = duplicate_facet_inner(bad, "src", "dst", tmp.path());
-            assert!(result.is_err(), "duplicate_facet({bad}) must be rejected");
-        }
-    }
-
-    #[test]
-    pub fn open_facet_in_editor_inner_invokes_opener_for_each_kind() {
-        // open_facet_in_editor のエディタ呼び出し点はテストダブル（クロージャ）で差し替えて、
-        // 実プロセスを起動せずに 3 種すべての正常経路到達と引数（対象パス）を検証する。
-        let tmp = setup_tmp_facets_base();
-        for (kind, dir_name) in THREE_KINDS {
-            let recorded: Arc<std::sync::Mutex<Vec<String>>> =
-                Arc::new(std::sync::Mutex::new(Vec::new()));
-            let recorded_clone = recorded.clone();
-            let key = key_for(kind);
-            open_facet_in_editor_inner(kind, &key, tmp.path(), move |path_str| {
-                recorded_clone.lock().unwrap().push(path_str.to_string());
-                Ok(())
-            })
-            .unwrap();
-            let paths = recorded.lock().unwrap();
-            assert_eq!(
-                paths.len(),
-                1,
-                "opener must be invoked exactly once for {kind}"
-            );
-            let expected = tmp.path().join(dir_name).join(format!("{key}.md"));
-            assert_eq!(
-                paths[0],
-                expected.to_string_lossy().to_string(),
-                "opener must receive the resolved facet path for {kind}"
-            );
-        }
-    }
-
-    #[test]
-    pub fn open_facet_in_editor_inner_rejects_unknown_without_invoking_opener() {
-        let tmp = setup_tmp_facets_base();
-        for bad in ["unknown"] {
-            let invoked: Arc<std::sync::Mutex<bool>> = Arc::new(std::sync::Mutex::new(false));
-            let invoked_clone = invoked.clone();
-            let result = open_facet_in_editor_inner(bad, "sample", tmp.path(), move |_| {
-                *invoked_clone.lock().unwrap() = true;
-                Ok(())
-            });
-            assert!(
-                result.is_err(),
-                "open_facet_in_editor({bad}) must be rejected"
-            );
-            assert!(
-                !*invoked.lock().unwrap(),
-                "opener must not be invoked for {bad}"
-            );
-        }
+        let bad = "unknown";
+        // When
+        let result = FacetKind::from_str(bad)
+            .and_then(|kind| FacetFileQueryService::new(tmp.path()).list_facet_summaries(kind));
+        // Then
+        assert!(
+            result.is_err(),
+            "list_facet_summaries({bad}) must be rejected"
+        );
     }
 
     // ---- duplicate logic tests ----
@@ -297,7 +179,6 @@ pub(crate) mod tests {
         WorkflowDefinitionYaml {
             name: name.to_string(),
             description: "test workflow".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
                 name: "main".to_string(),
@@ -326,51 +207,40 @@ pub(crate) mod tests {
         )
         .unwrap();
         let wf = make_test_workflow("source-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
-        // Simulate duplicate logic
-        let new_name = "copied-wf";
-        releashd::test_support::integration::workflow::validate_name(new_name).unwrap();
-        assert!(!dir.join(format!("{new_name}.yml")).exists());
-        assert!(!releashd::test_support::integration::workflow::is_builtin_workflow(new_name));
-
-        let mut copied = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join("source-wf.yml"),
-            dir,
-        )
-        .unwrap();
-        copied.name = new_name.to_string();
-        copied.builtin = false;
-        releashd::test_support::integration::workflow::save_workflow(dir, &copied).unwrap();
-
-        assert!(dir.join(format!("{new_name}.yml")).exists());
-        let loaded = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join(format!("{new_name}.yml")),
-            dir,
-        )
-        .unwrap();
-        assert_eq!(loaded.name, new_name);
-        assert!(!loaded.builtin);
+        // When
+        let usecase = workflow_usecase(dir);
+        usecase
+            .duplicate_workflow("source-wf", "copied-wf")
+            .unwrap();
+        // Then
+        use releashd::test_support::integration::workflow::{
+            WorkflowDefinitionFileRepository, WorkflowDefinitionRepository,
+        };
+        assert!(dir.join("copied-wf.yml").exists());
+        let copied = WorkflowDefinitionFileRepository::new(dir, dir)
+            .get("copied-wf")
+            .unwrap();
+        let content = copied.content().unwrap();
+        assert_eq!(content.name, "copied-wf");
+        assert_eq!(content.description, wf.description);
+        assert_eq!(content.nodes, wf.nodes);
     }
 
     #[test]
     pub fn duplicate_workflow_rejects_existing_custom_name() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("instructions")).unwrap();
+        std::fs::write(dir.join("instructions/review-acceptance.md"), "Review.").unwrap();
         let wf = make_test_workflow("existing-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
-        // Act: Simulate the duplicate check from the command
-        let new_name = "existing-wf";
-        let result: Result<(), String> = if dir.join(format!("{new_name}.yml")).exists() {
-            Err(format!("ワークフロー '{new_name}' は既に存在します"))
-        } else {
-            Ok(())
-        };
-
-        // Assert
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("既に存在します"));
+        // When
+        let result = workflow_usecase(dir).duplicate_workflow("existing-wf", "existing-wf");
+        // Then
+        assert!(result.unwrap_err().to_string().contains("既に存在します"));
     }
 
     #[test]
@@ -440,35 +310,6 @@ pub(crate) mod tests {
 
     // ---- save_workflow rename duplicate check ----
 
-    #[test]
-    pub fn save_workflow_rename_rejects_duplicate_name() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        // Create two workflows
-        let wf_a = make_test_workflow("workflow-a");
-        let wf_b = make_test_workflow("workflow-b");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf_a).unwrap();
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf_b).unwrap();
-
-        // Simulate renaming workflow-a to workflow-b (duplicate)
-        let original_name = Some("workflow-a".to_string());
-        let new_name = "workflow-b";
-        let is_rename = original_name.as_ref().is_some_and(|o| *o != new_name);
-
-        // Act: Simulate the rename duplicate check from the command
-        let result: Result<(), String> =
-            if is_rename && dir.join(format!("{new_name}.yml")).exists() {
-                Err(format!("ワークフロー '{new_name}' は既に存在します"))
-            } else {
-                Ok(())
-            };
-
-        // Assert
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("既に存在します"));
-    }
-
     // ---- save_facet is_new duplicate check ----
 
     #[test]
@@ -519,10 +360,11 @@ pub(crate) mod tests {
             // list_facets includes builtins, so duplicate to a builtin key would be caught
             // by the existing.contains(&new_key) check
             assert!(
-                releashd::test_support::integration::workflow::is_builtin_facet(
+                releashd::test_support::integration::workflow::get_builtin_facet(
                     FacetKind::Policy,
                     key
                 )
+                .is_some()
             );
 
             // Verify list_facets returns builtin keys (which is used for duplicate check)
@@ -542,29 +384,41 @@ pub(crate) mod tests {
 
     // ---- save_workflow create/update/rename logic ----
 
-    /// save_workflow のコア判定ロジックを再現するヘルパー
-    fn simulate_save_workflow(
+    fn save_workflow(
         dir: &Path,
         workflow: &WorkflowDefinitionYaml,
         original_name: Option<&str>,
     ) -> Result<(), String> {
-        let is_new = original_name.is_none();
-        let is_rename = original_name.is_some_and(|o| o != workflow.name);
-        if (is_new || is_rename) && dir.join(format!("{}.yml", workflow.name)).exists() {
-            return Err(format!("ワークフロー '{}' は既に存在します", workflow.name));
-        }
-        releashd::test_support::integration::workflow::save_workflow(dir, workflow)
-            .map_err(|e| e.to_string())?;
-        if let Some(orig) = original_name {
-            if orig != workflow.name {
-                let old_path = dir.join(format!("{orig}.yml"));
-                if old_path.exists() {
-                    std::fs::remove_file(&old_path)
-                        .map_err(|e| format!("旧ファイル削除失敗: {e}"))?;
-                }
-            }
-        }
-        Ok(())
+        workflow_usecase(dir)
+            .save_workflow_source_with_diagnostics(
+                &serde_saphyr::to_string(workflow).unwrap(),
+                original_name,
+            )
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    fn workflow_usecase(
+        dir: &Path,
+    ) -> releashd::test_support::integration::workflow::WorkflowUsecase {
+        std::fs::create_dir_all(dir.join("instructions")).unwrap();
+        std::fs::write(
+            dir.join("instructions/review-acceptance.md"),
+            "Review the change.",
+        )
+        .unwrap();
+        let store = releashd::test_support::integration::persistence::LocalEventStore::open(
+            releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
+                dir.to_path_buf(),
+                Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+            ),
+        )
+        .unwrap();
+        releashd::test_support::integration::platform::workflow_services(
+            store,
+            dir,
+            Some(dir.to_path_buf()),
+        )
     }
 
     #[test]
@@ -580,12 +434,12 @@ pub(crate) mod tests {
         .unwrap();
 
         let wf = make_test_workflow("my-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
         // Update same workflow (original_name = Some("my-wf"), name = "my-wf")
         let mut updated = make_test_workflow("my-wf");
         updated.description = "updated desc".to_string();
-        let result = simulate_save_workflow(dir, &updated, Some("my-wf"));
+        let result = save_workflow(dir, &updated, Some("my-wf"));
         assert!(
             result.is_ok(),
             "Expected same-name update to succeed, got: {result:?}"
@@ -605,7 +459,7 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("brand-new");
-        let result = simulate_save_workflow(dir, &wf, None);
+        let result = save_workflow(dir, &wf, None);
         assert!(result.is_ok());
         assert!(dir.join("brand-new.yml").exists());
     }
@@ -616,9 +470,9 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("dup-wf");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
-        let result = simulate_save_workflow(dir, &wf, None);
+        let result = save_workflow(dir, &wf, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("既に存在します"));
     }
@@ -629,11 +483,11 @@ pub(crate) mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("old-name");
-        releashd::test_support::integration::workflow::save_workflow(dir, &wf).unwrap();
+        super::seed_workflow(dir, &wf).unwrap();
 
         let mut renamed = make_test_workflow("new-name");
         renamed.description = "renamed".to_string();
-        let result = simulate_save_workflow(dir, &renamed, Some("old-name"));
+        let result = save_workflow(dir, &renamed, Some("old-name"));
         assert!(result.is_ok());
         assert!(!dir.join("old-name.yml").exists());
         assert!(dir.join("new-name.yml").exists());
@@ -644,28 +498,16 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        releashd::test_support::integration::workflow::save_workflow(
-            dir,
-            &make_test_workflow("wf-a"),
-        )
-        .unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            dir,
-            &make_test_workflow("wf-b"),
-        )
-        .unwrap();
+        super::seed_workflow(dir, &make_test_workflow("wf-a")).unwrap();
+        super::seed_workflow(dir, &make_test_workflow("wf-b")).unwrap();
 
         let renamed = make_test_workflow("wf-b");
-        let result = simulate_save_workflow(dir, &renamed, Some("wf-a"));
+        let result = save_workflow(dir, &renamed, Some("wf-a"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("既に存在します"));
     }
 
     // ---- [05] read-only Execution 観測 API: Tauri command 境界の直接テスト ----
-
-    fn read_only_test_uuid(seed: u8) -> String {
-        uuid::Uuid::from_bytes([seed; 16]).to_string()
-    }
 
     pub(crate) fn make_read_only_app() -> (
         WorkflowTestDependencies,
@@ -785,7 +627,7 @@ pub(crate) mod tests {
                     releashd::test_support::integration::workflow::WorkflowNodeProcesses::default(
                     ),
                 ),
-                data_dir.join("workflows"),
+                releashd::test_support::integration::platform::WorkflowEditorDependencies { settings: Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway), launcher: Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway), workflows_dir: data_dir.join("workflows") },
             );
         let workflow_usecase = Arc::new(workflow_usecase);
         let git_host_usecase =
@@ -918,9 +760,10 @@ pub(crate) mod tests {
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
     pub async fn execution_projection_preserves_state_without_runtime_enrichment() {
+        // Given
         let (app, _data_dir, local_event_store, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
-        let execution_id = read_only_test_uuid(5);
+        let execution_id = uuid::Uuid::from_bytes([5; 16]).to_string();
         releashd::test_support::integration::workflow::append_canonical_events(
             &local_event_store,
             &[
@@ -955,12 +798,14 @@ pub(crate) mod tests {
             .as_ref()
             .unwrap()
             .workflow_usecase
-            .read_usecase();
+            .clone();
+        // When
         let view = read
             .get_execution_state(&execution_id)
             .await
             .unwrap()
             .unwrap();
+        // Then
         assert_eq!(view.id, execution_id);
         assert_eq!(view.node_executions.len(), 1);
         assert_eq!(view.node_executions[0].node_name, "main");
@@ -968,9 +813,113 @@ pub(crate) mod tests {
 
         // 存在しない execution_id は Ok(None)。
         let missing = read
-            .get_execution_state(&read_only_test_uuid(97))
+            .get_execution_state(&uuid::Uuid::from_bytes([97; 16]).to_string())
             .await
             .unwrap();
         assert!(missing.is_none());
     }
+}
+
+#[tokio::test]
+async fn test_定義フォルダrpc_登録したhandlerがusecaseを呼びフォルダを用意する() {
+    use releashd::test_support::integration::{transport, workflow};
+    // Given
+    let (app, data_dir, _store) = tests::make_read_only_app();
+    let folder = data_dir.join("workflows");
+    assert!(!folder.exists());
+    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
+    workflow::register_shared(&mut dispatch, &app.client);
+    assert!(dispatch.contains("open_workflow_directory_in_editor"));
+    // When
+    use releashd::test_support::integration::wire;
+    let command = wire::command_request::Command::OpenWorkflowDirectoryInEditor(Default::default());
+    let result = dispatch.dispatch(command).await.unwrap();
+    // Then
+    assert!(matches!(
+        result,
+        wire::command_result::Command::OpenWorkflowDirectoryInEditor(_)
+    ));
+    assert!(folder.is_dir());
+}
+
+#[tokio::test]
+async fn test_workflow保存rpc_entityの名前と診断と業務エラーを転送する() {
+    use releashd::test_support::integration::{client_protocol::wire, transport, workflow};
+    // Given
+    let (app, data_dir, _store) = tests::make_read_only_app();
+    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
+    workflow::register_shared(&mut dispatch, &app.client);
+    let save = |source: &str, original_name| {
+        wire::command_request::Command::SaveWorkflowSource(wire::SaveWorkflowSourceRequest {
+            source: Some(source.into()),
+            original_name,
+        })
+    };
+    // When
+    let success = dispatch
+        .dispatch(save(
+            "name: rpc-saved\ndescription: saved\nnodes:\n  main: {command: 'true'}\n",
+            None,
+        ))
+        .await
+        .unwrap();
+    let diagnostic = dispatch.dispatch(save("name: [", None)).await.unwrap();
+    let rejected = dispatch
+        .dispatch(save(
+            "name: rpc-saved\ndescription: duplicate\nnodes:\n  main: {command: 'true'}\n",
+            None,
+        ))
+        .await;
+    // Then
+    let wire::command_result::Command::SaveWorkflowSource(success) = success else {
+        panic!("save result");
+    };
+    assert!(
+        matches!(success.variant, Some(wire::save_workflow_source_result_dto::Variant::Success(value)) if value.ok == Some(true) && value.name.as_deref() == Some("rpc-saved"))
+    );
+    assert!(data_dir.join("workflows/rpc-saved.yml").exists());
+    let wire::command_result::Command::SaveWorkflowSource(diagnostic) = diagnostic else {
+        panic!("diagnostics result");
+    };
+    assert!(
+        matches!(diagnostic.variant, Some(wire::save_workflow_source_result_dto::Variant::Diagnostics(value)) if value.ok == Some(false) && !value.diagnostics.as_ref().unwrap().items.is_empty())
+    );
+    assert!(rejected.is_err());
+}
+
+#[tokio::test]
+async fn test_facet編集rpc_正規名だけをdomainの種類へ変換する() {
+    use releashd::test_support::integration::{client_protocol::wire, transport, workflow};
+    // Given
+    let (app, data_dir, _store) = tests::make_read_only_app();
+    std::fs::create_dir_all(data_dir.join("workflows/policies")).unwrap();
+    std::fs::write(data_dir.join("workflows/policies/custom.md"), "# Custom").unwrap();
+    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
+    workflow::register_shared(&mut dispatch, &app.client);
+    // When / Then
+    for kind in ["policy", "policies", "unknown"] {
+        let result = dispatch
+            .dispatch(wire::command_request::Command::OpenFacetInEditor(
+                wire::OpenFacetInEditorRequest {
+                    kind: Some(kind.into()),
+                    key: Some("custom".into()),
+                },
+            ))
+            .await;
+        if kind == "policy" {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
+
+fn seed_workflow(
+    dir: &std::path::Path,
+    workflow: &releashd::test_support::integration::workflow::WorkflowDefinitionContent,
+) -> std::io::Result<()> {
+    std::fs::write(
+        dir.join(format!("{}.yml", workflow.name)),
+        serde_saphyr::to_string(workflow).unwrap(),
+    )
 }

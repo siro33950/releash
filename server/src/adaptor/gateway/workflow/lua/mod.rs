@@ -10,7 +10,7 @@ use crate::domain::workflow::value_objects::{
     ChildEntry, CommandSpec, EnvironmentVariableName, EnvironmentVariableNameError, FacetRefs,
     FanoutSpec, InputParam, InputParameterRef, InputSourceRef, ItemsSource, NodeCompletion,
     NodeDefinition, NodeKind, NodeNamespace, NodeNamespaceError, Predicate, Rule, SchemaDef,
-    SequenceSpec, SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinition,
+    SequenceSpec, SessionDelegate, SessionPermission, SessionSpec, WorkflowDefinitionContent,
     MAIN_ENTRY_NODE_NAME,
 };
 use crate::infrastructure::lua::{
@@ -87,7 +87,7 @@ pub(crate) fn facet_catalog(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LuaWorkflowDefinition {
-    pub workflow: WorkflowDefinition,
+    pub workflow: WorkflowDefinitionContent,
     pub(crate) node_locations: BTreeMap<String, LuaSourceLocation>,
     pub(crate) node_artifact_spans: BTreeMap<String, DiagnosticSpan>,
 }
@@ -1594,10 +1594,9 @@ impl WorkflowGraphBuilder {
             .insert(workflow.main, MAIN_ENTRY_NODE_NAME.to_string());
         self.child_uses.insert(workflow.main);
         self.visit_node(workflow.main)?;
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: workflow.name,
             description: workflow.description,
-            builtin: false,
             schemas: std::mem::take(&mut self.schemas),
             nodes: std::mem::take(&mut self.nodes),
             entry: MAIN_ENTRY_NODE_NAME.to_string(),
@@ -2200,7 +2199,7 @@ impl WorkflowGraphBuilder {
 
     fn validate_unconsumed_sources(
         &self,
-        workflow: &WorkflowDefinition,
+        workflow: &WorkflowDefinitionContent,
     ) -> Result<(), LuaWorkflowError> {
         for source in &self.host.sources {
             if self.host.source_paths.contains(source.path()) {

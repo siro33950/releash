@@ -7,18 +7,19 @@ use releashd::test_support::integration::workflow::IsolatedWorktree;
 use releashd::test_support::integration::workflow::NodeFactMeta;
 use releashd::test_support::integration::workflow::StoredWorkspaceWorktreePathQuery;
 use releashd::test_support::integration::workflow::WorktreeContextReadError;
+use releashd::test_support::integration::workflow::{
+    NodeExecutionFailureKind, RuntimeFailureObservedFact,
+};
 
 use releashd::test_support::integration::workflow::ArtifactProducedFact;
 use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
-use releashd::test_support::integration::workflow::NodeExecutionFailureKind;
 use releashd::test_support::integration::workflow::NodeFact;
 use releashd::test_support::integration::workflow::NodeKindName;
 use releashd::test_support::integration::workflow::SchemaDef;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 
-use releashd::test_support::integration::workflow::RuntimeFailureObservedFact;
 use releashd::test_support::integration::workflow::SessionAttachedFact;
 use releashd::test_support::integration::workflow::StartedFact;
 use releashd::test_support::integration::workflow::StopReceivedFact;
@@ -54,10 +55,10 @@ impl Fixture {
             std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
-        let mut definition: WorkflowDefinition = serde_saphyr::from_str(&format!("name: context\ndescription: test\nnodes:\n  main: {{worktree: isolated, sequence: {{children: [child]}}}}\n  child: {{worktree: {}, session: {{provider: codex, facets: {{instruction: policy-confirmation}}}}}}", if isolated_child {"isolated"} else {"shared"})).unwrap();
+        let mut definition: WorkflowDefinitionContent = serde_saphyr::from_str(&format!("name: context\ndescription: test\nnodes:\n  main: {{worktree: isolated, sequence: {{children: [child]}}}}\n  child: {{worktree: {}, session: {{provider: codex, facets: {{instruction: policy-confirmation}}}}}}", if isolated_child {"isolated"} else {"shared"})).unwrap();
         if fanout {
             definition.nodes.iter_mut().find(|node| node.name == "main").unwrap().kind =
-                serde_saphyr::from_str::<WorkflowDefinition>("name: test\ndescription: test\nnodes:\n  main: {fanout: {items: [x, y], children: [child]}}\n  child: {session: {provider: codex}}")
+                serde_saphyr::from_str::<WorkflowDefinitionContent>("name: test\ndescription: test\nnodes:\n  main: {fanout: {items: [x, y], children: [child]}}\n  child: {session: {provider: codex}}")
                     .unwrap().node_by_name("main").unwrap().kind.clone();
         }
         if contract {
@@ -224,7 +225,6 @@ pub async fn test_隔離読み取り_実体なしでも実行中と失敗後とa
         // When
         let state = fixture
             .read()
-            .read_usecase()
             .get_execution_state(TREE)
             .await
             .unwrap()

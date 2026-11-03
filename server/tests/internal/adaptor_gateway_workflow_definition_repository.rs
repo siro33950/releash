@@ -1,7 +1,10 @@
 use releashd::test_support::integration::workflow::WorkflowDefinitionRepository;
+use releashd::test_support::integration::workflow::{
+    WorkflowDefinitionFileQueryService, WorkflowDefinitionQueryService, WorkflowSource,
+};
 #[cfg(unix)]
 #[test]
-pub fn test_workflow探索失敗_定義とsourceと形式をbuiltinへ変換しない() {
+pub fn test_workflow探索失敗_定義とsourceをbuiltinへ変換しない() {
     // Given
     let dir = tempfile::tempdir().unwrap();
     let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
@@ -14,11 +17,9 @@ pub fn test_workflow探索失敗_定義とsourceと形式をbuiltinへ変換し�
     // When
     let definition = repository.get(&name);
     let source = gateway.get_source(&name);
-    let format = gateway.source_format(&name);
     // Then
     assert!(definition.is_err());
     assert!(source.is_err());
-    assert!(format.is_err());
 }
 
 #[test]
@@ -27,7 +28,14 @@ pub fn test_workflow探索_定義がないと未設定を返す() {
     let dir = tempfile::tempdir().unwrap();
     let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
     // When
-    let definition = repository.get("missing").unwrap();
+    let definition = repository.find(Some("missing")).unwrap();
+    assert!(repository.find(None).unwrap().is_none());
+    let gateway = WorkflowDefinitionFileSourceGateway::new(dir.path(), dir.path());
+    assert_eq!(gateway.get_source("missing").unwrap(), None);
+    assert!(matches!(
+        repository.get("missing"),
+        Err(WorkflowError::NotFound(_))
+    ));
     // Then
     assert!(definition.is_none());
 }
@@ -35,21 +43,22 @@ use releashd::test_support::integration::workflow::definition_FacetRefs as Facet
 use releashd::test_support::integration::workflow::NodeDefinition;
 use releashd::test_support::integration::workflow::NodeKind;
 use releashd::test_support::integration::workflow::SessionSpec;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
 use releashd::test_support::integration::workflow::WorkflowDefinitionFileRepository;
 use releashd::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
-use releashd::test_support::integration::workflow::WorkflowDefinitionSourceGateway;
+use releashd::test_support::integration::workflow::WorkflowDefinitionSourceService;
 use releashd::test_support::integration::workflow::WorkflowError;
 use releashd::test_support::integration::workflow::WorkflowSourceSaveError;
+use releashd::test_support::integration::workflow::{
+    WorkflowDefinition, WorkflowDefinitionContent,
+};
 use std::fs;
 
 use tempfile::TempDir;
 
-fn definition(name: &str) -> WorkflowDefinition {
-    WorkflowDefinition {
+fn definition(name: &str) -> WorkflowDefinitionContent {
+    WorkflowDefinitionContent {
         name: name.to_string(),
         description: "desc".to_string(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![NodeDefinition {
             name: "main".to_string(),
@@ -114,10 +123,14 @@ pub fn saves_and_loads_workflow_yaml_through_existing_storage() {
     .unwrap();
     let repo = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
 
-    repo.save(definition("wf"), None).unwrap();
-    let loaded = repo.get("wf").unwrap().unwrap();
+    repo.save(
+        WorkflowDefinition::new(workflows.path().to_path_buf(), definition("wf")).unwrap(),
+        None,
+    )
+    .unwrap();
+    let loaded = repo.get("wf").unwrap();
 
-    assert_eq!(loaded.name, "wf");
+    assert_eq!(loaded.content().unwrap().name, "wf");
     assert!(workflows.path().join("wf.yml").exists());
 }
 
@@ -126,9 +139,17 @@ pub fn rename_removes_old_workflow_file_after_successful_save() {
     let workflows = TempDir::new().unwrap();
     let facets = TempDir::new().unwrap();
     let repo = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
-    repo.save(definition("old"), None).unwrap();
+    repo.save(
+        WorkflowDefinition::new(workflows.path().to_path_buf(), definition("old")).unwrap(),
+        None,
+    )
+    .unwrap();
 
-    repo.save(definition("new"), Some("old")).unwrap();
+    repo.save(
+        WorkflowDefinition::new(workflows.path().to_path_buf(), definition("new")).unwrap(),
+        Some("old"),
+    )
+    .unwrap();
 
     assert!(!workflows.path().join("old.yml").exists());
     assert!(workflows.path().join("new.yml").exists());
@@ -140,12 +161,13 @@ pub fn source_gateway_saves_and_reads_verbatim_workflow_source() {
     let facets = TempDir::new().unwrap();
     seed_instruction_facet(&facets);
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
+    let repository = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
     let source = source("wf");
 
-    let saved = gateway.save_source(&source, None).unwrap();
+    let saved = save_source(&gateway, &repository, &source, None).unwrap();
     let loaded = gateway.get_source("wf").unwrap().unwrap();
 
-    assert_eq!(saved.name, "wf");
+    assert_eq!(saved.content().unwrap().name, "wf");
     assert_eq!(loaded, source);
 }
 
@@ -155,16 +177,21 @@ pub fn source_gateway_rejects_invalid_source_without_overwriting_existing_file()
     let facets = TempDir::new().unwrap();
     seed_instruction_facet(&facets);
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
+    let repository = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
     let original = source("stable");
-    gateway.save_source(&original, None).unwrap();
+    save_source(&gateway, &repository, &original, None).unwrap();
 
-    let err = gateway
-        .save_source(&invalid_source_unknown_field("stable"), Some("stable"))
-        .unwrap_err();
+    let err = save_source(
+        &gateway,
+        &repository,
+        &invalid_source_unknown_field("stable"),
+        Some("stable"),
+    )
+    .unwrap_err();
     let loaded = gateway.get_source("stable").unwrap().unwrap();
 
     assert!(
-        matches!(err, WorkflowError::External(message) if message.contains("workflow_diagnostics") && message.contains("WFS002"))
+        matches!(err, WorkflowSourceSaveError::Diagnostics(items) if items.iter().any(|item| item.code == "WFS002"))
     );
     assert_eq!(loaded, original);
 }
@@ -175,35 +202,53 @@ pub fn source_gateway_rename_removes_old_workflow_file_after_successful_save() {
     let facets = TempDir::new().unwrap();
     seed_instruction_facet(&facets);
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
-    gateway.save_source(&source("old"), None).unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
+    save_source(&gateway, &repository, &source("old"), None).unwrap();
 
-    gateway.save_source(&source("new"), Some("old")).unwrap();
+    save_source(&gateway, &repository, &source("new"), Some("old")).unwrap();
 
     assert!(!workflows.path().join("old.yml").exists());
     assert!(workflows.path().join("new.yml").exists());
 }
 
 #[test]
-pub fn source_gateway_rejects_builtin_name_collision() {
+pub fn test_定義取得と一覧_builtinと同名の利用者ファイルはfile由来() {
+    // Given
     let workflows = TempDir::new().unwrap();
     let facets = TempDir::new().unwrap();
     seed_instruction_facet(&facets);
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
-    let builtin_name = releashd::test_support::integration::workflow::list_builtin_workflows()
-        .first()
-        .expect("builtin workflow fixture must exist")
+    let repository = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
+    let query = WorkflowDefinitionFileQueryService::new(workflows.path(), facets.path());
+    let name = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
         .name
         .clone();
-
-    let err = gateway
-        .save_source(&source(&builtin_name), None)
-        .unwrap_err();
-
-    assert!(err.to_string().contains("ビルトイン名と重複"));
-    assert!(!workflows
-        .path()
-        .join(format!("{builtin_name}.yml"))
-        .exists());
+    let text = source(&name);
+    fs::write(workflows.path().join(format!("{name}.yml")), &text).unwrap();
+    // When
+    let definition = repository.get(&name).unwrap();
+    let summaries = query.list_workflows(&[]).unwrap();
+    // Then
+    assert!(
+        matches!(definition.source(), WorkflowSource::File { path } if path == &workflows.path().join(format!("{name}.yml")))
+    );
+    assert_eq!(
+        summaries
+            .iter()
+            .filter(|summary| summary.name == name)
+            .count(),
+        1
+    );
+    assert!(
+        !summaries
+            .iter()
+            .find(|summary| summary.name == name)
+            .unwrap()
+            .builtin
+    );
+    save_source(&gateway, &repository, &text, Some(&name)).unwrap();
+    repository.delete(&definition).unwrap();
+    assert!(!workflows.path().join(format!("{name}.yml")).exists());
 }
 
 #[test]
@@ -212,11 +257,12 @@ pub fn source_gateway_rejects_invalid_workflow_name() {
     let facets = TempDir::new().unwrap();
     seed_instruction_facet(&facets);
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
+    let repository = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
 
-    let err = gateway.save_source(&source("-invalid"), None).unwrap_err();
+    let err = save_source(&gateway, &repository, &source("-invalid"), None).unwrap_err();
 
     assert!(
-        matches!(err, WorkflowError::External(message) if message.contains("workflow_diagnostics") && message.contains("WFS006"))
+        matches!(err, WorkflowSourceSaveError::Diagnostics(items) if items.iter().any(|item| item.code == "WFS006"))
     );
     assert!(!workflows.path().join("-invalid.yml").exists());
 }
@@ -240,9 +286,7 @@ nodes:
         knowledge: [known, missing-name]
 "#;
 
-    let error = gateway
-        .save_source_with_diagnostics(source, None)
-        .unwrap_err();
+    let error = gateway.parse(source).unwrap_err();
     let WorkflowSourceSaveError::Diagnostics(items) = error else {
         panic!("missing knowledge must remain a structured diagnostic");
     };
@@ -268,6 +312,7 @@ pub fn source_gateway_reads_lua_verbatim_and_rejects_save() {
     let workflows = TempDir::new().unwrap();
     let facets = TempDir::new().unwrap();
     let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
+    let repository = WorkflowDefinitionFileRepository::new(workflows.path(), facets.path());
     let source = r#"
 local r = require("releash")
 return r.workflow{
@@ -282,18 +327,275 @@ return r.workflow{
         Some(source)
     );
     assert_eq!(
-        gateway.source_format("lua-source").unwrap(),
+        repository.get("lua-source").unwrap().format(),
         releashd::test_support::integration::workflow::WorkflowSourceFormat::Lua
     );
-    let error = gateway
-        .save_source(
-            "name: replacement\ndescription: replacement\nnodes: {}\n",
-            Some("lua-source"),
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("Lua workflow"));
+    seed_instruction_facet(&facets);
+    let error = save_source(
+        &gateway,
+        &repository,
+        &self::source("replacement"),
+        Some("lua-source"),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, WorkflowSourceSaveError::Workflow(error) if error.to_string().contains("Lua workflow"))
+    );
     assert_eq!(
         fs::read_to_string(workflows.path().join("lua-source.lua")).unwrap(),
         source
+    );
+}
+
+fn save_source(
+    gateway: &WorkflowDefinitionFileSourceGateway,
+    repository: &WorkflowDefinitionFileRepository,
+    source: &str,
+    original_name: Option<&str>,
+) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+    let definition = gateway.parse(source)?;
+    let original = repository
+        .find(original_name)
+        .map_err(WorkflowSourceSaveError::Workflow)?;
+    definition
+        .validate_save(
+            original.as_ref(),
+            &repository
+                .list_names()
+                .map_err(WorkflowSourceSaveError::Workflow)?,
+        )
+        .map_err(WorkflowSourceSaveError::Workflow)?;
+    repository
+        .save_source(&definition, source, original_name)
+        .map_err(WorkflowSourceSaveError::Workflow)?;
+    Ok(definition)
+}
+
+#[test]
+fn test_定義取得_同梱定義はbuiltin由来() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+    let name = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
+        .name
+        .clone();
+    // When
+    let definition = repository.get(&name).unwrap();
+    // Then
+    assert_eq!(definition.source(), &WorkflowSource::Builtin);
+    assert!(definition.content().is_ok());
+    let gateway = WorkflowDefinitionFileSourceGateway::new(dir.path(), dir.path());
+    assert!(gateway.get_source(&name).unwrap().is_some());
+    assert!(
+        query
+            .list_workflows(&[])
+            .unwrap()
+            .iter()
+            .find(|summary| summary.name == name)
+            .unwrap()
+            .builtin
+    );
+}
+
+#[test]
+fn test_定義取得_解釈できない利用者ファイルはentityの失敗に残る() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+    fs::write(dir.path().join("invalid.yml"), "nodes: [").unwrap();
+    // When
+    let definition = repository.get("invalid").unwrap();
+    // Then
+    assert!(matches!(definition.source(), WorkflowSource::File { .. }));
+    let error = definition.content().unwrap_err();
+    assert!(matches!(error, WorkflowError::Diagnostics(_)));
+    let summaries = query.list_workflows(&[]).unwrap();
+    let summary = summaries
+        .iter()
+        .find(|summary| summary.name == "invalid")
+        .unwrap();
+    assert_eq!(summary.description, "Invalid workflow definition");
+    assert_eq!(
+        summary.failure,
+        Some(releashd::test_support::integration::platform::WorkFailure::from_error(error))
+    );
+}
+
+#[test]
+fn test_定義保存_置換失敗時は旧ファイルを残し一時ファイルを消す() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    let original =
+        WorkflowDefinition::new(dir.path().to_path_buf(), definition("original")).unwrap();
+    repository.save(original, None).unwrap();
+    fs::create_dir(dir.path().join("replacement.yml")).unwrap();
+    let replacement =
+        WorkflowDefinition::new(dir.path().to_path_buf(), definition("replacement")).unwrap();
+    // When
+    let result = repository.save(replacement.clone(), Some("original"));
+    let source_result = repository.save_source(&replacement, "new content", Some("original"));
+    // Then
+    assert!(result.is_err());
+    assert!(source_result.is_err());
+    assert!(dir.path().join("original.yml").is_file());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn test_定義取得_読めない利用者ファイルは失敗を持つentityになる() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    let name = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
+        .name
+        .clone();
+    let path = dir.path().join(format!("{name}.yml"));
+    fs::create_dir(&path).unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+    // When
+    let definition = repository.get(&name).unwrap();
+    // Then
+    assert!(
+        matches!(definition.source(), WorkflowSource::File { path: source } if source == &path)
+    );
+    assert!(matches!(
+        definition.content(),
+        Err(WorkflowError::Technical(_))
+    ));
+    assert!(query
+        .list_workflows(&[])
+        .unwrap()
+        .iter()
+        .find(|row| row.name == name)
+        .unwrap()
+        .failure
+        .is_some());
+}
+
+#[test]
+fn test_定義一覧_実行中の定義を取得元にかかわらず示す() {
+    use releashd::test_support::integration::workflow::{
+        ExecutionOrigin, ExecutionStatus, WorkflowExecutionSummary,
+    };
+    // Given
+    let dir = TempDir::new().unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+    let builtin_name = releashd::test_support::integration::workflow::list_builtin_workflows()[0]
+        .name
+        .clone();
+    repository
+        .save(
+            WorkflowDefinition::new(dir.path().to_path_buf(), definition("user")).unwrap(),
+            None,
+        )
+        .unwrap();
+    let running =
+        ["user".to_string(), builtin_name.clone()].map(|workflow_name| WorkflowExecutionSummary {
+            execution_id: "execution".to_string(),
+            workflow_name,
+            status: ExecutionStatus::Running,
+            worktree_path: "/repo".to_string(),
+            current_node: None,
+            created_from: ExecutionOrigin::Cli,
+            started_at: 1.0,
+            updated_at: 1.0,
+            completed_at: None,
+            error_reason: None,
+            total_token_usage: Default::default(),
+        });
+    // When
+    let summaries = query.list_workflows(&running).unwrap();
+    // Then
+    for name in ["user", &builtin_name] {
+        assert!(
+            summaries
+                .iter()
+                .find(|summary| summary.name == name)
+                .unwrap()
+                .is_running
+        );
+    }
+    assert!(summaries
+        .windows(2)
+        .all(|pair| pair[0].name <= pair[1].name));
+    assert!(query
+        .list_workflows(&[])
+        .unwrap()
+        .iter()
+        .all(|summary| !summary.is_running));
+}
+
+#[test]
+fn test_workflow一覧_同名のyamlとluaを一行に畳む() {
+    // Given
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("duplicated.yml"),
+        "name: duplicated\ndescription: YAML duplicate\nnodes:\n  main: {command: 'true'}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("duplicated.lua"),
+        r#"
+local r = require("releash")
+return r.workflow{
+  name = "duplicated", description = "Lua duplicate",
+  main = r.command{ command = "true" },
+}
+"#,
+    )
+    .unwrap();
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+    // When
+    let list = query.list_workflows(&[]).unwrap();
+    let matches = list
+        .iter()
+        .filter(|row| row.name == "duplicated")
+        .collect::<Vec<_>>();
+    // Then
+    assert_eq!(matches.len(), 1);
+    assert_eq!(
+        matches[0].description,
+        releashd::test_support::integration::workflow::DUPLICATE_NAME_DESCRIPTION
+    );
+}
+
+#[test]
+fn test_builtin解決失敗_entityと一覧の失敗に保持し他の定義を返す() {
+    use releashd::test_support::integration::platform::WorkFailure;
+    // Given
+    let dir = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join("policies")).unwrap();
+    fs::write(dir.path().join("policies/coding.md"), "Use {{ missing }}").unwrap();
+    fs::write(
+        dir.path().join("healthy.yml"),
+        "name: healthy\ndescription: Healthy\nnodes:\n  main: {command: 'true'}\n",
+    )
+    .unwrap();
+    let repository = WorkflowDefinitionFileRepository::new(dir.path(), dir.path());
+    let query = WorkflowDefinitionFileQueryService::new(dir.path(), dir.path());
+    // When
+    let definition = repository.get("02_implement-existing-spec").unwrap();
+    let summaries = query.list_workflows(&[]).unwrap();
+    // Then
+    assert_eq!(definition.source(), &WorkflowSource::Builtin);
+    let failure = WorkFailure::from_error(definition.content().unwrap_err());
+    assert!(failure.message.contains("missing"), "{failure:?}");
+    let builtin = summaries
+        .iter()
+        .find(|row| row.name == "02_implement-existing-spec")
+        .unwrap();
+    assert!(builtin.builtin);
+    assert_eq!(builtin.failure.as_ref(), Some(&failure));
+    assert!(summaries
+        .iter()
+        .any(|row| row.name == "healthy" && row.failure.is_none()));
+    assert_eq!(
+        summaries.len(),
+        releashd::test_support::integration::workflow::list_builtin_workflows().len() + 1
     );
 }

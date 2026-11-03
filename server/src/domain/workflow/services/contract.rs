@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::domain::workflow::services::contract_schema::{self, SchemaViolation};
 use crate::domain::workflow::value_objects::{
-    ContractValidationResult, ContractViolation, SchemaDef, WorkflowDefinition,
+    ContractValidationResult, ContractViolation, SchemaDef, WorkflowDefinitionContent,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,7 +24,10 @@ pub struct ArtifactSubmittedSnapshot {
     pub timestamp: f64,
 }
 
-pub fn lookup_node_contract(workflow: &WorkflowDefinition, node_name: &str) -> Option<String> {
+pub fn lookup_node_contract(
+    workflow: &WorkflowDefinitionContent,
+    node_name: &str,
+) -> Option<String> {
     for node in &workflow.nodes {
         if node.name == node_name {
             return node

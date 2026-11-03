@@ -25,7 +25,7 @@ use crate::domain::workflow::services::{
 use crate::domain::workflow::value_objects::{
     ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeCompletionSignal,
     NodeCompletionSignalState, NodeDefinition, NodeHistoryEntry, NodeKindName, RuntimeArtifact,
-    RuntimeExecutionState, TokenUsage, WorkflowDefinition,
+    RuntimeExecutionState, TokenUsage, WorkflowDefinitionContent,
 };
 use crate::domain::workflow::WorkflowEvent;
 
@@ -339,7 +339,7 @@ impl RuntimeNodeExecution {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionTreeRestore {
     pub id: String,
-    pub workflow: WorkflowDefinition,
+    pub workflow: WorkflowDefinitionContent,
     pub state: RuntimeExecutionState,
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
@@ -362,7 +362,7 @@ impl Default for ExecutionTreeRestore {
     fn default() -> Self {
         Self {
             id: String::new(),
-            workflow: WorkflowDefinition::default(),
+            workflow: WorkflowDefinitionContent::default(),
             state: RuntimeExecutionState::Running,
             node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults,
@@ -618,7 +618,7 @@ pub struct ExecutionTree {
 pub struct ExecutionTreeView {
     pub id: String,
     pub workflow_name: String,
-    pub workflow: Option<WorkflowDefinition>,
+    pub workflow: Option<WorkflowDefinitionContent>,
     pub node_history: Vec<NodeHistoryEntry>,
     pub workflow_defaults: WorkflowDefaults,
     pub worktree_path: String,
@@ -683,7 +683,7 @@ impl ExecutionTree {
 
     pub fn workflow_definition(
         &self,
-    ) -> Result<&WorkflowDefinition, crate::domain::workflow::WorkflowError> {
+    ) -> Result<&WorkflowDefinitionContent, crate::domain::workflow::WorkflowError> {
         self.runtime.workflow.as_ref().ok_or_else(|| {
             crate::domain::workflow::WorkflowError::invalid_state(
                 "terminal execution has no workflow definition",

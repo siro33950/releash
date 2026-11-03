@@ -212,9 +212,9 @@ impl TryFrom<crate::usecase::code_dto::ChangeGroupDto> for wire::ChangeGroupDto 
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::ChildEntryDto> for wire::ChildEntryDto {
+impl TryFrom<crate::domain::workflow::ChildEntry> for wire::ChildEntryDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::ChildEntryDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::ChildEntry) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
             inputs: Some(cv(value.inputs)?),
@@ -223,26 +223,32 @@ impl TryFrom<crate::usecase::workflow::dto::ChildEntryDto> for wire::ChildEntryD
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::ChildInputDto> for wire::ChildInputDto {
+impl
+    TryFrom<(
+        String,
+        crate::domain::workflow::value_objects::InputSourceRef,
+    )> for wire::ChildInputDto
+{
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::ChildInputDto) -> Result<Self, String> {
+    fn try_from(
+        value: (
+            String,
+            crate::domain::workflow::value_objects::InputSourceRef,
+        ),
+    ) -> Result<Self, String> {
         Ok(Self {
-            parameter: Some(cv(value.parameter)?),
-            source: Some(cv(value.source)?),
+            parameter: Some(cv(value.0)?),
+            source: Some(cv(value.1.raw().to_string())?),
         })
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::CompletionRequirementDto>
-    for wire::CompletionRequirementDto
-{
+impl TryFrom<crate::domain::workflow::CompletionRequirement> for wire::CompletionRequirementDto {
     type Error = String;
-    fn try_from(
-        value: crate::usecase::workflow::dto::CompletionRequirementDto,
-    ) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::CompletionRequirement) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::workflow::dto::CompletionRequirementDto::Approval => {
+                crate::domain::workflow::CompletionRequirement::Approval => {
                     wire::completion_requirement_dto::Value::Approval as i32
                 }
             }),
@@ -489,9 +495,9 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::ExecutionStatusView>
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::FacetRefsDto> for wire::FacetRefsDto {
+impl TryFrom<crate::domain::workflow::FacetRefs> for wire::FacetRefsDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::FacetRefsDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::FacetRefs) -> Result<Self, String> {
         Ok(Self {
             policy: value.policy.map(cv).transpose()?,
             knowledge: Some(cv(value.knowledge)?),
@@ -500,9 +506,9 @@ impl TryFrom<crate::usecase::workflow::dto::FacetRefsDto> for wire::FacetRefsDto
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::FacetSummaryDto> for wire::FacetSummaryDto {
+impl TryFrom<crate::usecase::workflow::FacetSummaryDto> for wire::FacetSummaryDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::FacetSummaryDto) -> Result<Self, String> {
+    fn try_from(value: crate::usecase::workflow::FacetSummaryDto) -> Result<Self, String> {
         Ok(Self {
             key: Some(cv(value.key)?),
             kind: Some(cv(value.kind)?),
@@ -525,9 +531,9 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::FacetUsageEntry> for wire
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::FanoutSpecDto> for wire::FanoutSpecDto {
+impl TryFrom<crate::domain::workflow::FanoutSpec> for wire::FanoutSpecDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::FanoutSpecDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::FanoutSpec) -> Result<Self, String> {
         Ok(Self {
             children: Some(cv(value.children)?),
             items: value.items.map(cv).transpose()?,
@@ -667,9 +673,9 @@ impl TryFrom<crate::usecase::code_dto::InlineChunkKindDto> for wire::InlineChunk
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::InputParamDto> for wire::InputParamDto {
+impl TryFrom<crate::domain::workflow::InputParam> for wire::InputParamDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::InputParamDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::InputParam) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
             contract: value.contract.map(cv).transpose()?,
@@ -707,16 +713,19 @@ impl TryFrom<crate::usecase::git_host::dto::IssueLabelDto> for wire::IssueLabelD
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::ItemsSourceDto> for wire::ItemsSourceDto {
+impl TryFrom<crate::domain::workflow::ItemsSource> for wire::ItemsSourceDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::ItemsSourceDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::ItemsSource) -> Result<Self, String> {
         Ok(Self {
             variant: Some(match value {
-                crate::usecase::workflow::dto::ItemsSourceDto::Literal(value) => {
+                crate::domain::workflow::ItemsSource::Literal(value) => {
                     wire::items_source_dto::Variant::Literal(cv(value)?)
                 }
-                crate::usecase::workflow::dto::ItemsSourceDto::ArtifactField(value) => {
-                    wire::items_source_dto::Variant::ArtifactField(cv(value)?)
+                crate::domain::workflow::ItemsSource::ArtifactField { node, field_path } => {
+                    wire::items_source_dto::Variant::ArtifactField(cv(format!(
+                        "{node}.{}",
+                        field_path.as_string()
+                    ))?)
                 }
             }),
         })
@@ -770,9 +779,9 @@ impl TryFrom<crate::usecase::git_host::dto::MilestoneDto> for wire::MilestoneDto
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::NodeCompletionDto> for wire::NodeCompletionDto {
+impl TryFrom<crate::domain::workflow::NodeCompletion> for wire::NodeCompletionDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::NodeCompletionDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::NodeCompletion) -> Result<Self, String> {
         Ok(Self {
             require: value.require.map(cv).transpose()?,
             delegate: value.delegate.map(cv).transpose()?,
@@ -800,20 +809,33 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::NodeCompletionSignalView>
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::NodeDefinitionDto> for wire::NodeDefinitionDto {
+impl TryFrom<crate::domain::workflow::NodeDefinition> for wire::NodeDefinitionDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::NodeDefinitionDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::NodeDefinition) -> Result<Self, String> {
         Ok(Self {
-            name: Some(cv(value.name)?),
-            kind: Some(cv(value.kind)?),
-            command: value.command.map(cv).transpose()?,
-            session: value.session.map(cv).transpose()?,
-            fanout: value.fanout.map(cv).transpose()?,
-            sequence: value.sequence.map(cv).transpose()?,
-            artifact: value.artifact.map(cv).transpose()?,
-            input: Some(cv(value.input)?),
-            completion: value.completion.map(cv).transpose()?,
-            worktree: value.worktree.map(cv).transpose()?,
+            name: Some(cv(value.name.clone())?),
+            kind: Some(cv(value.kind_name())?),
+            command: value
+                .command()
+                .map(|command| cv(command.to_string()))
+                .transpose()?,
+            session: value.session().cloned().map(cv).transpose()?,
+            fanout: value.fanout().cloned().map(cv).transpose()?,
+            sequence: value.sequence().cloned().map(cv).transpose()?,
+            artifact: value.artifact.clone().map(cv).transpose()?,
+            input: Some(cv(value.input.clone())?),
+            completion: (!value.completion.is_empty())
+                .then(|| cv(value.completion.clone()))
+                .transpose()?,
+            worktree: value
+                .worktree
+                .map(|mode| {
+                    cv(match mode {
+                        crate::domain::workflow::WorktreeMode::Shared => "shared",
+                        crate::domain::workflow::WorktreeMode::Isolated => "isolated",
+                    })
+                })
+                .transpose()?,
         })
     }
 }
@@ -879,21 +901,21 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::NodeExecutionView>
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::NodeKindDto> for wire::NodeKindDto {
+impl TryFrom<crate::domain::workflow::NodeKindName> for wire::NodeKindDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::NodeKindDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::NodeKindName) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::workflow::dto::NodeKindDto::Session => {
+                crate::domain::workflow::NodeKindName::Session => {
                     wire::node_kind_dto::Value::Session as i32
                 }
-                crate::usecase::workflow::dto::NodeKindDto::Command => {
+                crate::domain::workflow::NodeKindName::Command => {
                     wire::node_kind_dto::Value::Command as i32
                 }
-                crate::usecase::workflow::dto::NodeKindDto::Fanout => {
+                crate::domain::workflow::NodeKindName::Fanout => {
                     wire::node_kind_dto::Value::Fanout as i32
                 }
-                crate::usecase::workflow::dto::NodeKindDto::Sequence => {
+                crate::domain::workflow::NodeKindName::Sequence => {
                     wire::node_kind_dto::Value::Sequence as i32
                 }
             }),
@@ -1060,20 +1082,20 @@ impl TryFrom<crate::usecase::git_host::dto::PrAuthorDto> for wire::PrAuthorDto {
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::PredicateDto> for wire::PredicateDto {
+impl TryFrom<crate::domain::workflow::Predicate<String>> for wire::PredicateDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::PredicateDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::Predicate<String>) -> Result<Self, String> {
         Ok(Self {
             variant: Some(match value {
-                crate::usecase::workflow::dto::PredicateDto::Ref(value) => {
+                crate::domain::workflow::Predicate::Ref(value) => {
                     wire::predicate_dto::Variant::Ref(cv(value)?)
                 }
-                crate::usecase::workflow::dto::PredicateDto::And { and } => {
+                crate::domain::workflow::Predicate::And(and) => {
                     wire::predicate_dto::Variant::And(wire::PredicateDtoAnd {
                         and: Some(cv(and)?),
                     })
                 }
-                crate::usecase::workflow::dto::PredicateDto::Or { or } => {
+                crate::domain::workflow::Predicate::Or(or) => {
                     wire::predicate_dto::Variant::Or(wire::PredicateDtoOr { or: Some(cv(or)?) })
                 }
             }),
@@ -1501,33 +1523,33 @@ impl TryFrom<wire::ReviewThreadStateDto> for crate::domain::comment::State {
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::RuleDto> for wire::RuleDto {
+impl TryFrom<crate::domain::workflow::Rule> for wire::RuleDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::RuleDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::Rule) -> Result<Self, String> {
         Ok(Self {
             variant: Some(match value {
-                crate::usecase::workflow::dto::RuleDto::When { on, then, next } => {
+                crate::domain::workflow::Rule::When { on, then, next } => {
                     wire::rule_dto::Variant::When(wire::RuleDtoWhen {
                         on: Some(cv(on)?),
                         then: Some(cv(then)?),
                         next: Some(cv(next)?),
                     })
                 }
-                crate::usecase::workflow::dto::RuleDto::Switch { on, cases, next } => {
+                crate::domain::workflow::Rule::Switch { on, cases, next } => {
                     wire::rule_dto::Variant::Switch(wire::RuleDtoSwitch {
                         on: Some(cv(on)?),
                         cases: Some(cv(cases)?),
                         next: next.map(cv).transpose()?,
                     })
                 }
-                crate::usecase::workflow::dto::RuleDto::LoopGuard {
+                crate::domain::workflow::Rule::LoopGuard {
                     max_iterations,
                     on_exhausted,
                 } => wire::rule_dto::Variant::LoopGuard(wire::RuleDtoLoopGuard {
                     max_iterations: Some(cv(max_iterations)?),
                     on_exhausted: Some(cv(on_exhausted)?),
                 }),
-                crate::usecase::workflow::dto::RuleDto::Next { next } => {
+                crate::domain::workflow::Rule::Next(next) => {
                     wire::rule_dto::Variant::Next(wire::RuleDtoNext {
                         next: Some(cv(next)?),
                     })
@@ -1537,9 +1559,9 @@ impl TryFrom<crate::usecase::workflow::dto::RuleDto> for wire::RuleDto {
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::SequenceSpecDto> for wire::SequenceSpecDto {
+impl TryFrom<crate::domain::workflow::SequenceSpec> for wire::SequenceSpecDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::SequenceSpecDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::SequenceSpec) -> Result<Self, String> {
         Ok(Self {
             entry: value.entry.map(cv).transpose()?,
             children: Some(cv(value.children)?),
@@ -1547,9 +1569,9 @@ impl TryFrom<crate::usecase::workflow::dto::SequenceSpecDto> for wire::SequenceS
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::SessionDelegateDto> for wire::SessionDelegateDto {
+impl TryFrom<crate::domain::workflow::SessionDelegate> for wire::SessionDelegateDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::SessionDelegateDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::SessionDelegate) -> Result<Self, String> {
         Ok(Self {
             child: Some(cv(value.child)?),
             inputs: Some(cv(value.inputs)?),
@@ -1577,13 +1599,18 @@ impl TryFrom<crate::usecase::provider_dto::AgentSessionProviderDto> for wire::Se
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::SessionSpecDto> for wire::SessionSpecDto {
+impl TryFrom<crate::domain::workflow::SessionSpec> for wire::SessionSpecDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::SessionSpecDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::SessionSpec) -> Result<Self, String> {
         Ok(Self {
-            provider: Some(cv(value.provider)?),
+            provider: Some(cv(
+                crate::usecase::provider_dto::AgentSessionProviderDto::from(value.provider),
+            )?),
             model: value.model.map(cv).transpose()?,
-            permission: value.permission.map(cv).transpose()?,
+            permission: value
+                .permission
+                .map(|permission| cv(permission.to_string()))
+                .transpose()?,
             facets: Some(cv(value.facets)?),
         })
     }
@@ -1689,16 +1716,17 @@ impl TryFrom<crate::usecase::code_dto::VisibleBlockDto> for wire::VisibleBlockDt
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::WorkflowDto> for wire::WorkflowDto {
+impl TryFrom<crate::domain::workflow::WorkflowDefinition> for wire::WorkflowDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::WorkflowDto) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::WorkflowDefinition) -> Result<Self, String> {
+        let content = value.content().map_err(ToString::to_string)?;
         Ok(Self {
-            name: Some(cv(value.name)?),
-            description: Some(cv(value.description)?),
-            builtin: Some(cv(value.builtin)?),
-            source_format: Some(cv(value.source_format)?),
-            schemas: Some(cv(value.schemas)?),
-            nodes: Some(cv(value.nodes)?),
+            name: Some(cv(content.name.clone())?),
+            description: Some(cv(content.description.clone())?),
+            builtin: Some(cv(value.source().is_builtin())?),
+            source_format: Some(cv(value.format())?),
+            schemas: Some(cv(content.schemas.iter().map(|(name, schema)| (name.clone(), crate::domain::workflow::services::contract_schema::schema_def_to_json_value(schema))).collect::<std::collections::BTreeMap<_, _>>())?),
+            nodes: Some(cv(content.nodes.clone())?),
         })
     }
 }
@@ -1786,19 +1814,15 @@ impl TryFrom<wire::WorkflowSection> for crate::usecase::app_config::WorkflowConf
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::WorkflowSourceFormatDto>
-    for wire::WorkflowSourceFormat
-{
+impl TryFrom<crate::domain::workflow::WorkflowSourceFormat> for wire::WorkflowSourceFormat {
     type Error = String;
-    fn try_from(
-        value: crate::usecase::workflow::dto::WorkflowSourceFormatDto,
-    ) -> Result<Self, String> {
+    fn try_from(value: crate::domain::workflow::WorkflowSourceFormat) -> Result<Self, String> {
         Ok(Self {
             value: Some(match value {
-                crate::usecase::workflow::dto::WorkflowSourceFormatDto::Yaml => {
+                crate::domain::workflow::WorkflowSourceFormat::Yaml => {
                     wire::workflow_source_format::Value::Yaml as i32
                 }
-                crate::usecase::workflow::dto::WorkflowSourceFormatDto::Lua => {
+                crate::domain::workflow::WorkflowSourceFormat::Lua => {
                     wire::workflow_source_format::Value::Lua as i32
                 }
             }),
@@ -1818,9 +1842,9 @@ impl TryFrom<wire::WorkflowSubmitArtifactInput>
     }
 }
 
-impl TryFrom<crate::usecase::workflow::dto::WorkflowSummaryDto> for wire::WorkflowSummaryDto {
+impl TryFrom<crate::usecase::workflow::WorkflowSummaryDto> for wire::WorkflowSummaryDto {
     type Error = String;
-    fn try_from(value: crate::usecase::workflow::dto::WorkflowSummaryDto) -> Result<Self, String> {
+    fn try_from(value: crate::usecase::workflow::WorkflowSummaryDto) -> Result<Self, String> {
         Ok(Self {
             read_error: value
                 .failure

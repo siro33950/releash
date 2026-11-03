@@ -177,6 +177,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub fn test_lua補完_無効なfacetキーを出力しない() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let policies = dir.path().join("policies");
+        fs::create_dir_all(&policies).unwrap();
+        let invalid_keys = ["bad key!", "bad\nkey", "bad\\"];
+        for key in invalid_keys {
+            fs::write(policies.join(format!("{key}.md")), "invalid policy").unwrap();
+        }
+        fs::write(policies.join("valid-policy.md"), "valid policy").unwrap();
+
+        // When
+        generate_editor_support(dir.path()).unwrap();
+        let stub = fs::read_to_string(dir.path().join(".releash/facets.lua")).unwrap();
+
+        // Then
+        assert!(stub.contains("---@field [\"valid-policy\"] ReleashFacet "));
+        for key in invalid_keys {
+            assert!(!stub.contains(key));
+        }
+    }
+
+    #[test]
     pub fn test_編集支援生成_permission補完を4値unionに限定する() {
         // Given
         let directory = TempDir::new().unwrap();

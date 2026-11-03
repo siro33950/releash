@@ -34,8 +34,8 @@ use crate::domain::provider_lifecycle::{
 pub use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
 pub use crate::domain::workflow::NodeExecutionStatus;
 use crate::domain::workflow::{
-    ExecutionOrigin, IsolatedWorktree, IsolatedWorktreeGateway, NodeFact, WorkflowDefinition,
-    WorkflowError,
+    ExecutionOrigin, IsolatedWorktree, IsolatedWorktreeGateway, NodeFact,
+    WorkflowDefinitionContent, WorkflowError,
 };
 pub use crate::provider_lifecycle_acceptance::{AcceptanceIngressResult, AcceptanceProvider};
 use crate::usecase::agent_session::AgentSessionUsecase;
@@ -346,7 +346,7 @@ impl WorkflowDefinitionResolver for UnusedWorkflowResolver {
     async fn resolve(
         &self,
         _name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+    ) -> Result<WorkflowDefinitionContent, WorkflowDefinitionResolverError> {
         unreachable!("workflow definition is supplied by the integration test")
     }
 }

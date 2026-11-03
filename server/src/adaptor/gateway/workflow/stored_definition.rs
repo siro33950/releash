@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeFact, StartedFact, TreeRootFact,
-    WorkflowDefinition,
+    WorkflowDefinitionContent,
 };
 
 #[derive(Debug, Deserialize)]
@@ -83,7 +83,7 @@ pub(crate) fn definition_error(detail: &str) -> Result<Option<String>, String> {
                 #[serde(rename = "entry")]
                 _entry: String,
                 #[serde(flatten)]
-                _definition: WorkflowDefinition,
+                _definition: WorkflowDefinitionContent,
             }
             Ok(serde_json::from_str::<Snapshot>(root.definition.get())
                 .err()

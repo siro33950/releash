@@ -122,8 +122,8 @@ mod adaptor_gateway_workflow_delegate_diagnostics;
 mod adaptor_gateway_workflow_diagnostics;
 #[path = "internal/adaptor_gateway_workflow_diagnostics_gateway.rs"]
 mod adaptor_gateway_workflow_diagnostics_gateway;
-#[path = "internal/adaptor_gateway_workflow_editor_gateway.rs"]
-mod adaptor_gateway_workflow_editor_gateway;
+#[path = "internal/adaptor_gateway_workflow_directory_service.rs"]
+mod adaptor_gateway_workflow_directory_service;
 #[path = "internal/adaptor_gateway_workflow_event_repository.rs"]
 mod adaptor_gateway_workflow_event_repository;
 #[path = "internal/adaptor_gateway_workflow_execution_archive_repository.rs"]
@@ -152,6 +152,8 @@ mod adaptor_gateway_workflow_secret_source_gateway;
 mod adaptor_gateway_workflow_startup_repository;
 #[path = "internal/adaptor_gateway_workflow_storage.rs"]
 mod adaptor_gateway_workflow_storage;
+#[path = "internal/adaptor_gateway_workflow_summary_query.rs"]
+mod adaptor_gateway_workflow_summary_query;
 #[path = "internal/adaptor_gateway_workflow_workflow_host.rs"]
 mod adaptor_gateway_workflow_workflow_host;
 #[path = "internal/adaptor_gateway_workflow_workflow_host_delegate.rs"]

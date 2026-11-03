@@ -195,7 +195,6 @@ impl WorkspaceStateReads {
             T::WorkflowExecution(id) => {
                 return self
                     .workflow
-                    .read_usecase()
                     .get_execution_state(id)
                     .await
                     .map(StateValue::WorkflowExecution)
@@ -342,7 +341,6 @@ impl WorkspaceStateReads {
             T::Workflows => {
                 return Ok(StateValue::Workflows(
                     self.workflow
-                        .read_usecase()
                         .list_workflow_summaries()
                         .await
                         .map_err(error)?,
@@ -427,22 +425,13 @@ impl WorkspaceStateReads {
                     .map_err(error)?,
             ),
             T::Workflow(name) => {
-                StateValue::Workflow(self.workflow.get_workflow_dto(name).map_err(error)?)
+                StateValue::Workflow(self.workflow.get_workflow(name).map_err(error)?)
             }
             T::WorkflowSource(name) => {
                 StateValue::WorkflowSource(self.workflow.get_workflow_source(name).map_err(error)?)
             }
-            T::Facets(kind) => StateValue::Facets(
-                self.workflow
-                    .list_facet_summaries(*kind)
-                    .map_err(error)?
-                    .into_iter()
-                    .map(crate::usecase::workflow::dto::facet_summary_to_dto)
-                    .collect(),
-            ),
-            T::Facet(kind, key) => {
-                StateValue::Facet(self.workflow.get_facet(*kind, key).map_err(error)?)
-            }
+            T::Facets(kind) => StateValue::Facets(self.workflow.list_facet_summaries(*kind).map_err(error)?),
+            T::Facet(kind, key) => StateValue::Facet(self.workflow.get_facet(*kind, key).map_err(error)?),
             T::Diagnostics => StateValue::Diagnostics(
                 self.workflow
                     .diagnose_all(

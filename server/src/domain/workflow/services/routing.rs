@@ -6,7 +6,7 @@ use crate::domain::workflow::services::contract_schema::RoutingFieldKind;
 use crate::domain::workflow::services::{contract_schema, reference};
 use crate::domain::workflow::value_objects::{
     ChildEntry, EffectiveRules, NodeDefinition, NodeKind, Rule, SchemaDef, SequenceSpec,
-    WorkflowDefinition,
+    WorkflowDefinitionContent,
 };
 use crate::domain::workflow::{FieldPath, WorkflowError};
 
@@ -129,7 +129,7 @@ struct CompositeScope<'a> {
     sequence: Option<&'a SequenceSpec>,
 }
 
-fn composite_scopes(workflow: &WorkflowDefinition) -> Vec<CompositeScope<'_>> {
+fn composite_scopes(workflow: &WorkflowDefinitionContent) -> Vec<CompositeScope<'_>> {
     workflow
         .nodes
         .iter()
@@ -149,7 +149,7 @@ fn composite_scopes(workflow: &WorkflowDefinition) -> Vec<CompositeScope<'_>> {
         .collect()
 }
 
-pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
+pub fn validate_rules(workflow: &WorkflowDefinitionContent) -> Vec<RoutingValidationError> {
     let node_by_name: BTreeMap<_, _> = workflow
         .nodes
         .iter()
@@ -247,7 +247,7 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
 }
 
 fn validate_scope_children(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     scope: &CompositeScope<'_>,
     node_by_name: &BTreeMap<&str, &NodeDefinition>,
 ) -> Vec<RoutingValidationError> {
@@ -318,7 +318,7 @@ fn validate_scope_children(
 /// 判別（when / switch）の型検証はエントリが参照する子 node の artifact Contract
 /// に対して行う。
 fn validate_entry_rules(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     entry_name: &str,
     rules: &[Rule],
     child: Option<&NodeDefinition>,
@@ -463,7 +463,7 @@ pub fn rule_targets(rule: &Rule) -> Vec<&str> {
 /// (a) 各 sequence スコープ内: 実効 entry から実効辺で辿れない子。
 /// (b) カタログレベル: root からの構造参照（children / rules ターゲット）の閉包に
 ///     入らない node（ネスト合成子配下も構造参照として辿る）。
-pub fn validate_reachability(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
+pub fn validate_reachability(workflow: &WorkflowDefinitionContent) -> Vec<RoutingValidationError> {
     let mut unreachable: BTreeSet<String> = BTreeSet::new();
 
     let referenced = catalog_reference_closure(workflow);
@@ -488,7 +488,7 @@ pub fn validate_reachability(workflow: &WorkflowDefinition) -> Vec<RoutingValida
         .collect()
 }
 
-fn catalog_reference_closure(workflow: &WorkflowDefinition) -> HashSet<&str> {
+fn catalog_reference_closure(workflow: &WorkflowDefinitionContent) -> HashSet<&str> {
     let node_by_name: BTreeMap<_, _> = workflow
         .nodes
         .iter()
@@ -624,7 +624,7 @@ fn validate_scope_cycles(owner: &str, sequence: &SequenceSpec) -> Vec<RoutingVal
 /// root sequence スコープの前進（テスト用の互換入口）。
 #[cfg(test)]
 pub fn route(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     current_index: usize,
     artifact: Option<&Value>,
     node_execution_counts: &HashMap<String, u32>,
@@ -651,7 +651,7 @@ pub fn route(
 /// カウント範囲はスコープインスタンスの `child_counts` に閉じる。children に
 /// 載らず行き先参照だけされた node は次を持たないため、そこからの前進は終端。
 pub fn route_in_scope(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     sequence: &SequenceSpec,
     from_child: &str,
     artifact: Option<&Value>,
@@ -671,7 +671,7 @@ pub fn route_in_scope(
 }
 
 fn guarded_target_in_scope(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     sequence: &SequenceSpec,
     mut target: String,
     child_counts: &HashMap<String, u32>,
@@ -697,7 +697,7 @@ fn guarded_target_in_scope(
 }
 
 pub(crate) fn validate_routing_field(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node: &NodeDefinition,
     field: &str,
     expected: RoutingFieldKind,
@@ -710,7 +710,7 @@ pub(crate) fn validate_routing_field(
 }
 
 pub(crate) fn validate_artifact_field(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node: &NodeDefinition,
     field: &str,
     expected: RoutingFieldKind,

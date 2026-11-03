@@ -2,7 +2,7 @@ pub(crate) mod tests {
     use super::super::*;
     use crate::domain::workflow::{
         ExecutionTree, ExecutionTreeId, FacetRefs, NodeDefinition, NodeKind, SchemaDef,
-        SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository, WorkflowSummary,
+        SessionSpec, WorkflowDefinitionContent,
     };
     use crate::usecase::workflow::ports::WorkflowEventDraft;
     use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
@@ -10,29 +10,7 @@ pub(crate) mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
-    struct NoopDefinitionRepository;
-
-    impl WorkflowDefinitionRepository for NoopDefinitionRepository {
-        fn list(&self, _running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-            Ok(Vec::new())
-        }
-
-        fn get(&self, _file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-            Ok(None)
-        }
-
-        fn save(
-            &self,
-            _definition: WorkflowDefinition,
-            _original_name: Option<&str>,
-        ) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn delete(&self, _name: &str) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-    }
+    use crate::usecase::workflow::test_helpers::FakeDefinitionRepository as NoopDefinitionRepository;
 
     use crate::usecase::workflow::test_helpers::{FakeEventRepository, FakeFacetRepository};
 
@@ -67,7 +45,7 @@ pub(crate) mod tests {
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let query = WorkflowQueryService::new(
-                Arc::new(NoopDefinitionRepository),
+                Arc::new(NoopDefinitionRepository::default()),
                 Arc::new(NoopDefinitionSourceGateway),
                 facets.clone(),
                 events.clone(),
@@ -78,11 +56,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn definition_with_artifact_contract(contract: &str) -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn definition_with_artifact_contract(contract: &str) -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: "desc".to_string(),
-            builtin: false,
             schemas: BTreeMap::from([(
                 contract.to_string(),
                 SchemaDef::Object {
@@ -109,7 +86,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn execution_started(execution_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
+    fn execution_started(
+        execution_id: &str,
+        definition: WorkflowDefinitionContent,
+    ) -> WorkflowEventDraft {
         WorkflowEventDraft {
             execution_id: execution_id.to_string(),
             event_kind: "started".to_string(),

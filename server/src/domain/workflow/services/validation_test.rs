@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_参照schema集約_配線の既存診断messageを維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: wiring-message
 description: test
@@ -37,7 +37,7 @@ nodes:
 #[test]
 fn test_参照検証_非object契約と合成子経由の配線の原因段を両方収集する() {
     // Given
-    let mut workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let mut workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: nonobject-leaf
 description: test
@@ -81,7 +81,7 @@ nodes:
 #[test]
 fn test_fanout参照検証_配線とitemsの失敗位置とmap終端のmessageを維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/adaptor/gateway/workflow/fixtures/valid/fanout-map-references.yml"
     )))
@@ -140,7 +140,7 @@ fn test_fanout参照検証_配線とitemsの失敗位置とmap終端のmessage�
 #[test]
 fn test_fanout参照検証_items供給元の直接child参照と既存エラーを維持する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: items-errors
 description: test
@@ -185,7 +185,7 @@ fn test_delegate値域_直接構築された定義でもゼロを拒否し正の
         CommandSpec, NodeCompletion, Predicate, SessionDelegate, SessionSpec,
     };
     // Given
-    let mut workflow = WorkflowDefinition {
+    let mut workflow = WorkflowDefinitionContent {
         name: "delegate-limit".into(),
         entry: "main".into(),
         nodes: vec![
@@ -370,11 +370,10 @@ pub(crate) mod tests {
         }
     }
 
-    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
-        WorkflowDefinition {
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinitionContent {
+        WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: BTreeMap::new(),
             nodes,
             entry: "main".to_string(),

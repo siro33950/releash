@@ -255,7 +255,7 @@ pub(crate) mod tests {
         use releashd::test_support::integration::workflow::SessionSpec;
         use releashd::test_support::integration::workflow::StartedFact;
         use releashd::test_support::integration::workflow::TreeRootFact;
-        use releashd::test_support::integration::workflow::WorkflowDefinition;
+        use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
         vec![(
             NodeFactMeta {
                 tree_id: execution_id.to_string(),
@@ -275,10 +275,9 @@ pub(crate) mod tests {
                     created_from: ExecutionOrigin::Cli,
                     request: String::new(),
                     workflow_name: "wf".to_string(),
-                    definition: Some(WorkflowDefinition {
+                    definition: Some(WorkflowDefinitionContent {
                         name: "wf".to_string(),
                         description: String::new(),
-                        builtin: false,
                         schemas: Default::default(),
                         nodes: vec![NodeDefinition {
                             name: "main".to_string(),

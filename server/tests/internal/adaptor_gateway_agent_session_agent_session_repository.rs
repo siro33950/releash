@@ -2142,10 +2142,9 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
                 request: String::new(),
                 workflow_name: "workflow".to_string(),
                 definition: Some(
-                    releashd::test_support::integration::workflow::WorkflowDefinition {
+                    releashd::test_support::integration::workflow::WorkflowDefinitionContent {
                         name: "workflow".to_string(),
                         description: String::new(),
-                        builtin: false,
                         schemas: Default::default(),
                         nodes: vec![releashd::test_support::integration::workflow::NodeDefinition {
                     name: "session".to_string(),

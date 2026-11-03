@@ -24,7 +24,8 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
+    ) -> Result<crate::domain::workflow::WorkflowDefinitionContent, WorkflowDefinitionResolverError>
+    {
         let workflow_name = workflow_name.to_string();
         let dir = self.workflows_dir.clone();
         crate::common::operation_context::spawn_blocking(move || {
@@ -37,10 +38,10 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
     }
 }
 
-/// Runtime start の外部識別子はファイル名ではなく WorkflowDefinition.name である。
+/// Runtime start の外部識別子はファイル名ではなく WorkflowDefinitionContent.name である。
 ///
-/// ユーザーが YAML を直接編集・rename した場合も同じ規則を保つため、全 definition を
-/// load した後に name で一意解決する。複数ファイル（または builtin）が同じ name を
+/// ユーザーが YAML を直接編集・rename した場合も同じ規則を保つため、全 definition の
+/// name を読んで候補を絞り、一致した定義だけを完全に読み込む。複数ファイル（または builtin）が同じ name を
 /// 宣言した状態を先勝ちにすると実行対象が directory iteration order に依存するため、
 /// §7 の閉じた code 表で workflow name の妥当性にも使われる WFS006 Diagnostic として
 /// 明示的に拒否する（表にない新 code は追加しない）。
@@ -68,25 +69,41 @@ pub fn resolve_workflow_by_name(
         paths.sort();
 
         for path in paths {
-            match crate::adaptor::gateway::workflow::storage::load_workflow(&path, facets_base_dir)
-            {
-                Ok(workflow) if workflow.name == workflow_name => {
-                    matches.push((path.display().to_string(), workflow));
+            let result = (|| {
+                let content =
+                    std::fs::read_to_string(&path).map_err(super::storage::StorageError::from)?;
+                let diagnosis = super::storage::diagnose_workflow_file(
+                    &path,
+                    &content,
+                    workflows_dir,
+                    facets_base_dir,
+                );
+                let workflow = super::storage::diagnosed_workflow(diagnosis)?;
+                if workflow.name != workflow_name {
+                    return Ok(None);
                 }
-                Ok(_) => {}
-                Err(error)
-                    if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) =>
-                {
-                    exact_file_error = Some(error.to_string());
-                }
+                super::storage::resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
+                Ok::<_, super::storage::StorageError>(Some(workflow))
+            })();
+            match result {
+                Ok(Some(workflow)) => matches.push((path.display().to_string(), workflow)),
+                Ok(None) => {}
                 Err(error) => {
-                    log::warn!("workflow definition skipped: {}: {error}", path.display());
+                    if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) {
+                        log::warn!("workflow definition skipped: {}: {error}", path.display());
+                        exact_file_error = Some(error.to_string());
+                    } else {
+                        log::debug!("workflow definition skipped: {}: {error}", path.display());
+                    }
                 }
             }
         }
     }
 
     for summary in crate::adaptor::gateway::workflow::builtin::list_builtin_workflows() {
+        if summary.name != workflow_name {
+            continue;
+        }
         match crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
             &summary.name,
             facets_base_dir,
@@ -116,9 +133,17 @@ pub fn resolve_workflow_by_name(
                 .map(|(source, _)| source.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
-                "workflow_diagnostics: WFS006: workflow name '{workflow_name}' is duplicated: {sources}"
-            )))
+            Err(WorkflowDefinitionResolverError::InvalidWorkflow(
+                crate::domain::workflow::WorkflowError::Diagnostics(vec![
+                    crate::domain::workflow::value_objects::diagnostic::DiagnosticItem::new(
+                        "WFS006",
+                        crate::domain::workflow::value_objects::diagnostic::Severity::Error,
+                        crate::domain::workflow::value_objects::diagnostic::DiagnosticStage::ParseShape,
+                        None,
+                        format!("workflow name '{workflow_name}' is duplicated: {sources}"),
+                    ),
+                ]).to_string(),
+            ))
         }
     }
 }

@@ -8,6 +8,17 @@
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
 //! query service や gateway 協力者は対応する usecase の構築時に注入する。
 
+use crate::adaptor::gateway::workflow::{
+    definition_repository::{
+        WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    },
+    diagnostics_gateway::WorkflowDiagnosticsFileGateway,
+    execution_projection_repository::WorkflowExecutionProjectionLogRepository,
+    facet_repository::WorkflowFacetFileRepository,
+    summary_query::{FacetFileQueryService, WorkflowDefinitionFileQueryService},
+    WorkflowEventLogRepository,
+};
+use crate::usecase::workflow::query_service::WorkflowQueryService;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
@@ -28,16 +39,11 @@ use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree_terminal::NoopWorktreeTerminalGateway;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::terminal_surface::runtime_gateway_impl::TerminalSurfaceRuntimeGateway;
+#[cfg(any(test, feature = "test-support"))]
+use crate::adaptor::gateway::workflow::PassthroughManagedWorktreeGateway;
 use crate::adaptor::gateway::workflow::{
     ExecutionTreeArchiveFactRepository, RepositoryManagedWorktreeGateway,
-    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
-    WorkflowExecutionProjectionLogRepository, WorkflowExternalEditorGateway,
-    WorkflowFacetFileRepository, WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
-};
-#[cfg(any(test, feature = "test-support"))]
-use crate::adaptor::gateway::workflow::{
-    NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
+    WorkflowRuntimeCommandGateway, WorkflowRuntimeCommandGatewayDeps,
 };
 use crate::domain::app_config::{AppConfigRepository, RepositoryConfigRepository};
 use crate::domain::git::WorktreeTerminalGateway;
@@ -52,8 +58,6 @@ use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::git_usecase::GitUsecase;
 #[cfg(any(test, feature = "test-support"))]
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
-use crate::usecase::workflow::ports::ExternalEditorGateway;
-use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use crate::usecase::workflow::{
     WorkflowRuntimeUsecase, WorkflowUsecase, WorkspaceNodeActionResolver,
@@ -203,13 +207,20 @@ pub fn build_workflow_usecase_and_store(
         Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
         data_dir,
         Arc::new(PassthroughManagedWorktreeGateway),
-        Arc::new(NoopWorkflowExternalEditorGateway),
+        Arc::new(crate::usecase::workflow::test_support::NoopEditorSettingsGateway),
+        Arc::new(crate::usecase::workflow::test_support::NoopEditorLauncherGateway),
         local_event_store.clone(),
         None,
         workflows_dir,
     )
     .0;
     (workflow_usecase, local_event_store)
+}
+
+pub struct WorkflowEditorDependencies {
+    pub settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
+    pub launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
+    pub workflows_dir: std::path::PathBuf,
 }
 
 pub fn build_workflow_services_with_repository_worktrees(
@@ -219,7 +230,7 @@ pub fn build_workflow_services_with_repository_worktrees(
     app_config: Arc<dyn AppConfigRepository>,
     local_event_store: Arc<LocalEventStore>,
     processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
-    workflows_dir: std::path::PathBuf,
+    editor: WorkflowEditorDependencies,
 ) -> (
     WorkflowUsecase,
     Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
@@ -232,13 +243,11 @@ pub fn build_workflow_services_with_repository_worktrees(
             git_usecase,
             app_config.clone(),
         )),
-        Arc::new(WorkflowExternalEditorGateway::new(
-            app_config,
-            workflows_dir.clone(),
-        )),
+        editor.settings,
+        editor.launcher,
         local_event_store,
         Some(processes),
-        Some(workflows_dir),
+        Some(editor.workflows_dir),
     )
 }
 
@@ -249,7 +258,8 @@ pub fn build_workflow_services_with_gateways(
     failures: Arc<crate::adaptor::gateway::failure_records::FailureRecordStore>,
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
-    editors: Arc<dyn ExternalEditorGateway>,
+    editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
+    editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
     store: Arc<LocalEventStore>,
     processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
     workflows_dir: Option<std::path::PathBuf>,
@@ -286,7 +296,7 @@ pub fn build_workflow_services_with_gateways(
     let execution_projection = Arc::new(projection);
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
-        facets_base_dir,
+        facets_base_dir.clone(),
     ));
     let query = WorkflowQueryService::new(
         definitions.clone(),
@@ -297,11 +307,22 @@ pub fn build_workflow_services_with_gateways(
     );
     let workflow_usecase = WorkflowUsecase::new(
         query.clone(),
+        Arc::new(WorkflowDefinitionFileQueryService::new(
+            workflows_dir.clone(),
+            facets_base_dir.clone(),
+        )),
+        Arc::new(FacetFileQueryService::new(facets_base_dir.clone())),
         definitions,
         definition_sources,
         facets,
         worktrees.clone(),
-        editors,
+        editor_settings,
+        editor_launcher,
+        Arc::new(
+            crate::adaptor::gateway::workflow::directory_service::WorkflowDirectoryFileService::new(
+                workflows_dir,
+            ),
+        ),
         diagnostics,
         execution_archives.clone(),
         workspace_nodes,

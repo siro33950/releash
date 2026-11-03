@@ -35,7 +35,7 @@ use releashd::test_support::integration::workflow::Rule;
 use releashd::test_support::integration::workflow::SchemaDef;
 use releashd::test_support::integration::workflow::SequenceSpec;
 use releashd::test_support::integration::workflow::SessionSpec;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowEvent;
 use releashd::test_support::integration::workspace::WorkspaceNodeStatus;
 
@@ -53,11 +53,10 @@ const REPORTED_SESSION_1_ID: &str = "00000000-0000-4000-8000-000000000720";
 const REPORTED_SESSION_2_ID: &str = "00000000-0000-4000-8000-000000000721";
 const REPORTED_FIX_SESSION_ID: &str = "00000000-0000-4000-8000-000000000722";
 
-fn reported_fanout_definition() -> WorkflowDefinition {
-    WorkflowDefinition {
+fn reported_fanout_definition() -> WorkflowDefinitionContent {
+    WorkflowDefinitionContent {
         name: "dev-cycle".to_string(),
         description: String::new(),
-        builtin: false,
         schemas: std::collections::BTreeMap::from([
             (
                 "review-result".to_string(),
@@ -448,11 +447,10 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
         },
     ]
 }
-fn fanout_with_sequence_child_definition() -> WorkflowDefinition {
-    WorkflowDefinition {
+fn fanout_with_sequence_child_definition() -> WorkflowDefinitionContent {
+    WorkflowDefinitionContent {
         name: "multi-execution".to_string(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![
             NodeDefinition {
@@ -474,10 +472,9 @@ fn fanout_with_sequence_child_definition() -> WorkflowDefinition {
 }
 
 fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEvent> {
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         name: "duplicate-session-binding".to_string(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![
             NodeDefinition {
@@ -604,11 +601,10 @@ fn fanout_with_sequence_child_events(execution_id: &str, workspace: &str) -> Vec
     ]
 }
 
-fn dynamic_fanout_with_sequence_child_definition() -> WorkflowDefinition {
-    WorkflowDefinition {
+fn dynamic_fanout_with_sequence_child_definition() -> WorkflowDefinitionContent {
+    WorkflowDefinitionContent {
         name: "dynamic-multi-execution".to_string(),
         description: String::new(),
-        builtin: false,
         schemas: Default::default(),
         nodes: vec![
             NodeDefinition {
@@ -857,7 +853,7 @@ pub async fn test_ツリー読み出し_command形のsession成果物を含む�
         "00000000-0000-4000-8000-000000000743",
         "00000000-0000-4000-8000-000000000744",
     ];
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         name: "session-artifact".to_string(),
         schemas: std::collections::BTreeMap::from([(
             "report-result".to_string(),
@@ -887,7 +883,7 @@ pub async fn test_ツリー読み出し_command形のsession成果物を含む�
             ..NodeDefinition::default()
         }],
         entry: "report".to_string(),
-        ..WorkflowDefinition::default()
+        ..WorkflowDefinitionContent::default()
     };
     releashd::test_support::integration::workflow::validate(&definition).unwrap();
     for execution_id in execution_ids {
@@ -1401,7 +1397,7 @@ pub(super) async fn delegate_fixture(
     const TREE: &str = "00000000-0000-4000-8000-000000001958";
     const ROOT: &str = "00000000-0000-4000-8000-000000001957";
     const CHILD: &str = "00000000-0000-4000-8000-000000001959";
-    let definition = WorkflowDefinition {
+    let definition = WorkflowDefinitionContent {
         name: "delegate".into(),
         entry: "main".into(),
         nodes: vec![
@@ -2103,7 +2099,7 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
         let tree = "00000000-0000-4000-8000-000000002063";
         let parent = "00000000-0000-4000-8000-000000002064";
         let scope = "00000000-0000-4000-8000-000000002065";
-        let definition = WorkflowDefinition {
+        let definition = WorkflowDefinitionContent {
             name: "composite".into(),
             entry: "main".into(),
             nodes: vec![

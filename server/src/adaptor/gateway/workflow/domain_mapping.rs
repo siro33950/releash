@@ -9,11 +9,11 @@ use crate::domain::workflow as domain;
 
 pub(crate) fn workflow_definition_to_domain(
     workflow: &schema::WorkflowDefinitionYaml,
-) -> domain::WorkflowDefinition {
-    domain::WorkflowDefinition {
+) -> domain::WorkflowDefinitionContent {
+    domain::WorkflowDefinitionContent {
         name: workflow.name.clone(),
         description: workflow.description.clone(),
-        builtin: workflow.builtin,
+
         schemas: workflow_schemas_to_domain(&workflow.schemas),
         nodes: workflow
             .nodes

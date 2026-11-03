@@ -3,19 +3,19 @@
 //! Query services assemble read models from repository ports only. They do not
 //! call command usecases and they do not mutate workflow state.
 
+use crate::domain::workflow::WorkflowDefinitionSourceService;
 use std::sync::Arc;
 
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ExecutionTree, ExecutionTreeId, FacetKind, FacetRepository, FacetSummary, WorkflowDefinition,
-    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError, WorkflowSummary,
+    ExecutionTree, ExecutionTreeId, Facet, FacetKind, FacetRepository, WorkflowDefinition,
+    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
 };
 
 use super::event_draft;
 use super::ports::{
-    WorkflowDefinitionSourceGateway, WorkflowEventDraft, WorkflowEventRepository,
-    WorkflowExecutionProjectionRepository,
+    WorkflowEventDraft, WorkflowEventRepository, WorkflowExecutionProjectionRepository,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,7 +33,7 @@ pub enum WorkflowGetOutputResult {
 #[derive(Clone)]
 pub struct WorkflowQueryService {
     definitions: Arc<dyn WorkflowDefinitionRepository>,
-    definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
+    definition_sources: Arc<dyn WorkflowDefinitionSourceService>,
     facets: Arc<dyn FacetRepository>,
     events: Arc<dyn WorkflowEventRepository>,
     execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
@@ -42,7 +42,7 @@ pub struct WorkflowQueryService {
 impl WorkflowQueryService {
     pub fn new(
         definitions: Arc<dyn WorkflowDefinitionRepository>,
-        definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
+        definition_sources: Arc<dyn WorkflowDefinitionSourceService>,
         facets: Arc<dyn FacetRepository>,
         events: Arc<dyn WorkflowEventRepository>,
         execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
@@ -56,32 +56,18 @@ impl WorkflowQueryService {
         }
     }
 
-    pub fn list_workflows(
-        &self,
-        running_names: &[String],
-    ) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        self.definitions.list(running_names)
-    }
-
+    /// 定義を取得し、存在しない場合は空を返す。
     pub fn get_workflow(
         &self,
         file_stem: &str,
     ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
         let name = WorkflowDefinitionName::new(file_stem.to_string())?;
-        self.definitions.get(name.as_str())
+        self.definitions.find(Some(name.as_str()))
     }
 
     pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
         let name = WorkflowDefinitionName::new(file_stem.to_string())?;
         self.definition_sources.get_source(name.as_str())
-    }
-
-    pub fn get_workflow_source_format(
-        &self,
-        file_stem: &str,
-    ) -> Result<crate::domain::workflow::WorkflowSourceFormat, WorkflowError> {
-        let name = WorkflowDefinitionName::new(file_stem.to_string())?;
-        self.definition_sources.source_format(name.as_str())
     }
 
     pub(in crate::usecase::workflow) async fn read_events(
@@ -133,15 +119,8 @@ impl WorkflowQueryService {
         self.execution_projection.get_execution(&execution_id).await
     }
 
-    pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
+    pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError> {
         self.facets.get(kind, key)
-    }
-
-    pub fn list_facet_summaries(
-        &self,
-        kind: FacetKind,
-    ) -> Result<Vec<FacetSummary>, WorkflowError> {
-        self.facets.list_summaries(kind)
     }
 }
 

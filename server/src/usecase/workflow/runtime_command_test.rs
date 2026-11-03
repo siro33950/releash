@@ -1,6 +1,6 @@
 pub(crate) mod tests {
     use super::super::*;
-    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition};
+    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinitionContent};
     use std::sync::Mutex;
 
     mod runtime_command_tests {
@@ -15,6 +15,38 @@ pub(crate) mod tests {
         use crate::usecase::provider_lifecycle::{
             ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
         };
+
+        #[tokio::test]
+        async fn test_workflow診断失敗_stopとcache解放と起動登録を拒否する() {
+            // Given
+            let gateway = Arc::new(FakeRuntimeGateway {
+                failure: Some(WorkflowError::Diagnostics(Vec::new())),
+                ..Default::default()
+            });
+            let usecase = WorkflowRuntimeUsecase::new(
+                gateway,
+                Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+            );
+            // When / Then
+            assert_eq!(ProviderExecutionTreeStopTransaction::commit_provider_stop(
+                &usecase, ProviderExecutionTreeStopCommand {
+                    tree_id: "tree".into(), node_execution_id: "node".into(),
+                    agent_session_id: "session".into(), binding_id: "binding".into(),
+                }, Vec::new(),
+            ).await.unwrap_err(), crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput);
+            assert_eq!(
+                ExecutionTreeCache::release_deleted_execution_tree(&usecase, "tree")
+                    .await
+                    .unwrap_err(),
+                ExecutionTreeCacheReleaseError::Corrupt
+            );
+            assert_eq!(
+                StartedExecutionTreeRegistrar::register_started_execution_tree(&usecase, "tree")
+                    .await
+                    .unwrap_err(),
+                StartedExecutionTreeRegistrationError::Corrupt
+            );
+        }
 
         #[tokio::test]
         async fn test_workflow失敗_stopとcache解放と起動登録で元の分類を保持する() {
@@ -141,9 +173,9 @@ pub(crate) mod tests {
         async fn resolve_start_execution_workflow(
             &self,
             _workflow_name: &str,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
+        ) -> Result<WorkflowDefinitionContent, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_workflow");
-            Ok(WorkflowDefinition::default())
+            Ok(WorkflowDefinitionContent::default())
         }
 
         async fn start_resolved_execution(

@@ -358,12 +358,7 @@ fn format_notion_tasks(request: &NotionTaskListRequest) -> (&'static str, Vec<St
 }
 
 fn facet_kind(kind: &str) -> Result<FacetKind, SubscriptionError> {
-    match kind {
-        "policy" => Ok(FacetKind::Policy),
-        "knowledge" => Ok(FacetKind::Knowledge),
-        "instruction" => Ok(FacetKind::Instruction),
-        _ => Err(SubscriptionError::InvalidId),
-    }
+    kind.parse().map_err(|_| SubscriptionError::InvalidId)
 }
 
 fn facet_kind_name(kind: FacetKind) -> &'static str {

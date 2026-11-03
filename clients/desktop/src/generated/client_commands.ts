@@ -74,6 +74,7 @@ import {
 	OpenFacetInEditorRequestSchema,
 	OpenFolderInEditorRequestSchema,
 	OpenInEditorRequestSchema,
+	OpenWorkflowDirectoryInEditorRequestSchema,
 	OpenWorkflowInEditorRequestSchema,
 	RefreshProviderAvailabilityRequestSchema,
 	RefreshWorkspacesRequestSchema,
@@ -957,6 +958,25 @@ const commands = {
 					OpenWorkflowInEditorRequestSchema,
 					clientJson(
 						OpenWorkflowInEditorRequestSchema,
+						JSON.parse(JSON.stringify(args ?? {})),
+						true,
+					),
+				),
+			),
+		);
+		return result;
+	},
+	open_workflow_directory_in_editor: async (
+		client: Client<typeof ClientService>,
+		args: ClientCommandArgs["open_workflow_directory_in_editor"],
+	) => {
+		const result = decode(
+			UnitSchema,
+			await client.openWorkflowDirectoryInEditor(
+				fromJson(
+					OpenWorkflowDirectoryInEditorRequestSchema,
+					clientJson(
+						OpenWorkflowDirectoryInEditorRequestSchema,
 						JSON.parse(JSON.stringify(args ?? {})),
 						true,
 					),

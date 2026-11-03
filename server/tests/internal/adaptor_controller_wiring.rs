@@ -77,7 +77,15 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         config.clone(),
         store.clone(),
         processes.clone(),
-        root.join("workflows"),
+        releashd::test_support::integration::platform::WorkflowEditorDependencies {
+            settings: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorSettingsGateway,
+            ),
+            launcher: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorLauncherGateway,
+            ),
+            workflows_dir: root.join("workflows"),
+        },
     );
     let (runtime, _) = build_workflow_runtime_usecase(
         retrying.clone(),
@@ -153,7 +161,6 @@ pub(crate) mod tests {
     use releashd::test_support::integration::platform::build_workflow_services_with_gateways;
     use releashd::test_support::integration::platform::workflow_read;
 
-    use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
     use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     use std::sync::Arc;
 
@@ -236,7 +243,8 @@ pub(crate) mod tests {
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             root.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             store.clone(),
             None,
             None,
@@ -336,7 +344,15 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         config.clone(),
         store.clone(),
         processes.clone(),
-        workflows_dir.clone(),
+        releashd::test_support::integration::platform::WorkflowEditorDependencies {
+            settings: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorSettingsGateway,
+            ),
+            launcher: Arc::new(
+                releashd::test_support::integration::workflow::NoopEditorLauncherGateway,
+            ),
+            workflows_dir: workflows_dir.clone(),
+        },
     );
     let (runtime, _) = build_workflow_runtime_usecase(
         retrying.clone(),

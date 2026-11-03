@@ -45,7 +45,7 @@ use releashd::test_support::integration::workflow::SubmitOutputCommand;
 use releashd::test_support::integration::workflow::TransitionOutcome;
 use releashd::test_support::integration::workflow::WorkflowControlPlaneUsecase;
 use releashd::test_support::integration::workflow::WorkflowDefaults;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowEvent;
 use releashd::test_support::integration::workflow::WorkflowExecutionInsert;
 use releashd::test_support::integration::workflow::WorkflowRuntimeCommandGateway;
@@ -2212,7 +2212,7 @@ pub async fn test_worktree排他_再起動直後の記録を使い占有実行�
         .persist_started("  main: {session: {provider: codex}}\n", "/repo")
         .await;
     let host = fixture.restarted_host();
-    let attempted: WorkflowDefinition = serde_saphyr::from_str("name: attempted\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
+    let attempted: WorkflowDefinitionContent = serde_saphyr::from_str("name: attempted\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
     // When
     let error = host
         .start_resolved_workflow(
@@ -2237,7 +2237,7 @@ pub async fn test_worktree排他_再起動直後の記録を使い占有実行�
 pub async fn test_worktree排他_同時起動は一件だけ成功し外部abort後は起動できる() {
     // Given
     let fixture = crate::adaptor_gateway_workflow_workflow_host_test_helpers::Fixture::new(0);
-    let workflow: WorkflowDefinition = serde_saphyr::from_str("name: concurrent\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str("name: concurrent\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
     let facet_guard = fixture.host.test_execution_facet_contents().lock().await;
     // When
     let mut first = Box::pin(fixture.host.start_resolved_workflow(
@@ -2296,7 +2296,7 @@ pub async fn test_worktree排他_abort待機中も別worktreeは起動し同一w
         let active = fixture
             .persist_started("  main: {session: {provider: codex}}\n", "/repo")
             .await;
-        let workflow: WorkflowDefinition = serde_saphyr::from_str("name: concurrent\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
+        let workflow: WorkflowDefinitionContent = serde_saphyr::from_str("name: concurrent\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}\n").unwrap();
         let gate = fixture
             .host
             .runtime_activation_gate(&active.execution_id)
@@ -4323,12 +4323,12 @@ pub(crate) mod command_env_tests {
 
     use releashd::test_support::integration::workflow::command_env;
     use releashd::test_support::integration::workflow::CommandExecutionInput;
-    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
     use std::collections::BTreeMap;
 
     #[tokio::test]
     pub async fn test_command_env_yaml定義と束縛から子processへstringとjsonを渡す() {
-        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+        let workflow = serde_saphyr::from_str::<WorkflowDefinitionContent>(
             r#"name: env-runtime
 description: env runtime
 nodes:
@@ -4432,7 +4432,7 @@ pub(crate) mod workflow_host_tests {
     use releashd::test_support::integration::workflow::RuntimeExecutionState;
     use releashd::test_support::integration::workflow::WorkflowAgentSessionPort;
     use releashd::test_support::integration::workflow::WorkflowDefaults;
-    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
     use releashd::test_support::integration::workflow::WorkflowDefinitionResolver;
     use releashd::test_support::integration::workflow::WorkflowEvent;
     use releashd::test_support::integration::workflow::WorkflowExecutionInsert;
@@ -4476,7 +4476,7 @@ pub(crate) mod workflow_host_tests {
         async fn resolve(
             &self,
             _workflow_name: &str,
-        ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+        ) -> Result<WorkflowDefinitionContent, WorkflowDefinitionResolverError> {
             Err(WorkflowDefinitionResolverError::Infrastructure(
                 "unused in startup recovery".to_string(),
             ))
@@ -4544,7 +4544,7 @@ pub(crate) mod workflow_host_tests {
                     releashd::test_support::integration::daemon::serving(),
                 ));
                 let node_name = if parent.is_empty() { "main" } else { "run" };
-                let workflow = serde_saphyr::from_str::<WorkflowDefinition>(&format!(
+                let workflow = serde_saphyr::from_str::<WorkflowDefinitionContent>(&format!(
                     "name: command-completion\ndescription: test\nnodes:\n{parent}  {node_name}:\n    command: 'true'\n{completion}"
                 ))
                 .unwrap();
@@ -5001,7 +5001,7 @@ pub(crate) mod workflow_host_tests {
             ),
             releashd::test_support::integration::daemon::serving(),
         );
-        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+        let workflow = serde_saphyr::from_str::<WorkflowDefinitionContent>(
             r#"name: missing-command-env
 description: missing command env
 nodes:
@@ -5096,7 +5096,7 @@ nodes:
             ),
             releashd::test_support::integration::daemon::serving(),
         );
-        let workflow = serde_saphyr::from_str::<WorkflowDefinition>(
+        let workflow = serde_saphyr::from_str::<WorkflowDefinitionContent>(
             r#"name: nul-command-env
 description: nul command env
 nodes:
@@ -5654,10 +5654,9 @@ nodes:
                 completion,
                 worktree: None,
             }];
-            let workflow = WorkflowDefinition {
+            let workflow = WorkflowDefinitionContent {
                 name: "runtime-effect-test".to_string(),
                 description: String::new(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes,
                 entry: EFFECT_NODE_NAME.to_string(),
@@ -5756,10 +5755,9 @@ nodes:
                 completion: NodeCompletion::default(),
                 worktree: None,
             };
-            let workflow = WorkflowDefinition {
+            let workflow = WorkflowDefinitionContent {
                 name: "runtime-effect-order-test".to_string(),
                 description: String::new(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes: vec![
                     NodeDefinition {
@@ -6214,10 +6212,9 @@ nodes:
                     releashd::test_support::integration::platform::shared().clone(),
                     gateway,
                 )));
-            let workflow = WorkflowDefinition {
+            let workflow = WorkflowDefinitionContent {
                 name: "stop-during-activation".to_string(),
                 description: String::new(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes: vec![NodeDefinition {
                     name: "main".to_string(),
@@ -6438,10 +6435,9 @@ nodes:
             host.register_started_execution_tree(&app, session_id)
                 .await
                 .unwrap();
-            let workflow = WorkflowDefinition {
+            let workflow = WorkflowDefinitionContent {
                 name: "coexisting-workflow".to_string(),
                 description: String::new(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes: vec![NodeDefinition {
                     name: "main".to_string(),
@@ -6993,10 +6989,9 @@ nodes:
             worktree_path: &str,
             timestamp_ms: i64,
         ) {
-            let definition = WorkflowDefinition {
+            let definition = WorkflowDefinitionContent {
                 name: format!("workflow-{tree_id}"),
                 description: String::new(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes: vec![
                     NodeDefinition {

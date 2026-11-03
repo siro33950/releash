@@ -1,11 +1,11 @@
 //! Start command admission and domain validation mapping.
 
 use crate::domain::workflow as domain;
-use crate::domain::workflow::WorkflowDefinition;
+use crate::domain::workflow::WorkflowDefinitionContent;
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 
 pub(crate) fn validate_workflow_shape(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
 ) -> Result<(), WorkflowRuntimeError> {
     domain::validation::validate_workflow_shape(workflow)
         .map_err(|err| domain_validation_to_runtime_error(err, workflow))
@@ -21,9 +21,12 @@ pub(crate) fn validate_start(
 
 fn domain_validation_to_runtime_error(
     err: domain::WorkflowError,
-    _workflow: &domain::WorkflowDefinition,
+    _workflow: &domain::WorkflowDefinitionContent,
 ) -> WorkflowRuntimeError {
     match err {
+        error @ domain::WorkflowError::Diagnostics(_) => {
+            WorkflowRuntimeError::InvalidWorkflow(error.to_string())
+        }
         error @ (domain::WorkflowError::Technical(_) | domain::WorkflowError::Editor(_)) => {
             WorkflowRuntimeError::Store(error.into())
         }

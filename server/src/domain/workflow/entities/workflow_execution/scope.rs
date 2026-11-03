@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::domain::workflow::services::routing::{route_in_scope, RouteDecision};
 use crate::domain::workflow::value_objects::RuntimeArtifact;
 use crate::domain::workflow::{
-    NodeDefinition, NodeExecutionStatus, NodeKind, WorkflowDefinition, WorkflowError,
+    NodeDefinition, NodeExecutionStatus, NodeKind, WorkflowDefinitionContent, WorkflowError,
 };
 
 use super::{ExecutionTree, FanoutChildRuntime, RuntimeNodeExecution};
@@ -167,7 +167,7 @@ impl ExecutionTree {
     pub(super) fn advance_composite(
         &self,
         scope_id: &str,
-        workflow: &WorkflowDefinition,
+        workflow: &WorkflowDefinitionContent,
         node: &NodeDefinition,
         completed_child: &str,
         counts: &HashMap<String, u32>,

@@ -228,7 +228,7 @@ mod vocabulary_tests {
 mod detail_round_trip_tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionTreeLaunch, NodeDefinition, NodeKind, WorkflowDefinition,
+        ExecutionTreeLaunch, NodeDefinition, NodeKind, WorkflowDefinitionContent,
     };
 
     #[test]
@@ -244,10 +244,9 @@ mod detail_round_trip_tests {
                 created_from: ExecutionOrigin::Cli,
                 request: "please review".to_string(),
                 workflow_name: "review".to_string(),
-                definition: Some(WorkflowDefinition {
+                definition: Some(WorkflowDefinitionContent {
                     name: "review".to_string(),
                     description: String::new(),
-                    builtin: false,
                     schemas: Default::default(),
                     nodes: vec![NodeDefinition {
                         name: "main".to_string(),

@@ -46,4 +46,21 @@ final class SettingsTests: XCTestCase {
     let result = await XCTWaiter.fulfillment(of: [restored], timeout: 10)
     XCTAssertEqual(result, .completed)
   }
+
+  @MainActor func testWorkflowsListOpensDefinitionAndDiagnostics() async throws {
+    app.launch()
+    XCTAssertTrue(app.buttons["Worktreeを作成"].waitForExistence(timeout: 30), app.debugDescription)
+    app.typeKey(",", modifierFlags: .command)
+    let tab = app.toolbars.buttons["Workflows"]
+    XCTAssertTrue(tab.waitForExistence(timeout: 10), app.debugDescription)
+    tab.click()
+    let row = app.descendants(matching: .any)["settings-workflow-01_author-spec"].firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
+    row.click()
+    let node = app.descendants(matching: .any)["settings-workflow-node-main"].firstMatch
+    XCTAssertTrue(node.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["settings-diagnostic-WFI000"].firstMatch.waitForExistence(
+        timeout: 10), app.debugDescription)
+  }
 }

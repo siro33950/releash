@@ -1,6 +1,6 @@
 use super::*;
 
-fn composite_workflow() -> WorkflowDefinition {
+fn composite_workflow() -> WorkflowDefinitionContent {
     serde_saphyr::from_str(
         r#"
 name: composite-reference
@@ -163,7 +163,7 @@ fn test_node参照解決_未知キーと成果のない子と非objectを絶対�
 #[test]
 fn test_node参照解決_包含cycleへの再訪をその段で打ち切る() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: cycle-schema
 description: test
@@ -190,7 +190,7 @@ nodes:
 #[test]
 fn test_node参照解決_非objectのcommand契約と参照不能な成果を区別する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: invalid-schema
 description: test
@@ -227,7 +227,7 @@ nodes:
 #[test]
 fn test_node参照解決_合成子経由の非object契約をleafの直前段に帰属させる() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: nonobject-leaf
 description: test
@@ -275,7 +275,7 @@ nodes:
 #[test]
 fn test_node参照解決_訪問済み集合は要求されたpathごとに閉じる() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: shared-schema
 description: test
@@ -309,7 +309,7 @@ nodes:
 #[test]
 fn test_node参照解決_fanout内のsequenceとfanoutを経由してleafへ届く() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: nested-fanout
 description: test
@@ -471,7 +471,7 @@ pub(crate) mod tests {
             unreachable!();
         };
         command.env = command_env(&[("UNKNOWN", "missing"), ("FIELD", "document.body")]);
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
             schemas: [(
@@ -811,7 +811,7 @@ mod reference_path_test {
     #[test]
     fn test_command_env参照検証_型ありinputの多段fieldが通る() {
         // Given
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "wf".to_string(),
             schemas: BTreeMap::from([("document".to_string(), nested_parameter_schema())]),
             nodes: vec![command_with_env(
@@ -834,7 +834,7 @@ mod reference_path_test {
     #[test]
     fn test_command_env参照検証_存在しない段と非object中間段を拒否する() {
         // Given
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "wf".to_string(),
             schemas: BTreeMap::from([("document".to_string(), nested_parameter_schema())]),
             nodes: vec![command_with_env(
@@ -863,7 +863,7 @@ mod reference_path_test {
     #[test]
     fn test_command_env参照検証_型なしinputの多段は静的検査しない() {
         // Given
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "wf".to_string(),
             nodes: vec![command_with_env(
                 vec![crate::domain::workflow::InputParam {
@@ -940,7 +940,7 @@ mod reference_path_test {
     #[test]
     fn test_正本サンプルのfanout配線_統合と整合確認と修正統合へ同じslot集合を渡す() {
         // Given
-        let workflow: WorkflowDefinition = serde_saphyr::from_str(include_str!(concat!(
+        let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../workflows/examples/full-cycle-development.yml"
         )))
@@ -986,7 +986,7 @@ mod reference_path_test {
 #[test]
 fn test_node参照解決_委任先の成果と隔離worktreeを正しいnodeから解決する() {
     // Given
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(
         r#"
 name: delegated-reference
 description: test

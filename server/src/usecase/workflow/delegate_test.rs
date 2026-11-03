@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::workflow::entities::workflow_execution::ExecutionTreeRestore;
-use crate::domain::workflow::{NodeCompletionSignal, WorkflowDefinition};
+use crate::domain::workflow::{NodeCompletionSignal, WorkflowDefinitionContent};
 use std::sync::Mutex;
 
 struct Gateway {
@@ -82,7 +82,7 @@ impl DelegateContinuationGateway for Gateway {
 }
 
 fn fixture(fail: Option<&'static str>) -> (std::sync::Arc<Gateway>, DelegateInjection) {
-    let workflow: WorkflowDefinition = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: check, when: child.ok, max_iterations: 2}}}\n  check: {command: check}").unwrap();
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str("name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}, artifact: result, completion: {delegate: {child: check, when: child.ok, max_iterations: 2}}}\n  check: {command: check}").unwrap();
     let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "tree".into(),
         workflow,

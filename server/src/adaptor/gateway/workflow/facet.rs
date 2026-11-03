@@ -1,5 +1,6 @@
 use super::builtin;
 use super::schema::{FacetRefs, WorkflowDefinitionYaml};
+#[cfg(any(test, feature = "test-support"))]
 use super::storage;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -22,7 +23,6 @@ pub(crate) fn resolve_facets_base_dir(workflow_source_dir: &Path) -> PathBuf {
 pub enum FacetError {
     InvalidKey { key: String },
     NotFound { kind: FacetKind, key: String },
-    BuiltinProtected { kind: FacetKind, key: String },
     Io(std::io::Error),
 }
 
@@ -36,11 +36,6 @@ impl fmt::Display for FacetError {
             Self::NotFound { kind, key } => write!(
                 f,
                 "ファセット '{key}' ({}) が見つかりません",
-                kind.dir_name()
-            ),
-            Self::BuiltinProtected { kind, key } => write!(
-                f,
-                "ビルトインファセット '{key}' ({}) は削除できません",
                 kind.dir_name()
             ),
             Self::Io(e) => write!(f, "I/Oエラー: {e}"),
@@ -65,69 +60,37 @@ impl Serialize for FacetError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FacetKind {
-    Policy,
-    Knowledge,
-    Instruction,
-}
-
-impl FacetKind {
-    /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
-    pub fn dir_name(&self) -> &str {
-        match self {
-            Self::Policy => "policies",
-            Self::Knowledge => "knowledge",
-            Self::Instruction => "instructions",
-        }
-    }
-
-    /// UI / CLI / DiagnosticReport が共有する正規識別子（単数形）。
-    /// backend command の `parse_domain_facet_kind` が受理する語彙と一致する。
-    pub fn canonical_name(&self) -> &str {
-        match self {
-            Self::Policy => "policy",
-            Self::Knowledge => "knowledge",
-            Self::Instruction => "instruction",
-        }
-    }
-}
+pub use crate::domain::workflow::FacetKind;
 
 pub use crate::domain::workflow::{FacetContents, WorkflowFacetContents};
 
 pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
-    if key.is_empty() {
-        return Err(FacetError::InvalidKey {
+    crate::domain::workflow::FacetKey::new(key)
+        .map(|_| ())
+        .map_err(|_| FacetError::InvalidKey {
             key: key.to_string(),
-        });
-    }
-    let mut chars = key.chars();
-    let first = chars.next().unwrap();
-    if !first.is_ascii_alphanumeric() {
-        return Err(FacetError::InvalidKey {
-            key: key.to_string(),
-        });
-    }
-    for c in chars {
-        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err(FacetError::InvalidKey {
-                key: key.to_string(),
-            });
-        }
-    }
-    Ok(())
+        })
 }
 
 pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String, FacetError> {
     validate_facet_key(key)?;
+    load_facet_with_source(kind, key, base_dir).map(|(_, content)| content)
+}
+
+pub(super) fn load_facet_with_source(
+    kind: FacetKind,
+    key: &str,
+    base_dir: &Path,
+) -> Result<(crate::domain::workflow::WorkflowSource, String), FacetError> {
+    use crate::domain::workflow::WorkflowSource;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
     match fs::read_to_string(&path) {
-        Ok(content) => return Ok(content),
+        Ok(content) => return Ok((WorkflowSource::File { path }, content)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
     if let Some(content) = builtin::get_builtin_facet(kind, key) {
-        return Ok(content.to_string());
+        return Ok((WorkflowSource::Builtin, content.to_string()));
     }
     Err(FacetError::NotFound {
         kind,
@@ -141,13 +104,14 @@ pub(crate) fn facet_exists(
     base_dir: &Path,
 ) -> Result<bool, FacetError> {
     validate_facet_key(key)?;
-    if builtin::is_builtin_facet(kind, key) {
-        return Ok(true);
-    }
-    let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    Ok(path.try_exists()?)
+    Ok(builtin::get_builtin_facet(kind, key).is_some()
+        || base_dir
+            .join(kind.dir_name())
+            .join(format!("{key}.md"))
+            .try_exists()?)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn save_facet(
     kind: FacetKind,
     key: &str,
@@ -162,23 +126,18 @@ pub fn save_facet(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn delete_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<(), FacetError> {
     validate_facet_key(key)?;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    if path.exists() {
-        fs::remove_file(&path)?;
-        return Ok(());
-    }
-    if builtin::is_builtin_facet(kind, key) {
-        return Err(FacetError::BuiltinProtected {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(FacetError::NotFound {
             kind,
             key: key.to_string(),
-        });
+        }),
+        Err(error) => Err(error.into()),
     }
-    Err(FacetError::NotFound {
-        kind,
-        key: key.to_string(),
-    })
 }
 
 pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, FacetError> {
@@ -201,66 +160,7 @@ pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, Face
     Ok(keys.into_iter().collect())
 }
 
-/// Markdownファイルの先頭行から説明を取得する。
-/// 先頭行が `# ` で始まる場合はその見出しテキストを、そうでなければ先頭の非空行をそのまま使用する。
-pub fn extract_description(content: &str) -> String {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(heading) = trimmed.strip_prefix("# ") {
-            return heading.trim().to_string();
-        }
-        return trimmed.to_string();
-    }
-    String::new()
-}
-
-pub fn list_facet_summaries(
-    kind: FacetKind,
-    base_dir: &Path,
-) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
-    let kind_name = kind.canonical_name().to_string();
-    let mut summaries = Vec::new();
-    let dir = base_dir.join(kind.dir_name());
-
-    let mut seen_keys = BTreeSet::new();
-    if dir.try_exists()? {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let content = fs::read_to_string(&path)?;
-                    summaries.push(super::schema::FacetSummary {
-                        key: stem.to_string(),
-                        kind: kind_name.clone(),
-                        description: extract_description(&content),
-                        builtin: builtin::is_builtin_facet(kind, stem),
-                    });
-                    seen_keys.insert(stem.to_string());
-                }
-            }
-        }
-    }
-
-    for key in builtin::list_builtin_facet_keys(kind) {
-        if !seen_keys.contains(key) {
-            let content = builtin::get_builtin_facet(kind, key).unwrap_or("");
-            summaries.push(super::schema::FacetSummary {
-                key: key.to_string(),
-                kind: kind_name.clone(),
-                description: extract_description(content),
-                builtin: true,
-            });
-        }
-    }
-
-    summaries.sort_by(|a, b| a.key.cmp(&b.key));
-    Ok(summaries)
-}
-
+#[cfg(any(test, feature = "test-support"))]
 pub fn resolve_facet_path(
     kind: FacetKind,
     key: &str,

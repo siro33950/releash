@@ -1129,7 +1129,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::workflow::NodeKind;
     use releashd::test_support::integration::workflow::Rule;
     use releashd::test_support::integration::workflow::Severity;
-    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
     use releashd::test_support::integration::workflow::YamlSpanMap;
     use std::collections::HashSet;
     use std::path::Path;
@@ -1534,7 +1534,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "canonical-custom-facet".to_string(),
             description: "canonical custom facet diagnostic".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("custom-instruction"))],
@@ -1574,7 +1573,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "builtin-override".to_string(),
             description: "disk facet overrides builtin".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some(&builtin_instruction))],
@@ -1608,7 +1606,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "mixed-references".to_string(),
             description: "mixed valid and invalid references".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1658,7 +1655,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "broken-inventory".to_string(),
             description: "one broken facet inventory".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1686,7 +1682,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "mixed-knowledge".to_string(),
             description: "valid knowledge and invalid instruction".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1729,7 +1724,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "scope-parity".to_string(),
             description: "facet reference parity".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1782,7 +1776,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "cross-kind-degrade".to_string(),
             description: "broken policy inventory and healthy knowledge".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node(
@@ -1809,7 +1802,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "missing-facet".to_string(),
             description: "missing facet reference".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_session_node("main", Some("missing-policy"), &[], None)],
@@ -1855,7 +1847,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "facet-syntax".to_string(),
             description: "invalid Facet template syntax".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("invalid-template"))],
@@ -1892,7 +1883,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "facet-reference".to_string(),
             description: "invalid Facet template reference".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("invalid-reference"))],
@@ -1932,7 +1922,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "custom-facet".to_string(),
             description: "custom facet diagnostic".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("custom-instruction"))],
@@ -1966,7 +1955,6 @@ nodes:
         let workflow = WorkflowDefinitionYaml {
             name: "builtin-facet".to_string(),
             description: "builtin facet diagnostic".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some(&builtin_instruction))],
@@ -2313,7 +2301,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "semantic-template".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("bad"))],
@@ -2416,7 +2403,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -2461,7 +2447,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -2498,7 +2483,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -2532,7 +2516,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "review-list".to_string(),
@@ -2580,7 +2563,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "input-contract".to_string(),
@@ -2623,7 +2605,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2662,7 +2643,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2717,7 +2697,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2764,7 +2743,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![
@@ -2849,7 +2827,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "bad-template".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("bad"))],
@@ -2891,7 +2868,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "command-wf".to_string(),
             description: "command test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_command("main", "cargo build")],
@@ -2920,7 +2896,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "command-wf".to_string(),
             description: "command test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_command("main", "   ")],
@@ -2941,6 +2916,37 @@ nodes:
     }
 
     #[test]
+    pub fn test_診断_facet本文の参照エラーでもbuiltinの参照元を保持する() {
+        // Given
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "policies", "coding", "Use {{ missing }}");
+
+        // When
+        let report = diagnose_all(wf_dir, wf_dir).unwrap();
+
+        // Then
+        let usages = report.facet_usage.get("policy/coding").unwrap();
+        for (workflow, node) in [
+            ("02_implement-existing-spec", "implement_task"),
+            ("05_review-fix", "implement_fix_plan"),
+        ] {
+            assert!(usages.iter().any(|usage| usage.workflow_name == workflow
+                && usage.node_name == node
+                && usage.slot == "policy"));
+            assert!(report.workflow_summaries[workflow].error_count > 0);
+            assert!(report
+                .items
+                .iter()
+                .any(|item| item.severity == Severity::Error
+                    && item.workflow_name.as_deref() == Some(workflow)
+                    && item.node_name.as_deref() == Some(node)
+                    && item.facet_kind.as_deref() == Some("policy")
+                    && item.facet_key.as_deref() == Some("coding")));
+        }
+    }
+
+    #[test]
     pub fn diagnose_facet_usage_tracked() {
         // Given
         let tmp = TempDir::new().unwrap();
@@ -2950,7 +2956,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("impl"))],
@@ -2977,7 +2982,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "knowledge-usage".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
@@ -3021,7 +3025,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "bad workflow".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: Default::default(),
             nodes: vec![make_node("main", Some("impl"))],
@@ -3131,7 +3134,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "input-ref".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "artifact".to_string(),
@@ -3210,7 +3212,6 @@ nodes:
         let wf = WorkflowDefinitionYaml {
             name: "par-item".to_string(),
             description: "test".to_string(),
-            builtin: false,
             entry: "main".to_string(),
             schemas: [(
                 "item-contract".to_string(),
@@ -3689,7 +3690,7 @@ return r.workflow{
                 .iter()
                 .find(|(workflow_name, _)| workflow_name == name)
                 .unwrap_or_else(|| panic!("{name} の診断 load 結果"));
-            let Ok((workflow, source_diagnostics)) = result else {
+            let Ok((workflow, source_diagnostics, _)) = result else {
                 panic!("{name} は診断時に正常 load されるべき: {result:?}");
             };
             assert_eq!(workflow.name, name);
@@ -3775,7 +3776,7 @@ return r.workflow{
             .iter()
             .find(|(name, _)| name == "healthy")
             .expect("healthy の診断 load 結果");
-        let Ok((healthy, source_diagnostics)) = healthy_result else {
+        let Ok((healthy, source_diagnostics, _)) = healthy_result else {
             panic!("healthy は正常 load されるべき: {healthy_result:?}");
         };
         assert_eq!(healthy.name, "healthy");
@@ -4529,5 +4530,30 @@ return r.workflow{ name = "items-non-object", description = "items non-object", 
             assert_eq!(lua_item.stage, yaml_item.stage, "{name}");
             assert_eq!(lua_item.message, yaml_item.message, "{name}");
         }
+    }
+}
+
+#[test]
+fn test_診断_builtin由来だけにwfi000を付ける() {
+    use releashd::test_support::integration::workflow::{diagnose_all, list_builtin_workflows};
+    // Given
+    let dir = tempfile::tempdir().unwrap();
+    let builtins = list_builtin_workflows();
+    let name = &builtins[0].name;
+    std::fs::write(dir.path().join(format!("{name}.yml")), format!("name: {name}\ndescription: user override\nnodes:\n  main:\n    command: echo override\n")).unwrap();
+    // When
+    let report = diagnose_all(dir.path(), dir.path()).unwrap();
+    // Then
+    assert!(!report
+        .items
+        .iter()
+        .any(|item| item.code == "WFI000" && item.workflow_name.as_deref() == Some(name)));
+    for builtin in &builtins[1..] {
+        assert!(
+            report.items.iter().any(|item| item.code == "WFI000"
+                && item.workflow_name.as_deref() == Some(&builtin.name)),
+            "{}",
+            builtin.name
+        );
     }
 }

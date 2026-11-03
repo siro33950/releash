@@ -3,10 +3,8 @@
 //! Implementations live in `adaptor/gateway/workflow/`; durable execution reads
 //! are provided by the canonical workspace query port.
 
-use crate::domain::workflow::value_objects::{
-    ExecutionTreeId, FacetKind, FacetSummary, WorkflowDefinition, WorkflowSummary,
-};
-use crate::domain::workflow::WorkflowError;
+use crate::domain::workflow::value_objects::{ExecutionTreeId, FacetKind};
+use crate::domain::workflow::{Facet, WorkflowDefinition, WorkflowError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionTreeArchiveRecord {
@@ -86,29 +84,43 @@ pub struct ExecutionTreeArchiveSnapshot {
     pub records: Vec<ExecutionTreeArchiveRecord>,
 }
 
+/// workflow 定義を取得し、Entity が認めた変更を保存する。
 pub trait WorkflowDefinitionRepository: Send + Sync {
-    fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError>;
-    fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError>;
+    /// 保存先の重複を検証するため、既存の定義名を取得する。
+    fn list_names(&self) -> Result<Vec<String>, WorkflowError>;
+    /// 指定された定義を取得し、存在しなければ失敗を返す。
+    fn get(&self, file_stem: &str) -> Result<WorkflowDefinition, WorkflowError>;
+    /// 検証済みの定義を保存する。
     fn save(
         &self,
         definition: WorkflowDefinition,
         original_name: Option<&str>,
     ) -> Result<(), WorkflowError>;
-    fn delete(&self, name: &str) -> Result<(), WorkflowError>;
+    /// 指定があれば元の定義を取得する。
+    fn find(&self, file_stem: Option<&str>) -> Result<Option<WorkflowDefinition>, WorkflowError>;
+    /// 検証済みの定義を元のソース表現で保存する。
+    fn save_source(
+        &self,
+        definition: &WorkflowDefinition,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<(), WorkflowError>;
+    /// 利用者の定義を削除する。
+    fn delete(&self, definition: &WorkflowDefinition) -> Result<(), WorkflowError>;
 }
 
+/// Facet を取得し、Entity が認めた変更を保存する。
 pub trait FacetRepository: Send + Sync {
+    /// 指定された種類の Facet の識別子を取得する。
     fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError>;
-    fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError>;
-    fn save(
-        &self,
-        kind: FacetKind,
-        key: &str,
-        content: &str,
-        is_new: bool,
-    ) -> Result<(), WorkflowError>;
-    fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError>;
-    fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError>;
+    /// 指定された Facet を取得する。
+    fn get(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError>;
+    /// Facet を保存し、新規保存では既存の Facet を上書きしない。
+    fn save(&self, facet: Facet, is_new: bool) -> Result<(), WorkflowError>;
+    /// 保存対象を取得し、存在しなければ未保存の利用者 Facet を返す。
+    fn get_or_new(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError>;
+    /// 利用者の Facet を削除する。
+    fn delete(&self, facet: &Facet) -> Result<(), WorkflowError>;
 }
 
 pub struct WorkflowStartupRecord {

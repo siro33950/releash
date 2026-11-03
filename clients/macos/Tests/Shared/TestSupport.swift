@@ -25,6 +25,10 @@ final class TestHTTPClient: HTTPClientInterface {
     var externalEditor = Releash_Client_V1_ExternalEditorState()
     var providerAvailability = Releash_Client_V1_ProviderAvailabilitySnapshotResponse()
     var terminalStartupCommand = ""
+    var workflows = Releash_Client_V1_ListWorkflowSummaryDto()
+    var workflowDetails: [String: Releash_Client_V1_NullableWorkflowDto] = [:]
+    var facets: [String: Releash_Client_V1_ListFacetSummaryDto] = [:]
+    var diagnostics = Releash_Client_V1_DiagnosticReport()
     var workflowConfig = Releash_Client_V1_WorkflowSection()
     var releashBases: [String: Releash_Client_V1_Nullablestring] = [:]
     var branches: [String: Releash_Client_V1_ListBranchDto] = [:]
@@ -152,6 +156,14 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.providerAvailability = state.providerAvailability
           } else if subscription.target == "terminal-startup-command" {
             payload.terminalStartupCommand.value = state.terminalStartupCommand
+          } else if subscription.target == "workflows" {
+            payload.workflows = state.workflows
+          } else if subscription.target == "workflow" {
+            payload.workflow = state.workflowDetails[subscription.args[0]] ?? .init()
+          } else if subscription.target == "facets" {
+            payload.facets = state.facets[subscription.args[0]] ?? .init()
+          } else if subscription.target == "diagnostics" {
+            payload.diagnostics = state.diagnostics
           } else if subscription.target == "workflow-config" {
             payload.workflowConfig = state.workflowConfig
           } else if subscription.target == "releash-base" {
@@ -269,6 +281,12 @@ final class TestHTTPClient: HTTPClientInterface {
         if let path = args?.first { state.branches[path] = value }
       case .notionConfig(let value):
         if let path = args?.first { state.notionConfigs[path] = value }
+      case .workflows(let value): state.workflows = value
+      case .workflow(let value):
+        if let name = args?.first { state.workflowDetails[name] = value }
+      case .facets(let value):
+        if let kind = args?.first { state.facets[kind] = value }
+      case .diagnostics(let value): state.diagnostics = value
       case .agentSession(let value):
         if value.hasValue { state.sessions[value.value.id] = value.value }
       case .nodeDetail(let value):
@@ -364,4 +382,164 @@ func testReviewThread(_ id: String, resolved: Bool = false) -> Releash_Client_V1
   await model.start()
   try await eventually { model.connected }
   return model
+}
+
+func testWorkflowSettings(_ http: TestHTTPClient) {
+  http.state.withLock { state in
+    state.workflows.items = [
+      .with {
+        $0.name = "builtin-flow"
+        $0.description_p = "組み込みの定義"
+        $0.builtin = true
+        $0.sourceFormat.value = .yaml
+      },
+      .with {
+        $0.name = "01_author-spec"
+        $0.description_p = "利用者の定義"
+        $0.isRunning = true
+        $0.sourceFormat.value = .lua
+      },
+      .with {
+        $0.name = "broken"
+        $0.readError = "定義を読み取れません"
+      },
+    ]
+    let nodes: [Releash_Client_V1_NodeDefinitionDto] = [
+      .with {
+        $0.name = "review"
+        $0.kind.value = .session
+        $0.session.provider.value = .codex
+        $0.session.model = "test-model"
+        $0.session.permission = "read-only"
+        $0.session.facets.policy = "coding"
+        $0.session.facets.knowledge.items = ["guide"]
+        $0.session.facets.instruction = "implement"
+        $0.artifact = "report"
+        $0.input.items = [
+          .with {
+            $0.name = "source"
+            $0.contract = "ReviewInput"
+          }
+        ]
+        $0.completion.require.value = .approval
+        $0.completion.delegate.child = "worker"
+        $0.completion.delegate.maxIterations = 2
+        $0.completion.delegate.when.ref = "retry"
+        $0.completion.delegate.inputs.items = [
+          .with {
+            $0.parameter = "task"
+            $0.source = "input.task"
+          }
+        ]
+        $0.worktree.value = .isolated
+      },
+      .with {
+        $0.name = "check"
+        $0.kind.value = .command
+        $0.command = "echo checked"
+      },
+      .with {
+        $0.name = "parallel"
+        $0.kind.value = .fanout
+        $0.fanout.children.items = [.with { $0.name = "worker" }]
+        $0.fanout.items.artifactField = "tasks"
+      },
+      .with {
+        $0.name = "serial"
+        $0.kind.value = .sequence
+        $0.sequence.entry = "first"
+        $0.sequence.children.items = [.with { $0.name = "first" }]
+      },
+    ]
+    for summary in state.workflows.items where !summary.hasReadError {
+      state.workflowDetails[summary.name] = .with {
+        $0.value.name = summary.name
+        $0.value.description_p = summary.description_p
+        $0.value.builtin = summary.builtin
+        $0.value.nodes.items = nodes
+      }
+    }
+    for kind in ["policy", "knowledge", "instruction"] {
+      state.facets[kind] = .with {
+        $0.items = [
+          .with {
+            $0.kind = kind
+            $0.key = "builtin-facet"
+            $0.builtin = true
+            $0.description_p = "組み込みFacet"
+          },
+          .with {
+            $0.kind = kind
+            $0.key = "coding"
+            $0.description_p = "共有Facetの説明"
+          },
+          .with {
+            $0.kind = kind
+            $0.key = "guide"
+            $0.description_p = "知識の説明"
+          },
+          .with {
+            $0.kind = kind
+            $0.key = "implement"
+            $0.description_p = "指示の説明"
+          },
+        ]
+      }
+    }
+    state.diagnostics.items.items = [
+      .with {
+        $0.code = "WFE001"
+        $0.workflowName = "01_author-spec"
+        $0.severity.value = .error
+        $0.stage.value = .parseShape
+        $0.span.source = "01_author-spec.lua"
+        $0.span.startLine = 2
+        $0.span.startCol = 3
+        $0.span.endLine = 4
+        $0.span.endCol = 5
+        $0.message = "定義のエラー"
+      },
+      .with {
+        $0.code = "WFI000"
+        $0.workflowName = "builtin-flow"
+        $0.severity.value = .info
+        $0.stage.value = .resolve
+        $0.message = "組み込みの情報"
+      },
+      .with {
+        $0.code = "WFE002"
+        $0.workflowName = "broken"
+        $0.message = "解釈できない定義"
+      },
+      .with {
+        $0.code = "WFE003"
+        $0.facetKind = "policy"
+        $0.facetKey = "coding"
+        $0.message = "Facetのエラー"
+      },
+    ]
+    state.diagnostics.workflowSummaries.entries["01_author-spec"] = .with {
+      $0.errorCount = 1
+      $0.infoCount = 2
+    }
+    state.diagnostics.workflowSummaries.entries["builtin-flow"] = .with { $0.infoCount = 1 }
+    state.diagnostics.facetSummaries.entries["policy/coding"] = .with {
+      $0.errorCount = 3
+      $0.infoCount = 4
+    }
+    state.diagnostics.facetUsage.entries["policy/coding"] = .with {
+      $0.items = [
+        .with {
+          $0.workflowName = "01_author-spec"
+          $0.nodeName = "review"
+          $0.slot = "policy"
+        },
+        .with {
+          $0.workflowName = "builtin-flow"
+          $0.nodeName = "review"
+          $0.slot = "policy"
+        },
+      ]
+    }
+  }
 }

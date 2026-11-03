@@ -6,7 +6,7 @@ use super::contract_schema;
 
 use crate::domain::workflow::{
     ChildEntry, EnvironmentVariableName, FieldPath, InputParameterRef, NodeDefinition, NodeKind,
-    NodeKindName, SchemaDef, WorkflowDefinition,
+    NodeKindName, SchemaDef, WorkflowDefinitionContent,
 };
 
 pub const REQUEST_ARTIFACT: &str = "request";
@@ -81,7 +81,7 @@ pub fn extract_template_references(content: &str) -> Vec<String> {
 }
 
 pub(crate) fn validate_workflow_reference_diagnostics(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
 ) -> Vec<ReferenceResolveError> {
     let mut errors = Vec::new();
 
@@ -100,7 +100,7 @@ pub(crate) fn validate_workflow_reference_diagnostics(
 }
 
 pub(crate) fn validate_workflow_command_environment_references(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
 ) -> Vec<CommandEnvironmentReferenceError> {
     let mut errors = Vec::new();
     for node in &workflow.nodes {
@@ -208,7 +208,7 @@ pub(crate) enum NodeFieldPathError {
 }
 
 pub(crate) fn resolve_node_field_path(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node: &NodeDefinition,
     field_path: &FieldPath,
 ) -> Result<ResolvedNodeField, NodeFieldPathError> {
@@ -290,7 +290,7 @@ fn missing_node_field(position: usize, segment: &str) -> NodeFieldPathError {
 }
 
 fn node_reference_schema(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node: &NodeDefinition,
 ) -> Result<SchemaDef, NodeFieldPathError> {
     let artifact_schema = node
@@ -343,7 +343,7 @@ fn node_reference_schema(
 /// 参照先は Artifact を産出するカタログ node（fanout の子は親の map へ集約される
 /// ため参照不可）。
 pub(crate) fn artifact_field_schema(
-    workflow: &WorkflowDefinition,
+    workflow: &WorkflowDefinitionContent,
     node_name: &str,
     field_path: &FieldPath,
 ) -> Result<ResolvedNodeField, String> {

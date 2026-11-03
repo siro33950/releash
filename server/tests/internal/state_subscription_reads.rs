@@ -2,10 +2,10 @@ use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget as T;
+use releashd::test_support::integration::workflow::WorkflowDiagnosticsTarget;
 
 use releashd::test_support::integration::subscriptions::Event;
 
-use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
 use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
 
 use releashd::test_support::integration::repository::FsWorktreePathNormalizer;
@@ -75,7 +75,6 @@ use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase
 use releashd::test_support::integration::subscriptions::StateValue;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget;
 use releashd::test_support::integration::subscriptions::WorkspaceStateReads;
-use releashd::test_support::integration::workflow::WorkflowDiagnosticsTarget;
 use releashd::test_support::integration::workspace::WorkspaceListUsecase;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -584,23 +583,16 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace.into()), Vec::new(), None),
+            StateValue::WorkspaceState(Some(workspace), Vec::new(), None),
         ),
         (
             T::Workflows,
-            StateValue::Workflows(
-                r.workflow
-                    .read_usecase()
-                    .list_workflow_summaries()
-                    .await
-                    .unwrap(),
-            ),
+            StateValue::Workflows(r.workflow.list_workflow_summaries().await.unwrap()),
         ),
         (
             T::Workflow("fixture".into()),
-            StateValue::Workflow(r.workflow.get_workflow_dto("fixture").unwrap()),
+            StateValue::Workflow(r.workflow.get_workflow("fixture").unwrap()),
         ),
-        (T::Workflow("missing".into()), StateValue::Workflow(None)),
         (
             T::WorkflowSource("fixture".into()),
             StateValue::WorkflowSource(r.workflow.get_workflow_source("fixture").unwrap()),
@@ -610,15 +602,16 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
             StateValue::Facets(
                 r.workflow
                     .list_facet_summaries(FacetKind::Instruction)
-                    .unwrap()
-                    .into_iter()
-                    .map(releashd::test_support::integration::workflow::facet_summary_to_dto)
-                    .collect(),
+                    .unwrap(),
             ),
         ),
         (
             T::Facet(FacetKind::Instruction, "fixture-instruction".into()),
-            StateValue::Facet("# fixture instruction\n".into()),
+            StateValue::Facet(
+                r.workflow
+                    .get_facet(FacetKind::Instruction, "fixture-instruction")
+                    .unwrap(),
+            ),
         ),
         (
             T::Diagnostics,
@@ -769,10 +762,10 @@ pub async fn test_状態読取_workflowの本文を読む() {
         .await
         .unwrap();
     // Then
-    let StateValue::Workflow(Some(workflow)) = value else {
+    let StateValue::Workflow(workflow) = value else {
         panic!("unexpected state")
     };
-    assert_eq!(workflow.name, "fixture");
+    assert_eq!(workflow.unwrap().content().unwrap().name, "fixture");
 }
 
 #[tokio::test]
@@ -793,17 +786,40 @@ pub async fn test_状態読取_診断に壊れた定義を含む() {
 }
 
 #[tokio::test]
-pub async fn test_状態読取_壊れた定義を失敗として返す() {
+pub async fn test_状態読取_壊れた定義の解釈失敗を空の詳細として配信する() {
+    use releashd::test_support::integration::{subscriptions::payload, wire};
     // Given
     let fixture = Fixture::new();
     // When
-    let error = fixture
+    let value = fixture
         .reads
         .read(&SubscriptionTarget::Workflow("broken".into()))
         .await
-        .unwrap_err();
+        .unwrap();
+    let message = payload(&value).unwrap();
     // Then
-    assert!(matches!(error.source, StateReadFailure::Workflow(_)));
+    assert!(matches!(
+        message.value,
+        Some(wire::state_payload::Value::Workflow(value)) if value.value.is_none()
+    ));
+}
+
+#[tokio::test]
+pub async fn test_状態読取_存在しない定義を空の詳細として配信する() {
+    use releashd::test_support::integration::{subscriptions::payload, wire};
+    // Given
+    let fixture = Fixture::new();
+    // When
+    let value = fixture
+        .reads
+        .read(&SubscriptionTarget::Workflow("missing".into()))
+        .await
+        .unwrap();
+    let message = payload(&value).unwrap();
+    // Then
+    assert!(
+        matches!(message.value, Some(wire::state_payload::Value::Workflow(value)) if value.value.is_none())
+    );
 }
 
 #[tokio::test]
@@ -908,7 +924,6 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
     use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
     use releashd::test_support::integration::subscriptions::Event;
 
-    use releashd::test_support::integration::workflow::NoopWorkflowExternalEditorGateway;
     use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
     let fixture = Fixture::new();
     let mut archive = archive_fixture();
@@ -940,7 +955,8 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             archive.store.clone(),
             None,
             None,
@@ -1020,7 +1036,8 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             archive.store.clone(),
             None,
             None,
@@ -1110,7 +1127,8 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             archive.store.clone(),
             None,
             None,
@@ -1222,7 +1240,8 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
             failures.clone(),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             archive.store.clone(),
             None,
             None,
@@ -1319,7 +1338,8 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
             failures.clone(),
             _directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             store.clone(),
             None,
             None,
@@ -1831,7 +1851,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     use releashd::test_support::integration::workflow::{
         append_single_fact, ExecutionOrigin, ExecutionTreeLaunch, NodeDefinition, NodeFact,
         NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
-        WorkflowDefinition,
+        WorkflowDefinitionContent,
     };
     let child_tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
         .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
@@ -1878,7 +1898,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
                     created_from: ExecutionOrigin::Cli,
                     request: String::new(),
                     workflow_name: "main".into(),
-                    definition: Some(WorkflowDefinition {
+                    definition: Some(WorkflowDefinitionContent {
                         entry: "main".into(),
                         nodes: vec![NodeDefinition {
                             name: "main".into(),
@@ -1969,7 +1989,8 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
             archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(NoopWorkflowExternalEditorGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
             archive.store.clone(),
             None,
             None,
@@ -2071,5 +2092,125 @@ pub async fn test_状態読取_baseの保存と自動への復帰を購読値に
         let value = fixture.reads.read(&target).await.unwrap();
         // Then
         assert!(matches!(value, StateValue::ReleashBase(actual) if actual.as_deref() == base));
+    }
+}
+
+#[tokio::test]
+async fn test_状態読取_builtinと同名の利用者ファイルをbuiltinではない一覧として配信する() {
+    use releashd::test_support::integration::{subscriptions::payload, wire, workflow};
+    // Given
+    let fixture = Fixture::new();
+    let dir = &fixture.reads.workflows_dir;
+    let name = workflow::list_builtin_workflows()[0].name.clone();
+    std::fs::write(
+        dir.join(format!("{name}.yml")),
+        format!("name: {name}\ndescription: user workflow\nnodes:\n  main: {{command: 'true'}}\n"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("policies")).unwrap();
+    std::fs::write(dir.join("policies/coding.md"), "# User coding").unwrap();
+    // When
+    let workflows = payload(
+        &fixture
+            .reads
+            .read(&SubscriptionTarget::Workflows)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let facets = payload(
+        &fixture
+            .reads
+            .read(&SubscriptionTarget::Facets(FacetKind::Policy))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    // Then
+    let Some(wire::state_payload::Value::Workflows(workflows)) = workflows.value else {
+        panic!("workflows payload");
+    };
+    let row = workflows
+        .items
+        .iter()
+        .find(|row| row.name.as_deref() == Some(&name))
+        .unwrap();
+    assert_eq!(row.builtin, Some(false));
+    assert_eq!(row.description.as_deref(), Some("user workflow"));
+    let Some(wire::state_payload::Value::Facets(facets)) = facets.value else {
+        panic!("facets payload");
+    };
+    let row = facets
+        .items
+        .iter()
+        .find(|row| row.key.as_deref() == Some("coding"))
+        .unwrap();
+    assert_eq!(row.builtin, Some(false));
+    assert_eq!(row.description.as_deref(), Some("User coding"));
+}
+
+#[tokio::test]
+async fn test_builtin解決失敗_workflows購読と無関係な定義の保存複製を継続する() {
+    use releashd::test_support::integration::{subscriptions::payload, wire};
+    // Given
+    let fixture = Fixture::new();
+    let dir = &fixture.reads.workflows_dir;
+    std::fs::create_dir_all(dir.join("policies")).unwrap();
+    std::fs::write(dir.join("policies/coding.md"), "Use {{ missing }}").unwrap();
+    // When
+    let workflows = payload(
+        &fixture
+            .reads
+            .read(&SubscriptionTarget::Workflows)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let saved = fixture
+        .reads
+        .workflow
+        .save_workflow_source_with_diagnostics(
+            "name: independent\ndescription: Independent\nnodes:\n  main: {command: 'true'}\n",
+            None,
+        )
+        .unwrap();
+    fixture
+        .reads
+        .workflow
+        .duplicate_workflow("independent", "independent-copy")
+        .unwrap();
+    let updated = payload(
+        &fixture
+            .reads
+            .read(&SubscriptionTarget::Workflows)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    // Then
+    let Some(wire::state_payload::Value::Workflows(workflows)) = workflows.value else {
+        panic!("workflows payload");
+    };
+    let builtin = workflows
+        .items
+        .iter()
+        .find(|row| row.name.as_deref() == Some("02_implement-existing-spec"))
+        .unwrap();
+    assert_eq!(builtin.builtin, Some(true));
+    assert!(builtin.read_error.as_ref().unwrap().contains("missing"));
+    assert!(workflows
+        .items
+        .iter()
+        .any(|row| row.name.as_deref() == Some("fixture") && row.read_error.is_none()));
+    assert_eq!(saved.file_stem(), "independent");
+    let Some(wire::state_payload::Value::Workflows(updated)) = updated.value else {
+        panic!("workflows payload");
+    };
+    for name in ["independent", "independent-copy"] {
+        assert!(updated
+            .items
+            .iter()
+            .any(|row| row.name.as_deref() == Some(name) && row.read_error.is_none()));
+        assert!(dir.join(format!("{name}.yml")).is_file());
     }
 }

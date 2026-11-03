@@ -1,19 +1,18 @@
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::workflow::event as workflow_event;
-use crate::adaptor::gateway::workflow::facet as gateway_facet;
 use crate::domain::workflow as domain;
 #[cfg(any(test, feature = "test-support"))]
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 
 pub(crate) fn domain_workflow_to_schema(
-    definition: &domain::WorkflowDefinition,
+    definition: &domain::WorkflowDefinitionContent,
 ) -> Result<crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml, domain::WorkflowError>
 {
     Ok(
         crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
             name: definition.name.clone(),
             description: definition.description.clone(),
-            builtin: definition.builtin,
+
             schemas: definition
                 .schemas
                 .iter()
@@ -27,7 +26,7 @@ pub(crate) fn domain_workflow_to_schema(
 
 pub fn schema_workflow_to_domain(
     workflow: crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml,
-) -> Result<domain::WorkflowDefinition, domain::WorkflowError> {
+) -> Result<domain::WorkflowDefinitionContent, domain::WorkflowError> {
     Ok(crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(&workflow))
 }
 
@@ -108,64 +107,6 @@ fn domain_items_source_to_schema(
                 field_path: field_path.clone(),
             }
         }
-    }
-}
-
-pub(crate) fn schema_workflow_summary_to_domain(
-    summary: crate::adaptor::gateway::workflow::schema::Summary,
-) -> domain::WorkflowSummary {
-    domain::WorkflowSummary {
-        failure: summary.failure,
-        name: summary.name,
-        description: summary.description,
-        builtin: summary.builtin,
-        is_running: summary.is_running,
-        source_format: summary.source_format,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn domain_workflow_summary_to_schema(
-    summary: domain::WorkflowSummary,
-) -> crate::adaptor::gateway::workflow::schema::Summary {
-    crate::adaptor::gateway::workflow::schema::Summary {
-        failure: summary.failure,
-        name: summary.name,
-        description: summary.description,
-        builtin: summary.builtin,
-        is_running: summary.is_running,
-        source_format: summary.source_format,
-    }
-}
-
-pub(crate) fn domain_facet_kind_to_gateway(kind: domain::FacetKind) -> gateway_facet::FacetKind {
-    match kind {
-        domain::FacetKind::Policy => gateway_facet::FacetKind::Policy,
-        domain::FacetKind::Knowledge => gateway_facet::FacetKind::Knowledge,
-        domain::FacetKind::Instruction => gateway_facet::FacetKind::Instruction,
-    }
-}
-
-pub(crate) fn gateway_facet_summary_to_domain(
-    summary: crate::adaptor::gateway::workflow::schema::FacetSummary,
-) -> domain::FacetSummary {
-    domain::FacetSummary {
-        key: summary.key,
-        kind: summary.kind,
-        description: summary.description,
-        builtin: summary.builtin,
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn domain_facet_summary_to_gateway(
-    summary: domain::FacetSummary,
-) -> crate::adaptor::gateway::workflow::schema::FacetSummary {
-    crate::adaptor::gateway::workflow::schema::FacetSummary {
-        key: summary.key,
-        kind: summary.kind,
-        description: summary.description,
-        builtin: summary.builtin,
     }
 }
 

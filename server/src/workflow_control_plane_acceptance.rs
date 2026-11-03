@@ -14,7 +14,7 @@ use crate::domain::provider_lifecycle::{ProviderKind, ProviderLifecycleScope};
 use crate::domain::workflow::{
     ChildEntry, FacetRefs, FanoutSpec, NodeCompletion, NodeCompletionSignalState, NodeDefinition,
     NodeExecutionStatus, NodeKind, NodeKindName, RuntimeExecutionState, SchemaDef, SequenceSpec,
-    SessionSpec, WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot,
+    SessionSpec, WorkflowDefinitionContent, WorkflowError, WorkflowRuntimeSnapshot,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::domain::workspace_tree::{WorkspaceNodeStatusClassification, WorkspaceTreeRepository};
@@ -191,7 +191,7 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<WorkflowDefinition, WorkflowDefinitionResolverError> {
+    ) -> Result<WorkflowDefinitionContent, WorkflowDefinitionResolverError> {
         if workflow_name == DEFAULT_CAP_FANOUT_CLAUDE_WORKFLOW {
             let child_names = (0..DEFAULT_CAP_FANOUT_CHILDREN)
                 .map(|index| format!("review-{index:02}"))
@@ -214,10 +214,9 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
                     NodeCompletion::require_approval(),
                 )
             }));
-            return Ok(WorkflowDefinition {
+            return Ok(WorkflowDefinitionContent {
                 name: workflow_name.to_string(),
                 description: "Workflow control-plane product acceptance".to_string(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes,
                 entry: "fanout".to_string(),
@@ -229,10 +228,9 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             _ => None,
         };
         if let Some(provider) = fanout_provider {
-            return Ok(WorkflowDefinition {
+            return Ok(WorkflowDefinitionContent {
                 name: workflow_name.to_string(),
                 description: "Workflow control-plane product acceptance".to_string(),
-                builtin: false,
                 schemas: Default::default(),
                 nodes: vec![
                     NodeDefinition {
@@ -281,10 +279,9 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             };
             let mut node = acceptance_session_node("agent", provider, completion);
             node.artifact = Some("acceptance-result".to_string());
-            return Ok(WorkflowDefinition {
+            return Ok(WorkflowDefinitionContent {
                 name: workflow_name.to_string(),
                 description: "Workflow control-plane product acceptance".to_string(),
-                builtin: false,
                 schemas: [(
                     "acceptance-result".to_string(),
                     SchemaDef::Object {
@@ -345,10 +342,9 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             vec![acceptance_session_node("agent", provider, completion)]
         };
         let entry = nodes[0].name.clone();
-        Ok(WorkflowDefinition {
+        Ok(WorkflowDefinitionContent {
             name: workflow_name.to_string(),
             description: "Workflow control-plane product acceptance".to_string(),
-            builtin: false,
             schemas: Default::default(),
             nodes,
             entry,
@@ -448,7 +444,7 @@ pub struct WorkflowControlPlaneAcceptanceHost {
     local_api: Arc<LocalApiServer>,
     local_api_base_url: String,
     local_api_token: String,
-    workflow_read: Arc<crate::usecase::workflow::WorkflowReadUsecase>,
+    workflow_read: Arc<crate::usecase::workflow::WorkflowUsecase>,
 }
 
 impl WorkflowControlPlaneAcceptanceHost {
@@ -1247,7 +1243,7 @@ impl From<NodeExecutionResponse> for AcceptanceNodeExecution {
 #[path = "workflow_control_plane_acceptance_test.rs"]
 mod workflow_control_plane_acceptance_tests;
 
-struct AcceptanceWorkflowStateReads(Arc<crate::usecase::workflow::WorkflowReadUsecase>);
+struct AcceptanceWorkflowStateReads(Arc<crate::usecase::workflow::WorkflowUsecase>);
 #[async_trait::async_trait]
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceWorkflowStateReads {
     async fn read(

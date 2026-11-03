@@ -1,5 +1,8 @@
 use releashd::test_support::integration::workflow::DiagnosticSpan;
 use releashd::test_support::integration::workflow::MAX_SPAN_SOURCE_BYTES;
+use releashd::test_support::integration::workflow::{
+    WorkflowDefinitionFileQueryService, WorkflowDefinitionQueryService,
+};
 
 #[test]
 pub fn test_lua宣言位置_解析上限を超える定義もloadと一覧に成功する() {
@@ -20,11 +23,9 @@ return r.workflow{{ name = 'example', description = 'large definition', main = r
     // When
     let loaded =
         releashd::test_support::integration::workflow::load_workflow(&path, tmp.path()).unwrap();
-    let summaries = releashd::test_support::integration::workflow::list_workflows_with_facets(
-        tmp.path(),
-        tmp.path(),
-    )
-    .unwrap();
+    let summaries = WorkflowDefinitionFileQueryService::new(tmp.path(), tmp.path())
+        .list_workflows(&[])
+        .unwrap();
 
     // Then
     assert!(source.len() > MAX_SPAN_SOURCE_BYTES);

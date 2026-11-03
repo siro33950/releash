@@ -3,6 +3,7 @@ use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, optional, required};
 use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
+use crate::adaptor::presenter::error::AppError;
 
 pub fn register_shared(
     router: &mut ClientCommandDispatch,
@@ -245,6 +246,34 @@ pub fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::OpenWorkflowInEditor(result))
+                })
+            }),
+        );
+    }
+    {
+        let state = deps.app_state.clone();
+        router.register_domain(
+            &["open_workflow_directory_in_editor"],
+            Box::new(move |command| {
+                let state = state.clone();
+                Box::pin(async move {
+                    let wire::command_request::Command::OpenWorkflowDirectoryInEditor(_args) =
+                        command
+                    else {
+                        return Err(invalid_request("Mismatched command"));
+                    };
+                    let result = async move {
+                        let state = state
+                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
+                        outcome(
+                            state
+                                .workflow_usecase
+                                .open_workflow_directory_in_editor()
+                                .map_err(AppError::from_failure),
+                        )
+                    }
+                    .await?;
+                    Ok(wire::command_result::Command::OpenWorkflowDirectoryInEditor(result))
                 })
             }),
         );

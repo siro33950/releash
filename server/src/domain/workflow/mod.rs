@@ -13,8 +13,11 @@ pub mod repository;
 pub mod services;
 pub mod value_objects;
 
+pub use entities::{Facet, WorkflowDefinition};
 pub use error::WorkflowError;
-pub use gateway::{IsolatedWorktreeGateway, ManagedWorktreeGateway, NodeProcessReader};
+pub use gateway::{
+    IsolatedWorktreeGateway, ManagedWorktreeGateway, NodeProcessReader, WorkflowDirectoryService,
+};
 pub use repository::{
     ExecutionTreeArchiveCandidate, ExecutionTreeArchiveRecord, ExecutionTreeArchiveRepository,
     ExecutionTreeArchiveSnapshot, ExecutionTreeArchiveTarget, FacetRepository,
@@ -28,8 +31,8 @@ pub use value_objects::{
     ContractType, ContractValidationResult, EnvironmentVariableName, EnvironmentVariableNameError,
     ExecutionOrigin, ExecutionParentRef, ExecutionStatus, ExecutionStatusFilter, ExecutionTree,
     ExecutionTreeId, ExecutionTreeLaunch, FacetContents, FacetKey, FacetKind, FacetRefs,
-    FacetSummary, FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec,
-    FieldPath, InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
+    FailureClassification, FailureDisposition, Fanout, FanoutSlot, FanoutSpec, FieldPath,
+    InputParam, InputParameterRef, IsolatedWorktree, ItemsSource, NodeCompletion,
     NodeCompletionSignal, NodeCompletionSignalState, NodeDefinition, NodeDefinitionName,
     NodeExecution, NodeExecutionFailureKind, NodeExecutionStatus, NodeFact, NodeFactMeta,
     NodeFactRecord, NodeKind, NodeKindName, NodeProcessPresence, Predicate, ProcessExitedFact,
@@ -37,8 +40,8 @@ pub use value_objects::{
     SchemaDef, SequenceSpec, SessionAttachedFact, SessionContinuationAdmittedFact, SessionDelegate,
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, SessionPermission, SessionSpec,
     StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact, TimeoutKind, TokenUsage,
-    TreeRootFact, WorkflowDefinition, WorkflowDefinitionName, WorkflowEvent, WorkflowExecutionId,
-    WorkflowExecutionSummary, WorkflowFacetContents, WorkflowSourceFormat, WorkflowSummary,
+    TreeRootFact, WorkflowDefinitionContent, WorkflowDefinitionName, WorkflowEvent,
+    WorkflowExecutionId, WorkflowExecutionSummary, WorkflowFacetContents, WorkflowSourceFormat,
     WorkspaceWorktreePath, WorktreeInheritance, WorktreeInventoryEntry, WorktreeMode,
     NODE_STATUS_COMPLETED,
 };
@@ -48,3 +51,7 @@ pub use value_objects::WorkflowRuntimeSnapshot;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use value_objects::{NodeHistoryEntry, RuntimeArtifact};
+
+pub use value_objects::{WorkflowDirectory, WorkflowSource};
+
+pub use gateway::{WorkflowDefinitionSourceService, WorkflowSourceSaveError};

@@ -2,9 +2,11 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::domain::workflow::FacetKey;
+
 use crate::adaptor::gateway::workflow::{
     builtin,
-    facet::{self, FacetError, FacetKind},
+    facet::{FacetError, FacetKind},
 };
 
 /// 編集支援ファイルの生成で発生しうるエラー。I/O 失敗と facet カタログの失敗を
@@ -251,8 +253,11 @@ fn generate_facet_stub(base_dir: &Path) -> Result<String, StubGenerationError> {
             FacetKind::Knowledge => "ReleashKnowledgeFacets",
         };
         output.push_str(&format!("---@class {class_name}\n"));
-        let summaries = facet::list_facet_summaries(kind, base_dir)?;
+        let summaries = super::super::summary_query::list_facet_summaries(kind, base_dir)?;
         for summary in summaries {
+            if FacetKey::new(&summary.key).is_err() {
+                continue;
+            }
             let path = facet_document_path(base_dir, kind, &summary.key, summary.builtin);
             let description = summary.description.replace(['\r', '\n'], " ");
             let key = lua_doc_field(&summary.key);

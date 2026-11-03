@@ -128,7 +128,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::workflow::CommandSpec;
     use releashd::test_support::integration::workflow::NodeDefinition;
     use releashd::test_support::integration::workflow::NodeKind;
-    use releashd::test_support::integration::workflow::WorkflowDefinition as WorkflowDefinitionYaml;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent as WorkflowDefinitionYaml;
 
     fn workflow(name: &str) -> WorkflowDefinitionYaml {
         WorkflowDefinitionYaml {
@@ -149,11 +149,7 @@ pub(crate) mod tests {
     #[test]
     pub fn resolves_definition_name_when_filename_differs() {
         let tmp = TempDir::new().unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            tmp.path(),
-            &workflow("declared-name"),
-        )
-        .unwrap();
+        super::seed_workflow(tmp.path(), &workflow("declared-name")).unwrap();
         std::fs::rename(
             tmp.path().join("declared-name.yml"),
             tmp.path().join("different-filename.yml"),
@@ -168,11 +164,7 @@ pub(crate) mod tests {
     #[test]
     pub fn duplicate_definition_names_are_reported_as_diagnostic() {
         let tmp = TempDir::new().unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            tmp.path(),
-            &workflow("duplicate-name"),
-        )
-        .unwrap();
+        super::seed_workflow(tmp.path(), &workflow("duplicate-name")).unwrap();
         std::fs::copy(
             tmp.path().join("duplicate-name.yml"),
             tmp.path().join("second-file.yml"),
@@ -210,11 +202,7 @@ return r.workflow{
     #[test]
     pub fn duplicate_name_across_yaml_and_lua_is_reported() {
         let tmp = TempDir::new().unwrap();
-        releashd::test_support::integration::workflow::save_workflow(
-            tmp.path(),
-            &workflow("duplicate-cross-format"),
-        )
-        .unwrap();
+        super::seed_workflow(tmp.path(), &workflow("duplicate-cross-format")).unwrap();
         std::fs::write(
             tmp.path().join("duplicate-cross-format.lua"),
             r#"
@@ -260,4 +248,14 @@ async fn test_workflow定義解決_注入された保存先から定義とfacet�
 
     // Then
     assert_eq!(definition.name, "isolated-resolver-test");
+}
+
+fn seed_workflow(
+    dir: &std::path::Path,
+    workflow: &releashd::test_support::integration::workflow::WorkflowDefinitionContent,
+) -> std::io::Result<()> {
+    std::fs::write(
+        dir.join(format!("{}.yml", workflow.name)),
+        serde_saphyr::to_string(workflow).unwrap(),
+    )
 }

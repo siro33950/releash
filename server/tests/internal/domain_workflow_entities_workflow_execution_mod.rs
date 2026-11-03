@@ -10,7 +10,7 @@ use releashd::test_support::integration::workflow::NodeCompletionSignal;
 use releashd::test_support::integration::workflow::NodeExecutionStatus as RuntimeNodeExecutionStatus;
 use releashd::test_support::integration::workflow::NodeKindName;
 use releashd::test_support::integration::workflow::TransitionOutcome;
-use releashd::test_support::integration::workflow::WorkflowDefinition;
+use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 
 #[test]
 pub fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火して成果をmergeへ渡す() {
@@ -18,7 +18,7 @@ pub fn test_正本サンプル_fanout内の隔離sessionがdelegateを発火し�
     let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../workflows/examples/full-cycle-development.yml");
     let source = std::fs::read_to_string(source_path).unwrap();
-    let workflow: WorkflowDefinition = serde_saphyr::from_str(&source).unwrap();
+    let workflow: WorkflowDefinitionContent = serde_saphyr::from_str(&source).unwrap();
     let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
         id: "canonical-example-execution".to_string(),
         repository_root: Some("/repo".into()),

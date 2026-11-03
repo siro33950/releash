@@ -13,7 +13,7 @@ pub(crate) mod test_support {
     use releashd::test_support::integration::workflow::WorkflowAbortExecutionGateway;
     use releashd::test_support::integration::workflow::WorkflowControlPlaneCommit;
     use releashd::test_support::integration::workflow::WorkflowControlPlaneGateway;
-    use releashd::test_support::integration::workflow::WorkflowDefinition;
+    use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
     use releashd::test_support::integration::workflow::WorkflowError;
     use releashd::test_support::integration::workflow::WorkflowRuntimeShutdownGateway;
     use releashd::test_support::integration::workflow::WorkflowRuntimeStateGateway;
@@ -59,8 +59,8 @@ pub(crate) mod test_support {
         async fn resolve_start_execution_workflow(
             &self,
             _workflow_name: &str,
-        ) -> Result<WorkflowDefinition, WorkflowError> {
-            Ok(WorkflowDefinition::default())
+        ) -> Result<WorkflowDefinitionContent, WorkflowError> {
+            Ok(WorkflowDefinitionContent::default())
         }
 
         async fn start_resolved_execution(
@@ -106,10 +106,9 @@ pub(crate) mod test_support {
         use releashd::test_support::integration::workflow::SessionSpec;
         use releashd::test_support::integration::workflow::{ExecutionParentRef, NodeKindName};
 
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "review-workflow".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: BTreeMap::from([(
                 "review-result".to_string(),
                 SchemaDef::Object {

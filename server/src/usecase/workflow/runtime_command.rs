@@ -199,7 +199,7 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
             .await
             .map_err(|error| match error {
                 WorkflowError::Store(kind) => crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(kind),
-                WorkflowError::Validation(_)
+                WorkflowError::Validation(_) | WorkflowError::Diagnostics(_)
                 | WorkflowError::InvalidState(_)
                 | WorkflowError::NotFound(_)
                 | WorkflowError::UnauthorizedApprovalTarget(_) => {
@@ -249,6 +249,7 @@ impl crate::usecase::agent_session::ExecutionTreeCache for WorkflowRuntimeUsecas
                     )
                 }
                 WorkflowError::Validation(_)
+                | WorkflowError::Diagnostics(_)
                 | WorkflowError::InvalidState(_)
                 | WorkflowError::NotFound(_)
                 | WorkflowError::UnauthorizedApprovalTarget(_)
@@ -307,6 +308,7 @@ fn map_started_execution_tree_error(
             )
         }
         WorkflowError::Validation(_)
+        | WorkflowError::Diagnostics(_)
         | WorkflowError::InvalidState(_)
         | WorkflowError::NotFound(_)
         | WorkflowError::UnauthorizedApprovalTarget(_)

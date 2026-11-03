@@ -14,10 +14,9 @@ pub(crate) mod tests {
 
     #[test]
     fn validate_submission_output_with_secrets_accepts_schema_valid_artifact() {
-        let workflow = WorkflowDefinition {
+        let workflow = WorkflowDefinitionContent {
             name: "wf".to_string(),
             description: String::new(),
-            builtin: false,
             schemas: [(
                 "spec-directory".to_string(),
                 SchemaDef::Object {

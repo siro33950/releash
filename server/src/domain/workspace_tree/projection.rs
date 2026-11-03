@@ -16,7 +16,7 @@ pub struct RuntimeSnapshotNodeProjection<'a> {
     pub execution_id: &'a str,
     pub workflow_name: &'a str,
     pub workspace_identity: &'a str,
-    pub workflow_definition: Option<&'a crate::domain::workflow::WorkflowDefinition>,
+    pub workflow_definition: Option<&'a crate::domain::workflow::WorkflowDefinitionContent>,
     pub node_executions:
         &'a [crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution],
     pub retry_predecessors: &'a std::collections::HashMap<String, String>,

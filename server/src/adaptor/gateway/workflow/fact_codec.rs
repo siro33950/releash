@@ -237,7 +237,7 @@ struct TreeRootFactDetail {
     pub created_from: ExecutionOrigin,
     pub request: String,
     #[serde(with = "workflow_definition_snapshot_serde")]
-    pub definition: Option<WorkflowDefinition>,
+    pub definition: Option<WorkflowDefinitionContent>,
     #[serde(default)]
     pub workflow_name: String,
     pub launched_as: ExecutionTreeLaunch,
@@ -464,10 +464,10 @@ mod execution_origin_serde {
 mod workflow_definition_snapshot_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use super::WorkflowDefinition;
+    use super::WorkflowDefinitionContent;
 
     pub(super) fn serialize<S>(
-        definition: &Option<WorkflowDefinition>,
+        definition: &Option<WorkflowDefinitionContent>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -479,7 +479,7 @@ mod workflow_definition_snapshot_serde {
         #[derive(Serialize)]
         struct Snapshot<'a> {
             #[serde(flatten)]
-            definition: &'a WorkflowDefinition,
+            definition: &'a WorkflowDefinitionContent,
             entry: &'a str,
         }
         Snapshot {
@@ -491,7 +491,7 @@ mod workflow_definition_snapshot_serde {
 
     pub(super) fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<Option<WorkflowDefinition>, D::Error>
+    ) -> Result<Option<WorkflowDefinitionContent>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -499,7 +499,7 @@ mod workflow_definition_snapshot_serde {
         struct Snapshot {
             entry: String,
             #[serde(flatten)]
-            definition: WorkflowDefinition,
+            definition: WorkflowDefinitionContent,
         }
         let Snapshot {
             mut definition,
