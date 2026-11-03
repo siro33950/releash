@@ -86,10 +86,8 @@ pub fn resolve_workflow_by_name(
                 Ok::<_, super::storage::StorageError>(Some(workflow))
             })();
             match result {
-                Ok(Some(workflow)) if workflow.name == workflow_name => {
-                    matches.push((path.display().to_string(), workflow))
-                }
-                Ok(_) => {}
+                Ok(Some(workflow)) => matches.push((path.display().to_string(), workflow)),
+                Ok(None) => {}
                 Err(error) => {
                     if path.file_stem().and_then(|stem| stem.to_str()) == Some(workflow_name) {
                         log::warn!("workflow definition skipped: {}: {error}", path.display());

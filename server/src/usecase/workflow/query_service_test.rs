@@ -345,6 +345,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn event_and_facet_queries_validate_execution_ids_and_delegate() {
+        // Given
         let fixture = Fixture::new();
         fixture
             .events
@@ -360,27 +361,22 @@ pub(crate) mod tests {
             "instruction body".to_string(),
         );
 
-        assert_eq!(
-            fixture
-                .service
-                .read_events(test_execution_id())
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(matches!(
-            fixture.service.read_events("not-a-uuid").await.unwrap_err(),
-            WorkflowError::Validation(_)
-        ));
-        assert_eq!(
-            fixture
-                .service
-                .get_facet(FacetKind::Instruction, "implement")
-                .unwrap()
-                .content(),
-            "instruction body"
-        );
+        // When
+        let events = fixture
+            .service
+            .read_events(test_execution_id())
+            .await
+            .unwrap();
+        let invalid_execution = fixture.service.read_events("not-a-uuid").await.unwrap_err();
+        let facet = fixture
+            .service
+            .get_facet(FacetKind::Instruction, "implement")
+            .unwrap();
+
+        // Then
+        assert_eq!(events.len(), 1);
+        assert!(matches!(invalid_execution, WorkflowError::Validation(_)));
+        assert_eq!(facet.content(), "instruction body");
     }
 
     #[tokio::test]
