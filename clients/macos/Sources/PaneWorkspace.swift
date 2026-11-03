@@ -31,7 +31,10 @@ import SwiftUI
     var metadata: [Bonsplit.Tab] = []
     var terminalNumber = 1
     func identifier(_ original: String) -> String {
-      var id = (UUID(uuidString: original) ?? UUID()).uuidString
+      var id =
+        UUID(uuidString: original)?.uuidString
+        ?? identifiers.first(where: { $0.value == original })?.key
+        ?? UUID().uuidString
       if ids[id] != nil { id = UUID().uuidString }
       ids[id] = original
       return id
