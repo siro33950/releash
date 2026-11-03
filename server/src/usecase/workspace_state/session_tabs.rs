@@ -34,7 +34,7 @@ impl SessionTabsUsecase {
     /// Session のタブを追加して保存し、配置の購読へ通知する。
     pub async fn add_session(&self, session: &AgentSession) -> Result<(), WorkspaceStateError> {
         self.update(session.workspace().as_str(), |state| {
-            state.add_session_tab(session.id());
+            state.add_session_tab(session.id(), session.tree_location().node_execution_id());
         })
         .await
     }

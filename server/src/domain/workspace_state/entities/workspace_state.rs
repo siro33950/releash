@@ -15,8 +15,8 @@ impl WorkspaceState {
         todo!()
     }
 
-    /// Session のタブを、既存の選択を変えずに追加する。
-    pub fn add_session_tab(&mut self, _session_id: &str) {
+    /// 同じ Node の Session 未確定の Session タブに関連付け、無ければ追加する。既存の選択は変えない。
+    pub fn add_session_tab(&mut self, _session_id: &str, _node_id: &str) {
         todo!()
     }
 

@@ -67,11 +67,18 @@ import SwiftUI
       }
     }
     let snapshot = try tree(layout)
-    try controller.restoreLayout(snapshot, tabs: metadata)
+    try restoreLayoutPreservingFocus(snapshot, tabs: metadata)
     identifiers = ids
     self.tabs = restoredTabs
     pendingSessionTabs = [:]
     nextTerminalNumber = terminalNumber
+  }
+
+  /// レイアウトを復元し、復元前にフォーカスされていた pane を保つ。
+  private func restoreLayoutPreservingFocus(
+    _ snapshot: ExternalTreeNode, tabs: [Bonsplit.Tab]
+  ) throws {
+    fatalError("Not implemented")
   }
 
   struct LayoutInput: Equatable {
