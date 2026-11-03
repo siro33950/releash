@@ -170,25 +170,15 @@ struct StoredWorkspaceLayoutState {
 }
 
 impl From<&WorkspaceState> for StoredWorkspaceState {
-    fn from(state: &WorkspaceState) -> Self {
-        Self {
-            panes: state.panes.as_ref().map(Into::into),
-            version: state.version,
-            tabs: state.tabs.clone().into(),
-            layout: state.layout.clone().into(),
-        }
+    fn from(_state: &WorkspaceState) -> Self {
+        todo!()
     }
 }
 
 impl TryFrom<StoredWorkspaceState> for WorkspaceState {
     type Error = WorkspaceStateError;
-    fn try_from(dto: StoredWorkspaceState) -> Result<Self, Self::Error> {
-        Ok(Self {
-            panes: dto.panes.map(TryInto::try_into).transpose()?,
-            version: dto.version,
-            tabs: dto.tabs.into(),
-            layout: dto.layout.into(),
-        })
+    fn try_from(_dto: StoredWorkspaceState) -> Result<Self, Self::Error> {
+        todo!()
     }
 }
 

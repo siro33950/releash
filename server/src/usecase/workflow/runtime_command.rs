@@ -23,6 +23,7 @@ use super::ports::{
 
 #[derive(Clone)]
 pub struct WorkflowRuntimeUsecase {
+    pub(super) session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     pub(super) state_publisher:
         Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
     pub(super) worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
@@ -56,9 +57,11 @@ impl WorkflowRuntimeUsecase {
         runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
         worktree_operations: Arc<crate::usecase::worktree_operation::WorktreeOperations>,
+        session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     ) -> Self {
         let control_plane_runtime: Arc<dyn WorkflowControlPlaneGateway> = runtime.clone();
         Self {
+            session_tabs,
             state_publisher: None,
             execution_archives,
             worktree_operations,

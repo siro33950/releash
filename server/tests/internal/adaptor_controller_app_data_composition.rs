@@ -340,26 +340,7 @@ pub(crate) mod tests {
     }
 
     fn ui_state() -> releashd::test_support::integration::platform::WorkspaceState {
-        use releashd::test_support::integration::platform::{
-            PaneLayout, WorkspaceLayoutState, WorkspaceState, WorkspaceTabsState,
-        };
-        WorkspaceState {
-            panes: Some(PaneLayout::pane("old-pane".into(), vec![], None).unwrap()),
-            version: 1,
-            tabs: WorkspaceTabsState {
-                editors: vec![],
-                active_editor_path: None,
-            },
-            layout: WorkspaceLayoutState {
-                center_tab: "agent".into(),
-                active_view: "git".into(),
-                left_nav_collapsed: false,
-                right_collapsed: false,
-                right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
-            },
-        }
+        todo!()
     }
 
     async fn assert_facts_appended_at_sweep_boundary_are_protected(
@@ -990,10 +971,12 @@ async fn test_起動時gc入口_後続ページの失敗にも先行処理の警
     );
     assert_eq!(failure.report.errors, 2);
     let warnings = captured_warning_messages();
-    assert!(warnings.iter().any(|message| message
-        .contains("execution tree GC failed to record repository for gc-owner-failed")
-        && message.contains("gc-owner-reason")));
-    assert!(warnings.iter().any(|message| message
-        .contains("execution tree GC failed to archive gc-archive-failed")
-        && message.contains("gc-archive-reason")));
+    assert!(warnings.iter().any(|message| {
+        message.contains("execution tree GC failed to record repository for gc-owner-failed")
+            && message.contains("gc-owner-reason")
+    }));
+    assert!(warnings.iter().any(|message| {
+        message.contains("execution tree GC failed to archive gc-archive-failed")
+            && message.contains("gc-archive-reason")
+    }));
 }

@@ -345,49 +345,7 @@ pub fn build_workflow_runtime_usecase(
     ),
     WorkflowRuntimeError,
 > {
-    use crate::adaptor::gateway::workflow::{
-        runtime_resolver::{AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver},
-        workflow_host::WorkflowRuntimeHost,
-    };
-    let operations = deps.git_usecase.worktree_operations();
-    let mut driver = WorkflowRuntimeHost::new_canonical(
-        workflows_dir.clone(),
-        retrying.clone(),
-        Arc::new(DefaultWorkflowDefinitionResolver::new(workflows_dir)),
-        Arc::new(AppConfigManagedWorktreeResolver::new(
-            deps.git_usecase,
-            deps.app_config,
-        )),
-        deps.workspace_query,
-        deps.agent_session_launch,
-        deps.agent_session_initial_instruction,
-        deps.agent_session_lifecycle,
-        deps.provider_availability,
-        deps.isolated_worktrees,
-        daemon,
-    );
-    driver.node_processes = deps.node_processes;
-    let driver = wire_delegate_continuation(app.clone(), driver);
-    let archives = Arc::new(ExecutionTreeArchiveFactRepository::from_backend(
-        crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
-            app.store.clone().ok_or_else(|| {
-                WorkflowRuntimeError::SessionStore("fact store unavailable".into())
-            })?,
-        ),
-    ));
-    let driver = Arc::new(driver);
-    let startup = wire_workflow_startup(app.clone(), driver.clone());
-    let publisher = app.state_changes.clone();
-    Ok((
-        WorkflowRuntimeUsecase::new_with_worktree_operations(
-            retrying,
-            Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, driver)),
-            archives,
-            operations,
-        )
-        .with_state_publisher(publisher),
-        startup,
-    ))
+    todo!()
 }
 
 pub fn wire_delegate_continuation(

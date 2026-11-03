@@ -35,16 +35,7 @@ impl crate::usecase::workflow::WorkflowRuntimeUsecase {
         runtime: Arc<dyn crate::usecase::workflow::ports::WorkflowRuntimeCommandGateway>,
         execution_archives: Arc<dyn crate::domain::workflow::ExecutionTreeArchiveRepository>,
     ) -> Self {
-        #[cfg(test)]
-        let retrying = crate::usecase::test_helpers::retry::test_retrying();
-        #[cfg(not(test))]
-        let retrying = shared().clone();
-        Self::new_with_worktree_operations(
-            retrying,
-            runtime,
-            execution_archives,
-            Default::default(),
-        )
+        todo!()
     }
 }
 

@@ -191,98 +191,12 @@ impl WorkspaceStateRepository for Store {
 
 #[tokio::test]
 async fn test_表示状態保存_保存成功後だけ対象名を通知する() {
-    for fail in [false, true] {
-        // Given
-        let store = Store {
-            fail,
-            readable: true,
-            missing_files: Vec::new(),
-            conflict: false,
-            conflicts_remaining: Default::default(),
-            reads: Default::default(),
-            conflict_returned: Default::default(),
-            save_failure: None,
-            retry_previous: None,
-            previous: None,
-            saved: Default::default(),
-            calls: Default::default(),
-        };
-        let publisher = crate::test_support::state_subscription::test_subscriptions();
-        let mut changes = crate::test_support::state_subscription::changes(&publisher);
-        let state = WorkspaceState {
-            panes: None,
-            version: 1,
-            tabs: WorkspaceTabsState {
-                editors: vec![],
-                active_editor_path: None,
-            },
-            layout: WorkspaceLayoutState {
-                center_tab: "editor".into(),
-                active_view: "git".into(),
-                left_nav_collapsed: false,
-                right_collapsed: false,
-                right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
-            },
-        };
-        // When
-        let result = save_workspace_state(&store, Some(&publisher), "worktree", state).await;
-        // Then
-        assert_eq!(*store.calls.lock(), ["save:worktree"]);
-        assert_eq!(result.is_err(), fail);
-        if fail {
-            assert!(changes.try_recv().is_err());
-        } else {
-            assert_eq!(
-                changes.try_recv().unwrap(),
-                crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
-                    "worktree".into()
-                )
-            );
-        }
-    }
+    todo!()
 }
 
 #[tokio::test]
 async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
-    // Given
-    let store = Store {
-        fail: false,
-        readable: false,
-        missing_files: Vec::new(),
-        conflict: false,
-        conflicts_remaining: Default::default(),
-        reads: Default::default(),
-        conflict_returned: Default::default(),
-        save_failure: None,
-        retry_previous: None,
-        previous: None,
-        saved: Default::default(),
-        calls: Default::default(),
-    };
-    let state = WorkspaceState {
-        panes: None,
-        version: 1,
-        tabs: WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
-            center_tab: "editor".into(),
-            active_view: "git".into(),
-            left_nav_collapsed: false,
-            right_collapsed: false,
-            right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
-        },
-    };
-    // When
-    let result = save_workspace_state(&store, None, "wt", state).await;
-    // Then
-    assert!(result.is_err());
-    assert!(store.calls.lock().is_empty());
+    todo!()
 }
 
 #[tokio::test]
@@ -325,54 +239,7 @@ async fn test_repository折りたたみ保存_成功したgroupだけ通知す�
 
 #[tokio::test]
 async fn test_表示状態保存_不正なpane配置は保存前に拒否する() {
-    // Given
-    let store = Store {
-        fail: false,
-        readable: true,
-        missing_files: Vec::new(),
-        conflict: false,
-        conflicts_remaining: Default::default(),
-        reads: Default::default(),
-        conflict_returned: Default::default(),
-        save_failure: None,
-        retry_previous: None,
-        previous: None,
-        saved: Default::default(),
-        calls: Default::default(),
-    };
-    // When
-    let result = crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-        "pane".into(),
-        vec![],
-        Some("missing".into()),
-    )
-    .map(|panes| {
-        save_workspace_state(
-            &store,
-            None,
-            "wt",
-            WorkspaceState {
-                panes: Some(panes),
-                version: 1,
-                tabs: WorkspaceTabsState {
-                    editors: vec![],
-                    active_editor_path: None,
-                },
-                layout: WorkspaceLayoutState {
-                    center_tab: "editor".into(),
-                    active_view: "git".into(),
-                    left_nav_collapsed: false,
-                    right_collapsed: false,
-                    right_bottom_collapsed: false,
-                    right_bottom_active_tab: None,
-                    selected_diff_file: None,
-                },
-            },
-        )
-    });
-    // Then
-    assert!(result.is_err());
-    assert!(store.calls.lock().is_empty());
+    todo!()
 }
 
 #[tokio::test]
@@ -436,67 +303,11 @@ async fn test_旧表示状態の移行_登録repositoryを列挙し未解決な�
 }
 
 fn state_with_panes() -> WorkspaceState {
-    WorkspaceState {
-        panes: Some(
-            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-                "previous".into(),
-                vec![],
-                None,
-            )
-            .unwrap(),
-        ),
-        version: 1,
-        tabs: WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
-            center_tab: "editor".into(),
-            active_view: "git".into(),
-            left_nav_collapsed: false,
-            right_collapsed: false,
-            right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
-        },
-    }
+    todo!()
 }
 #[tokio::test]
 async fn test_表示状態保存_最新の配置を保持し競合待ちの取消で版競合を返し通知しない() {
-    // Given
-    let previous = state_with_panes();
-    let store = Store {
-        readable: true,
-        missing_files: Vec::new(),
-        conflict: true,
-        previous: Some(previous.clone()),
-        ..Default::default()
-    };
-    let publisher = crate::test_support::state_subscription::test_subscriptions();
-    let mut changes = crate::test_support::state_subscription::changes(&publisher);
-    let cancellation = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
-    let mut next = previous.clone();
-    next.panes = None;
-    next.layout.left_nav_collapsed = true;
-    // When
-    let (result, ()) = tokio::join!(
-        crate::common::operation_context::scope(
-            crate::common::operation_context::OperationContext::new(None, cancellation.clone()),
-            save_workspace_state(&store, Some(&publisher), "wt", next),
-        ),
-        async {
-            store.conflict_returned.notified().await;
-            cancellation.cancel();
-        }
-    );
-    // Then
-    assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
-    assert!(changes.try_recv().is_err());
-    assert_eq!(store.calls.lock().as_slice(), ["save:wt"]);
-    let saved = store.saved.lock();
-    assert_eq!(saved.len(), 1);
-    assert_eq!(saved[0].panes, previous.panes);
-    assert!(saved[0].layout.left_nav_collapsed);
+    todo!()
 }
 
 #[tokio::test]
@@ -560,58 +371,7 @@ async fn test_ui状態保存_競合後の技術的な期限切れをそのまま
 
 #[tokio::test]
 async fn test_ui状態保存_両方の保存が版競合後に読み直し成功後だけ通知する() {
-    for group in [false, true] {
-        // Given
-        let previous = state_with_panes();
-        let mut latest = previous.clone();
-        latest.panes = Some(
-            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-                "latest".into(),
-                vec![],
-                None,
-            )
-            .unwrap(),
-        );
-        let store = Store {
-            fail: false,
-            readable: true,
-            missing_files: Vec::new(),
-            conflict: false,
-            conflicts_remaining: Mutex::new(1),
-            reads: Default::default(),
-            conflict_returned: Default::default(),
-            save_failure: None,
-            retry_previous: Some(latest.clone()),
-            previous: Some(previous),
-            saved: Default::default(),
-            calls: Default::default(),
-        };
-        let publisher = crate::test_support::state_subscription::test_subscriptions();
-        let mut changes = crate::test_support::state_subscription::changes(&publisher);
-        let mut next = state_with_panes();
-        next.panes = None;
-        next.layout.left_nav_collapsed = true;
-        // When
-        if group {
-            save_repository_group_state(&store, Some(&publisher), "/repo", true)
-                .await
-                .unwrap();
-        } else {
-            save_workspace_state(&store, Some(&publisher), "/repo/wt", next)
-                .await
-                .unwrap();
-        }
-        // Then
-        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert_eq!(store.calls.lock().len(), 2);
-        if !group {
-            let saved = store.saved.lock();
-            assert_eq!(saved[1].panes, latest.panes);
-            assert!(saved[1].layout.left_nav_collapsed);
-        }
-        assert!(changes.try_recv().is_ok());
-        assert!(changes.try_recv().is_err());
-    }
+    todo!()
 }
 
 #[tokio::test]
@@ -738,51 +498,7 @@ async fn test_旧会話参照の復元_解決を保存して再照会せず未�
 
 #[tokio::test]
 async fn test_旧会話参照の移行_競合後は最新配置へ参照置換だけを適用する() {
-    // Given
-    let query =
-        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
-    query
-        .session_nodes
-        .lock()
-        .sessions
-        .insert("resolved".into(), "agent".into());
-    let original = legacy_state();
-    let mut latest = original.clone();
-    latest.layout.left_nav_collapsed = true;
-    latest.layout.right_collapsed = true;
-    use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
-    latest.panes = Some(
-        PaneLayout::split(
-            "latest-split".into(),
-            SplitAxis::Vertical,
-            0.7,
-            latest.panes.take().unwrap(),
-            PaneLayout::pane("new-pane".into(), Vec::new(), None).unwrap(),
-        )
-        .unwrap(),
-    );
-    let store = Store {
-        readable: true,
-        previous: Some(original),
-        retry_previous: Some(latest.clone()),
-        conflicts_remaining: Mutex::new(1),
-        ..Default::default()
-    };
-    // When
-    let (actual, _, migration_failure) =
-        load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
-            .await
-            .unwrap();
-    // Then
-    latest
-        .panes
-        .as_mut()
-        .unwrap()
-        .resolve_legacy_sessions(&[("resolved".into(), "agent".into())].into());
-    assert_eq!(actual, Some(latest.clone()));
-    assert!(migration_failure.is_none());
-    assert_eq!(store.saved.lock().last(), Some(&latest));
-    assert_eq!(store.saved.lock().len(), 2);
+    todo!()
 }
 
 #[tokio::test]
@@ -875,37 +591,7 @@ async fn test_配置復元_配置自体の取得失敗は成功として扱わ�
 
 #[tokio::test]
 async fn test_配置復元_参照置換を保存してから返却値だけの欠損ファイルを除く() {
-    // Given
-    let query =
-        crate::usecase::workspace_tree::test_support::TestWorkspaceQueryService::new(Vec::new());
-    query
-        .session_nodes
-        .lock()
-        .sessions
-        .insert("resolved".into(), "agent".into());
-    let mut original = legacy_state();
-    original.layout.selected_diff_file = Some("missing".into());
-    let store = Store {
-        readable: true,
-        previous: Some(original),
-        missing_files: vec!["missing".into()],
-        ..Default::default()
-    };
-    // When
-    let (actual, _, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
-        .await
-        .unwrap();
-    // Then
-    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let saved = store.saved.lock();
-    assert_eq!(saved.len(), 1);
-    assert_eq!(
-        saved[0].layout.selected_diff_file.as_deref(),
-        Some("missing")
-    );
-    let actual = actual.unwrap();
-    assert!(actual.layout.selected_diff_file.is_none());
-    assert_eq!(actual.panes, saved[0].panes);
+    todo!()
 }
 
 #[tokio::test]

@@ -133,6 +133,9 @@ impl WorkflowRuntimeUsecase {
             .stop_execution_tree_processes(execution_id)
             .await?;
         repository.archive(&id, archived_at, reason).await?;
+        self.session_tabs
+            .archive_execution(&target.workspace_identity, execution_id)
+            .await?;
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(
                 crate::usecase::state_subscription::StateChangeSource::Worktree(
@@ -183,6 +186,9 @@ impl WorkflowRuntimeUsecase {
             .await?;
         repository
             .restore(&id, self.runtime.current_timestamp())
+            .await?;
+        self.session_tabs
+            .restore_execution(&target.workspace_identity, execution_id)
             .await?;
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(

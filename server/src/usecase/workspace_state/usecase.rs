@@ -18,7 +18,7 @@ pub async fn save_workspace_state(
         },
         |_| async {
             let (version, previous) = repository.read(worktree_name).await?;
-            let next = state.clone().preserve_omitted_panes(previous);
+            let next = state.clone().preserve_omitted_fields(previous);
             repository.save(worktree_name, next, version).await
         },
     )
@@ -55,9 +55,7 @@ pub async fn load_workspace_state(
         },
         |_| async {
             let (version, state) = repository.read(worktree_name).await?;
-            let Some(mut state) = state else {
-                return Ok((None, Vec::new(), None));
-            };
+            let mut state = state.unwrap_or_else(WorkspaceState::new).initialize_panes();
             let mut failures = Vec::new();
             let mut migration_failure = None;
             if let Some(layout) = state.panes.as_mut() {

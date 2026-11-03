@@ -281,6 +281,7 @@ impl StandaloneLaunchRequestRegistry {
 }
 
 pub struct AgentSessionLaunchUsecase {
+    session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     performance: Arc<dyn crate::usecase::telemetry::PerformanceOutput>,
     workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     sessions: Arc<AgentSessionUsecase>,
@@ -348,6 +349,7 @@ impl AgentSessionLaunchUsecase {
         execution_trees: Arc<dyn AgentSessionLaunchExecutionTrees>,
         retention: tokio::sync::mpsc::UnboundedSender<LaunchRetention>,
         workspace_trees: Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
+        session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     ) -> Self {
         let ProviderAgentRuntime {
             availability,
@@ -355,6 +357,7 @@ impl AgentSessionLaunchUsecase {
             terminal,
         } = provider_runtime;
         Self {
+            session_tabs,
             workspace_trees,
             activated: retention,
             performance,
@@ -856,17 +859,13 @@ impl AgentSessionLaunchUsecase {
             executable: _,
         } = durable;
         let initial_hook_warning = prepared.initial_hook_warning();
-        if let Err(error) = self.terminal.spawn(
-            created.session().terminal_surface_owner(),
-            created.session().worktree_path(),
-            prepared.into_process(),
-            rows,
-            cols,
-        ) {
-            record_terminal_spawn_failure(created.session().id(), &error);
+        if let Err(error) = self
+            .spawn_session_with_tab(&created, prepared, rows, cols)
+            .await
+        {
             self.rollback_failed_new_launch_preserving_cause(&created, &armed, &caller_request_id)
                 .await;
-            return Err(AgentSessionLaunchUsecaseError::Terminal(error));
+            return Err(error);
         }
         self.record_hook_launch(
             created.session().provider(),
@@ -875,6 +874,30 @@ impl AgentSessionLaunchUsecase {
             &caller_request_id,
         );
         Ok(created)
+    }
+
+    /// Session のプロセスを起動し、その Session のタブを保存する。
+    async fn spawn_session_with_tab(
+        &self,
+        created: &VersionedAgentSession,
+        prepared: crate::domain::agent_session::PreparedProviderLaunch,
+        rows: u16,
+        cols: u16,
+    ) -> Result<(), AgentSessionLaunchUsecaseError> {
+        self.terminal
+            .spawn(
+                created.session().terminal_surface_owner(),
+                created.session().worktree_path(),
+                prepared.into_process(),
+                rows,
+                cols,
+            )
+            .inspect_err(|error| record_terminal_spawn_failure(created.session().id(), error))
+            .map_err(AgentSessionLaunchUsecaseError::Terminal)?;
+        self.session_tabs
+            .add_session(created.session())
+            .await
+            .map_err(map_tab_error)
     }
 
     pub async fn resume_history(
@@ -965,6 +988,10 @@ impl AgentSessionLaunchUsecase {
             )
             .await
             .map_err(map_session_error)?;
+        self.session_tabs
+            .add_session(associated.session())
+            .await
+            .map_err(map_tab_error)?;
         let slot_id = issue_lifecycle_slot_id(&request.caller_request_id)?;
         let scope = ProviderLifecycleScope::new(associated.session().id())
             .map_err(|_| AgentSessionLaunchUsecaseError::Corrupt)?;
@@ -1049,15 +1076,21 @@ impl AgentSessionLaunchUsecase {
         created: &VersionedAgentSession,
         caller_request_id: &str,
     ) {
-        let session_result = self
-            .sessions
-            .garbage_collect(
-                created.session().id(),
-                ManagedPtyPresence::ConfirmedAbsent,
-                &format!("{caller_request_id}.rollback"),
-            )
-            .await
-            .map_err(map_session_error);
+        let session_result = async {
+            self.sessions
+                .garbage_collect(
+                    created.session().id(),
+                    ManagedPtyPresence::ConfirmedAbsent,
+                    &format!("{caller_request_id}.rollback"),
+                )
+                .await
+                .map_err(map_session_error)?;
+            self.session_tabs
+                .remove_session(created.session())
+                .await
+                .map_err(map_tab_error)
+        }
+        .await;
         if let Err(rollback_error) = session_result {
             log::warn!(
                 "failed to roll back AgentSession history resume after execution tree registration failure: {rollback_error:?}"
@@ -1133,15 +1166,21 @@ impl AgentSessionLaunchUsecase {
             .launch_gateway
             .cleanup(created.session().id())
             .map_err(AgentSessionLaunchUsecaseError::Launch);
-        let session_result = self
-            .sessions
-            .garbage_collect(
-                created.session().id(),
-                ManagedPtyPresence::ConfirmedAbsent,
-                &format!("{caller_request_id}.rollback"),
-            )
-            .await
-            .map_err(map_session_error);
+        let session_result = async {
+            self.sessions
+                .garbage_collect(
+                    created.session().id(),
+                    ManagedPtyPresence::ConfirmedAbsent,
+                    &format!("{caller_request_id}.rollback"),
+                )
+                .await
+                .map_err(map_session_error)?;
+            self.session_tabs
+                .remove_session(created.session())
+                .await
+                .map_err(map_tab_error)
+        }
+        .await;
         if session_result.is_ok() {
             if let Err(error) = self
                 .execution_trees
@@ -1257,6 +1296,12 @@ fn map_lifecycle_error(error: ProviderLifecycleUsecaseError) -> AgentSessionLaun
         ProviderLifecycleUsecaseError::Store(kind) => AgentSessionLaunchUsecaseError::Store(kind),
         ProviderLifecycleUsecaseError::Corrupt => AgentSessionLaunchUsecaseError::Corrupt,
     }
+}
+
+fn map_tab_error(
+    _error: crate::domain::workspace_state::WorkspaceStateError,
+) -> AgentSessionLaunchUsecaseError {
+    todo!()
 }
 
 fn map_execution_tree_registration_error(
