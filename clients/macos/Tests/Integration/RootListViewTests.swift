@@ -7,6 +7,112 @@ import XCTest
 @testable import Releash
 
 final class RootListViewTests: XCTestCase {
+  @MainActor func testChildRowsDefaultExpansionFollowsStatus() async throws {
+    for status in [Releash_Client_V1_WorkspaceStatusClassification.Value.idle, .active, .attention]
+    {
+      try await checkExpansion(initial: status, updates: [])
+    }
+  }
+
+  @MainActor func testChildRowsCloseWhenIdleAndReopenWhenRunning() async throws {
+    for status in [Releash_Client_V1_WorkspaceStatusClassification.Value.active, .attention] {
+      try await checkExpansion(initial: status, updates: [(.idle, false), (status, true)])
+    }
+  }
+
+  @MainActor func testManuallyClosedRowsStayClosedUntilTheyLeaveIdle() async throws {
+    for status in [Releash_Client_V1_WorkspaceStatusClassification.Value.active, .attention] {
+      try await checkExpansion(
+        initial: .active, manualExpansion: false,
+        updates: [(.attention, false), (.active, false), (.idle, false), (status, true)])
+    }
+  }
+
+  @MainActor func testManuallyOpenedIdleRowsCloseWhenTheyBecomeIdleAgain() async throws {
+    for status in [Releash_Client_V1_WorkspaceStatusClassification.Value.active, .attention] {
+      try await checkExpansion(
+        initial: .idle, manualExpansion: true,
+        updates: [(status, true), (.idle, false)])
+    }
+  }
+
+  @MainActor private func checkExpansion(
+    initial: Releash_Client_V1_WorkspaceStatusClassification.Value,
+    manualExpansion: Bool? = nil,
+    updates: [(Releash_Client_V1_WorkspaceStatusClassification.Value, Bool)]
+  ) async throws {
+    let http = TestHTTPClient()
+    let ids = ["sequence", "fanout", "session"]
+    var items = ids.map { id in
+      var child = Releash_Client_V1_WorkspaceTreeItem()
+      child.node.id = "\(id)-child"
+      child.node.title = "\(id) child"
+      child.node.contentKind.value = .command
+      var item = Releash_Client_V1_WorkspaceTreeItem()
+      switch id {
+      case "sequence":
+        item.sequence.id = id
+        item.sequence.title = id
+        item.sequence.children.items = [child]
+      case "fanout":
+        item.fanout.id = id
+        item.fanout.title = id
+        item.fanout.children.items = [child]
+      default:
+        item.node.id = id
+        item.node.title = id
+        item.node.contentKind.value = .session
+        item.node.children.items = [child]
+      }
+      return item
+    }
+    var tree = Releash_Client_V1_WorkspaceWorktreeList()
+    tree.path = "/repo"
+    var repo = Releash_Client_V1_WorkspaceRepositoryList()
+    func payload(_ status: Releash_Client_V1_WorkspaceStatusClassification.Value)
+      -> Releash_Client_V1_StatePayload
+    {
+      items[0].sequence.status.value = status
+      items[1].fanout.status.value = status
+      items[2].node.status.value = status
+      tree.snapshot.nodes.items = items
+      repo.worktrees.items = [tree]
+      var payload = Releash_Client_V1_StatePayload()
+      payload.workspaces.repositories.items = [repo]
+      return payload
+    }
+    try http.publish(payload(initial), target: "workspaces")
+    let model = try await testModel(http)
+    let host = await ViewHarness(RootListView(model: model, path: "/repo"))
+    defer { host.close() }
+    func expectExpansion(
+      _ expanded: Bool, status: Releash_Client_V1_WorkspaceStatusClassification.Value
+    ) async throws {
+      try await eventuallyView(host) {
+        ids.allSatisfy { id in
+          host.element("root:\(id)")?.value == String(describing: status)
+            && (host.element("root:\(id)-child") != nil) == expanded
+        }
+      }
+    }
+    try await expectExpansion(initial != .idle, status: initial)
+    if let manualExpansion {
+      for id in ids {
+        if manualExpansion && id != "session" {
+          try await host.selectRow("root:\(id)")
+        } else {
+          try await host.setRowExpanded("root:\(id)", manualExpansion)
+        }
+      }
+      try await expectExpansion(manualExpansion, status: initial)
+    }
+    for (status, expanded) in updates {
+      try http.publish(payload(status), target: "workspaces")
+      try await expectExpansion(expanded, status: status)
+    }
+    await model.stop()
+  }
+
   @MainActor func testPendingWorkflowBelongsToStartingWorktreeAcrossSelectionChanges() async throws
   {
     let http = TestHTTPClient()
