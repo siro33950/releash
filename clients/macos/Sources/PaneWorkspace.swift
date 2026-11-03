@@ -31,7 +31,10 @@ import SwiftUI
     var metadata: [Bonsplit.Tab] = []
     var terminalNumber = 1
     func identifier(_ original: String) -> String {
-      var id = (UUID(uuidString: original) ?? UUID()).uuidString
+      var id =
+        UUID(uuidString: original)?.uuidString
+        ?? identifiers.first(where: { $0.value == original })?.key
+        ?? UUID().uuidString
       if ids[id] != nil { id = UUID().uuidString }
       ids[id] = original
       return id
@@ -67,11 +70,22 @@ import SwiftUI
       }
     }
     let snapshot = try tree(layout)
-    try controller.restoreLayout(snapshot, tabs: metadata)
+    try restoreLayoutPreservingFocus(snapshot, tabs: metadata)
     identifiers = ids
     self.tabs = restoredTabs
     pendingSessionTabs = [:]
     nextTerminalNumber = terminalNumber
+  }
+
+  /// レイアウトを復元し、復元前にフォーカスされていた pane を保つ。
+  private func restoreLayoutPreservingFocus(
+    _ snapshot: ExternalTreeNode, tabs: [Bonsplit.Tab]
+  ) throws {
+    let focusedPane = controller.focusedPaneId
+    try controller.restoreLayout(snapshot, tabs: tabs)
+    if let focusedPane, controller.allPaneIds.contains(focusedPane) {
+      controller.focusPane(focusedPane)
+    }
   }
 
   struct LayoutInput: Equatable {

@@ -13,10 +13,21 @@ import {
 	UpdateCrashReportingRequestSchema,
 	WorkflowValueSchema,
 	WorkspaceListSnapshotSchema,
+	WorkspaceStateDtoSchema,
 	WriteTerminalSurfaceRequestSchema,
 } from "@/generated/client_pb";
 import { clientJson } from "./clientJson";
 import { decodeTerminalEvent } from "./clientProtocol";
+
+it("tabsとlayoutが未保存のworkspace stateを省略したまま復号する", () => {
+	expect(
+		clientJson(WorkspaceStateDtoSchema, { version: 1, etag: "0" }, false),
+	).toEqual({
+		readFailures: [],
+		version: 1,
+		etag: "0",
+	});
+});
 
 describe("Connect message codecs", () => {
 	it("terminalのsnapshotと出力と終了を復号する", () => {

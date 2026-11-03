@@ -848,6 +848,7 @@ pub fn launch_usecase_with_tree_registrar(
         execution_trees,
         tokio::sync::mpsc::unbounded_channel().0,
         crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        crate::usecase::workspace_state::test_support::test_session_tabs(),
     )
 }
 

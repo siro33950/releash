@@ -232,7 +232,7 @@ mod memory_tests {
         let launch_gateway = Arc::new(RecordingLaunchGateway::default());
         let terminal = Arc::new(RecordingTerminal::default());
         let execution_trees = started_execution_trees();
-        let usecase = launch_usecase_with_tree_registrar(
+        let mut usecase = launch_usecase_with_tree_registrar(
             repository,
             availability.clone(),
             launch_gateway.clone(),
@@ -240,6 +240,17 @@ mod memory_tests {
             hook_health_usecase(),
             execution_trees.clone(),
         );
+
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        usecase.session_tabs =
+            crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+                tabs.clone(),
+                crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+                crate::test_support::state_subscription::test_subscriptions(),
+            );
 
         let launched = usecase
             .launch_standalone(AgentSessionLaunchRequest {
@@ -254,27 +265,181 @@ mod memory_tests {
             .unwrap();
         let expected_id = launched.session().id();
 
+        use crate::domain::workspace_state::value_objects::pane_layout::PaneLayoutView;
+        use crate::domain::workspace_state::WorkspaceStateRepository;
+        let (_, state) = tabs.read("/repo").await.unwrap();
+        let state = state.unwrap();
+        let PaneLayoutView::Pane {
+            tabs: saved_tabs,
+            active_tab,
+            ..
+        } = state.panes.as_ref().unwrap().view()
+        else {
+            panic!("expected a pane");
+        };
+        assert_eq!(saved_tabs.len(), 1);
+        assert_eq!(saved_tabs[0].agent_session_id.as_deref(), Some(expected_id));
+        assert_eq!(active_tab, None);
+
         assert_eq!(launched.session().provider(), ProviderKind::Codex);
         assert_eq!(
             availability.checks.lock().unwrap().as_slice(),
             &[ProviderKind::Codex]
         );
-        let armed = launch_gateway.armed.lock().unwrap();
-        assert_eq!(armed.len(), 1);
-        assert_eq!(armed[0].scope().agent_session_id(), expected_id);
-        let spawns = terminal.spawns.lock().unwrap();
-        assert_eq!(spawns.len(), 1);
+        {
+            let armed = launch_gateway.armed.lock().unwrap();
+            assert_eq!(armed.len(), 1);
+            assert_eq!(armed[0].scope().agent_session_id(), expected_id);
+            let spawns = terminal.spawns.lock().unwrap();
+            assert_eq!(spawns.len(), 1);
+            assert_eq!(
+                spawns[0].owner,
+                TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), expected_id)
+                    .unwrap()
+            );
+            assert_eq!(spawns[0].worktree_path, "/repo/.worktrees/feature");
+            assert_eq!(spawns[0].process.executable(), "/opt/bin/provider");
+            assert_eq!((spawns[0].rows, spawns[0].cols), (30, 120));
+            assert_eq!(
+                execution_trees.tree_ids.lock().unwrap().as_slice(),
+                &[expected_id.to_string()]
+            );
+        }
+        // When
+        let binding = launch_gateway.armed.lock().unwrap()[0].clone();
+        usecase
+            .rollback_failed_new_launch(&launched, &binding, "launch-request-1")
+            .await
+            .unwrap();
+        // Then
+        let (_, state) = tabs.read("/repo").await.unwrap();
         assert_eq!(
-            spawns[0].owner,
-            TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), expected_id).unwrap()
+            state.unwrap().panes,
+            Some(
+                crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
+                    "pane".into(),
+                    vec![],
+                    None
+                )
+                .unwrap()
+            )
         );
-        assert_eq!(spawns[0].worktree_path, "/repo/.worktrees/feature");
-        assert_eq!(spawns[0].process.executable(), "/opt/bin/provider");
-        assert_eq!((spawns[0].rows, spawns[0].cols), (30, 120));
+    }
+
+    #[tokio::test]
+    async fn test_workflow起動_pendingタブへ関連付け選択を保って通知する() {
+        use crate::domain::workspace_state::value_objects::pane_layout::{
+            PaneLayout, PaneLayoutView, PaneTab, PaneTabKind,
+        };
+        use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+        use crate::usecase::workspace_state::session_tabs::SessionTabsUsecase;
+        use crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository;
+        // Given
+        let seed = AgentSession::create(
+            "seed",
+            WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Claude,
+            session_location("seed"),
+        )
+        .unwrap();
+        let repository = Arc::new(FailingSaveRepository::new(seed));
+        *repository.stored.lock().unwrap() = None;
+        let launches = Arc::new(RecordingLaunchGateway::default());
+        let mut usecase = launch_usecase_with_tree_registrar(
+            repository.clone(),
+            Arc::new(FixedAvailability {
+                available: true,
+                checks: Mutex::new(Vec::new()),
+            }),
+            launches.clone(),
+            Arc::new(RecordingTerminal::default()),
+            hook_health_usecase(),
+            started_execution_trees(),
+        );
+        let tabs = Arc::new(MemoryWorkspaceStateRepository::default());
+        let publisher = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
+        usecase.session_tabs = SessionTabsUsecase::new(
+            tabs.clone(),
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            publisher,
+        );
+        let mut state = WorkspaceState::default();
+        let selected = PaneTab {
+            id: "selected".into(),
+            kind: PaneTabKind::Terminal,
+            node_id: None,
+            agent_session_id: None,
+            file_path: None,
+            file_mode: None,
+            file_base: None,
+        };
+        let pending = PaneTab {
+            id: "pending".into(),
+            kind: PaneTabKind::Session,
+            node_id: Some("node".into()),
+            ..selected.clone()
+        };
+        state.panes = Some(
+            PaneLayout::pane(
+                "pane".into(),
+                vec![selected.clone(), pending],
+                Some("selected".into()),
+            )
+            .unwrap(),
+        );
+        tabs.save(
+            "/repo",
+            state,
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+        // When
+        let created = usecase
+            .prepare_workflow_node(super::super::WorkflowAgentSessionLaunchRequest {
+                workspace: WorkspaceIdentity::new("/repo"),
+                worktree_path: "/repo/worktree".into(),
+                provider: ProviderKind::Claude,
+                model: None,
+                permission: None,
+                workflow_execution_id: "workflow".into(),
+                node_execution_id: "node".into(),
+                initial_instruction: "test".into(),
+                rows: 24,
+                cols: 80,
+                caller_request_id: "workflow-launch".into(),
+            })
+            .await
+            .unwrap();
+        let launched = usecase
+            .activate_workflow_node(created.session().id())
+            .await
+            .unwrap();
+        // Then
+        let (_, state) = tabs.read("/repo").await.unwrap();
+        let state = state.unwrap();
+        let PaneLayoutView::Pane {
+            tabs: saved,
+            active_tab,
+            ..
+        } = state.panes.as_ref().unwrap().view()
+        else {
+            panic!("expected a pane")
+        };
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[1].id, "pending");
         assert_eq!(
-            execution_trees.tree_ids.lock().unwrap().as_slice(),
-            &[expected_id.to_string()]
+            saved[1].agent_session_id.as_deref(),
+            Some(launched.session().id())
         );
+        assert!(saved[1].node_id.is_none());
+        assert_eq!(active_tab, Some("selected"));
+        let expected =
+            crate::usecase::state_subscription::StateChangeSource::WorkspaceState("/repo".into());
+        assert_eq!(changes.try_recv().unwrap(), expected);
+        assert!(changes.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -368,6 +533,7 @@ mod memory_tests {
             execution_trees.clone(),
             tokio::sync::mpsc::unbounded_channel().0,
             crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         );
 
         let error = usecase
@@ -397,6 +563,115 @@ mod memory_tests {
         assert_eq!(*terminal.deletes.lock().unwrap(), 1);
         assert!(launch_gateway.launches.lock().unwrap().is_empty());
         assert!(terminal.spawns.lock().unwrap().is_empty());
+        assert!(lifecycle_events.events.lock().unwrap().iter().any(|event| {
+        matches!(
+            event.clone().into_parts().1,
+            crate::domain::provider_lifecycle::value_objects::provider_lifecycle_event::ProviderLifecycleEvent::BindingExpired { .. }
+        )
+    }));
+    }
+
+    #[tokio::test]
+    pub async fn test_agent_session_launch_タブ保存失敗では一次エラーを保ち起動済み資源をrollbackする(
+    ) {
+        // Given
+        let seed = AgentSession::create(
+            "seed",
+            WorkspaceIdentity::new("/seed"),
+            "/seed",
+            ProviderKind::Claude,
+            session_location("seed"),
+        )
+        .unwrap();
+        let repository = Arc::new(FailingSaveRepository::new(seed));
+        *repository.stored.lock().unwrap() = None;
+        let launch_gateway = Arc::new(RecordingLaunchGateway::default());
+        let terminal = Arc::new(RecordingTerminal::default());
+        let lifecycle_events = Arc::new(RecordingLifecycleEvents::default());
+        let execution_trees = started_execution_trees();
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        let failure = crate::domain::failure::TechnicalFailure {
+            nature: crate::domain::failure::TechnicalFailureNature::Other,
+            message: "tab save failed".into(),
+        };
+        *tabs.next_save_error.lock() =
+            Some(crate::domain::workspace_state::WorkspaceStateError::Technical(failure.clone()));
+        let usecase = AgentSessionLaunchUsecase::new(
+            std::sync::Arc::new(crate::usecase::test_helpers::NoopPerformance),
+            Arc::new(AgentSessionUsecase::new(
+                repository.clone(),
+                Arc::new(FakeThreadRepository::default()),
+                AgentSessionService::new(
+                    Arc::new(RecordingTerminal::default()),
+                    Arc::new(RecordingTerminalInput::default()),
+                ),
+            )),
+            Arc::new(ProviderLifecycleUsecase::new(
+                Arc::new(crate::usecase::test_helpers::TestCredentials),
+                lifecycle_events.clone(),
+            )),
+            provider_runtime(
+                Arc::new(FixedAvailability {
+                    available: true,
+                    checks: Mutex::new(Vec::new()),
+                }),
+                launch_gateway.clone(),
+                terminal.clone(),
+            ),
+            Arc::new(FixedHistory {
+                entries: Vec::new(),
+            }),
+            hook_health_usecase(),
+            execution_trees.clone(),
+            tokio::sync::mpsc::unbounded_channel().0,
+            crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+                tabs.clone(),
+                crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+                crate::test_support::state_subscription::test_subscriptions(),
+            ),
+        );
+
+        // When
+        let error = usecase
+            .launch_standalone(AgentSessionLaunchRequest {
+                workspace: WorkspaceIdentity::new("/repo"),
+                worktree_path: "/repo/worktree".to_string(),
+                provider: ProviderKind::Codex,
+                rows: 24,
+                cols: 80,
+                caller_request_id: "tab-save-failure".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        // Then
+        assert_eq!(error, AgentSessionLaunchUsecaseError::Technical(failure));
+        assert!(repository.stored.lock().unwrap().is_none());
+        assert_eq!(repository.atomic_create_calls.load(Ordering::SeqCst), 1);
+        let expected_id = execution_trees.tree_ids.lock().unwrap()[0].clone();
+        assert_eq!(
+            execution_trees.releases.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected_id)
+        );
+        assert_eq!(
+            launch_gateway.cleanups.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected_id)
+        );
+        assert_eq!(*terminal.deletes.lock().unwrap(), 1);
+        assert_eq!(launch_gateway.launches.lock().unwrap().len(), 1);
+        assert_eq!(terminal.spawns.lock().unwrap().len(), 1);
+        assert_eq!(
+            terminal.spawns.lock().unwrap()[0].owner,
+            TerminalSurfaceOwner::session(WorkspaceIdentity::new("/repo"), &expected_id).unwrap()
+        );
+        use crate::domain::workspace_state::WorkspaceStateRepository;
+        let (version, state) = tabs.read("/repo").await.unwrap();
+        assert_eq!(version.value(), 0);
+        assert_eq!(state, None);
         assert!(lifecycle_events.events.lock().unwrap().iter().any(|event| {
         matches!(
             event.clone().into_parts().1,
@@ -448,6 +723,7 @@ mod memory_tests {
             started_execution_trees(),
             tokio::sync::mpsc::unbounded_channel().0,
             crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         );
 
         usecase
@@ -624,6 +900,7 @@ mod memory_tests {
             started_execution_trees(),
             tokio::sync::mpsc::unbounded_channel().0,
             crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         ));
 
         let first = tokio::spawn(
@@ -824,6 +1101,7 @@ mod memory_tests {
                     tokio::sync::mpsc::unbounded_channel().0,
                     crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(
                     ),
+                    crate::usecase::workspace_state::test_support::test_session_tabs(),
                 ));
 
                 let first = Arc::clone(&usecase)
@@ -937,6 +1215,7 @@ mod memory_tests {
             started_execution_trees(),
             tokio::sync::mpsc::unbounded_channel().0,
             crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         );
 
         let launched = usecase
@@ -972,6 +1251,36 @@ mod memory_tests {
         assert_eq!(
             warnings[0].reason,
             ProviderLifecycleUnavailableReason::CodexHookDeliveryUnconfirmed
+        );
+    }
+}
+
+#[test]
+fn test_タブ保存エラー_session起動の分類と技術的失敗を保持する() {
+    use super::{map_tab_error, AgentSessionLaunchUsecaseError};
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::workspace_state::WorkspaceStateError;
+    // Given / When / Then
+    assert!(
+        matches!(map_tab_error(WorkspaceStateError::VersionConflict), AgentSessionLaunchUsecaseError::Conflict(failure) if failure.version_conflict().is_some())
+    );
+    assert_eq!(
+        map_tab_error(WorkspaceStateError::InvalidLayout),
+        AgentSessionLaunchUsecaseError::Corrupt
+    );
+    for nature in [
+        TechnicalFailureNature::Transient,
+        TechnicalFailureNature::TimedOut,
+        TechnicalFailureNature::Cancelled,
+        TechnicalFailureNature::Other,
+    ] {
+        let failure = TechnicalFailure {
+            nature,
+            message: "save failure".into(),
+        };
+        assert_eq!(
+            map_tab_error(WorkspaceStateError::Technical(failure.clone())),
+            AgentSessionLaunchUsecaseError::Technical(failure)
         );
     }
 }

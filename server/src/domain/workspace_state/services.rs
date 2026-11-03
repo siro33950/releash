@@ -2,25 +2,28 @@ use std::path::Path;
 
 use crate::domain::workspace_state::WorkspaceState;
 
+/// 保存済みの設定から存在しないファイルへの参照を除き、未保存の設定は保持する。
 pub fn filter_missing_files(
     mut state: WorkspaceState,
     exists: impl Fn(&str) -> bool,
 ) -> WorkspaceState {
-    state.tabs.editors.retain(|tab| exists(&tab.path));
-
-    if let Some(ref active) = state.tabs.active_editor_path {
-        let still_exists = state.tabs.editors.iter().any(|e| e.path == *active);
-        if !still_exists {
-            state.tabs.active_editor_path = state.tabs.editors.first().map(|e| e.path.clone());
+    if let Some(tabs) = &mut state.tabs {
+        tabs.editors.retain(|tab| exists(&tab.path));
+        if let Some(active) = &tabs.active_editor_path {
+            if !tabs.editors.iter().any(|tab| &tab.path == active) {
+                tabs.active_editor_path = tabs.editors.first().map(|tab| tab.path.clone());
+            }
         }
     }
-
-    if let Some(ref diff_file) = state.layout.selected_diff_file {
-        if !exists(diff_file) {
-            state.layout.selected_diff_file = None;
+    if let Some(layout) = &mut state.layout {
+        if layout
+            .selected_diff_file
+            .as_ref()
+            .is_some_and(|path| !exists(path))
+        {
+            layout.selected_diff_file = None;
         }
     }
-
     state
 }
 

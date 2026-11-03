@@ -133,12 +133,47 @@ fn test_workspace保存形式_panesのない旧jsonと現在のjsonを直接往�
         let domain: WorkspaceState = stored.try_into().unwrap();
         // Then
         assert_eq!(domain.panes.is_some(), panes.is_some());
-        assert_eq!(domain.tabs.editors[0].path, "file");
-        assert!(domain.layout.left_nav_collapsed);
+        assert_eq!(domain.tabs.as_ref().unwrap().editors[0].path, "file");
+        assert!(domain.layout.as_ref().unwrap().left_nav_collapsed);
         assert_eq!(
             serde_json::to_value(StoredWorkspaceState::from(&domain)).unwrap(),
             json
         );
+    }
+}
+
+#[test]
+fn test_workspace保存形式_省略した設定を補わず往復する() {
+    // Given
+    let full = serde_json::json!({
+        "version": 1,
+        "tabs": {"editors": [], "activeEditorPath": null},
+        "layout": {"centerTab":"agent", "activeView":"git", "leftNavCollapsed":false, "rightCollapsed":false, "rightBottomCollapsed":false}
+    });
+    for tabs in [false, true] {
+        for layout in [false, true] {
+            let mut json = full.clone();
+            if !tabs {
+                json.as_object_mut().unwrap().remove("tabs");
+            }
+            if !layout {
+                json.as_object_mut().unwrap().remove("layout");
+            }
+            // When
+            let stored: StoredWorkspaceState = serde_json::from_value(json.clone()).unwrap();
+            let state: WorkspaceState = stored.try_into().unwrap();
+            let event = LocalDomainEvent::WorkspaceStateChanged(Box::new(state.clone()));
+            let codec = WorkspaceStateCodec;
+            let decoded = codec.decode(1, &codec.encode(&event).unwrap()).unwrap();
+            // Then
+            assert_eq!(state.tabs.is_some(), tabs);
+            assert_eq!(state.layout.is_some(), layout);
+            assert_eq!(decoded, Some(event));
+            assert_eq!(
+                serde_json::to_value(StoredWorkspaceState::from(&state)).unwrap(),
+                json
+            );
+        }
     }
 }
 

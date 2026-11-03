@@ -49,7 +49,7 @@ describe("buildWorkspaceState", () => {
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
-		expect(result.layout.leftNavCollapsed).toBe(false);
+		expect(result.layout?.leftNavCollapsed).toBe(false);
 	});
 
 	it("leftNavVisible=false → leftNavCollapsed=true（反転）", () => {
@@ -64,7 +64,7 @@ describe("buildWorkspaceState", () => {
 		};
 
 		const result = buildWorkspaceState(internal, "editor", false, true);
-		expect(result.layout.leftNavCollapsed).toBe(true);
+		expect(result.layout?.leftNavCollapsed).toBe(true);
 	});
 
 	it("rightVisible=false → rightCollapsed=true（反転）", () => {
@@ -79,7 +79,7 @@ describe("buildWorkspaceState", () => {
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, false);
-		expect(result.layout.rightCollapsed).toBe(true);
+		expect(result.layout?.rightCollapsed).toBe(true);
 	});
 
 	it("rightBottomCollapsedが保持される", () => {
@@ -94,8 +94,8 @@ describe("buildWorkspaceState", () => {
 		};
 
 		const result = buildWorkspaceState(internal, "agent", true, true);
-		expect(result.layout.rightBottomCollapsed).toBe(true);
-		expect(result.layout.centerTab).toBe("agent");
+		expect(result.layout?.rightBottomCollapsed).toBe(true);
+		expect(result.layout?.centerTab).toBe("agent");
 	});
 
 	it("selectedDiffFileが非null値で保持される", () => {
@@ -110,7 +110,7 @@ describe("buildWorkspaceState", () => {
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
-		expect(result.layout.selectedDiffFile).toBe("src/main.rs");
+		expect(result.layout?.selectedDiffFile).toBe("src/main.rs");
 	});
 
 	it("diffOnlyMode=trueが保持される", () => {
@@ -125,6 +125,6 @@ describe("buildWorkspaceState", () => {
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
-		expect(result.layout.diffOnlyMode).toBe(true);
+		expect(result.layout?.diffOnlyMode).toBe(true);
 	});
 });

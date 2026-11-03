@@ -87,10 +87,11 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(wire::NullableStartupWorktree {
                 value: value.as_ref().map(|value| wire::StartupWorktree { path: Some(value.path.clone()), branch: Some(value.branch.clone()), repository_name: Some(value.repository_name.clone()) })
             }),
-            StateValue::WorkspaceState(value, failures, _) => {
+            StateValue::WorkspaceState(version, value, failures, _) => {
                 let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
                 if let Some(state) = &mut value.value {
+                    state.etag = Some(crate::adaptor::presenter::client::etag(*version));
                     state.read_failures = failures.iter().map(|failure| wire::WorkspaceStateReadFailure {
                         reference_id: failure.reference_id.clone(), message: failure.failure.message.clone(),
                     }).collect();

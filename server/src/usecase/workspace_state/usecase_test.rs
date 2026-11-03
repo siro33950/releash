@@ -148,7 +148,7 @@ impl WorkspaceStateRepository for Store {
         name: &str,
         state: WorkspaceState,
         expected: crate::domain::local_event::StreamVersion,
-    ) -> Result<(), WorkspaceStateError> {
+    ) -> Result<crate::domain::local_event::StreamVersion, WorkspaceStateError> {
         assert_eq!(
             expected.value() + 1,
             self.reads.load(std::sync::atomic::Ordering::SeqCst) as i64
@@ -169,7 +169,7 @@ impl WorkspaceStateRepository for Store {
                 },
             ))
         } else {
-            Ok(())
+            Ok(crate::domain::local_event::StreamVersion::new(expected.value() + 1).unwrap())
         }
     }
     async fn states(
@@ -212,11 +212,11 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
         let state = WorkspaceState {
             panes: None,
             version: 1,
-            tabs: WorkspaceTabsState {
+            tabs: Some(WorkspaceTabsState {
                 editors: vec![],
                 active_editor_path: None,
-            },
-            layout: WorkspaceLayoutState {
+            }),
+            layout: Some(WorkspaceLayoutState {
                 center_tab: "editor".into(),
                 active_view: "git".into(),
                 left_nav_collapsed: false,
@@ -224,16 +224,26 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
                 right_bottom_collapsed: false,
                 right_bottom_active_tab: None,
                 selected_diff_file: None,
-            },
+            }),
         };
         // When
-        let result = save_workspace_state(&store, Some(&publisher), "worktree", state).await;
+        let result = save_workspace_state(
+            &store,
+            Some(&publisher),
+            "worktree",
+            state.clone(),
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await;
         // Then
         assert_eq!(*store.calls.lock(), ["save:worktree"]);
         assert_eq!(result.is_err(), fail);
         if fail {
             assert!(changes.try_recv().is_err());
         } else {
+            let (version, saved) = result.unwrap();
+            assert_eq!(version.value(), 1);
+            assert_eq!(saved, state);
             assert_eq!(
                 changes.try_recv().unwrap(),
                 crate::usecase::state_subscription::StateChangeSource::WorkspaceState(
@@ -264,11 +274,11 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
     let state = WorkspaceState {
         panes: None,
         version: 1,
-        tabs: WorkspaceTabsState {
+        tabs: Some(WorkspaceTabsState {
             editors: vec![],
             active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
+        }),
+        layout: Some(WorkspaceLayoutState {
             center_tab: "editor".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
@@ -276,10 +286,17 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
             right_bottom_collapsed: false,
             right_bottom_active_tab: None,
             selected_diff_file: None,
-        },
+        }),
     };
     // When
-    let result = save_workspace_state(&store, None, "wt", state).await;
+    let result = save_workspace_state(
+        &store,
+        None,
+        "wt",
+        state,
+        crate::domain::local_event::StreamVersion::zero(),
+    )
+    .await;
     // Then
     assert!(result.is_err());
     assert!(store.calls.lock().is_empty());
@@ -354,11 +371,11 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
             WorkspaceState {
                 panes: Some(panes),
                 version: 1,
-                tabs: WorkspaceTabsState {
+                tabs: Some(WorkspaceTabsState {
                     editors: vec![],
                     active_editor_path: None,
-                },
-                layout: WorkspaceLayoutState {
+                }),
+                layout: Some(WorkspaceLayoutState {
                     center_tab: "editor".into(),
                     active_view: "git".into(),
                     left_nav_collapsed: false,
@@ -366,8 +383,9 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
                     right_bottom_collapsed: false,
                     right_bottom_active_tab: None,
                     selected_diff_file: None,
-                },
+                }),
             },
+            crate::domain::local_event::StreamVersion::zero(),
         )
     });
     // Then
@@ -446,11 +464,11 @@ fn state_with_panes() -> WorkspaceState {
             .unwrap(),
         ),
         version: 1,
-        tabs: WorkspaceTabsState {
+        tabs: Some(WorkspaceTabsState {
             editors: vec![],
             active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
+        }),
+        layout: Some(WorkspaceLayoutState {
             center_tab: "editor".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
@@ -458,11 +476,12 @@ fn state_with_panes() -> WorkspaceState {
             right_bottom_collapsed: false,
             right_bottom_active_tab: None,
             selected_diff_file: None,
-        },
+        }),
     }
 }
 #[tokio::test]
-async fn test_表示状態保存_最新の配置を保持し競合待ちの取消で版競合を返し通知しない() {
+async fn test_表示状態保存_版が進んでいれば省略した配置を補った上で版競合を返し再試行も通知もしない(
+) {
     // Given
     let previous = state_with_panes();
     let store = Store {
@@ -474,29 +493,27 @@ async fn test_表示状態保存_最新の配置を保持し競合待ちの取�
     };
     let publisher = crate::test_support::state_subscription::test_subscriptions();
     let mut changes = crate::test_support::state_subscription::changes(&publisher);
-    let cancellation = std::sync::Arc::new(tokio_util::sync::CancellationToken::new());
     let mut next = previous.clone();
     next.panes = None;
-    next.layout.left_nav_collapsed = true;
+    next.layout.as_mut().unwrap().left_nav_collapsed = true;
     // When
-    let (result, ()) = tokio::join!(
-        crate::common::operation_context::scope(
-            crate::common::operation_context::OperationContext::new(None, cancellation.clone()),
-            save_workspace_state(&store, Some(&publisher), "wt", next),
-        ),
-        async {
-            store.conflict_returned.notified().await;
-            cancellation.cancel();
-        }
-    );
+    let result = save_workspace_state(
+        &store,
+        Some(&publisher),
+        "wt",
+        next,
+        crate::domain::local_event::StreamVersion::zero(),
+    )
+    .await;
     // Then
     assert!(matches!(result, Err(WorkspaceStateError::VersionConflict)));
     assert!(changes.try_recv().is_err());
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(store.calls.lock().as_slice(), ["save:wt"]);
     let saved = store.saved.lock();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].panes, previous.panes);
-    assert!(saved[0].layout.left_nav_collapsed);
+    assert!(saved[0].layout.as_ref().unwrap().left_nav_collapsed);
 }
 
 #[tokio::test]
@@ -529,89 +546,48 @@ async fn test_repositoryグループ保存_競合待ちの取消で版競合を�
 }
 
 #[tokio::test]
-async fn test_ui状態保存_競合後の技術的な期限切れをそのまま返し通知しない() {
-    for group in [false, true] {
-        // Given
-        let failure = crate::domain::failure::TechnicalFailure {
-            nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-            message: "save timed out".into(),
-        };
-        let store = Store {
-            readable: true,
-            conflicts_remaining: Mutex::new(1),
-            save_failure: Some(failure.clone()),
-            ..Default::default()
-        };
-        let publisher = crate::test_support::state_subscription::test_subscriptions();
-        let mut changes = crate::test_support::state_subscription::changes(&publisher);
-        // When
-        let result = if group {
-            save_repository_group_state(&store, Some(&publisher), "/repo", true).await
-        } else {
-            save_workspace_state(&store, Some(&publisher), "/repo/wt", state_with_panes()).await
-        };
-        // Then
-        assert!(matches!(result, Err(WorkspaceStateError::Technical(actual)) if actual == failure));
-        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert_eq!(store.calls.lock().len(), 2);
-        assert!(changes.try_recv().is_err());
-    }
+async fn test_repositoryグループ保存_競合後の技術的な期限切れをそのまま返し通知しない() {
+    // Given
+    let failure = crate::domain::failure::TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
+        message: "save timed out".into(),
+    };
+    let store = Store {
+        readable: true,
+        conflicts_remaining: Mutex::new(1),
+        save_failure: Some(failure.clone()),
+        ..Default::default()
+    };
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    // When
+    let result = save_repository_group_state(&store, Some(&publisher), "/repo", true).await;
+    // Then
+    assert!(matches!(result, Err(WorkspaceStateError::Technical(actual)) if actual == failure));
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(store.calls.lock().len(), 2);
+    assert!(changes.try_recv().is_err());
 }
 
 #[tokio::test]
-async fn test_ui状態保存_両方の保存が版競合後に読み直し成功後だけ通知する() {
-    for group in [false, true] {
-        // Given
-        let previous = state_with_panes();
-        let mut latest = previous.clone();
-        latest.panes = Some(
-            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-                "latest".into(),
-                vec![],
-                None,
-            )
-            .unwrap(),
-        );
-        let store = Store {
-            fail: false,
-            readable: true,
-            missing_files: Vec::new(),
-            conflict: false,
-            conflicts_remaining: Mutex::new(1),
-            reads: Default::default(),
-            conflict_returned: Default::default(),
-            save_failure: None,
-            retry_previous: Some(latest.clone()),
-            previous: Some(previous),
-            saved: Default::default(),
-            calls: Default::default(),
-        };
-        let publisher = crate::test_support::state_subscription::test_subscriptions();
-        let mut changes = crate::test_support::state_subscription::changes(&publisher);
-        let mut next = state_with_panes();
-        next.panes = None;
-        next.layout.left_nav_collapsed = true;
-        // When
-        if group {
-            save_repository_group_state(&store, Some(&publisher), "/repo", true)
-                .await
-                .unwrap();
-        } else {
-            save_workspace_state(&store, Some(&publisher), "/repo/wt", next)
-                .await
-                .unwrap();
-        }
-        // Then
-        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert_eq!(store.calls.lock().len(), 2);
-        if !group {
-            let saved = store.saved.lock();
-            assert_eq!(saved[1].panes, latest.panes);
-            assert!(saved[1].layout.left_nav_collapsed);
-        }
-        assert!(changes.try_recv().is_ok());
-        assert!(changes.try_recv().is_err());
-    }
+async fn test_repositoryグループ保存_版競合後に読み直し成功後だけ通知する() {
+    // Given
+    let store = Store {
+        readable: true,
+        conflicts_remaining: Mutex::new(1),
+        ..Default::default()
+    };
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    // When
+    save_repository_group_state(&store, Some(&publisher), "/repo", true)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(store.calls.lock().len(), 2);
+    assert!(changes.try_recv().is_ok());
+    assert!(changes.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -641,7 +617,15 @@ async fn test_ui状態保存_取消済みなら両方とも読み書きしない
                 if group {
                     save_repository_group_state(&store, None, "/repo", true).await
                 } else {
-                    save_workspace_state(&store, None, "/repo/wt", state_with_panes()).await
+                    save_workspace_state(
+                        &store,
+                        None,
+                        "/repo/wt",
+                        state_with_panes(),
+                        crate::domain::local_event::StreamVersion::zero(),
+                    )
+                    .await
+                    .map(|_| ())
                 }
             },
         )
@@ -707,11 +691,12 @@ async fn test_旧会話参照の復元_解決を保存して再照会せず未�
         ..Default::default()
     };
     // When
-    let (actual, failures, migration_failure) =
+    let (version, actual, failures, migration_failure) =
         load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
             .await
             .unwrap();
     // Then
+    assert_eq!(version.value(), 1);
     let mut expected = original;
     expected
         .panes
@@ -748,8 +733,8 @@ async fn test_旧会話参照の移行_競合後は最新配置へ参照置換�
         .insert("resolved".into(), "agent".into());
     let original = legacy_state();
     let mut latest = original.clone();
-    latest.layout.left_nav_collapsed = true;
-    latest.layout.right_collapsed = true;
+    latest.layout.as_mut().unwrap().left_nav_collapsed = true;
+    latest.layout.as_mut().unwrap().right_collapsed = true;
     use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
     latest.panes = Some(
         PaneLayout::split(
@@ -769,7 +754,7 @@ async fn test_旧会話参照の移行_競合後は最新配置へ参照置換�
         ..Default::default()
     };
     // When
-    let (actual, _, migration_failure) =
+    let (_, actual, _, migration_failure) =
         load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
             .await
             .unwrap();
@@ -838,11 +823,12 @@ async fn test_旧会話参照の復元_書き戻し失敗でも配置と取得�
             ..Default::default()
         };
         // When
-        let (actual, failures, migration_failure) =
+        let (version, actual, failures, migration_failure) =
             load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
                 .await
                 .unwrap();
         // Then
+        assert_eq!(version.value(), 0);
         original
             .panes
             .as_mut()
@@ -884,7 +870,7 @@ async fn test_配置復元_参照置換を保存してから返却値だけの�
         .sessions
         .insert("resolved".into(), "agent".into());
     let mut original = legacy_state();
-    original.layout.selected_diff_file = Some("missing".into());
+    original.layout.as_mut().unwrap().selected_diff_file = Some("missing".into());
     let store = Store {
         readable: true,
         previous: Some(original),
@@ -892,7 +878,7 @@ async fn test_配置復元_参照置換を保存してから返却値だけの�
         ..Default::default()
     };
     // When
-    let (actual, _, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
+    let (_, actual, _, _) = load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
         .await
         .unwrap();
     // Then
@@ -900,11 +886,16 @@ async fn test_配置復元_参照置換を保存してから返却値だけの�
     let saved = store.saved.lock();
     assert_eq!(saved.len(), 1);
     assert_eq!(
-        saved[0].layout.selected_diff_file.as_deref(),
+        saved[0]
+            .layout
+            .as_ref()
+            .unwrap()
+            .selected_diff_file
+            .as_deref(),
         Some("missing")
     );
     let actual = actual.unwrap();
-    assert!(actual.layout.selected_diff_file.is_none());
+    assert!(actual.layout.as_ref().unwrap().selected_diff_file.is_none());
     assert_eq!(actual.panes, saved[0].panes);
 }
 
@@ -921,16 +912,102 @@ async fn test_配置復元_保存値なしと移行不要の配置は一度だ�
             ..Default::default()
         };
         // When
-        let (actual, failures, migration_failure) =
+        let (version, actual, failures, migration_failure) =
             load_workspace_state(&store, query.as_ref(), "/repo", "/repo")
                 .await
                 .unwrap();
         // Then
-        assert_eq!(actual, previous);
+        assert_eq!(version.value(), 0);
+        assert_eq!(actual, Some(previous.unwrap_or_default()));
         assert!(failures.is_empty());
         assert!(migration_failure.is_none());
         assert!(store.saved.lock().is_empty());
         assert!(query.resolved_nodes.lock().is_empty());
         assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
+}
+
+#[tokio::test]
+async fn test_sessionタブ保存_競合後の最新配置へ追加して一度だけ通知する() {
+    use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+    use crate::domain::provider_lifecycle::value_objects::provider_kind::ProviderKind;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+    // Given
+    let mut latest = state_with_panes();
+    latest.add_session_tab("other", "other-node");
+    let store = std::sync::Arc::new(Store {
+        readable: true,
+        previous: Some(state_with_panes()),
+        retry_previous: Some(latest.clone()),
+        conflicts_remaining: Mutex::new(1),
+        ..Default::default()
+    });
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let usecase = super::super::session_tabs::SessionTabsUsecase::new(
+        store.clone(),
+        crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        publisher,
+    );
+    let session = AgentSession::create(
+        "session",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/worktree",
+        ProviderKind::Claude,
+        AgentSessionTreeLocation::workflow_node("workflow", "node").unwrap(),
+    )
+    .unwrap();
+    // When
+    usecase.add_session(&session).await.unwrap();
+    // Then
+    latest.add_session_tab("session", "node");
+    let saved = store.saved.lock();
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved.last(), Some(&latest));
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        crate::usecase::state_subscription::StateChangeSource::WorkspaceState("/repo".into())
+    );
+    assert!(changes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_sessionタブ保存_技術的失敗は再試行せず通知しない() {
+    use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+    use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
+    use crate::domain::provider_lifecycle::value_objects::provider_kind::ProviderKind;
+    use crate::domain::workspace_tree::WorkspaceIdentity;
+    // Given
+    let failure = TechnicalFailure {
+        nature: TechnicalFailureNature::Transient,
+        message: "save failure".into(),
+    };
+    let store = std::sync::Arc::new(Store {
+        readable: true,
+        save_failure: Some(failure.clone()),
+        ..Default::default()
+    });
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let usecase = super::super::session_tabs::SessionTabsUsecase::new(
+        store.clone(),
+        crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+        publisher,
+    );
+    let session = AgentSession::create(
+        "session",
+        WorkspaceIdentity::new("/repo"),
+        "/repo/worktree",
+        ProviderKind::Claude,
+        AgentSessionTreeLocation::workflow_node("workflow", "node").unwrap(),
+    )
+    .unwrap();
+    // When / Then
+    assert_eq!(
+        usecase.add_session(&session).await,
+        Err(WorkspaceStateError::Technical(failure))
+    );
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(store.saved.lock().len(), 1);
+    assert!(changes.try_recv().is_err());
 }

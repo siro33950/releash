@@ -704,9 +704,10 @@ extension AppModelTests {
         state.deferSave = false
         return callback
       })
+    let saved = try http.state.withLock { try XCTUnwrap($0.layouts[path]).serializedData() }
     release(
       HTTPResponse(
-        code: .ok, headers: ["content-type": ["application/proto"]], message: Data(), trailers: [:],
+        code: .ok, headers: ["content-type": ["application/proto"]], message: saved, trailers: [:],
         error: nil, tracingInfo: .init(httpStatus: 200)))
     try await eventually { model.pendingSaves[path] == nil }
     let saves = try http.requests("SaveWorkspaceState").map {
@@ -1105,6 +1106,50 @@ extension AppModelTests {
       try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
     }.filter { $0.target == "terminal" }
     XCTAssertEqual(attempts.count, 3)
+    await model.stop()
+  }
+}
+
+extension AppModelTests {
+  @MainActor func testSavesSendObservedEtagAndChainResponseEtag() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let path = "/repo/a"
+    model.selectWorktree(path)
+    try await eventually { model.layoutLoaded }
+    let last = testLayout(.file)
+    model.editLayout { $0 = testLayout(.terminal) }
+    model.editLayout { $0 = last }
+    try await eventually { model.pendingSaves[path] == nil }
+    let saves = try http.requests("SaveWorkspaceState").map {
+      try Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: $0.message!)
+    }
+    XCTAssertEqual(saves.map(\.state.etag), ["0", "1"])
+    XCTAssertEqual(http.state.withLock { $0.layouts[path]?.etag }, "2")
+    XCTAssertEqual(try PaneLayout(saves.last!.state.paneLayout), last)
+    XCTAssertNil(model.failure)
+    await model.stop()
+  }
+
+  @MainActor func testStaleSaveIsDroppedAndServerLayoutIsReloaded() async throws {
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let path = "/repo/a"
+    model.selectWorktree(path)
+    try await eventually { model.layoutLoaded }
+    let serverLayout = testLayout(.command)
+    var server = Releash_Client_V1_WorkspaceStateDto()
+    server.version = 1
+    server.paneLayout = serverLayout.message
+    server.etag = "1"
+    http.state.withLock { $0.layouts[path] = server }
+    model.editLayout { $0 = testLayout(.file) }
+    try await eventually { model.pendingSaves[path] == nil && model.layout == serverLayout }
+    XCTAssertEqual(http.state.withLock { $0.layouts[path] }, server)
+    XCTAssertNil(model.failure)
+    let request = try Releash_Client_V1_SaveWorkspaceStateRequest(
+      serializedBytes: XCTUnwrap(http.requests("SaveWorkspaceState").last?.message))
+    XCTAssertEqual(request.state.etag, "0")
     await model.stop()
   }
 }

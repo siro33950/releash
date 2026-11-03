@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { useCallback, useEffect, useRef } from "react";
 import { invokeClient as invoke, subscribeState } from "@/lib/client";
 import { logClientError } from "@/lib/clientErrorNotice";
@@ -16,7 +17,9 @@ export interface UseWorkspaceStateCacheReturn {
 
 export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 	const subscriptions = useRef(new Map<string, () => void>());
+	const loaders = useRef(new Map<string, () => void>());
 	const cacheRef = useRef<Map<string, WorkspaceState>>(new Map());
+	const etagsRef = useRef<Map<string, string>>(new Map());
 	const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
 		new Map(),
 	);
@@ -31,45 +34,56 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 		if (!state) return;
 		invoke("save_workspace_state", {
 			worktreeName: rootPath,
-			state,
+			state: { ...state, etag: etagsRef.current.get(rootPath) ?? "0" },
 		})
-			.then(() => {
+			.then((saved) => {
+				etagsRef.current.set(rootPath, saved.etag);
 				if (cacheRef.current.get(rootPath) === state) {
 					dirtyRef.current.delete(rootPath);
 				}
 			})
-			.catch((e) => logClientError("Failed to save workspace state:", e));
+			.catch((e) => {
+				if (e instanceof ConnectError && e.code === Code.Aborted) {
+					dirtyRef.current.delete(rootPath);
+					loaders.current.get(rootPath)?.();
+					return;
+				}
+				logClientError("Failed to save workspace state:", e);
+			});
 	}, []);
 
-	const loadState = useCallback(
-		(
-			rootPath: string,
-			onState: (state: WorkspaceState | undefined) => void,
-			onError: (error: unknown) => void,
-		) => {
-			subscriptions.current.get(rootPath)?.();
+	const loadState = useCallback(function load(
+		rootPath: string,
+		onState: (state: WorkspaceState | undefined) => void,
+		onError: (error: unknown) => void,
+	) {
+		subscriptions.current.get(rootPath)?.();
+		loaders.current.set(rootPath, () => load(rootPath, onState, onError));
 
-			const release = subscribeState(
-				{
-					kind: "workspace-state",
-					args: [rootPath, rootPath],
-				},
-				(state) => {
-					if (!dirtyRef.current.has(rootPath)) {
-						if (state) cacheRef.current.set(rootPath, state);
-						else cacheRef.current.delete(rootPath);
+		const release = subscribeState(
+			{
+				kind: "workspace-state",
+				args: [rootPath, rootPath],
+			},
+			(state) => {
+				if (!dirtyRef.current.has(rootPath)) {
+					if (state) {
+						cacheRef.current.set(rootPath, state);
+						etagsRef.current.set(rootPath, state.etag);
+					} else {
+						cacheRef.current.delete(rootPath);
+						etagsRef.current.delete(rootPath);
 					}
-					onState(state ?? undefined);
-				},
-				(error) => {
-					logClientError("Failed to load workspace state:", error);
-					onError(error);
-				},
-			);
-			subscriptions.current.set(rootPath, release);
-		},
-		[],
-	);
+				}
+				onState(state ?? undefined);
+			},
+			(error) => {
+				logClientError("Failed to load workspace state:", error);
+				onError(error);
+			},
+		);
+		subscriptions.current.set(rootPath, release);
+	}, []);
 
 	const updateState = useCallback(
 		(rootPath: string, state: WorkspaceState) => {

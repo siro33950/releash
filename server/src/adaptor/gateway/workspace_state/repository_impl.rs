@@ -91,6 +91,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
             expected,
         )
         .await
+        .map(|_| ())
     }
 
     async fn filter_missing_files(
@@ -131,7 +132,7 @@ impl WorkspaceStateRepository for WorkspaceStateStore {
         key: &str,
         state: WorkspaceState,
         expected: StreamVersion,
-    ) -> Result<(), WorkspaceStateError> {
+    ) -> Result<StreamVersion, WorkspaceStateError> {
         facts::append(
             &self.store,
             facts::workspace_stream(key),

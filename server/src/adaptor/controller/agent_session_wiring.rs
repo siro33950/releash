@@ -28,6 +28,7 @@ use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub struct AgentSessionCompositionInput {
+    pub session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     pub launch_retention:
         tokio::sync::mpsc::UnboundedSender<crate::usecase::agent_session::LaunchRetention>,
     pub retrying: Arc<crate::usecase::retry::Retrying>,
@@ -406,6 +407,7 @@ pub fn compose_agent_sessions(
         execution_tree_registrations.clone(),
         input.launch_retention,
         workspace_trees.clone(),
+        input.session_tabs,
     ));
     let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),

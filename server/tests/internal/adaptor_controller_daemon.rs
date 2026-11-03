@@ -442,6 +442,7 @@ pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損
             .unwrap()
             .unwrap()
             .layout
+            .unwrap()
             .left_nav_collapsed
     );
     assert!(repository.list_worktrees(&healthy).is_ok());

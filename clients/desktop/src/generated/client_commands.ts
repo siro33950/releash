@@ -122,6 +122,7 @@ import {
 	UpdateWorkflowConfigRequestSchema,
 	ValidateNotionConfigRequestSchema,
 	WorkflowSubmitOutputRequestSchema,
+	WorkspaceStateDtoSchema,
 	WritePathsToTerminalSurfaceRequestSchema,
 	WriteTerminalSurfaceRequestSchema,
 } from "./client_pb";
@@ -1408,7 +1409,7 @@ const commands = {
 		args: ClientCommandArgs["save_workspace_state"],
 	) => {
 		const result = decode(
-			UnitSchema,
+			WorkspaceStateDtoSchema,
 			await client.saveWorkspaceState(
 				fromJson(
 					SaveWorkspaceStateRequestSchema,

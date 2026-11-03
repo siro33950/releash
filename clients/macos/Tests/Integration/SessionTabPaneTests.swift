@@ -695,6 +695,18 @@ final class SessionTabPaneTests: XCTestCase {
           let historyHost = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
           try await eventuallyView(historyHost) { historyHost.element("Codex · history") != nil }
           try await historyHost.press("Codex · history")
+          try await eventually { http.requests("RestoreAgentSession").count == 1 }
+          try await eventually { model.pendingSaves["/repo"] == nil }
+          guard case .pane(let id, var tabs, let active) = try model.panes.layout() else {
+            return XCTFail("Expected a single pane")
+          }
+          tabs[0].nodeID = nil
+          tabs[0].agentSessionID = "agent-session"
+          var state = Releash_Client_V1_StatePayload()
+          state.workspaceState.value.version = 1
+          state.workspaceState.value.paneLayout =
+            PaneLayout.pane(id: id, tabs: tabs, active: active).message
+          try http.publish(state, target: "workspace-state")
           try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
           historyHost.close()
         } else {
@@ -707,12 +719,18 @@ final class SessionTabPaneTests: XCTestCase {
         XCTAssertEqual(model.panes.controller.allTabIds, [tab])
         XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent-session")
         XCTAssertNil(try model.panes.layout().tabs.first?.nodeID)
-        try await eventually {
-          guard let data = http.requests("SaveWorkspaceState").last?.message,
-            let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data)
-          else { return false }
-          return (try? PaneLayout(saved.state.paneLayout).tabs.first?.agentSessionID)
-            == "agent-session"
+        if history {
+          XCTAssertEqual(
+            model.layout.tabs.first?.agentSessionID,
+            "agent-session")
+        } else {
+          try await eventually {
+            guard let data = http.requests("SaveWorkspaceState").last?.message,
+              let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data)
+            else { return false }
+            return (try? PaneLayout(saved.state.paneLayout).tabs.first?.agentSessionID)
+              == "agent-session"
+          }
         }
         host.close()
         await model.stop()

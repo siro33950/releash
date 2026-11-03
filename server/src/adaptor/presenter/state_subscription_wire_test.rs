@@ -220,8 +220,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     session_key: "terminal".into(),
                     data: Arc::from("output"),
                     sequence: 6,
-                }
-                .into(),
+                },
             ),
             W::Terminal(wire::TerminalEvent {
                 item: Some(wire::terminal_event::Item::Output(wire::TerminalOutput {
@@ -369,7 +368,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     workspace_identity: Some("/repo".into()),
                     worktree_path: Some("/repo/worktree".into()),
                     workspace_worktree_path: Some("/repo/worktree".into()),
-                    provider: Some(provider.clone()),
+                    provider: Some(provider),
                     tree_location: Some(wire::AgentSessionTreeLocationDto {
                         tree_id: Some("tree".into()),
                         node_execution_id: Some("node".into()),
@@ -403,7 +402,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
             W::SessionHistory(wire::AgentSessionHistoryPageDto {
                 items: Some(wire::ListAgentSessionHistoryCandidateDto {
                     items: vec![wire::AgentSessionHistoryCandidateDto {
-                        provider: Some(provider.clone()),
+                        provider: Some(provider),
                         provider_session_id: Some("provider-session".into()),
                         label: Some("session".into()),
                         updated_at_ms: Some(11),
@@ -574,14 +573,15 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
         ),
         (
             StateValue::WorkspaceState(
+                crate::domain::local_event::StreamVersion::new(7).unwrap(),
                 Some(WorkspaceState {
                     panes: None,
                     version: 1,
-                    tabs: WorkspaceTabsState {
+                    tabs: Some(WorkspaceTabsState {
                         editors: vec![],
                         active_editor_path: Some("/file".into()),
-                    },
-                    layout: WorkspaceLayoutState {
+                    }),
+                    layout: Some(WorkspaceLayoutState {
                         center_tab: "agent".into(),
                         active_view: "git".into(),
                         left_nav_collapsed: true,
@@ -589,7 +589,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                         right_bottom_collapsed: true,
                         right_bottom_active_tab: None,
                         selected_diff_file: None,
-                    },
+                    }),
                 }),
                 vec![crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
                     reference_id: "session-node".into(),
@@ -611,6 +611,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                     read_failures: vec![wire::WorkspaceStateReadFailure { reference_id: "session-node".into(), message: "Session lookup failed".into() }],
                     pane_layout: None,
                     version: Some(1),
+                    etag: Some("7".into()),
                     tabs: Some(wire::WorkspaceTabsStateDto {
                         editors: Some(wire::ListWorkspaceTabEntryDto { items: vec![] }),
                         active_editor_path: Some("/file".into()),
@@ -1247,4 +1248,28 @@ fn test_sessionタブ購読_不在snapshotを専用payloadで配る() {
             wire::SessionTabSnapshot::default()
         ))
     );
+}
+
+#[test]
+fn test_workspace購読payload_設定未保存のsession配置を転送する() {
+    use crate::domain::workspace_state::WorkspaceState;
+    // Given
+    let mut state = WorkspaceState::default();
+    state.add_session_tab("session", "node");
+    // When
+    let actual = payload(&StateValue::WorkspaceState(
+        crate::domain::local_event::StreamVersion::zero(),
+        Some(state.clone()),
+        vec![],
+        None,
+    ))
+    .unwrap();
+    // Then
+    let Some(wire::state_payload::Value::WorkspaceState(actual)) = actual.value else {
+        panic!("workspace state payload")
+    };
+    let actual = actual.value.unwrap();
+    assert!(actual.tabs.is_none());
+    assert!(actual.layout.is_none());
+    assert_eq!(WorkspaceState::try_from(actual).unwrap(), state);
 }

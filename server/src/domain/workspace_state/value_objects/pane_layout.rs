@@ -59,6 +59,117 @@ pub enum PaneLayoutView<'a> {
 }
 
 impl PaneLayout {
+    pub(in crate::domain::workspace_state) fn add_session_tab(
+        &mut self,
+        session_id: &str,
+        node_id: &str,
+    ) {
+        if self.contains_session(session_id) || self.bind_pending_session(session_id, node_id) {
+            return;
+        }
+        let mut id = format!("session-{session_id}");
+        while self.contains_id(&id) {
+            id.push('-');
+        }
+        self.append_tab(PaneTab {
+            id,
+            kind: PaneTabKind::Session,
+            node_id: None,
+            agent_session_id: Some(session_id.into()),
+            file_path: None,
+            file_mode: None,
+            file_base: None,
+        });
+    }
+
+    fn append_tab(&mut self, tab: PaneTab) {
+        match &mut self.0 {
+            PaneLayoutNode::Pane { tabs, .. } => tabs.push(tab),
+            PaneLayoutNode::Split { first, .. } => first.append_tab(tab),
+        }
+    }
+
+    fn contains_session(&self, session_id: &str) -> bool {
+        match &self.0 {
+            PaneLayoutNode::Pane { tabs, .. } => tabs
+                .iter()
+                .any(|tab| tab.agent_session_id.as_deref() == Some(session_id)),
+            PaneLayoutNode::Split { first, second, .. } => {
+                first.contains_session(session_id) || second.contains_session(session_id)
+            }
+        }
+    }
+
+    fn contains_id(&self, candidate: &str) -> bool {
+        match &self.0 {
+            PaneLayoutNode::Pane { id, tabs, .. } => {
+                id == candidate || tabs.iter().any(|tab| tab.id == candidate)
+            }
+            PaneLayoutNode::Split {
+                id, first, second, ..
+            } => id == candidate || first.contains_id(candidate) || second.contains_id(candidate),
+        }
+    }
+
+    fn bind_pending_session(&mut self, session_id: &str, node_id: &str) -> bool {
+        match &mut self.0 {
+            PaneLayoutNode::Pane { tabs, .. } => {
+                if let Some(tab) = tabs.iter_mut().find(|tab| {
+                    tab.kind == PaneTabKind::Session
+                        && tab.node_id.as_deref() == Some(node_id)
+                        && tab.agent_session_id.is_none()
+                }) {
+                    tab.agent_session_id = Some(session_id.into());
+                    tab.node_id = None;
+                    return true;
+                }
+                false
+            }
+            PaneLayoutNode::Split { first, second, .. } => {
+                first.bind_pending_session(session_id, node_id)
+                    || second.bind_pending_session(session_id, node_id)
+            }
+        }
+    }
+
+    pub(in crate::domain::workspace_state) fn remove_session_tab(
+        &mut self,
+        session_id: Option<&str>,
+        node_id: Option<&str>,
+    ) {
+        match &mut self.0 {
+            PaneLayoutNode::Pane {
+                tabs, active_tab, ..
+            } => {
+                let matches_session = |tab: &PaneTab| {
+                    session_id.is_some() && tab.agent_session_id.as_deref() == session_id
+                };
+                let matches_legacy_node = |tab: &PaneTab| {
+                    tab.kind == PaneTabKind::Session
+                        && tab.agent_session_id.is_none()
+                        && node_id.is_some()
+                        && tab.node_id.as_deref() == node_id
+                };
+                let removed = |tab: &PaneTab| matches_session(tab) || matches_legacy_node(tab);
+                if let Some(index) = tabs
+                    .iter()
+                    .position(|tab| active_tab.as_ref() == Some(&tab.id) && removed(tab))
+                {
+                    *active_tab = tabs[index + 1..]
+                        .iter()
+                        .find(|tab| !removed(tab))
+                        .or_else(|| tabs[..index].iter().rev().find(|tab| !removed(tab)))
+                        .map(|tab| tab.id.clone());
+                }
+                tabs.retain(|tab| !removed(tab));
+            }
+            PaneLayoutNode::Split { first, second, .. } => {
+                first.remove_session_tab(session_id, node_id);
+                second.remove_session_tab(session_id, node_id);
+            }
+        }
+    }
+
     pub fn pane(
         id: String,
         tabs: Vec<PaneTab>,

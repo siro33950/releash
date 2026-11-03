@@ -10,7 +10,7 @@ pub(crate) mod tests {
         WorkspaceState {
             panes: None,
             version: 1,
-            tabs: WorkspaceTabsState {
+            tabs: Some(WorkspaceTabsState {
                 editors: vec![
                     WorkspaceTabEntry {
                         path: "src/main.rs".to_string(),
@@ -22,8 +22,8 @@ pub(crate) mod tests {
                     },
                 ],
                 active_editor_path: Some("src/main.rs".to_string()),
-            },
-            layout: WorkspaceLayoutState {
+            }),
+            layout: Some(WorkspaceLayoutState {
                 center_tab: "editor".to_string(),
                 active_view: "git".to_string(),
                 left_nav_collapsed: false,
@@ -31,7 +31,7 @@ pub(crate) mod tests {
                 right_bottom_collapsed: false,
                 right_bottom_active_tab: None,
                 selected_diff_file: Some("src/deleted.rs".to_string()),
-            },
+            }),
         }
     }
 
@@ -44,8 +44,11 @@ pub(crate) mod tests {
 
         let state = filter_missing_files(make_state(), |path| worktree.join(path).exists());
 
-        assert_eq!(state.tabs.editors.len(), 1);
-        assert_eq!(state.tabs.active_editor_path.as_deref(), Some("src/lib.rs"));
-        assert_eq!(state.layout.selected_diff_file, None);
+        assert_eq!(state.tabs.as_ref().unwrap().editors.len(), 1);
+        assert_eq!(
+            state.tabs.as_ref().unwrap().active_editor_path.as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(state.layout.as_ref().unwrap().selected_diff_file, None);
     }
 }

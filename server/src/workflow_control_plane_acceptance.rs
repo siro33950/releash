@@ -315,7 +315,7 @@ impl WorkflowDefinitionResolver for AcceptanceWorkflowDefinitionResolver {
             _ => {
                 return Err(WorkflowDefinitionResolverError::InvalidWorkflow(format!(
                     "unknown acceptance workflow '{workflow_name}'"
-                )))
+                )));
             }
         };
         // 直列は root sequence の隣接辺（rules 無し = リストの次へ）で表現する。
@@ -461,7 +461,20 @@ impl WorkflowControlPlaneAcceptanceHost {
             config.data_dir.clone(),
             crate::test_support::terminal_config(""),
         );
+        let session_tabs = crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+            Arc::new(
+                crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
+                    config.data_dir.clone(),
+                    store.clone(),
+                ),
+            ),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+            ),
+            terminal.subscriptions(),
+        );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            session_tabs: session_tabs.clone(),
             git: Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(Arc::new(
                 crate::adaptor::gateway::app_config::AppConfig::new(Default::default(), std::path::PathBuf::new()),
             ))),
@@ -547,6 +560,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
                     crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(&config.data_dir),
                 ))),
+                session_tabs,
             ),
         );
         let workspace_node_commands = Arc::new(WorkspaceNodeCommandUsecase::new(

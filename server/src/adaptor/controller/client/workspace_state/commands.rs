@@ -1,5 +1,6 @@
 use crate::adaptor::presenter::error::AppError;
 
+use crate::domain::local_event::StreamVersion;
 use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
 
 pub(crate) async fn save_workspace_state_shared(
@@ -7,12 +8,14 @@ pub(crate) async fn save_workspace_state_shared(
     publisher: Option<&crate::usecase::state_subscription::StateSubscriptionUsecase>,
     worktree_name: String,
     state: WorkspaceState,
-) -> Result<(), AppError> {
+    expected: StreamVersion,
+) -> Result<(StreamVersion, WorkspaceState), AppError> {
     crate::usecase::workspace_state::usecase::save_workspace_state(
         store,
         publisher,
         &worktree_name,
         state,
+        expected,
     )
     .await
     .map_err(AppError::from)

@@ -3084,7 +3084,8 @@ pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し�
             context.execution_trees.clone(),
             tokio::sync::mpsc::unbounded_channel().0,
             releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
-        )),
+        releashd::test_support::integration::workspace::test_session_tabs(),
+)),
         Arc::new(releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
             context.sessions.clone(),
             input.clone(),
@@ -3442,7 +3443,8 @@ pub async fn test_workflow_session準備_入口から期限と取消の分類を
                 context.execution_trees.clone(),
                 tokio::sync::mpsc::unbounded_channel().0,
                 releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
-            )),
+            releashd::test_support::integration::workspace::test_session_tabs(),
+)),
             Arc::new(releashd::test_support::integration::sessions::AgentSessionInitialInstructionUsecase::new(
                 context.sessions.clone(),
                 Arc::new(RecordingContinuationInput::default()),

@@ -1,7 +1,7 @@
 use super::*;
+use crate::adaptor::controller::client::invalid_request;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::client::{convert, required};
-use crate::adaptor::controller::client::{invalid_request, outcome};
 use crate::adaptor::presenter::client as wire;
 
 pub(crate) fn register_shared(
@@ -52,15 +52,20 @@ pub(crate) fn register_shared(
                     let result = async move {
                         let store = store
                             .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            commands::save_workspace_state_shared(
-                                store.as_ref(),
-                                publisher.as_ref(),
-                                convert(required(args.worktree_name, "worktreeName")?)?,
-                                convert(required(args.state, "state")?)?,
-                            )
-                            .await,
+                        let state = required(args.state, "state")?;
+                        let expected = wire::stream_version(&required(state.etag.clone(), "etag")?)
+                            .map_err(invalid_request)?;
+                        let (version, saved) = commands::save_workspace_state_shared(
+                            store.as_ref(),
+                            publisher.as_ref(),
+                            convert(required(args.worktree_name, "worktreeName")?)?,
+                            convert(state)?,
+                            expected,
                         )
+                        .await?;
+                        let mut result: wire::WorkspaceStateDto = wire::value(saved)?;
+                        result.etag = Some(wire::etag(version));
+                        Ok::<_, wire::CommandFailure>(result)
                     }
                     .await?;
                     Ok(wire::command_result::Command::SaveWorkspaceState(result))

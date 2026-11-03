@@ -10,7 +10,7 @@ fn make_state() -> WorkspaceState {
     WorkspaceState {
         panes: None,
         version: 1,
-        tabs: WorkspaceTabsState {
+        tabs: Some(WorkspaceTabsState {
             editors: vec![
                 WorkspaceTabEntry {
                     path: "src/main.rs".to_string(),
@@ -22,8 +22,8 @@ fn make_state() -> WorkspaceState {
                 },
             ],
             active_editor_path: Some("src/main.rs".to_string()),
-        },
-        layout: WorkspaceLayoutState {
+        }),
+        layout: Some(WorkspaceLayoutState {
             center_tab: "editor".to_string(),
             active_view: "git".to_string(),
             left_nav_collapsed: false,
@@ -31,8 +31,34 @@ fn make_state() -> WorkspaceState {
             right_bottom_collapsed: false,
             right_bottom_active_tab: None,
             selected_diff_file: None,
-        },
+        }),
     }
+}
+
+#[tokio::test]
+async fn test_workspace状態保存_設定未保存のsession配置を再起動後も復元する() {
+    // Given
+    let directory = TempDir::new().unwrap();
+    let store = releashd::test_support::integration::platform::workspace_state_store(
+        directory.path().into(),
+    );
+    let mut state = WorkspaceState::default();
+    state.add_session_tab("session", "node");
+    // When
+    let (version, _) = store.read("worktree").await.unwrap();
+    store
+        .save("worktree", state.clone(), version)
+        .await
+        .unwrap();
+    drop(store);
+    let restarted = releashd::test_support::integration::platform::workspace_state_store(
+        directory.path().into(),
+    );
+    let actual = restarted.read("worktree").await.unwrap().1.unwrap();
+    // Then
+    assert!(actual.tabs.is_none());
+    assert!(actual.layout.is_none());
+    assert_eq!(actual, state);
 }
 
 #[tokio::test]
@@ -96,8 +122,8 @@ pub async fn save_and_load_roundtrip() {
         .unwrap();
     // Then
     assert_eq!(loaded.version, 1);
-    assert_eq!(loaded.tabs.editors.len(), 2);
-    assert_eq!(loaded.layout.center_tab, "editor");
+    assert_eq!(loaded.tabs.as_ref().unwrap().editors.len(), 2);
+    assert_eq!(loaded.layout.as_ref().unwrap().center_tab, "editor");
 }
 
 #[tokio::test]
@@ -137,6 +163,8 @@ pub async fn get_set_in_memory() {
             .1
             .unwrap()
             .tabs
+            .as_ref()
+            .unwrap()
             .editors
             .len(),
         2
@@ -315,7 +343,7 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
         dir.path().to_path_buf(),
     );
     let mut one = make_state();
-    one.layout.left_nav_collapsed = true;
+    one.layout.as_mut().unwrap().left_nav_collapsed = true;
     let two = make_state();
     // When
     let pending_state = one;
@@ -351,6 +379,8 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
     assert!(
@@ -359,6 +389,8 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
 }
@@ -381,7 +413,7 @@ pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい�
         .unwrap()
         .is_some());
     let mut next = make_state();
-    next.layout.left_nav_collapsed = true;
+    next.layout.as_mut().unwrap().left_nav_collapsed = true;
     let pending_state = next;
     releashd::test_support::integration::platform::save_workspace_state(
         &store,
@@ -397,6 +429,8 @@ pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい�
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
     corrupt_latest_event(dir.path());
@@ -536,10 +570,12 @@ async fn test_旧表示状態_絶対pathを名前より優先し最新の事実�
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
     let mut next = make_state();
-    next.layout.left_nav_collapsed = false;
+    next.layout.as_mut().unwrap().left_nav_collapsed = false;
     let pending_state = next;
     releashd::test_support::integration::platform::save_workspace_state(
         &store,
@@ -560,6 +596,8 @@ async fn test_旧表示状態_絶対pathを名前より優先し最新の事実�
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
     assert_eq!(event_count(dir.path()), 2);
@@ -658,6 +696,8 @@ async fn test_旧表示状態_名前がhashキーのprefixと同じでも絶対p
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
     assert_eq!(event_count(dir.path()), 1);
@@ -768,9 +808,9 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
         .await
         .unwrap();
     let mut react = make_state();
-    react.layout.left_nav_collapsed = true;
-    react.tabs.editors.clear();
-    react.tabs.active_editor_path = None;
+    react.layout.as_mut().unwrap().left_nav_collapsed = true;
+    react.tabs.as_mut().unwrap().editors.clear();
+    react.tabs.as_mut().unwrap().active_editor_path = None;
     // When
     save_workspace_state(&store, None, key, react.clone())
         .await
@@ -864,7 +904,7 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
         ))
     );
     let mut next = make_state();
-    next.layout.left_nav_collapsed = true;
+    next.layout.as_mut().unwrap().left_nav_collapsed = true;
     let pending_state = next;
     releashd::test_support::integration::platform::save_workspace_state(
         &store,
@@ -882,6 +922,8 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
             .unwrap()
             .unwrap()
             .layout
+            .as_ref()
+            .unwrap()
             .left_nav_collapsed
     );
     assert!(store
@@ -949,7 +991,7 @@ async fn test_表示状態の版競合_古い版で保存せず最新の状態�
     let path = "/repo/wt";
     let (version, _) = store.read(path).await.unwrap();
     let mut winner = make_state();
-    winner.layout.left_nav_collapsed = true;
+    winner.layout.as_mut().unwrap().left_nav_collapsed = true;
     save_workspace_state(&store, None, path, winner.clone())
         .await
         .unwrap();
@@ -994,7 +1036,7 @@ async fn wait_for_ui_writes(
 }
 
 #[tokio::test]
-async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと後続の状態を復元する() {
+async fn test_ui状態の並行保存_groupは再読取で後続を反映しworkspaceは版競合で後続を捨てる() {
     use releashd::test_support::integration::persistence::{
         LocalEventStore, LocalEventStoreConfig,
     };
@@ -1039,7 +1081,7 @@ async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと�
                 save_repository_group_state(second_store.as_ref(), None, "/repo", false).await
             } else {
                 let mut state = make_state();
-                state.layout.left_nav_collapsed = true;
+                state.layout.as_mut().unwrap().left_nav_collapsed = true;
                 save_workspace_state(second_store.as_ref(), None, "/repo/wt", state.clone()).await
             }
         });
@@ -1048,20 +1090,26 @@ async fn test_ui状態の並行保存_版競合を再読取し直前のpanesと�
         stall.release();
         append.await.unwrap();
         first.await.unwrap().unwrap();
-        second.await.unwrap().unwrap();
+        let second = second.await.unwrap();
         drop(store);
         let restored = WorkspaceStateStore::with_store(dir.path().into(), events.clone());
         // Then
         if group {
+            second.unwrap();
             assert!(!restored.load_repository_group("/repo").await.unwrap());
+            assert_eq!(event_count(dir.path()), 2);
         } else {
+            assert!(matches!(
+                second,
+                Err(releashd::test_support::integration::platform::WorkspaceStateError::VersionConflict)
+            ));
             let (version, state) = restored.read("/repo/wt").await.unwrap();
-            assert_eq!(version.value(), 2);
+            assert_eq!(version.value(), 1);
             let state = state.unwrap();
-            assert!(state.layout.left_nav_collapsed);
+            assert!(!state.layout.as_ref().unwrap().left_nav_collapsed);
             assert_eq!(state.panes, Some(panes));
+            assert_eq!(event_count(dir.path()), 1);
         }
-        assert_eq!(event_count(dir.path()), 2);
     }
 }
 
@@ -1263,14 +1311,14 @@ async fn test_表示状態load_相対pathとroot外の絶対pathで消失した�
         paths[3].to_string_lossy().into_owned(),
     ];
     let mut state = make_state();
-    state.tabs.editors = entries
+    state.tabs.as_mut().unwrap().editors = entries
         .iter()
         .map(|path| WorkspaceTabEntry {
             path: path.clone(),
             name: path.clone(),
         })
         .collect();
-    state.tabs.active_editor_path = Some(entries[0].clone());
+    state.tabs.as_mut().unwrap().active_editor_path = Some(entries[0].clone());
     let store = releashd::test_support::integration::platform::workspace_state_store(
         directory.path().into(),
     );
@@ -1293,6 +1341,8 @@ async fn test_表示状態load_相対pathとroot外の絶対pathで消失した�
     assert_eq!(
         loaded
             .tabs
+            .as_ref()
+            .unwrap()
             .editors
             .iter()
             .map(|entry| entry.path.as_str())
@@ -1327,11 +1377,10 @@ async fn test_ui状態gateway_両方の読取と保存で停止の種別を保�
                 match operation {
                     0 => store.read("/repo/wt").await.map(|_| ()),
                     1 => store.read_repository_group("/repo").await.map(|_| ()),
-                    2 => {
-                        store
-                            .save("/repo/wt", make_state(), StreamVersion::new(0).unwrap())
-                            .await
-                    }
+                    2 => store
+                        .save("/repo/wt", make_state(), StreamVersion::new(0).unwrap())
+                        .await
+                        .map(|_| ()),
                     _ => {
                         store
                             .save_repository_group("/repo", true, StreamVersion::new(0).unwrap())

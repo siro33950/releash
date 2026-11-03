@@ -547,6 +547,8 @@ pub(crate) struct ArchiveFixture {
     pub(crate) app: WorkflowRuntimeDependencies,
     pub(crate) sessions: Arc<TestSessions>,
     pub(crate) trees: Arc<SqliteWorkspaceTreeRepository>,
+    pub(crate) workspace_states:
+        Arc<releashd::test_support::integration::workspace::MemoryWorkspaceStateRepository>,
 }
 
 impl ArchiveFixture {
@@ -599,12 +601,17 @@ pub(crate) fn archive_fixture_with_resolver(
         Arc::new(TestWorktrees::default()),
         releashd::test_support::integration::daemon::serving(),
     ));
-    let runtime = releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new(
+    let workspace_states = Arc::new(
+        releashd::test_support::integration::workspace::MemoryWorkspaceStateRepository::default(),
+    );
+    let runtime = releashd::test_support::integration::workflow::WorkflowRuntimeUsecase::new_with_workspace_trees(
         Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(
             app.clone(),
             host.clone(),
         )),
         repository.clone(),
+        trees.clone(),
+        workspace_states.clone(),
     );
     ArchiveFixture {
         directory,
@@ -615,6 +622,7 @@ pub(crate) fn archive_fixture_with_resolver(
         app,
         sessions,
         trees,
+        workspace_states,
     }
 }
 

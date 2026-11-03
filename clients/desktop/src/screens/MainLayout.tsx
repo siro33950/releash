@@ -116,7 +116,7 @@ function WorktreeContent({
 
 	// Restore rightBottom collapsed state from initialWorkspaceState
 	const initialRightBottomCollapsed =
-		initialWorkspaceState?.layout.rightBottomCollapsed ?? false;
+		initialWorkspaceState?.layout?.rightBottomCollapsed ?? false;
 	useEffect(() => {
 		if (!initialRightBottomCollapsed) return;
 		const panel = rightBottomRef.current;
@@ -128,7 +128,7 @@ function WorktreeContent({
 
 	// Restore review collapsed state from initialWorkspaceState
 	const initialReviewCollapsed =
-		initialWorkspaceState?.layout.reviewCollapsed ?? false;
+		initialWorkspaceState?.layout?.reviewCollapsed ?? false;
 	useEffect(() => {
 		if (!initialReviewCollapsed) return;
 		const panel = reviewRef.current;

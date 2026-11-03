@@ -138,8 +138,10 @@ pub(crate) struct StoredWorkspaceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     panes: Option<StoredPaneLayout>,
     version: u32,
-    tabs: StoredWorkspaceTabsState,
-    layout: StoredWorkspaceLayoutState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tabs: Option<StoredWorkspaceTabsState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout: Option<StoredWorkspaceLayoutState>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -174,8 +176,8 @@ impl From<&WorkspaceState> for StoredWorkspaceState {
         Self {
             panes: state.panes.as_ref().map(Into::into),
             version: state.version,
-            tabs: state.tabs.clone().into(),
-            layout: state.layout.clone().into(),
+            tabs: state.tabs.clone().map(Into::into),
+            layout: state.layout.clone().map(Into::into),
         }
     }
 }
@@ -186,8 +188,8 @@ impl TryFrom<StoredWorkspaceState> for WorkspaceState {
         Ok(Self {
             panes: dto.panes.map(TryInto::try_into).transpose()?,
             version: dto.version,
-            tabs: dto.tabs.into(),
-            layout: dto.layout.into(),
+            tabs: dto.tabs.map(Into::into),
+            layout: dto.layout.map(Into::into),
         })
     }
 }

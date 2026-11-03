@@ -1,10 +1,10 @@
 export interface WorkspaceState {
 	version: 1;
-	tabs: {
+	tabs?: {
 		editors: { path: string; name: string }[];
 		activeEditorPath: string | null;
 	};
-	layout: {
+	layout?: {
 		centerTab: "editor" | "agent";
 		activeView: string;
 		leftNavCollapsed: boolean;

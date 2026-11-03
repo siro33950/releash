@@ -329,7 +329,7 @@ message CommandResult {
     Unit save_facet = 125;
     Unit save_notion_config = 126;
     SaveWorkflowSourceResultDto save_workflow_source = 127;
-    Unit save_workspace_state = 128;
+    WorkspaceStateDto save_workspace_state = 128;
     Unit set_branch_base = 129;
     Unit set_releash_base = 130;
 
@@ -2014,8 +2014,9 @@ message WorkspaceStateDto {
   repeated WorkspaceStateReadFailure read_failures = 6 [json_name = "readFailures", (json_omit_empty) = true];
   PaneLayout pane_layout = 4;
   optional uint32 version = 1 [json_name = "version", (json_required) = true, (json_literal) = "1"];
-  optional WorkspaceTabsStateDto tabs = 2 [json_name = "tabs", (json_required) = true];
-  optional WorkspaceLayoutStateDto layout = 3 [json_name = "layout", (json_required) = true];
+  optional WorkspaceTabsStateDto tabs = 2 [json_name = "tabs"];
+  optional WorkspaceLayoutStateDto layout = 3 [json_name = "layout"];
+  optional string etag = 7 [json_name = "etag", (json_required) = true];
 }
 
 message WorkspaceTabsStateDto {
@@ -2733,7 +2734,7 @@ service ClientService {
   rpc SaveFacet(SaveFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc SaveNotionConfig(SaveNotionConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc SaveWorkflowSource(SaveWorkflowSourceRequest) returns (SaveWorkflowSourceResultDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (WorkspaceStateDto) { option (scope) = SCOPE_OPERATOR; }
   rpc SetBranchBase(SetBranchBaseRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc SetReleashBase(SetReleashBaseRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc StartWorkflow(StartWorkflowRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }

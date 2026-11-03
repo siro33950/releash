@@ -470,19 +470,23 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     let workspace = releashd::test_support::integration::platform::WorkspaceState {
         version: 1,
         panes: None,
-        tabs: releashd::test_support::integration::platform::WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        },
-        layout: releashd::test_support::integration::platform::WorkspaceLayoutState {
-            center_tab: "agent".into(),
-            active_view: "git".into(),
-            left_nav_collapsed: true,
-            right_collapsed: false,
-            right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
-        },
+        tabs: Some(
+            releashd::test_support::integration::platform::WorkspaceTabsState {
+                editors: vec![],
+                active_editor_path: None,
+            },
+        ),
+        layout: Some(
+            releashd::test_support::integration::platform::WorkspaceLayoutState {
+                center_tab: "agent".into(),
+                active_view: "git".into(),
+                left_nav_collapsed: true,
+                right_collapsed: false,
+                right_bottom_collapsed: false,
+                right_bottom_active_tab: None,
+                selected_diff_file: None,
+            },
+        ),
     };
     releashd::test_support::integration::platform::save_workspace_state(
         r.workspace_state.as_ref(),
@@ -583,7 +587,12 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
-            StateValue::WorkspaceState(Some(workspace), Vec::new(), None),
+            StateValue::WorkspaceState(
+                releashd::test_support::integration::platform::StreamVersion::new(1).unwrap(),
+                Some(workspace.initialize_panes()),
+                Vec::new(),
+                None,
+            ),
         ),
         (
             T::Workflows,
@@ -1653,11 +1662,11 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     let state = WorkspaceState {
         panes: Some(panes),
         version: 1,
-        tabs: WorkspaceTabsState {
+        tabs: Some(WorkspaceTabsState {
             editors: vec![],
             active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
+        }),
+        layout: Some(WorkspaceLayoutState {
             center_tab: "agent".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
@@ -1665,7 +1674,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
             right_bottom_collapsed: false,
             right_bottom_active_tab: None,
             selected_diff_file: None,
-        },
+        }),
     };
     save_workspace_state(
         reads.workspace_state.as_ref(),
@@ -1677,7 +1686,7 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     .unwrap();
     let mut react = state.clone();
     react.panes = None;
-    react.layout.left_nav_collapsed = true;
+    react.layout.as_mut().unwrap().left_nav_collapsed = true;
     // When
     save_workspace_state(
         reads.workspace_state.as_ref(),
@@ -1695,7 +1704,12 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     react.panes = state.panes;
     assert_eq!(
         actual,
-        StateValue::WorkspaceState(Some(react.into()), Vec::new(), None)
+        StateValue::WorkspaceState(
+            releashd::test_support::integration::platform::StreamVersion::new(2).unwrap(),
+            Some(react),
+            Vec::new(),
+            None
+        )
     );
 }
 
@@ -1969,11 +1983,11 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     let state = WorkspaceState {
         panes: Some(panes),
         version: 1,
-        tabs: WorkspaceTabsState {
+        tabs: Some(WorkspaceTabsState {
             editors: Vec::new(),
             active_editor_path: None,
-        },
-        layout: WorkspaceLayoutState {
+        }),
+        layout: Some(WorkspaceLayoutState {
             center_tab: "agent".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
@@ -1981,7 +1995,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             right_bottom_collapsed: false,
             right_bottom_active_tab: None,
             selected_diff_file: None,
-        },
+        }),
     };
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
@@ -2014,7 +2028,7 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .await
         .unwrap();
     // Then
-    let StateValue::WorkspaceState(Some(actual), failures, None) = actual else {
+    let StateValue::WorkspaceState(_, Some(actual), failures, None) = actual else {
         panic!("Missing workspace state")
     };
     let mut expected = state;
@@ -2213,4 +2227,59 @@ async fn test_builtin解決失敗_workflows購読と無関係な定義の保存�
             .any(|row| row.name.as_deref() == Some(name) && row.read_error.is_none()));
         assert!(dir.join(format!("{name}.yml")).is_file());
     }
+}
+
+#[tokio::test]
+async fn test_workspace状態購読_sessionタブ追加を設定未保存のまま配信する() {
+    use releashd::test_support::integration::{
+        platform::{save_workspace_state, WorkspaceState},
+        subscriptions::payload,
+        wire,
+    };
+    // Given
+    let fixture = Fixture::new();
+    let target = T::WorkspaceState(fixture.path.clone(), fixture.path.clone());
+    let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
+    stream.next().await.unwrap();
+    start_read(&fixture.subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    stream.next().await.unwrap();
+    stream.next().await.unwrap();
+    let mut expected = WorkspaceState::default();
+    expected.add_session_tab("session", "node");
+    // When
+    save_workspace_state(
+        fixture.reads.workspace_state.as_ref(),
+        Some(&fixture.subscriptions),
+        &fixture.path,
+        expected.clone(),
+    )
+    .await
+    .unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let (version, _) =
+        releashd::test_support::integration::repository::WorkspaceStateRepository::read(
+            fixture.reads.workspace_state.as_ref(),
+            &fixture.path,
+        )
+        .await
+        .unwrap();
+    // Then
+    assert!(
+        matches!(event, StateSubscriptionEvent::Item(id, Event::Change(_, _, value))
+        if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::WorkspaceState(version, Some(expected.clone()), vec![], None)))
+    );
+    let value = fixture.reads.read(&target).await.unwrap();
+    let Some(wire::state_payload::Value::WorkspaceState(value)) = payload(&value).unwrap().value
+    else {
+        panic!("workspace state payload")
+    };
+    let actual = value.value.unwrap();
+    assert!(actual.tabs.is_none());
+    assert!(actual.layout.is_none());
+    assert_eq!(WorkspaceState::try_from(actual).unwrap(), expected);
 }

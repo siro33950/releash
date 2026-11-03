@@ -384,6 +384,7 @@ pub fn build_workflow_runtime_usecase(
             Arc::new(WorkflowRuntimeCommandGateway::new_with_driver(app, driver)),
             archives,
             operations,
+            deps.session_tabs,
         )
         .with_state_publisher(publisher),
         startup,

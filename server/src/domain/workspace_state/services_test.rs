@@ -58,7 +58,7 @@ fn test_表示状態のファイル整理_消えた選択を直し全件消失�
     let state = WorkspaceState {
         panes: None,
         version: 1,
-        tabs: WorkspaceTabsState {
+        tabs: Some(WorkspaceTabsState {
             editors: ["gone", "live"]
                 .map(|path| WorkspaceTabEntry {
                     path: path.into(),
@@ -66,8 +66,8 @@ fn test_表示状態のファイル整理_消えた選択を直し全件消失�
                 })
                 .into(),
             active_editor_path: Some("gone".into()),
-        },
-        layout: WorkspaceLayoutState {
+        }),
+        layout: Some(WorkspaceLayoutState {
             center_tab: "editor".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
@@ -75,15 +75,45 @@ fn test_表示状態のファイル整理_消えた選択を直し全件消失�
             right_bottom_collapsed: false,
             right_bottom_active_tab: None,
             selected_diff_file: Some("gone".into()),
-        },
+        }),
     };
     // When / Then
     let filtered = filter_missing_files(state.clone(), |path| path == "live");
-    assert_eq!(filtered.tabs.editors.len(), 1);
-    assert_eq!(filtered.tabs.active_editor_path.as_deref(), Some("live"));
-    assert!(filtered.layout.selected_diff_file.is_none());
+    assert_eq!(filtered.tabs.as_ref().unwrap().editors.len(), 1);
+    assert_eq!(
+        filtered
+            .tabs
+            .as_ref()
+            .unwrap()
+            .active_editor_path
+            .as_deref(),
+        Some("live")
+    );
+    assert!(filtered
+        .layout
+        .as_ref()
+        .unwrap()
+        .selected_diff_file
+        .is_none());
     let empty = filter_missing_files(state.clone(), |_| false);
-    assert!(empty.tabs.editors.is_empty());
-    assert!(empty.tabs.active_editor_path.is_none());
+    assert!(empty.tabs.as_ref().unwrap().editors.is_empty());
+    assert!(empty.tabs.as_ref().unwrap().active_editor_path.is_none());
+    assert_eq!(filter_missing_files(state.clone(), |_| true), state);
+}
+
+#[test]
+fn test_表示状態のファイル整理_未保存設定と未選択状態を保持する() {
+    // Given
+    let state = WorkspaceState::default();
+    // When / Then
+    assert_eq!(
+        filter_missing_files(state.clone(), |_| panic!("no file reference")),
+        state
+    );
+    let mut state = state;
+    state.tabs = Some(crate::domain::workspace_state::value_objects::WorkspaceTabsState {
+        editors: vec![crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry { path: "live".into(), name: "live".into() }],
+        active_editor_path: None,
+    });
     assert_eq!(filter_missing_files(state.clone(), |_| true), state);
 }

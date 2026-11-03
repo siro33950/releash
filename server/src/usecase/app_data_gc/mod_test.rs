@@ -271,7 +271,7 @@ mod workspace_state_gc_tests {
             _: &str,
             _: crate::domain::workspace_state::WorkspaceState,
             _: StreamVersion,
-        ) -> Result<(), WorkspaceStateError> {
+        ) -> Result<StreamVersion, WorkspaceStateError> {
             unreachable!()
         }
 

@@ -2103,10 +2103,26 @@ impl TryFrom<crate::domain::workspace_state::WorkspaceState> for wire::Workspace
             read_failures: Vec::new(),
             pane_layout: value.panes.map(cv).transpose()?,
             version: Some(cv(value.version)?),
-            tabs: Some(cv(value.tabs)?),
-            layout: Some(cv(value.layout)?),
+            tabs: value.tabs.map(cv).transpose()?,
+            layout: value.layout.map(cv).transpose()?,
+            etag: None,
         })
     }
+}
+
+/// workspace state の版を、client が保存要求で返す etag にする。
+pub(crate) fn etag(version: crate::domain::local_event::StreamVersion) -> String {
+    version.value().to_string()
+}
+
+/// client が返した etag を workspace state の版に戻す。
+pub(crate) fn stream_version(
+    etag: &str,
+) -> Result<crate::domain::local_event::StreamVersion, String> {
+    etag.parse::<i64>()
+        .ok()
+        .and_then(|value| crate::domain::local_event::StreamVersion::new(value).ok())
+        .ok_or_else(|| format!("Invalid etag: {etag}"))
 }
 
 impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::WorkspaceState {
@@ -2117,9 +2133,9 @@ impl TryFrom<wire::WorkspaceStateDto> for crate::domain::workspace_state::Worksp
         }
         Ok(Self {
             panes: value.pane_layout.map(cv).transpose()?,
-            version: cv(req(value.version, "version")?)?,
-            tabs: cv(req(value.tabs, "tabs")?)?,
-            layout: cv(req(value.layout, "layout")?)?,
+            version: 1,
+            tabs: value.tabs.map(cv).transpose()?,
+            layout: value.layout.map(cv).transpose()?,
         })
     }
 }

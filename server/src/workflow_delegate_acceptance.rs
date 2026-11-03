@@ -112,6 +112,11 @@ impl WorkflowDelegateAcceptanceHost {
                     crate::adaptor::gateway::repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir),
                 ),
             )),
+            crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+                Arc::new(crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(data_dir.into(), store.clone())),
+                SqliteWorkspaceTreeRepository::new(store.clone()),
+                dependencies.state_changes.clone(),
+            ),
         ));
         let repository = Arc::new(LocalAgentSessionRepository::new(store.clone()));
         let lifecycle = Arc::new(ProviderLifecycleUsecase::new(

@@ -29,7 +29,7 @@ pub(crate) async fn append(
     stream: StreamId,
     event: LocalDomainEvent,
     head: StreamVersion,
-) -> Result<(), WorkspaceStateError> {
+) -> Result<StreamVersion, WorkspaceStateError> {
     let identity = uuid::Uuid::new_v4().to_string();
     let events = vec![UncommittedDomainEvent {
         stream_id: stream.clone(),
@@ -57,11 +57,16 @@ pub(crate) async fn append(
         events,
         state_mutations: vec![],
     };
-    store
+    let (CommitBatchResult::Committed(committed) | CommitBatchResult::Replayed(committed)) = store
         .commit_batch(batch)
         .await
-        .map(|_| ())
-        .map_err(WorkspaceStateError::from)
+        .map_err(WorkspaceStateError::from)?;
+    committed
+        .stream_heads
+        .iter()
+        .find(|committed| committed.stream_id == stream)
+        .map(|committed| committed.head)
+        .ok_or_else(|| unexpected("Committed batch is missing the stream head"))
 }
 
 pub(crate) async fn latest(

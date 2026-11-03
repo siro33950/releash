@@ -249,6 +249,14 @@ pub async fn compose(
         ),
     );
 
+    let session_tabs = usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+        workspace_state_store.clone(),
+        adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
+            local_event_store.clone(),
+        ),
+        state_subscriptions.clone(),
+    );
+
     let notion_api_gateway: Arc<dyn domain::notion::NotionApiGateway> = Arc::new(
         adaptor::gateway::notion::NotionApiGatewayImpl::new(retry_limiter.clone()),
     );
@@ -272,6 +280,7 @@ pub async fn compose(
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        session_tabs: session_tabs.clone(),
                         hook_token: hook_token_value,
                         retrying: retrying.clone(),
                         state_publisher: Some(state_subscriptions.clone()),
@@ -507,6 +516,7 @@ pub async fn compose(
                 state_changes: state_subscriptions.clone(),
             },
             adaptor::gateway::workflow::WorkflowRuntimeCommandGatewayDeps {
+                session_tabs,
                 node_processes,
                 git_usecase: git_usecase.clone(),
                 app_config: config_repository.clone(),

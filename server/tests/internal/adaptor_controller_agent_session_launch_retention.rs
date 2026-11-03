@@ -52,6 +52,17 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
             })
         }
     }));
+    let workspace_states = Arc::new(
+        releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
+            directory.path().into(),
+            store.clone(),
+        ),
+    );
+    let session_tabs = releashd::test_support::integration::workspace::SessionTabsUsecase::new(
+        workspace_states.clone(),
+        releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(store),
+        releashd::test_support::integration::subscriptions::test_subscriptions(),
+    );
     let usecase = AgentSessionLaunchUsecase::new(
 std::sync::Arc::new(releashd::test_support::integration::telemetry::TelemetryGateway),
 sessions,
@@ -72,7 +83,7 @@ provider_runtime(
 Arc::new(FixedHistory { entries: Vec::new() }),
 hook_health_usecase(),
 started_execution_trees(),
-activated, releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),);
+activated, releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(), session_tabs,);
 
     let launched = usecase
         .prepare_workflow_node(WorkflowAgentSessionLaunchRequest {
@@ -96,6 +107,11 @@ activated, releashd::test_support::integration::workspace::TestWorkspaceTreeRepo
         .activate_workflow_node(launched.session().id())
         .await
         .unwrap();
+    use releashd::test_support::integration::repository::WorkspaceStateRepository;
+    let (_, saved) = workspace_states.read("/repo").await.unwrap();
+    let mut expected = releashd::test_support::integration::platform::WorkspaceState::default();
+    expected.add_session_tab(launched.session().id(), "node-1");
+    assert_eq!(saved, Some(expected));
     armed.notified().await;
     assert_eq!(Arc::strong_count(&usecase), 1);
     assert!(
