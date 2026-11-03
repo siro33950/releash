@@ -16,6 +16,38 @@ fn pane(id: &str) -> PaneLayout {
 }
 
 #[test]
+fn test_sessionタブ削除_旧node参照を消し選択中なら隣へ移す() {
+    // Given
+    let mut legacy = tab("legacy", PaneTabKind::Session);
+    legacy.node_id = Some("node".into());
+    let mut command = tab("command", PaneTabKind::Command);
+    command.node_id = Some("node".into());
+    let kept = vec![tab("left", PaneTabKind::Terminal), command];
+    let mut layout = PaneLayout::pane(
+        "pane".into(),
+        vec![kept[0].clone(), legacy, kept[1].clone()],
+        Some("legacy".into()),
+    )
+    .unwrap();
+    // When
+    layout.remove_session_tab(None, None);
+    // Then
+    assert!(matches!(layout.view(), PaneLayoutView::Pane { tabs, .. } if tabs.len() == 3));
+    // When
+    layout.remove_session_tab(None, Some("node"));
+    // Then
+    match layout.view() {
+        PaneLayoutView::Pane {
+            tabs, active_tab, ..
+        } => {
+            assert_eq!(tabs, kept);
+            assert_eq!(active_tab, Some("command"));
+        }
+        _ => panic!("expected pane"),
+    }
+}
+
+#[test]
 fn test_pane配置_復元するタブと分割を検証する() {
     // Given
     let valid = PaneLayout::pane(

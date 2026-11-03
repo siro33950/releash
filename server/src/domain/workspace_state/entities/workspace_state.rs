@@ -32,7 +32,7 @@ impl WorkspaceState {
     /// 指定された Session のタブを削除する。
     pub fn remove_session_tab(&mut self, session_id: &str) {
         if let Some(panes) = &mut self.panes {
-            panes.remove_session_tab(session_id);
+            panes.remove_session_tab(Some(session_id), None);
         }
     }
 
@@ -48,8 +48,8 @@ impl WorkspaceState {
     /// 実行木に属する Session のタブを削除する。
     pub fn remove_execution_tabs(&mut self, tree: &crate::domain::workspace_tree::WorkspaceTree) {
         for node in tree.nodes() {
-            if let Some(session_id) = &node.session_id {
-                self.remove_session_tab(session_id);
+            if let Some(panes) = &mut self.panes {
+                panes.remove_session_tab(node.session_id.as_deref(), Some(&node.id));
             }
         }
     }
