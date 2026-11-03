@@ -78,7 +78,11 @@ import SwiftUI
   private func restoreLayoutPreservingFocus(
     _ snapshot: ExternalTreeNode, tabs: [Bonsplit.Tab]
   ) throws {
-    fatalError("Not implemented")
+    let focusedPane = controller.focusedPaneId
+    try controller.restoreLayout(snapshot, tabs: tabs)
+    if let focusedPane, controller.allPaneIds.contains(focusedPane) {
+      controller.focusPane(focusedPane)
+    }
   }
 
   struct LayoutInput: Equatable {

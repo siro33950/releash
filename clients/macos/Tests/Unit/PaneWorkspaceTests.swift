@@ -4,6 +4,36 @@ import XCTest
 @testable import Releash
 
 final class PaneWorkspaceTests: XCTestCase {
+  @MainActor func testRestorationPreservesFocusOnSecondPane() throws {
+    let workspace = PaneWorkspace()
+    try workspace.restore(.empty())
+    let first = try XCTUnwrap(workspace.controller.allPaneIds.first)
+    let second = try XCTUnwrap(workspace.controller.splitPane(first, orientation: .vertical))
+    workspace.controller.focusPane(second)
+    let layout = try workspace.layout()
+    XCTAssertEqual(workspace.controller.focusedPaneId, second)
+
+    try workspace.restore(layout)
+
+    XCTAssertEqual(workspace.controller.focusedPaneId, second)
+    XCTAssertEqual(try workspace.layout(), layout)
+  }
+
+  @MainActor func testRestorationFocusesFirstPaneWhenFocusedPaneIsRemoved() throws {
+    let workspace = PaneWorkspace()
+    let layout = PaneLayout.pane(id: UUID().uuidString, tabs: [], active: nil)
+    try workspace.restore(layout)
+    let first = try XCTUnwrap(workspace.controller.allPaneIds.first)
+    let second = try XCTUnwrap(workspace.controller.splitPane(first, orientation: .vertical))
+    workspace.controller.focusPane(second)
+    XCTAssertEqual(workspace.controller.focusedPaneId, second)
+
+    try workspace.restore(layout)
+
+    XCTAssertEqual(workspace.controller.allPaneIds, [first])
+    XCTAssertEqual(workspace.controller.focusedPaneId, first)
+  }
+
   @MainActor func testRestoresNestedLayoutWithAllKindsAndOriginalIdentifiers() throws {
     let tabs = PaneTab.Kind.allCases.map { PaneTab(id: $0.rawValue, kind: $0) }
     let layout = PaneLayout.split(
