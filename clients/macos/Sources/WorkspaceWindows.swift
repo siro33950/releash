@@ -25,7 +25,7 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
     window.minSize = NSSize(
       width: UIStyle.windowMinimumWidth + UIStyle.windowPadding * 2,
       height: UIStyle.windowMinimumHeight + UIStyle.windowPadding * 2)
-    let content = NSHostingView(rootView: RootView(model: model))
+    let content = NSHostingView(rootView: RootView(model: model, state: window.state))
     content.safeAreaRegions = []
     window.contentView = content
     window.delegate = self
@@ -38,6 +38,12 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
     windows.append(window)
     window.makeKeyAndOrderFront(nil)
     NSApp.activate()
+  }
+
+  func createBranch() {
+    guard let window = NSApp.keyWindow as? WorkspaceWindow, let path = model.selectedWorktree
+    else { return }
+    window.state.branchDestination = BranchDestination(id: path)
   }
 
   func applicationShouldHandleReopen(
@@ -55,6 +61,15 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
 }
 
 final class WorkspaceWindow: NSWindow {
+  let state = WorkspaceWindowState()
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
+}
+
+@MainActor @Observable final class WorkspaceWindowState {
+  var branchDestination: BranchDestination?
+}
+
+struct BranchDestination: Identifiable {
+  let id: String
 }
