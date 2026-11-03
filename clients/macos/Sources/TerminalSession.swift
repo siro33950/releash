@@ -13,6 +13,7 @@ import SwiftTerm
   var hasForegroundProcess: Bool?
   var exited = false
   var failure: String?
+  var dropFailure: String?
   @ObservationIgnored private weak var model: AppModel?
   @ObservationIgnored private var subscriber: UUID?
   @ObservationIgnored private var attachment: String?
@@ -47,6 +48,7 @@ import SwiftTerm
     screen.setAccessibilityIdentifier("terminal:\(id)")
     screen.clearAction = { [weak self] in self?.clear() }
     screen.dropPaths = { [weak self] in self?.writePaths($0) ?? false }
+    screen.canDropPaths = { [weak self] in self?.canWritePaths ?? false }
     subscriber = model.subscribe(target, [path, id]) { [weak self] payload in
       guard case .terminal(let event) = payload.value else { return }
       self?.receive(event)
@@ -174,20 +176,30 @@ import SwiftTerm
     }
   }
 
+  var canWritePaths: Bool { attachment != nil && !exited }
+
   func writePaths(_ paths: [String]) -> Bool {
     guard let attachment, !exited, !paths.isEmpty else { return false }
     var request = Releash_Client_V1_WritePathsToTerminalSurfaceRequest()
     request.owner = owner
     request.paths.items = paths
-    enqueue(attachment) { client, headers in
-      _ = try await client.writePathsToTerminalSurface(request: request, headers: headers).result
-        .get()
-    }
+    enqueue(
+      attachment,
+      onDiscard: { [weak self] in
+        guard let self else { return }
+        let message = "接続が変わったため、ドロップしたパスを入力できませんでした: \(paths.joined(separator: ", "))"
+        dropFailure = [dropFailure, message].compactMap { $0 }.joined(separator: "\n")
+      },
+      operation: { client, headers in
+        _ = try await client.writePathsToTerminalSurface(request: request, headers: headers).result
+          .get()
+      })
     return true
   }
 
   private func enqueue(
     _ attachment: String,
+    onDiscard: (() -> Void)? = nil,
     operation:
       @escaping @MainActor (any Releash_Client_V1_ClientServiceClientInterface, Connect.Headers)
       async throws -> Void
@@ -195,9 +207,13 @@ import SwiftTerm
     let prior = tail
     tail = Task { [weak self] in
       await prior?.value
-      guard let self, !Task.isCancelled, self.attachment == attachment,
+      guard let self, !Task.isCancelled else { return }
+      guard self.attachment == attachment,
         let model, let client = model.client
-      else { return }
+      else {
+        onDiscard?()
+        return
+      }
       do { try await operation(client, model.headers) } catch {
         guard self.attachment == attachment else { return }
         failure = model.failureMessage(error)
@@ -245,6 +261,7 @@ final class TerminalScreen: TerminalView {
   private var focused = false
   var clearAction: (() -> Void)?
   var dropPaths: (([String]) -> Bool)?
+  var canDropPaths: (() -> Bool)?
 
   override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
     acceptedFilePaths(sender) != nil ? .copy : []
@@ -260,7 +277,9 @@ final class TerminalScreen: TerminalView {
   }
 
   private func acceptedFilePaths(_ sender: any NSDraggingInfo) -> [String]? {
-    guard dropPaths != nil, sender.draggingSourceOperationMask.contains(.copy) else { return nil }
+    guard dropPaths != nil, canDropPaths?() == true,
+      sender.draggingSourceOperationMask.contains(.copy)
+    else { return nil }
     let urls =
       sender.draggingPasteboard.readObjects(
         forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []

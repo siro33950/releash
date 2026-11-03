@@ -16,11 +16,16 @@ GIVEN worktree を選択していて、その作業ツリーに変更がある
 WHEN 開発者が Git の Stage All を選ぶ
 THEN その worktree の変更がすべて index に入っている
 
+リンク先が存在しない symlink も対象に含む。
+サーバは同じ worktree のステージ・アンステージ処理による index 更新を排他で実行する。
+
 ## B-004: Unstage All
 
 GIVEN worktree を選択していて、その index に変更が入っている
 WHEN 開発者が Git の Unstage All を選ぶ
 THEN その worktree の index から変更がすべて外れている
+
+通常ファイルから symlink への型変更も対象に含む。
 
 ## B-005: Create Branch…
 
@@ -28,11 +33,19 @@ GIVEN worktree を選択している
 WHEN 開発者が Git の Create Branch… を選び、branch 名を入力して確定する
 THEN その worktree にその名前の branch が作られ、worktree がその branch に切り替わっている
 
+作成先はシートを開いた時点の worktree とする。
+別ウィンドウで選択を変えても作成先は変わらない。
+接続状態が変わってもシートと入力を保持し、未接続中は作成を無効にする。
+
 ## B-006: terminal へのドロップ
 
 GIVEN terminal が入力を待っている
 WHEN 開発者が Finder からファイルをその terminal の上に落とす
 THEN その terminal の入力にファイルの path が現れる
+
+attachment が未確立の terminal と終了済みの terminal は、ドラッグ中からドロップを拒否する。
+受理後、送信前に attachment が変わった場合は、送信できなかったパスを表示する。
+この通知は再接続後も保持し、利用者が閉じる。
 
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |

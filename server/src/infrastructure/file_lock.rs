@@ -42,3 +42,25 @@ pub async fn exclusive_async(file: &File) -> Result<(), LockError> {
     }
     Ok(())
 }
+
+fn open(path: &std::path::Path) -> Result<File, LockError> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(LockError::Io)
+}
+
+pub fn acquire(path: &std::path::Path) -> Result<File, LockError> {
+    let file = open(path)?;
+    exclusive(&file)?;
+    Ok(file)
+}
+
+pub async fn acquire_async(path: &std::path::Path) -> Result<File, LockError> {
+    let file = open(path)?;
+    exclusive_async(&file).await?;
+    Ok(file)
+}

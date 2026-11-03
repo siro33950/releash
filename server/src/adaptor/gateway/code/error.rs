@@ -6,6 +6,15 @@
 
 use crate::domain::code::CodeError;
 
+impl From<crate::infrastructure::file_lock::LockError> for CodeError {
+    fn from(error: crate::infrastructure::file_lock::LockError) -> Self {
+        match error {
+            crate::infrastructure::file_lock::LockError::Io(error) => error.into(),
+            crate::infrastructure::file_lock::LockError::Stopped(error) => error.into(),
+        }
+    }
+}
+
 impl From<git2::Error> for CodeError {
     fn from(e: git2::Error) -> Self {
         CodeError::External(e.to_string())

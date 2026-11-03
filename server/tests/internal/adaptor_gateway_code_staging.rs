@@ -9,6 +9,59 @@ use std::time::Instant;
 
 use releashd::test_support::integration::code::set_git_program;
 
+#[tokio::test]
+async fn test_index更新_排他待機中は期限で停止し解除後に更新できる() {
+    use std::sync::Arc;
+    // Given
+    let (dir, repo) = crate::test_support_git::create_test_repo();
+    crate::test_support_git::create_initial_commit(&repo);
+    std::fs::write(dir.path().join("new.txt"), "new").unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(repo.path().join("releash-index.lock"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    for stage in [true, false] {
+        let context = OperationContext::new(
+            Some(Deadline::new(Instant::now() + Duration::from_millis(30))),
+            Arc::new(tokio_util::sync::CancellationToken::new()),
+        );
+        // When
+        let result = releashd::test_support::integration::platform::scope(context, async {
+            if stage {
+                StagingGateway.stage(dir.path().to_str().unwrap(), vec![])
+            } else {
+                StagingGateway.unstage(dir.path().to_str().unwrap(), vec![])
+            }
+        })
+        .await;
+        // Then
+        assert!(
+            matches!(result, Err(CodeError::Technical(error)) if error == OperationStopped::Expired.into())
+        );
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(std::path::Path::new("new.txt"), 0)
+            .is_none());
+    }
+    drop(lock);
+    StagingGateway
+        .stage(dir.path().to_str().unwrap(), vec![])
+        .unwrap();
+    StagingGateway
+        .unstage(dir.path().to_str().unwrap(), vec![])
+        .unwrap();
+    assert!(repo
+        .index()
+        .unwrap()
+        .get_path(std::path::Path::new("new.txt"), 0)
+        .is_none());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 pub async fn test_hunk変更_実行中のprocessを期限と取消で回収し停止分類を返す() {
@@ -118,6 +171,45 @@ pub(crate) mod staging_gateway_tests {
         let entry = index.get_path(Path::new(path), 0).unwrap();
         let blob = repo.find_blob(entry.id).unwrap();
         std::str::from_utf8(blob.content()).unwrap().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_全ステージ_リンク先のないsymlinkを登録する() {
+        // Given
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        std::os::unix::fs::symlink("missing", dir.path().join("link")).unwrap();
+        // When
+        git_stage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        // Then
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        let entry = index.get_path(Path::new("link"), 0).unwrap();
+        assert_eq!(entry.mode, 0o120000);
+        assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"missing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_全アンステージ_通常変更と型変更を両方解除する() {
+        // Given
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "link", "original", "file");
+        fs::remove_file(dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("missing", dir.path().join("link")).unwrap();
+        fs::write(dir.path().join("new.txt"), "new").unwrap();
+        git_stage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        // When
+        git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
+        // Then
+        assert_eq!(index_file_content(&repo, "link"), "original");
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert_eq!(index.get_path(Path::new("link"), 0).unwrap().mode, 0o100644);
+        assert!(index.get_path(Path::new("new.txt"), 0).is_none());
+        git_unstage(dir.path().to_str().unwrap(), vec![]).unwrap();
     }
 
     fn diff_hunks_and_groups(original: &str, modified: &str) -> (Vec<Hunk>, Vec<ChangeGroup>) {

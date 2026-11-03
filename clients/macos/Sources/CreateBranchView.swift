@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CreateBranchView: View {
   let model: AppModel
+  let path: String
   @State private var name = ""
   @State private var failure: String?
   @State private var submitting = false
@@ -23,7 +24,7 @@ struct CreateBranchView: View {
           Task {
             defer { submitting = false }
             do {
-              try await model.createBranch(name)
+              try await model.createBranch(name, path: path)
               dismiss()
             } catch {
               failure = model.failureMessage(error)
@@ -31,7 +32,7 @@ struct CreateBranchView: View {
           }
         }
         .keyboardShortcut(.defaultAction)
-        .disabled(submitting || name.isEmpty || model.selectedWorktree == nil || !model.connected)
+        .disabled(submitting || name.isEmpty || !model.connected)
       }
     }
     .padding(UIStyle.padding)

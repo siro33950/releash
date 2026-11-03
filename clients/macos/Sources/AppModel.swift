@@ -659,10 +659,7 @@ import SwiftProtobuf
       _ = try await client.gitUnstage(request: request, headers: self.headers).result.get()
     }
   }
-  func createBranch(_ name: String) async throws {
-    guard let path = selectedWorktree else {
-      throw CLIFailure(message: "Worktreeを選択してください")
-    }
+  func createBranch(_ name: String, path: String) async throws {
     guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
     var request = Releash_Client_V1_GitCreateBranchRequest()
     request.repoPath = path

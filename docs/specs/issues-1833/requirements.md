@@ -55,6 +55,7 @@ Swift.app に `WritePathsToTerminalSurface` の呼び出し元は無い。
 - Swift.app のアプリメニュー。Tauri 版の項目のうち、New Terminal、Back to Kanban、View の Theme と Font Size を除いたもの。
 - Finder からドロップしたファイルの path を、ドロップ先の terminal へ書き込むこと。
 - メニュー項目から操作を実行できることを確かめる回帰の E2E（XCUITest）。
+- サーバの Stage All / Unstage All における symlink・型変更の扱いと、index 更新の排他。
 
 変更しない対象:
 
@@ -62,7 +63,7 @@ Swift.app に `WritePathsToTerminalSurface` の呼び出し元は無い。
 - View の Theme（Dark / Light）と Font Size の増、減、リセット。
 - Quit と About の振る舞い（#1764）。
 - provider の hook の警告（#1944）。
-- サーバと proto。既存の RPC で足りる。
+- proto。既存の RPC で足りる。
 - React と Tauri シェル。
 
 # Requirements

@@ -23,6 +23,8 @@ final class TerminalSessionTests: XCTestCase {
       let session = model.terminal(path: "/repo", id: agent ? "agent" : "shell", agent: agent)
       window.contentView?.addSubview(session.screen)
       XCTAssertTrue(session.screen.registeredDraggedTypes.contains(.fileURL))
+      XCTAssertEqual(session.screen.draggingEntered(drag), [])
+      XCTAssertFalse(session.screen.performDragOperation(drag))
       try await eventually { session.hasForegroundProcess != nil }
       XCTAssertEqual(session.screen.draggingEntered(drag), .copy)
       XCTAssertTrue(session.screen.prepareForDragOperation(drag))
@@ -34,6 +36,12 @@ final class TerminalSessionTests: XCTestCase {
         serializedBytes: XCTUnwrap(http.requests("WritePathsToTerminalSurface").last?.message))
       XCTAssertEqual(request.owner, session.owner)
       XCTAssertEqual(request.paths.items, urls.map(\.path))
+      var exit = Releash_Client_V1_TerminalEvent()
+      exit.exit = .init()
+      session.receive(exit)
+      XCTAssertEqual(session.screen.draggingEntered(drag), [])
+      XCTAssertFalse(session.screen.prepareForDragOperation(drag))
+      XCTAssertFalse(session.screen.performDragOperation(drag))
       session.screen.removeFromSuperview()
       session.stop()
     }
@@ -43,6 +51,7 @@ final class TerminalSessionTests: XCTestCase {
 
   @MainActor func testFileDropRejectsTextRemoteURLsAndUnsupportedOperations() {
     let screen = TerminalScreen(frame: .zero)
+    screen.canDropPaths = { true }
     let drag = TerminalFileDrag()
     defer { drag.draggingPasteboard.releaseGlobally() }
     var dropped: [[String]] = []

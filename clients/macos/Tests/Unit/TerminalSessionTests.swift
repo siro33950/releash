@@ -41,10 +41,12 @@ final class TerminalSessionTests: XCTestCase {
       XCTAssertFalse(session.writePaths([]))
       XCTAssertTrue(session.writePaths(["/tmp/stale"]))
       session.disconnect()
+      try await eventually { session.dropFailure?.contains("/tmp/stale") == true }
       XCTAssertFalse(session.writePaths(paths))
       var event = Releash_Client_V1_TerminalEvent()
       event.snapshot.isExited = true
       session.receive(event)
+      XCTAssertTrue(session.dropFailure?.contains("/tmp/stale") == true)
       XCTAssertFalse(session.writePaths(paths))
       session.stop()
     }

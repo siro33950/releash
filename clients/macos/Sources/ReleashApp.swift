@@ -52,7 +52,7 @@ extension FocusedValues {
 struct RootView: View {
   @Bindable var model: AppModel
   @State private var creating = false
-  @State private var creatingBranch = false
+  @State private var branchDestination: BranchDestination?
   @State private var sidebarWidth = UIStyle.sidebarWidth
   @State private var rightPanelWidth = UIStyle.centerInitialWidth
   @State private var rightPanelExpanded = true
@@ -163,14 +163,18 @@ struct RootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $creating) { CreateWorktreeView(model: model) }
-        .sheet(isPresented: $creatingBranch) { CreateBranchView(model: model) }
       }
     }
     .frame(
       minWidth: UIStyle.windowMinimumWidth, maxWidth: .infinity,
       minHeight: UIStyle.windowMinimumHeight, maxHeight: .infinity
     )
-    .focusedSceneValue(\.createBranch) { creatingBranch = true }
+    .sheet(item: $branchDestination) { destination in
+      CreateBranchView(model: model, path: destination.id)
+    }
+    .focusedSceneValue(\.createBranch) {
+      if let path = model.selectedWorktree { branchDestination = BranchDestination(id: path) }
+    }
     .overlay(alignment: .topLeading) {
       HStack(spacing: UIStyle.spacing) {
         WindowControls().frame(width: UIStyle.windowControlsWidth)
@@ -198,6 +202,10 @@ struct RootView: View {
       Text(model.failure ?? "")
     }
   }
+}
+
+private struct BranchDestination: Identifiable {
+  let id: String
 }
 
 private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable {

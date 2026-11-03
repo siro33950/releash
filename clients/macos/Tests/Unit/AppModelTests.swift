@@ -26,7 +26,7 @@ final class AppModelTests: XCTestCase {
     // When
     model.stageAll()
     model.unstageAll()
-    try await model.createBranch("feature/menu")
+    try await model.createBranch("feature/menu", path: "/repo/linked")
     model.selectedWorktree = "/repo/other"
     // Then
     try await eventually {
@@ -57,12 +57,6 @@ final class AppModelTests: XCTestCase {
     // When
     model.stageAll()
     model.unstageAll()
-    do {
-      try await model.createBranch("feature/menu")
-      XCTFail("Missing worktree must fail")
-    } catch {
-      XCTAssertEqual(error.localizedDescription, "Worktreeを選択してください")
-    }
     await model.stop()
     // Given
     let disconnected = AppModel(httpClient: http)
@@ -71,7 +65,7 @@ final class AppModelTests: XCTestCase {
     disconnected.stageAll()
     disconnected.unstageAll()
     do {
-      try await disconnected.createBranch("feature/menu")
+      try await disconnected.createBranch("feature/menu", path: "/repo/linked")
       XCTFail("Missing client must fail")
     } catch {
       XCTAssertEqual(error.localizedDescription, "サーバに接続されていません")
@@ -103,7 +97,7 @@ final class AppModelTests: XCTestCase {
     }
     http.state.withLock { $0.failedMethod = "GitCreateBranch" }
     do {
-      try await model.createBranch("invalid branch")
+      try await model.createBranch("invalid branch", path: "/repo/linked")
       XCTFail("RPC failure must be thrown")
     } catch {
       XCTAssertEqual((error as? ConnectError)?.message, "GitCreateBranch failed")
