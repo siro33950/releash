@@ -81,7 +81,7 @@ export function useWorkspacePersistence({
 		const cached = selectedRootPath
 			? workspaceCache.getState(selectedRootPath)
 			: undefined;
-		setCenterTab(cached?.layout.centerTab ?? "agent");
+		setCenterTab(cached?.layout?.centerTab ?? "agent");
 
 		// 切替先のキャッシュ有無でstateReadyを更新
 		const hasCache = selectedRootPath
@@ -95,14 +95,14 @@ export function useWorkspacePersistence({
 		if (!selectedRootPath) return;
 		const cache = workspaceCacheRef.current;
 		const cached = cache.getState(selectedRootPath);
-		if (cached) {
+		if (cached?.layout) {
 			requestAnimationFrame(() => {
-				if (cached.layout.leftNavCollapsed) {
+				if (cached.layout?.leftNavCollapsed) {
 					leftNavRef.current?.collapse();
 				} else {
 					leftNavRef.current?.expand();
 				}
-				if (cached.layout.rightCollapsed) {
+				if (cached.layout?.rightCollapsed) {
 					rightPanelRef.current?.collapse();
 				} else {
 					rightPanelRef.current?.expand();

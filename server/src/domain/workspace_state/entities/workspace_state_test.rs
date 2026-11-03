@@ -285,7 +285,8 @@ fn test_sessionタブ削除_全paneから消し選択中なら隣へ移す() {
 #[test]
 fn test_配置初期化_未保存だけ空paneを作り設定を保持する() {
     // Given
-    let mut state = WorkspaceState::default();
+    let mut state = WorkspaceState::new();
+    assert_eq!(state, WorkspaceState::default());
     assert_eq!(pane_tabs(state.panes.as_ref().unwrap()), (&[][..], None));
     assert!(state.tabs.is_none());
     assert!(state.layout.is_none());

@@ -478,8 +478,8 @@ export type WorkspaceStateDto = {
 	readFailures?: Array<WorkspaceStateReadFailure>;
 	paneLayout?: PaneLayout;
 	version: 1;
-	tabs: WorkspaceTabsStateDto;
-	layout: WorkspaceLayoutStateDto;
+	tabs?: WorkspaceTabsStateDto;
+	layout?: WorkspaceLayoutStateDto;
 };
 
 export type WorkspaceStateReadFailure = {
@@ -1757,8 +1757,8 @@ export type InputWorkspaceStateDto = {
 	readFailures?: Array<InputWorkspaceStateReadFailure>;
 	paneLayout?: InputPaneLayout;
 	version: 1;
-	tabs: InputWorkspaceTabsStateDto;
-	layout: InputWorkspaceLayoutStateDto;
+	tabs?: InputWorkspaceTabsStateDto;
+	layout?: InputWorkspaceLayoutStateDto;
 };
 
 export type InputWorkspaceStateReadFailure = {

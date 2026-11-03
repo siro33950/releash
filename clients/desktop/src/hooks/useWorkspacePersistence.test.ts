@@ -201,11 +201,11 @@ describe("useWorkspacePersistence", () => {
 		// タブ一覧・アクティブタブの復元検証
 		const initialState = result.current.getInitialState("/repoB");
 		expect(initialState).toBeDefined();
-		expect(initialState?.tabs.editors).toEqual([
+		expect(initialState?.tabs?.editors).toEqual([
 			{ path: "/repoA/src/main.rs", name: "main.rs" },
 			{ path: "/repoA/src/lib.rs", name: "lib.rs" },
 		]);
-		expect(initialState?.tabs.activeEditorPath).toBe("/repoA/src/main.rs");
+		expect(initialState?.tabs?.activeEditorPath).toBe("/repoA/src/main.rs");
 
 		// 旧Worktreeのエントリがクリーンアップされていること
 		expect(result.current.internalStateMapRef.current.has("/repoA")).toBe(
@@ -250,7 +250,7 @@ describe("useWorkspacePersistence", () => {
 		rerender({ selectedRootPath: "/repoB" });
 
 		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
-		expect(savedState.tabs.editors).toEqual(orderedTabs);
+		expect(savedState.tabs?.editors).toEqual(orderedTabs);
 	});
 
 	it("シナリオ4: パネルの表示状態が保持される", () => {
@@ -292,8 +292,8 @@ describe("useWorkspacePersistence", () => {
 		});
 
 		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
-		expect(savedState.layout.leftNavCollapsed).toBe(true);
-		expect(savedState.layout.rightCollapsed).toBe(true);
+		expect(savedState.layout?.leftNavCollapsed).toBe(true);
+		expect(savedState.layout?.rightCollapsed).toBe(true);
 
 		// Restore with collapsed panels
 		const collapsedState = makeState({
@@ -353,6 +353,35 @@ describe("useWorkspacePersistence", () => {
 		// パネルがexpandされる（デフォルトリセット）
 		expect(leftNavRef.current.expand).toHaveBeenCalled();
 		expect(rightPanelRef.current.expand).toHaveBeenCalled();
+	});
+
+	it("tabsとlayoutが未保存のWorktreeでは既定のタブとパネル状態を使う", () => {
+		mockGetState.mockReturnValue({ version: 1 });
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+		const { result, rerender } = renderHook(
+			({ selectedRootPath }) =>
+				useWorkspacePersistence({
+					selectedRootPath,
+					centerTab: "editor",
+					leftNavVisible: false,
+					rightVisible: false,
+					setCenterTab,
+					leftNavRef,
+					rightPanelRef,
+				}),
+			{ initialProps: { selectedRootPath: "/repoA" } },
+		);
+		rerender({ selectedRootPath: "/repoB" });
+		flushRAF();
+		expect(setCenterTab).toHaveBeenCalledWith("agent");
+		expect(leftNavRef.current.expand).toHaveBeenCalled();
+		expect(rightPanelRef.current.expand).toHaveBeenCalled();
+		expect(leftNavRef.current.collapse).not.toHaveBeenCalled();
+		expect(rightPanelRef.current.collapse).not.toHaveBeenCalled();
+		expect(result.current.stateReady).toBe(true);
+		expect(result.current.getInitialState("/repoB")).toEqual({ version: 1 });
 	});
 
 	it("シナリオ8: A→B→A の往復で状態が正しく復元される", () => {
@@ -504,7 +533,7 @@ describe("useWorkspacePersistence", () => {
 
 		// A's state should be saved with selectedDiffFile
 		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
-		expect(savedState.layout.selectedDiffFile).toBe("src/main.rs");
+		expect(savedState.layout?.selectedDiffFile).toBe("src/main.rs");
 
 		// B → A
 		setCenterTab.mockClear();
@@ -518,7 +547,7 @@ describe("useWorkspacePersistence", () => {
 
 		// A's cached state should have selectedDiffFile restored
 		const initialState = result.current.getInitialState("/repoA");
-		expect(initialState?.layout.selectedDiffFile).toBe("src/main.rs");
+		expect(initialState?.layout?.selectedDiffFile).toBe("src/main.rs");
 	});
 
 	it("pre-load: 初回マウント時にloadStateが呼ばれる", () => {

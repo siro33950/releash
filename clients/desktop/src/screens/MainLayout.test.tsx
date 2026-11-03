@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import type { WorkspaceState } from "@/types/workspace-state";
 
 Element.prototype.scrollIntoView = vi.fn();
 
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 	baseError: null as string | null,
 	baseBranch: "main" as string | null,
 	localBranches: ["main", "feature"],
+	initialWorkspaceState: undefined as WorkspaceState | undefined,
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -62,7 +64,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("@/hooks/useWorkspacePersistence", () => ({
 	useWorkspacePersistence: () => ({
 		internalStateMapRef: { current: new Map() },
-		getInitialState: () => undefined,
+		getInitialState: () => mocks.initialWorkspaceState,
 		stateReady: true,
 	}),
 }));
@@ -192,6 +194,16 @@ function renderMainLayout(
 describe("MainLayout node-centered workspace", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+	});
+
+	it("tabsとlayoutが未保存でもworktreeの画面を表示する", () => {
+		mocks.initialWorkspaceState = { version: 1 };
+		try {
+			renderMainLayout();
+			expect(screen.getByTestId("node-content-view-mock")).toBeInTheDocument();
+		} finally {
+			mocks.initialWorkspaceState = undefined;
+		}
 	});
 
 	it("worktreeの設定画面にも親の読み込み状態と失敗を渡す", () => {

@@ -55,7 +55,7 @@ pub async fn load_workspace_state(
         },
         |_| async {
             let (version, state) = repository.read(worktree_name).await?;
-            let mut state = state.unwrap_or_default().initialize_panes();
+            let mut state = state.unwrap_or_else(WorkspaceState::new).initialize_panes();
             let mut failures = Vec::new();
             let mut migration_failure = None;
             if let Some(layout) = state.panes.as_mut() {
