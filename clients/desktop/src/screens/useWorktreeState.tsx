@@ -37,21 +37,21 @@ export function useWorktreeState({
 	internalStateMapRef,
 }: UseWorktreeStateParams) {
 	const [rightBottomCollapsed, setRightBottomCollapsed] = useState(
-		initialWorkspaceState?.layout.rightBottomCollapsed ?? false,
+		initialWorkspaceState?.layout?.rightBottomCollapsed ?? false,
 	);
 
 	const [reviewCollapsed, setReviewCollapsed] = useState(
-		initialWorkspaceState?.layout.reviewCollapsed ?? false,
+		initialWorkspaceState?.layout?.reviewCollapsed ?? false,
 	);
 
 	const [diffOnlyMode, setDiffOnlyMode] = useState(
-		initialWorkspaceState?.layout.diffOnlyMode ??
+		initialWorkspaceState?.layout?.diffOnlyMode ??
 			settings.defaultDiffOnlyMode ??
 			false,
 	);
 
 	const [selectedDiffFile, setSelectedDiffFile] = useState<string | null>(
-		initialWorkspaceState?.layout.selectedDiffFile ?? null,
+		initialWorkspaceState?.layout?.selectedDiffFile ?? null,
 	);
 
 	const { branch } = useCurrentBranch(rootPath);

@@ -128,8 +128,11 @@ describe("useWorkspaceStateCache", () => {
 		const state1 = makeState();
 		const state2 = makeState({
 			layout: {
-				...makeState().layout,
 				centerTab: "agent",
+				activeView: "git",
+				leftNavCollapsed: false,
+				rightCollapsed: false,
+				rightBottomCollapsed: false,
 			},
 		});
 
@@ -286,6 +289,32 @@ describe("useWorkspaceStateCache", () => {
 		);
 		expect(result.current.getState("/repo")).toEqual(next);
 		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+
+	it("tabsとlayoutがない購読値を保持し、画面が更新した値をそのまま保存する", async () => {
+		const { result } = renderHook(() => useWorkspaceStateCache());
+		const received = vi.fn();
+		const failed = vi.fn();
+		act(() => {
+			result.current.loadState("/repo", received, failed);
+			states.publish(
+				{ kind: "workspace-state", args: ["/repo", "/repo"] },
+				{ version: 1 },
+			);
+		});
+		expect(received).toHaveBeenLastCalledWith({ version: 1 });
+		expect(result.current.getState("/repo")).toEqual({ version: 1 });
+		expect(failed).not.toHaveBeenCalled();
+		expect(mockInvoke).not.toHaveBeenCalled();
+		const state = makeState();
+		await act(async () => {
+			result.current.updateState("/repo", state);
+			result.current.flushState("/repo");
+		});
+		expect(mockInvoke).toHaveBeenCalledWith("save_workspace_state", {
+			worktreeName: "/repo",
+			state,
+		});
 	});
 
 	it("loadState returns undefined when backend returns null", async () => {
