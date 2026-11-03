@@ -247,28 +247,24 @@ final class TerminalScreen: TerminalView {
   var dropPaths: (([String]) -> Bool)?
 
   override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-    guard dropPaths != nil, sender.draggingSourceOperationMask.contains(.copy),
-      !filePaths(sender.draggingPasteboard).isEmpty
-    else { return [] }
-    return .copy
+    acceptedFilePaths(sender) != nil ? .copy : []
   }
 
   override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    draggingEntered(sender) == .copy
+    acceptedFilePaths(sender) != nil
   }
 
   override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-    guard sender.draggingSourceOperationMask.contains(.copy) else { return false }
-    let paths = filePaths(sender.draggingPasteboard)
-    guard !paths.isEmpty else { return false }
+    guard let paths = acceptedFilePaths(sender) else { return false }
     return dropPaths?(paths) ?? false
   }
 
-  private func filePaths(_ pasteboard: NSPasteboard) -> [String] {
+  private func acceptedFilePaths(_ sender: any NSDraggingInfo) -> [String]? {
+    guard dropPaths != nil, sender.draggingSourceOperationMask.contains(.copy) else { return nil }
     let urls =
-      pasteboard.readObjects(
+      sender.draggingPasteboard.readObjects(
         forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-    return urls.map(\.path)
+    return urls.isEmpty ? nil : urls.map(\.path)
   }
   override func menu(for event: NSEvent) -> NSMenu? {
     let menu = NSMenu()
