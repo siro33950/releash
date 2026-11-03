@@ -1146,7 +1146,9 @@ pub mod workspace {
     pub use crate::adaptor::gateway::workspace_tree::query_service::StandaloneReferences;
     pub use crate::domain::workspace_tree::entities::standalone_reference;
     pub use crate::usecase::workspace_state::session_tabs::SessionTabsUsecase;
-    pub use crate::usecase::workspace_state::test_support::test_session_tabs;
+    pub use crate::usecase::workspace_state::test_support::{
+        test_session_tabs, MemoryWorkspaceStateRepository,
+    };
 
     pub async fn session_detail(
         repository: &dyn crate::domain::workspace_tree::WorkspaceTreeRepository,

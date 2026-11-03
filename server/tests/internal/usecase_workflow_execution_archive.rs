@@ -465,3 +465,87 @@ pub async fn test_実行木archiveとrestore_workspace識別子と異なるworkt
     );
     assert!(changes.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn test_実行木archiveとrestore_sessionタブを増減して選択を保つ() {
+    use releashd::test_support::integration::platform::{
+        PaneLayout, PaneTab, PaneTabKind, StreamVersion, WorkspaceState,
+    };
+    use releashd::test_support::integration::repository::WorkspaceStateRepository;
+    use releashd::test_support::integration::workspace::{
+        WorkspaceIdentity, WorkspaceTreeRepository,
+    };
+    // Given
+    let fixture = archive_fixture();
+    let execution_id = archive_workflow(&fixture).await;
+    let target = fixture.repository.target(&execution_id).await.unwrap();
+    let tree = fixture
+        .trees
+        .load_execution_tree(
+            &WorkspaceIdentity::new(&target.workspace_identity),
+            &execution_id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(tree.nodes().iter().any(|node| node.session_id.is_some()));
+    let selected = PaneTab {
+        id: "selected".into(),
+        kind: PaneTabKind::Terminal,
+        node_id: None,
+        agent_session_id: None,
+        file_path: None,
+        file_mode: None,
+        file_base: None,
+    };
+    let mut state = WorkspaceState {
+        panes: Some(
+            PaneLayout::pane(
+                "pane".into(),
+                vec![selected.clone()],
+                Some(selected.id.clone()),
+            )
+            .unwrap(),
+        ),
+        ..WorkspaceState::default()
+    };
+    state.add_execution_tabs(&tree);
+    fixture
+        .workspace_states
+        .save(
+            &target.workspace_identity,
+            state.clone(),
+            StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+    // When
+    fixture
+        .runtime
+        .archive_execution_tree(&execution_id, "manual")
+        .await
+        .unwrap();
+    // Then
+    let (_, archived) = fixture
+        .workspace_states
+        .read(&target.workspace_identity)
+        .await
+        .unwrap();
+    let mut expected = state.clone();
+    expected.panes =
+        Some(PaneLayout::pane("pane".into(), vec![selected], Some("selected".into())).unwrap());
+    assert_eq!(archived, Some(expected));
+    // When
+    fixture
+        .runtime
+        .restore_execution_tree(&execution_id)
+        .await
+        .unwrap();
+    // Then
+    let (_, restored) = fixture
+        .workspace_states
+        .read(&target.workspace_identity)
+        .await
+        .unwrap();
+    assert_eq!(restored, Some(state));
+}

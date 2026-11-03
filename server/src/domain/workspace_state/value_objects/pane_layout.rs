@@ -59,7 +59,11 @@ pub enum PaneLayoutView<'a> {
 }
 
 impl PaneLayout {
-    pub(crate) fn add_session_tab(&mut self, session_id: &str, node_id: &str) {
+    pub(in crate::domain::workspace_state) fn add_session_tab(
+        &mut self,
+        session_id: &str,
+        node_id: &str,
+    ) {
         if self.contains_session(session_id) || self.bind_pending_session(session_id, node_id) {
             return;
         }
@@ -128,7 +132,7 @@ impl PaneLayout {
         }
     }
 
-    pub(crate) fn remove_session_tab(&mut self, session_id: &str) {
+    pub(in crate::domain::workspace_state) fn remove_session_tab(&mut self, session_id: &str) {
         match &mut self.0 {
             PaneLayoutNode::Pane {
                 tabs, active_tab, ..

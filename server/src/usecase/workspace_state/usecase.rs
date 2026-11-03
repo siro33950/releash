@@ -12,10 +12,7 @@ pub async fn save_workspace_state(
     retry::attempts(
         RetryBackoff::CONFLICT,
         &RetryLimiter::new(),
-        |error| match error {
-            WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
-            _ => None,
-        },
+        conflict_progress,
         |_| async {
             let (version, previous) = repository.read(worktree_name).await?;
             let next = state.clone().preserve_omitted_fields(previous);
@@ -49,10 +46,7 @@ pub async fn load_workspace_state(
     retry::attempts(
         RetryBackoff::CONFLICT,
         &RetryLimiter::new(),
-        |error| match error {
-            WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
-            _ => None,
-        },
+        conflict_progress,
         |_| async {
             let (version, state) = repository.read(worktree_name).await?;
             let mut state = state.unwrap_or_default().initialize_panes();
@@ -108,10 +102,7 @@ pub async fn save_repository_group_state(
     retry::attempts(
         RetryBackoff::CONFLICT,
         &RetryLimiter::new(),
-        |error| match error {
-            WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
-            _ => None,
-        },
+        conflict_progress,
         |_| async {
             let (version, _) = repository.read_repository_group(path).await?;
             repository
@@ -163,5 +154,12 @@ pub async fn migrate_workspace_states(
     WorkspaceStateMigrationResult {
         unresolved_repositories,
         migration,
+    }
+}
+
+pub(super) fn conflict_progress(error: &WorkspaceStateError) -> Option<AttemptProgress> {
+    match error {
+        WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),
+        _ => None,
     }
 }

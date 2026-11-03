@@ -11,6 +11,7 @@ use crate::domain::workspace_state::{
 #[derive(Default)]
 pub struct MemoryWorkspaceStateRepository {
     states: Mutex<HashMap<String, (StreamVersion, WorkspaceState)>>,
+    pub next_save_error: Mutex<Option<WorkspaceStateError>>,
 }
 
 #[async_trait::async_trait]
@@ -31,6 +32,9 @@ impl WorkspaceStateRepository for MemoryWorkspaceStateRepository {
         state: WorkspaceState,
         expected: StreamVersion,
     ) -> Result<(), WorkspaceStateError> {
+        if let Some(error) = self.next_save_error.lock().take() {
+            return Err(error);
+        }
         let mut states = self.states.lock();
         let version = states
             .get(workspace)

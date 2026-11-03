@@ -1,3 +1,4 @@
+use crate::domain::workspace_state::value_objects::pane_layout::PaneLayout;
 use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, WorkspaceTabsState};
 
 /// worktree のタブ配置と選択状態。
@@ -13,26 +14,23 @@ pub struct WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
-            panes: None,
+            panes: Some(empty_panes()),
             version: 1,
             tabs: None,
             layout: None,
         }
-        .initialize_panes()
     }
 }
 
 impl WorkspaceState {
+    /// 空のタブ配置を作る。エディタ設定とパネル設定は未保存とする。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// 同じ Node の Session 未確定の Session タブに関連付け、無ければ追加する。既存の選択は変えない。
     pub fn add_session_tab(&mut self, session_id: &str, node_id: &str) {
-        let panes = self.panes.get_or_insert_with(|| {
-            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-                "pane".into(),
-                vec![],
-                None,
-            )
-            .expect("empty pane is valid")
-        });
+        let panes = self.panes.get_or_insert_with(empty_panes);
         panes.add_session_tab(session_id, node_id);
     }
 
@@ -63,14 +61,7 @@ impl WorkspaceState {
 
     /// 配置が未保存なら空の配置を持つ状態にする。保存済みの配置と設定は保持する。
     pub fn initialize_panes(mut self) -> Self {
-        self.panes.get_or_insert_with(|| {
-            crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-                "pane".into(),
-                vec![],
-                None,
-            )
-            .expect("empty pane is valid")
-        });
+        self.panes.get_or_insert_with(empty_panes);
         self
     }
 
@@ -83,6 +74,10 @@ impl WorkspaceState {
         }
         self
     }
+}
+
+fn empty_panes() -> PaneLayout {
+    PaneLayout::pane("pane".into(), vec![], None).expect("empty pane is valid")
 }
 
 #[cfg(test)]
