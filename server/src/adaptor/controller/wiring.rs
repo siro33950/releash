@@ -327,7 +327,6 @@ pub fn build_workflow_services_with_gateways(
         execution_archives.clone(),
         workspace_nodes,
         workspace_query.clone(),
-        failures,
     );
     (workflow_usecase, workspace_query)
 }

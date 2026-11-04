@@ -233,15 +233,13 @@ pub async fn test_一覧の実行木_一覧から外れた木の保持を捨て�
 
 /// 実行中の session を 1 つ持つ workflow を、実在する worktree に作る。worktree の場所を返す。
 async fn seeded_workflow(
-    failures: Arc<releashd::test_support::integration::platform::FailureRecordStore>,
+    _failures: Arc<releashd::test_support::integration::platform::FailureRecordStore>,
     execution_id: &str,
 ) -> (tempfile::TempDir, WorkflowUsecase, String) {
     use releashd::test_support::integration::workflow::seed_workflow_session_facts;
     use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
     let directory = tempfile::tempdir().unwrap();
-    let (mut usecase, store) =
-        build_workflow_usecase_and_store(directory.path().join("data"), None);
-    usecase.test_replace_failure_repository(failures);
+    let (usecase, store) = build_workflow_usecase_and_store(directory.path().join("data"), None);
     let worktree = directory
         .path()
         .canonicalize()

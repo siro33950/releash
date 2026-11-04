@@ -516,22 +516,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         &self,
         workspace_identities: &[WorkspaceIdentity],
     ) -> Vec<Result<WorkspaceTree, WorkflowError>> {
-        let workspaces = workspace_identities
-            .iter()
-            .map(WorkspaceIdentity::as_str)
-            .collect::<Vec<_>>();
-        let folded = self.folded_workspaces(&workspaces).await;
-        let mut trees = Vec::with_capacity(workspaces.len());
-        for (workspace, folded) in workspaces.iter().zip(folded) {
-            trees.push(
-                match folded {
-                    Ok(folded) => self.workspace_tree(workspace, &folded).await,
-                    Err(error) => Err(error),
-                }
-                .map_err(super::query_service::query_error),
-            );
-        }
-        trees
+        todo!()
     }
 
     async fn load_execution_tree(
@@ -539,18 +524,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         workspace_identity: &WorkspaceIdentity,
         execution_id: &str,
     ) -> Result<Option<WorkspaceTree>, crate::domain::workflow::WorkflowError> {
-        let Some(execution) = self
-            .folded_tree(execution_id)
-            .await
-            .map_err(super::query_service::query_error)?
-        else {
-            return Ok(None);
-        };
-        if execution.0.root.workspace_identity != workspace_identity.as_str() {
-            return Ok(None);
-        }
-        self.workspace_tree_from_folded(workspace_identity.as_str(), &[execution])
-            .map_err(super::query_service::query_error)
+        todo!()
     }
 
     async fn load_node_by_session_id(

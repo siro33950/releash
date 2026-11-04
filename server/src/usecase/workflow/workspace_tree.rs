@@ -113,17 +113,7 @@ impl WorkflowUsecase {
         &self,
         identities: &[WorkspaceIdentity],
     ) -> Vec<Result<WorkspaceTree, WorkflowError>> {
-        self.workspace_nodes
-            .load_trees(identities)
-            .await
-            .into_iter()
-            .map(|tree| {
-                tree.map(|mut tree| {
-                    self.observe_failures(&mut tree);
-                    tree
-                })
-            })
-            .collect()
+        self.workspace_nodes.load_trees(identities).await
     }
 
     /// 一覧に出す worktree ごとの実行木。読めなかった worktree は、最後に読めた木を残す。
@@ -150,34 +140,6 @@ impl WorkflowUsecase {
                     result.map_err(|error| crate::domain::failure::WorkFailure::from_error(&error)),
                 );
                 entry.clone()
-            })
-            .collect()
-    }
-
-    fn observe_failures(&self, tree: &mut WorkspaceTree) {
-        for (target, message) in
-            self.failure_observations(tree.nodes().iter().map(|node| node.classification_input()))
-        {
-            tree.observe_background_failure(&target, &message);
-        }
-    }
-
-    fn failure_observations(
-        &self,
-        nodes: impl IntoIterator<Item = crate::domain::workspace_tree::WorkspaceNodeClassification>,
-    ) -> Vec<(String, String)> {
-        let targets = nodes
-            .into_iter()
-            .flat_map(|node| [Some(node.id), node.node_execution_id, node.execution_id])
-            .flatten()
-            .collect::<std::collections::HashSet<_>>();
-        targets
-            .into_iter()
-            .flat_map(|target| {
-                self.failures
-                    .attention_messages(&target)
-                    .into_iter()
-                    .map(move |message| (target.clone(), message))
             })
             .collect()
     }
@@ -228,7 +190,7 @@ impl WorkflowUsecase {
         session: &crate::usecase::agent_session::AgentSessionItemDto,
     ) -> Result<Option<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>, WorkflowError>
     {
-        let Some(mut tree) = self
+        let Some(tree) = self
             .workspace_nodes
             .load_execution_tree(
                 &WorkspaceIdentity::new(session.workspace_identity.clone()),
@@ -238,7 +200,6 @@ impl WorkflowUsecase {
         else {
             return Ok(None);
         };
-        self.observe_failures(&mut tree);
         Ok(tree
             .session_node(&session.id)
             .filter(|node| {
