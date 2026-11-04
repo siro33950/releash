@@ -20,10 +20,7 @@ pub(crate) fn provider_history_label(
     {
         return truncate_prompt(prompt);
     }
-    let provider = match provider {
-        ProviderKind::Claude => "Claude",
-        ProviderKind::Codex => "Codex",
-    };
+    let provider = provider.display_name();
     let short_id = provider_session_id.chars().take(8).collect::<String>();
     format!("{provider} {short_id}…")
 }

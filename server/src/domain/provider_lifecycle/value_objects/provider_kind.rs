@@ -11,6 +11,13 @@ impl ProviderKind {
 
     /// 利用者に見せる provider の名前。
     pub fn display_name(self) -> &'static str {
-        todo!()
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_kind_test.rs"]
+mod provider_kind_tests;
