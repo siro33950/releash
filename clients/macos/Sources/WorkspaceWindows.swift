@@ -5,6 +5,7 @@ import SwiftUI
 final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate {
   let model: AppModel
   let loginItem: LoginItemRegistration
+  private(set) var statusMenu: StatusMenu?
 
   private var windows: [NSWindow] = []
   private var settingsSubscription: UUID?
@@ -29,6 +30,7 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
   func prepareLaunch(event: NSAppleEventDescriptor?) {
     guard settingsSubscription == nil else { return }
+    statusMenu = StatusMenu(model: model) { [weak self] in self?.showWindow() }
     awaitingLaunchSettings = Self.isLoginItemLaunch(event)
     if !awaitingLaunchSettings { openWindow() }
     settingsSubscription = model.subscribe("desktop-settings") { [weak self] payload in
@@ -109,6 +111,10 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     false
+  }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    statusMenu?.remove()
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
