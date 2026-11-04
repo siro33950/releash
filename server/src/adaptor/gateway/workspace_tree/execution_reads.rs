@@ -8,7 +8,7 @@ use crate::adaptor::gateway::local_event_store::{
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::local_event::{LocalEventQueryError, WorkflowExecutionMetadataRecord};
 use crate::domain::workflow::services::fact_replay::{self, FoldedTree, TreeFold};
-use crate::domain::workflow::ExecutionTreeLaunch;
+use crate::domain::workflow::{ExecutionTreeLaunch, WorkflowError};
 /// 1 tree の fold 済みの結果と、そこから導出した metadata。
 pub(super) type FoldedExecution = Arc<(FoldedTree, WorkflowExecutionMetadataRecord)>;
 
@@ -41,9 +41,8 @@ struct HeldTree {
     /// 直近に確かめた store の最新 seq。
     head: i64,
     root: Option<TreeRoot>,
-    root_row: Option<Arc<NodeEventRow>>,
     session_root: Option<SessionRoot>,
-    root_identity: Option<(i64, [u8; 32])>,
+    root_identity: Option<(i64, i64)>,
     fold: Option<HeldFold>,
 }
 
@@ -79,6 +78,9 @@ pub(super) type SessionRoot = Arc<(
     crate::domain::agent_session::services::SessionExecutionContext,
 )>;
 
+type SessionRootReader<'a> =
+    dyn Fn(&NodeEventRow) -> Result<SessionRoot, LocalEventQueryError> + Sync + 'a;
+
 pub struct ExecutionReads {
     pub(crate) store: Arc<LocalEventStore>,
     held: tokio::sync::Mutex<BTreeMap<String, HeldTree>>,
@@ -97,29 +99,19 @@ impl ExecutionReads {
     fn update_root(
         tree: &mut HeldTree,
         head: i64,
-        row: Option<NodeEventRow>,
+        row: Option<&NodeEventRow>,
         idle: std::time::Duration,
     ) -> Result<(), LocalEventQueryError> {
-        let identity = row.as_ref().map(root_identity);
+        let identity = row.map(root_identity);
         if head < tree.head || identity != tree.root_identity {
             *tree = HeldTree::default();
         }
         if tree.root.is_none() {
-            tree.root = row.as_ref().map(TreeRoot::from_row).transpose()?.flatten();
+            tree.root = row.map(TreeRoot::from_row).transpose()?.flatten();
         }
         tree.head = head;
         tree.expire(idle);
         tree.root_identity = identity;
-        tree.root_row = if tree.session_root.is_none()
-            && tree
-                .root
-                .as_ref()
-                .is_some_and(|root| root.launched_as == ExecutionTreeLaunch::Session)
-        {
-            row.map(Arc::new)
-        } else {
-            None
-        };
         Ok(())
     }
 
@@ -127,13 +119,28 @@ impl ExecutionReads {
         &self,
         held: &mut BTreeMap<String, HeldTree>,
         idle: std::time::Duration,
-        check_all_roots: bool,
+        session_root: Option<&SessionRootReader<'_>>,
     ) -> Result<(), LocalEventQueryError> {
+        let check_all_roots = session_root.is_some();
         let known = held
             .iter()
-            .map(|(id, tree)| (id.clone(), tree.head))
+            .map(|(id, tree)| {
+                (
+                    id.clone(),
+                    (
+                        tree.head,
+                        tree.root_identity,
+                        tree.root.is_none(),
+                        session_root.is_some()
+                            && tree.session_root.is_none()
+                            && tree.root.as_ref().is_some_and(|root| {
+                                root.launched_as == ExecutionTreeLaunch::Session
+                            }),
+                    ),
+                )
+            })
             .collect::<HashMap<_, _>>();
-        let (heads, roots) = self
+        let (heads, roots, checked) = self
             .backend()
             .run_indexed(move |connection| {
                 let unavailable = |e: rusqlite::Error| {
@@ -141,50 +148,62 @@ impl ExecutionReads {
                 };
                 let transaction = connection.unchecked_transaction().map_err(unavailable)?;
                 let heads = node_events::tree_heads(&transaction).map_err(unavailable)?;
-                let roots = if check_all_roots {
-                    node_events::list_tree_roots(&transaction, "started").map_err(unavailable)?
+                let identities = if check_all_roots {
+                    node_events::tree_root_identities(&transaction, "started")
+                        .map_err(unavailable)?
                 } else {
-                    let mut roots = Vec::new();
-                    for (id, head) in &heads {
-                        if known.get(id) == Some(head) {
-                            continue;
-                        }
-                        if let Some(row) =
-                            node_events::first_root_row_of_tree(&transaction, id, "started")
-                                .map_err(unavailable)?
-                        {
-                            roots.push(row);
-                        }
-                    }
-                    roots
+                    HashMap::new()
                 };
-                Ok((heads, roots))
+                let ids = heads
+                    .iter()
+                    .filter_map(|(id, head)| {
+                        let needs_root = known.get(id).is_none_or(
+                            |(previous_head, identity, missing_root, missing_session)| {
+                                head < previous_head
+                                    || *missing_root
+                                    || *missing_session
+                                    || if check_all_roots {
+                                        identities.get(id) != identity.as_ref()
+                                    } else {
+                                        head != previous_head
+                                    }
+                            },
+                        );
+                        needs_root.then_some(id.clone())
+                    })
+                    .collect::<Vec<_>>();
+                let roots = node_events::first_root_rows_for_trees(&transaction, &ids, "started")
+                    .map_err(unavailable)?;
+                Ok((heads, roots, ids))
             })
             .await?;
-        let mut root_rows = HashMap::<String, NodeEventRow>::new();
-        for row in roots {
-            match root_rows.entry(row.tree_id.clone()) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    if row.seq < entry.get().seq {
-                        entry.insert(row);
-                    }
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(row);
-                }
-            }
-        }
+        let checked = checked.into_iter().collect::<HashSet<_>>();
+        let mut root_rows = roots
+            .into_iter()
+            .map(|row| (row.tree_id.clone(), row))
+            .collect::<HashMap<_, _>>();
         let present = heads
             .iter()
             .map(|(id, _)| id.as_str())
             .collect::<HashSet<_>>();
         held.retain(|id, _| present.contains(id.as_str()));
         for (id, head) in heads {
-            let changed = check_all_roots || held.get(&id).is_none_or(|tree| tree.head != head);
             let tree = held.entry(id.clone()).or_default();
-            if changed {
-                Self::update_root(tree, head, root_rows.remove(&id), idle)?;
+            if checked.contains(&id) {
+                let row = root_rows.remove(&id);
+                Self::update_root(tree, head, row.as_ref(), idle)?;
+                if let (Some(read_session_root), Some(row)) = (session_root, row) {
+                    if tree.session_root.is_none()
+                        && tree
+                            .root
+                            .as_ref()
+                            .is_some_and(|root| root.launched_as == ExecutionTreeLaunch::Session)
+                    {
+                        tree.session_root = Some(read_session_root(&row)?);
+                    }
+                }
             } else {
+                tree.head = head;
                 tree.expire(idle);
             }
         }
@@ -204,25 +223,10 @@ impl ExecutionReads {
     pub(super) async fn all(
         &self,
         idle: std::time::Duration,
-        session_root: impl Fn(&NodeEventRow) -> Result<SessionRoot, LocalEventQueryError>,
+        session_root: impl Fn(&NodeEventRow) -> Result<SessionRoot, LocalEventQueryError> + Sync,
     ) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
         let mut held = self.held.lock().await;
-        self.sync(&mut held, idle, true).await?;
-        for tree in held.values_mut() {
-            if tree.session_root.is_none()
-                && tree
-                    .root
-                    .as_ref()
-                    .is_some_and(|root| root.launched_as == ExecutionTreeLaunch::Session)
-            {
-                tree.session_root = tree
-                    .root_row
-                    .as_ref()
-                    .map(|row| session_root(row))
-                    .transpose()?;
-                tree.root_row = None;
-            }
-        }
+        self.sync(&mut held, idle, Some(&session_root)).await?;
         let ids = ordered_roots(&held)
             .into_iter()
             .map(|(id, _)| id)
@@ -301,7 +305,7 @@ impl ExecutionReads {
         idle: std::time::Duration,
     ) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
         let mut held = self.held.lock().await;
-        self.sync(&mut held, idle, false).await?;
+        self.sync(&mut held, idle, None).await?;
         let ids = ordered_roots(&held)
             .into_iter()
             .filter(|(_, root)| include(root))
@@ -316,7 +320,7 @@ impl ExecutionReads {
         idle: std::time::Duration,
     ) -> Vec<Result<Vec<FoldedExecution>, LocalEventQueryError>> {
         let mut held = self.held.lock().await;
-        if let Err(error) = self.sync(&mut held, idle, false).await {
+        if let Err(error) = self.sync(&mut held, idle, None).await {
             return workspaces.iter().map(|_| Err(error.clone())).collect();
         }
         let roots = ordered_roots(&held);
@@ -361,7 +365,7 @@ impl ExecutionReads {
         Self::update_root(
             held.entry(id.to_string()).or_default(),
             head,
-            Some(row),
+            Some(&row),
             idle,
         )?;
         Ok(self.advance(&mut held, &[id.to_string()]).await?.pop())
@@ -424,17 +428,8 @@ fn restore_fold(id: &str, rows: &[NodeEventRow]) -> Result<Option<HeldFold>, Loc
     }))
 }
 
-fn root_identity(row: &NodeEventRow) -> (i64, [u8; 32]) {
-    use sha2::Digest;
-    (
-        row.timestamp_ms,
-        sha2::Sha256::new()
-            .chain_update(row.node_execution_id.len().to_le_bytes())
-            .chain_update(row.node_execution_id.as_bytes())
-            .chain_update(row.detail.as_bytes())
-            .finalize()
-            .into(),
-    )
+fn root_identity(row: &NodeEventRow) -> (i64, i64) {
+    (row.seq, row.timestamp_ms)
 }
 
 fn ordered_roots(held: &BTreeMap<String, HeldTree>) -> Vec<(String, TreeRoot)> {
@@ -477,3 +472,12 @@ pub(super) fn fold_query_error(error: fact_log::FactReadError) -> LocalEventQuer
 #[cfg(test)]
 #[path = "execution_reads_test.rs"]
 mod execution_reads_tests;
+
+pub(super) fn execution_read_error(error: LocalEventQueryError) -> WorkflowError {
+    match error {
+        error @ LocalEventQueryError::StorageAccessRequired { .. } => {
+            WorkflowError::Store(error.into())
+        }
+        error => super::query_service::query_error(error),
+    }
+}

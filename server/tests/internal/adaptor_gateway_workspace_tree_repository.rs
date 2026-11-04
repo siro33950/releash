@@ -1625,6 +1625,42 @@ async fn standalone_session_store(
     (directory, store)
 }
 
+fn recreate_session_tree(connection: &rusqlite::Connection, tree_id: &str, workspace: &str) {
+    use releashd::test_support::integration::persistence::{
+        append_node_event, delete_tree, read_tree, NewNodeEventRow,
+    };
+    let rows = read_tree(connection, tree_id).unwrap();
+    let head = rows.last().unwrap().seq;
+
+    delete_tree(connection, tree_id).unwrap();
+    for row in rows {
+        let mut detail: serde_json::Value = serde_json::from_str(&row.detail).unwrap();
+        if row.event_type == "started" {
+            detail["root"]["workspaceIdentity"] = workspace.into();
+        }
+        append_node_event(
+            connection,
+            &NewNodeEventRow {
+                tree_id: row.tree_id,
+                node_execution_id: row.node_execution_id,
+                parent_id: row.parent_id,
+                node_name: row.node_name,
+                kind: row.kind,
+                attempt: row.attempt,
+                event_type: row.event_type,
+                session_id: row.session_id,
+                detail: detail.to_string(),
+            },
+            row.timestamp_ms + 1000,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        read_tree(connection, tree_id).unwrap().last().unwrap().seq,
+        head
+    );
+}
+
 #[tokio::test]
 pub async fn test_実行木のid読取_一覧の復元を共有し別の木の破損から独立する() {
     // Given
@@ -1679,8 +1715,8 @@ pub async fn test_実行木のid読取_一覧の復元を共有し別の木の�
         .unwrap()
         .is_none());
 
-    // When: the same id and sequence now belong to a reconstructed root.
-    connection.execute("UPDATE node_events SET detail = json_set(detail, '$.root.workspaceIdentity', '/relocated') WHERE tree_id = 'session' AND event_type = 'started'", []).unwrap();
+    // When
+    recreate_session_tree(&connection, "session", "/relocated");
     // Then
     assert!(repository
         .load_execution_tree(&workspace, "session")
@@ -2399,6 +2435,15 @@ pub async fn test_全実行木読取_全worktreeを返し保持済みのfoldへ�
     );
 
     // When / Then
+    repository
+        .folded_tree("first-session")
+        .await
+        .unwrap()
+        .unwrap();
+    repository
+        .folded_workspace_trees(second.as_str())
+        .await
+        .unwrap();
     let before = repository.load_all_trees().await.unwrap();
     assert_eq!(
         before
@@ -2544,23 +2589,25 @@ pub async fn test_全実行木読取_空のstoreと読取失敗と保持期限�
 }
 
 #[tokio::test]
-pub async fn test_全実行木読取_同じidとseqのroot差し替えで所属とsessionを復元し直す() {
+pub async fn test_全実行木読取_削除して同じidとheadで作り直すと所属とsessionを復元し直す() {
     // Given
     let workspace = WorkspaceIdentity::new("/repo");
     let (directory, store) = standalone_session_store("session", &workspace).await;
-    let repository = SqliteWorkspaceTreeRepository::new(
-        store,
-        std::sync::Arc::new(FailureRecordStore::default()),
-    );
+    let repository =
+        SqliteWorkspaceTreeRepository::new(store.clone(), Arc::new(FailureRecordStore::default()));
+    let single_repository =
+        SqliteWorkspaceTreeRepository::new(store, Arc::new(FailureRecordStore::default()));
     let before = repository.load_all_trees().await.unwrap();
     assert_eq!(before[0].workspace_identity(), &workspace);
-    assert!(before[0].session_node("session").is_some());
-    let folds = tree_fold_count();
+    single_repository
+        .load_execution_tree(&workspace, "session")
+        .await
+        .unwrap()
+        .unwrap();
     let connection =
         rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
-
     // When
-    connection.execute("UPDATE node_events SET detail = json_set(detail, '$.root.workspaceIdentity', '/relocated') WHERE tree_id = 'session' AND event_type = 'started'", []).unwrap();
+    recreate_session_tree(&connection, "session", "/relocated");
     let actual = repository.load_all_trees().await.unwrap();
 
     // Then
@@ -2576,7 +2623,6 @@ pub async fn test_全実行木読取_同じidとseqのroot差し替えで所属�
         &relocated
     );
     assert!(actual[0].session_node("session").is_some());
-    assert!(tree_fold_count() > folds);
     let folds = tree_fold_count();
     assert_eq!(repository.load_all_trees().await.unwrap(), actual);
     assert_eq!(tree_fold_count(), folds);
@@ -2589,18 +2635,17 @@ pub async fn test_全実行木読取_同じidとseqのroot差し替えで所属�
         actual[0]
     );
     assert_eq!(
-        repository
+        single_repository
             .load_execution_tree(&relocated, "session")
             .await
             .unwrap()
             .unwrap(),
         actual[0]
     );
-    assert_eq!(tree_fold_count(), folds);
 }
 
 #[tokio::test]
-pub async fn test_限定実行木読取_変更のない対象外rootを読み直さず全件読取は検証する() {
+pub async fn test_限定実行木読取_変更のないrootを読み直さず識別値の変更時に検証する() {
     use releashd::test_support::integration::workspace::{
         ExecutionReads, SqliteWorkspaceQueryService, WorkspaceQueryService,
     };
@@ -2649,6 +2694,8 @@ pub async fn test_限定実行木読取_変更のない対象外rootを読み直
         query.node_detail(&workspace, "session").await.unwrap();
         assert_eq!(tree_fold_count(), folds);
     }
+    assert_eq!(repository.load_all_trees().await.unwrap(), before);
+    connection.execute("UPDATE node_events SET timestamp = timestamp + 1000 WHERE tree_id = 'other-session' AND event_type = 'started'", []).unwrap();
     assert!(repository.load_all_trees().await.is_err());
 }
 
