@@ -28,6 +28,69 @@ final class WorkbenchTests: XCTestCase {
     XCTAssertTrue(try fixture.running())
   }
 
+  @MainActor func testQuitAndRelaunchKeepsServerAndWorkflowRunning() async throws {
+    try await fixture.startServer()
+    let repository = try await fixture.repository("relaunch-repository")
+    let (client, headers) = try fixture.client()
+    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
+    definition.source = """
+      name: e2e-relaunch
+      description: E2E fixture
+      nodes:
+        main:
+          command: sleep 3600
+      """
+    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
+      .get()
+    guard case .success = saved.variant else {
+      throw NSError(
+        domain: "E2E", code: 3,
+        userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
+    }
+    var request = Releash_Client_V1_StartWorkflowRequest()
+    request.workflowName = "e2e-relaunch"
+    request.worktreePath = repository.path
+    let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
+    let server = try await client.getServerInfo(request: .init(), headers: headers).result.get()
+    XCTAssertGreaterThan(server.pid, 0)
+
+    func assertServerAndWorkflowContinue() async throws {
+      XCTAssertTrue(try fixture.running())
+      let (client, headers) = try fixture.client()
+      let current = try await client.getServerInfo(request: .init(), headers: headers).result.get()
+      XCTAssertEqual(current.pid, server.pid)
+      XCTAssertEqual(current.processStartedAt, server.processStartedAt)
+      XCTAssertEqual(current.daemonID, server.daemonID)
+      try await fixture.waitForState(target: "workspaces") { payload in
+        guard case .workspaces(let workspaces) = payload.value else { return false }
+        return Fixture.hasRunningWorkflow(
+          workspaces, repository: repository.path, executionID: execution.value)
+      }
+    }
+
+    launch()
+    let card = app.buttons["worktree:main"].firstMatch
+    let visibleWorkflow = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label CONTAINS %@", "e2e-relaunch"), object: card)
+    let initial = await XCTWaiter.fulfillment(of: [visibleWorkflow], timeout: 30)
+    XCTAssertEqual(initial, .completed, app.debugDescription)
+    try await assertServerAndWorkflowContinue()
+
+    app.terminate()
+    XCTAssertEqual(app.state, .notRunning)
+    try await assertServerAndWorkflowContinue()
+
+    launch()
+    let restoredWorkflow = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label CONTAINS %@", "e2e-relaunch"), object: card)
+    let restored = await XCTWaiter.fulfillment(of: [restoredWorkflow], timeout: 30)
+    XCTAssertEqual(restored, .completed, app.debugDescription)
+    let connection = app.menuButtons["footer-server"]
+    XCTAssertTrue(connection.waitForExistence(timeout: 30), app.debugDescription)
+    XCTAssertTrue(connection.label.contains("serving"), connection.label)
+    try await assertServerAndWorkflowContinue()
+  }
+
   @MainActor func testFooterShowsProviderUsageAndServerState() async throws {
     try fixture.cleanUp()
     fixture = try Fixture(providerUsage: true)
