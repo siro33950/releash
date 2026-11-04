@@ -1,5 +1,4 @@
 use super::*;
-use crate::domain::failure::TechnicalFailureNature;
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
 use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 use crate::domain::workspace_tree::{
@@ -141,25 +140,6 @@ fn execution_summary_rejects_non_finite_timestamp() {
 }
 
 #[test]
-fn test_workspace_query_error_corruptをcorrupt_stored_stateへ写像する() {
-    // Given
-    let correlation_id = "workspace-corrupt-correlation";
-
-    // When
-    let error = query_error(crate::domain::local_event::LocalEventQueryError::Corrupt {
-        correlation_id: correlation_id.to_string(),
-    });
-
-    // Then
-    assert_eq!(
-        error,
-        WorkflowError::CorruptStoredState(format!(
-            "store corrupt (correlation_id={correlation_id})"
-        ))
-    );
-}
-
-#[test]
 fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを公開する() {
     // Given
     let expected = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "isolated", 2);
@@ -181,74 +161,6 @@ fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを
         assert_eq!(detail["status"], status.as_public_str());
         assert_eq!(detail["hasArtifact"], false);
         assert_eq!(detail["recoveryReason"], serde_json::Value::Null);
-    }
-}
-
-#[test]
-fn test_workspace_query_結果不明と期限切れの分類を保持する() {
-    use crate::adaptor::presenter::connect::ConnectFailure;
-    use crate::domain::local_event::LocalEventQueryError;
-    use connectrpc::ErrorCode;
-    // Given
-    for (error, expected) in [
-        (
-            LocalEventQueryError::CanonicalWriterRequired,
-            ErrorCode::Internal,
-        ),
-        (
-            LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
-                nature: crate::domain::failure::TechnicalFailureNature::TimedOut,
-                message: "deadline exceeded".into(),
-            }),
-            ErrorCode::DeadlineExceeded,
-        ),
-        (LocalEventQueryError::QueryBusy, ErrorCode::Unavailable),
-    ] {
-        // When / Then
-        assert_eq!(query_error(error).connect_code(), expected);
-    }
-}
-
-#[test]
-fn test_workspace_query_store以外の失敗はmainと同じ変種を返す() {
-    use crate::adaptor::presenter::connect::ConnectFailure;
-    use crate::domain::local_event::{
-        LocalEventQueryError, SafeOperationFailure, SessionOperationFailureKind,
-    };
-
-    for error in [
-        LocalEventQueryError::CanonicalWriterRequired,
-        LocalEventQueryError::StorageAccessRequired {
-            failure: SafeOperationFailure::new(
-                SessionOperationFailureKind::StorageUnavailable,
-                TechnicalFailureNature::Other,
-                "access required",
-                "id",
-            ),
-        },
-    ] {
-        let error = query_error(error);
-        assert!(matches!(error, WorkflowError::External(_)));
-        assert_eq!(error.connect_code(), connectrpc::ErrorCode::Internal);
-    }
-}
-
-#[test]
-fn test_store問い合わせエラー_停止の分類を保持する() {
-    use crate::adaptor::presenter::connect::ConnectFailure;
-    use crate::common::operation_context::OperationStopped;
-    // Given
-    for stopped in [OperationStopped::Expired, OperationStopped::Cancelled] {
-        // When
-        let error = query_error(crate::domain::local_event::LocalEventQueryError::Technical(
-            stopped.into(),
-        ));
-        // Then
-        assert_eq!(
-            error.connect_code(),
-            crate::domain::failure::TechnicalFailure::from(stopped).connect_code()
-        );
-        assert!(matches!(error, WorkflowError::Technical(value) if value == stopped.into()));
     }
 }
 

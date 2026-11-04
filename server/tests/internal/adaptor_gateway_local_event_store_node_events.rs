@@ -3,6 +3,9 @@ use releashd::test_support::integration::persistence::first_row_for_tree_with_ev
 use releashd::test_support::integration::persistence::latest_root_rows_for_trees;
 use releashd::test_support::integration::persistence::read_tree_after;
 use releashd::test_support::integration::persistence::tree_heads;
+use releashd::test_support::integration::persistence::{
+    first_root_rows_for_trees, tree_root_identities,
+};
 
 use rusqlite::Connection;
 
@@ -616,4 +619,82 @@ pub fn test_tree_root事実取得_親を持たない最初の事実だけを返�
     assert!(first_root_row_of_tree(&connection, "missing", "started")
         .unwrap()
         .is_none());
+}
+
+#[test]
+pub fn test_tree_root一括取得_seq最小の親なし行を種別と木で選ぶ() {
+    // Given
+    let connection = connection();
+    for tree in ["first", "second", "excluded"] {
+        let mut other = row(tree, "other-event", None);
+        other.event_type = "abort_requested".into();
+        append_node_event(&connection, &other, 1).unwrap();
+        append_node_event(&connection, &row(tree, "child", Some("root")), 2).unwrap();
+        append_node_event(&connection, &row(tree, "first-root", None), 90).unwrap();
+        append_node_event(&connection, &row(tree, "later-root", None), 5).unwrap();
+    }
+    append_node_event(&connection, &row("child-only", "child", Some("root")), 1).unwrap();
+    let ids = vec![
+        "second".into(),
+        "first".into(),
+        "missing".into(),
+        "child-only".into(),
+    ];
+
+    // When
+    let identities = tree_root_identities(&connection, "started").unwrap();
+    let mut roots = first_root_rows_for_trees(&connection, &ids, "started").unwrap();
+    roots.sort_by(|a, b| a.tree_id.cmp(&b.tree_id));
+
+    // Then
+    assert_eq!(identities.len(), 3);
+    assert_eq!(roots.len(), 2);
+    for (root, tree) in roots.iter().zip(["first", "second"]) {
+        assert_eq!(root.tree_id, tree);
+        assert_eq!(root.node_execution_id, "first-root");
+        assert_eq!((root.seq, root.timestamp_ms), (3, 90));
+        assert_eq!(identities.get(tree), Some(&(3, 90)));
+        let single = first_root_row_of_tree(&connection, tree, "started")
+            .unwrap()
+            .unwrap();
+        assert_eq!(&single, root);
+    }
+    assert_eq!(identities.get("excluded"), Some(&(3, 90)));
+    assert!(!identities.contains_key("child-only"));
+
+    // When
+    let identities = tree_root_identities(&connection, "abort_requested").unwrap();
+    let roots = first_root_rows_for_trees(&connection, &ids, "abort_requested").unwrap();
+    // Then
+    assert_eq!(identities.len(), 3);
+    assert_eq!(roots.len(), 2);
+    for root in roots {
+        assert_eq!(root.node_execution_id, "other-event");
+        assert_eq!(identities.get(&root.tree_id), Some(&(1, 1)));
+    }
+    assert!(tree_root_identities(&connection, "unknown")
+        .unwrap()
+        .is_empty());
+    assert!(first_root_rows_for_trees(&connection, &ids, "unknown")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+pub fn test_tree_root一括取得_空のstoreと空の対象は空を返す() {
+    // Given
+    let connection = connection();
+    // When / Then
+    assert!(tree_root_identities(&connection, "started")
+        .unwrap()
+        .is_empty());
+    assert!(
+        first_root_rows_for_trees(&connection, &["missing".into()], "started")
+            .unwrap()
+            .is_empty()
+    );
+    append_node_event(&connection, &row("tree", "root", None), 1).unwrap();
+    assert!(first_root_rows_for_trees(&connection, &[], "started")
+        .unwrap()
+        .is_empty());
 }
