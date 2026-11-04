@@ -230,7 +230,6 @@ fn execution_overview(
     trees: &[crate::domain::workspace_tree::WorkspaceTree],
 ) -> Result<wire::ExecutionOverviewDto, wire::CommandFailure> {
     use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
-    use crate::domain::provider_lifecycle::ProviderKind;
     use crate::domain::workflow::ExecutionTreeLaunch;
     use crate::domain::workspace_tree::WorkspaceNodeStatusClassification;
 
@@ -251,10 +250,7 @@ fn execution_overview(
                     if session.lifecycle() == AgentSessionLifecycle::Archived {
                         continue;
                     }
-                    let name = match session.provider() {
-                        ProviderKind::Claude => "Claude",
-                        ProviderKind::Codex => "Codex",
-                    };
+                    let name = session.provider().display_name();
                     (name, root.node())
                 }
                 ExecutionTreeLaunch::Workflow => (execution.workflow_name.as_str(), root.owner()),
