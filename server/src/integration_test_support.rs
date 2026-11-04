@@ -1216,6 +1216,7 @@ pub mod workspace {
     pub use crate::adaptor::controller::client::workspace_tree::shared::register_shared;
     pub use crate::adaptor::gateway::workspace_tree::query_service::SqliteWorkspaceQueryService;
 
+    pub use crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads;
     pub use crate::adaptor::gateway::workspace_tree::repository::SqliteWorkspaceTreeRepository;
     pub use crate::domain::workspace_tree::entities::WorkspaceTree;
     pub use crate::domain::workspace_tree::repository::WorkspaceTreeRepository;
