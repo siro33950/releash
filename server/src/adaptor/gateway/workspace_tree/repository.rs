@@ -508,6 +508,10 @@ impl SqliteWorkspaceTreeRepository {
 
 #[async_trait::async_trait]
 impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
+    async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
+        todo!()
+    }
+
     async fn load_trees(
         &self,
         workspace_identities: &[WorkspaceIdentity],

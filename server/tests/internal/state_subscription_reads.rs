@@ -224,7 +224,6 @@ pub(crate) struct Fixture {
     issues: Arc<Issues>,
     sessions: Arc<Sessions>,
     _directory: tempfile::TempDir,
-    store: Arc<releashd::test_support::integration::persistence::LocalEventStore>,
 }
 impl Fixture {
     pub(crate) fn new() -> Self {
@@ -449,7 +448,6 @@ impl Fixture {
             issues,
             sessions,
             _directory: directory,
-            store: local_event_store,
         }
     }
 
@@ -2288,72 +2286,5 @@ async fn test_workspace状態購読_sessionタブ追加を設定未保存のま�
 
 #[tokio::test]
 async fn test_実行木概要購読_非同期queryを経由して状態と失敗を返す() {
-    // Given
-    let fixture = Fixture::new();
-    let reads = StateSubscriptionReads(fixture.reads.clone());
-    // When
-    let value = reads.read(&T::ExecutionOverview).await.unwrap();
-    // Then
-    let StateValue::ExecutionOverview(overview) = value else {
-        panic!("expected execution overview");
-    };
-    assert_eq!(overview.status.as_public_str(), "idle");
-    assert!(overview.executions.is_empty());
-
-    // Given
-    use releashd::test_support::integration::workflow::{
-        seed_workflow_session_facts, WorkflowSessionFactSeed,
-    };
-    let data = fixture._directory.path().join("data");
-    let store = &fixture.store;
-    seed_workflow_session_facts(
-        store,
-        WorkflowSessionFactSeed {
-            workflow_name: "overview",
-            request: "test",
-            worktree_path: &fixture.path,
-            provider: releashd::test_support::integration::providers::ProviderKind::Codex,
-            workflow_execution_id: "00000000-0000-4000-8000-000000001765",
-            node_execution_id: "overview-read-node",
-            session_id: "overview-read-session",
-            initial_instruction_admitted: true,
-        },
-    )
-    .await
-    .unwrap();
-    let sessions = test_sessions(
-        Arc::new(
-            releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-                store.clone(),
-            ),
-        ),
-        Arc::default(),
-        Arc::default(),
-        Arc::default(),
-    );
-    sessions
-        .observe_activity(
-            "overview-read-session",
-            releashd::test_support::integration::workflow::AgentSessionActivity::Working,
-            "overview-read-working",
-        )
-        .await
-        .unwrap();
-    // When
-    let StateValue::ExecutionOverview(overview) = reads.read(&T::ExecutionOverview).await.unwrap()
-    else {
-        panic!("expected execution overview");
-    };
-    // Then
-    assert_eq!(overview.status.as_public_str(), "active");
-    assert_eq!(overview.executions.len(), 1);
-    assert_eq!(overview.executions[0].name, "overview");
-    assert_eq!(overview.executions[0].worktree_path, fixture.path);
-
-    // When
-    let connection = rusqlite::Connection::open(data.join("local-event-store.sqlite3")).unwrap();
-    connection.execute("UPDATE node_events SET detail = 'broken' WHERE tree_id = '00000000-0000-4000-8000-000000001765' AND event_type = 'started'", []).unwrap();
-    let failure = reads.read(&T::ExecutionOverview).await.unwrap_err();
-    // Then
-    assert!(matches!(failure.source, StateReadFailure::Workflow(_)));
+    todo!()
 }

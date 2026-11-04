@@ -1130,6 +1130,15 @@ pub async fn test_session選択_欠落はcorruptとしqueryの技術的性質を
     struct Trees(Option<LocalEventQueryError>);
     #[async_trait::async_trait]
     impl WorkspaceTreeRepository for Trees {
+        async fn load_all_trees(
+            &self,
+        ) -> Result<
+            Vec<releashd::test_support::integration::workspace::WorkspaceTree>,
+            releashd::test_support::integration::workflow::WorkflowError,
+        > {
+            todo!()
+        }
+
         async fn load_trees(
             &self,
             _: &[WorkspaceIdentity],

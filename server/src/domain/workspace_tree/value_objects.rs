@@ -83,6 +83,11 @@ pub enum WorkspaceNodeStatusClassification {
 }
 
 impl WorkspaceNodeStatusClassification {
+    /// 複数の状態から最も優先する状態を決める。空の場合は Idle とする。
+    pub fn aggregate(_statuses: impl IntoIterator<Item = Self>) -> Self {
+        todo!()
+    }
+
     pub fn as_public_str(self) -> &'static str {
         match self {
             Self::Active => "active",

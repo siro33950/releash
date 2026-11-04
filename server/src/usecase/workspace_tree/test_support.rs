@@ -25,15 +25,6 @@ impl TestWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
-    async fn execution_overview(
-        &self,
-    ) -> Result<super::execution_overview::ExecutionOverviewDto, WorkflowError> {
-        Ok(super::execution_overview::ExecutionOverviewDto {
-            status: crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Idle,
-            executions: Vec::new(),
-        })
-    }
-
     async fn resolve_session_nodes(
         &self,
         _: &WorkspaceIdentity,
@@ -77,6 +68,12 @@ impl TestWorkspaceTreeRepository {
 
 #[async_trait::async_trait]
 impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTreeRepository {
+    async fn load_all_trees(
+        &self,
+    ) -> Result<Vec<crate::domain::workspace_tree::WorkspaceTree>, WorkflowError> {
+        todo!()
+    }
+
     async fn load_trees(
         &self,
         workspaces: &[WorkspaceIdentity],

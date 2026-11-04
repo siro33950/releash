@@ -205,14 +205,11 @@ impl WorkflowUsecase {
         .await
     }
 
-    /// 全 worktree の実行木の一覧と集約状態を取得する。
+    /// 全 Workspace の実行木を取得する。
     pub(crate) async fn execution_overview(
         &self,
-    ) -> Result<
-        crate::usecase::workspace_tree::execution_overview::ExecutionOverviewDto,
-        WorkflowError,
-    > {
-        self.workspace_query.execution_overview().await
+    ) -> Result<Vec<crate::domain::workspace_tree::WorkspaceTree>, WorkflowError> {
+        self.workspace_nodes.load_all_trees().await
     }
 
     pub(crate) async fn get_workspace_node_detail(

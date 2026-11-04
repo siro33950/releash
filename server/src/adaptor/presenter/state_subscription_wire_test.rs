@@ -5,86 +5,12 @@ use std::sync::Arc;
 
 #[test]
 fn test_実行木一覧購読_集約と各実行木の三状態と表示名と選択先を転送する() {
-    use crate::domain::workspace_tree::WorkspaceNodeStatusClassification as Status;
-    use crate::usecase::workspace_tree::execution_overview::{
-        ExecutionOverviewDto, ExecutionOverviewEntryDto,
-    };
-    use wire::workspace_status_classification::Value;
-    // Given
-    let states = [
-        (Status::Active, Value::Active, Status::Idle, Value::Idle),
-        (
-            Status::Attention,
-            Value::Attention,
-            Status::Active,
-            Value::Active,
-        ),
-        (
-            Status::Idle,
-            Value::Idle,
-            Status::Attention,
-            Value::Attention,
-        ),
-    ];
-    for (status, expected, entry_status, expected_entry) in states {
-        let overview = ExecutionOverviewDto {
-            status,
-            executions: vec![ExecutionOverviewEntryDto {
-                worktree_path: "/作業:repo/feature".into(),
-                worktree_name: "feature".into(),
-                name: "開発 workflow".into(),
-                status: entry_status,
-            }],
-        };
-        // When
-        let actual = payload(&StateValue::ExecutionOverview(overview)).unwrap();
-        let encoded = to_rpc::<rpc::StatePayload>(&actual).unwrap();
-        let actual: wire::StatePayload =
-            crate::adaptor::presenter::connect_wire::to_wire(&encoded).unwrap();
-        // Then
-        let expected_status = wire::WorkspaceStatusClassification {
-            value: Some(expected as i32),
-        };
-        assert_eq!(
-            actual.value,
-            Some(wire::state_payload::Value::ExecutionOverview(
-                wire::ExecutionOverviewDto {
-                    status: Some(expected_status),
-                    executions: vec![wire::ExecutionOverviewEntryDto {
-                        worktree_path: "/作業:repo/feature".into(),
-                        worktree_name: "feature".into(),
-                        name: "開発 workflow".into(),
-                        status: Some(wire::WorkspaceStatusClassification {
-                            value: Some(expected_entry as i32),
-                        }),
-                    }],
-                }
-            ))
-        );
-    }
+    todo!()
 }
 
 #[test]
 fn test_実行木一覧購読_空の一覧も集約状態とともに転送する() {
-    // Given
-    let overview = crate::usecase::workspace_tree::execution_overview::ExecutionOverviewDto {
-        status: crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Idle,
-        executions: vec![],
-    };
-    // When
-    let actual = payload(&StateValue::ExecutionOverview(overview)).unwrap();
-    // Then
-    assert_eq!(
-        actual.value,
-        Some(wire::state_payload::Value::ExecutionOverview(
-            wire::ExecutionOverviewDto {
-                status: Some(wire::WorkspaceStatusClassification {
-                    value: Some(wire::workspace_status_classification::Value::Idle as i32),
-                }),
-                executions: vec![],
-            }
-        ))
-    );
+    todo!()
 }
 
 fn wire_event(event: StateSubscriptionEvent) -> wire::StateSubscriptionEvent {

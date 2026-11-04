@@ -16,7 +16,7 @@ pub enum StateValue {
     RepositoryGroupState(bool),
     Workspaces(WorkspaceList),
     /// 全 worktree の実行木の一覧と集約状態。
-    ExecutionOverview(crate::usecase::workspace_tree::execution_overview::ExecutionOverviewDto),
+    ExecutionOverview(Vec<crate::domain::workspace_tree::WorkspaceTree>),
     /// 実行木と、選択している Node が画面に出す木にあるか。
     Selection(crate::domain::workspace_tree::WorkspaceTree, bool),
     NodeDetail(Option<WorkspaceNodeDetailDto>),

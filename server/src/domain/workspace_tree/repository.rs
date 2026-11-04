@@ -4,6 +4,11 @@ use super::{WorkspaceIdentity, WorkspaceTree, WorkspaceTreeNode};
 /// records. There is intentionally no save/CAS operation.
 #[async_trait::async_trait]
 pub trait WorkspaceTreeRepository: Send + Sync {
+    /// 全 Workspace の実行木を取得する。
+    async fn load_all_trees(
+        &self,
+    ) -> Result<Vec<WorkspaceTree>, crate::domain::workflow::WorkflowError>;
+
     /// 複数の Workspace の実行木をまとめて読む。結果は指定した順に並ぶ。
     /// 実行木を持たない Workspace は空の木になる。
     async fn load_trees(

@@ -7,15 +7,7 @@ use crate::usecase::state_subscription::StateValue;
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
-            StateValue::ExecutionOverview(value) => wire::state_payload::Value::ExecutionOverview(wire::ExecutionOverviewDto {
-                status: Some(execution_status(value.status)),
-                executions: value.executions.iter().map(|entry| wire::ExecutionOverviewEntryDto {
-                    worktree_path: entry.worktree_path.clone(),
-                    worktree_name: entry.worktree_name.clone(),
-                    name: entry.name.clone(),
-                    status: Some(execution_status(entry.status)),
-                }).collect(),
-            }),
+            StateValue::ExecutionOverview(_) => todo!(),
             StateValue::RepositoryGroupState(collapsed) => wire::state_payload::Value::RepositoryGroupState(wire::RepositoryGroupState { collapsed: *collapsed }),
             StateValue::DaemonInfo(info) => wire::state_payload::Value::DaemonInfo(
                 crate::adaptor::presenter::daemon::server_info(info.clone()),
@@ -230,20 +222,6 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             }
         }),
     })
-}
-
-fn execution_status(
-    status: crate::domain::workspace_tree::WorkspaceNodeStatusClassification,
-) -> wire::WorkspaceStatusClassification {
-    use crate::domain::workspace_tree::WorkspaceNodeStatusClassification;
-    use wire::workspace_status_classification::Value;
-    wire::WorkspaceStatusClassification {
-        value: Some(match status {
-            WorkspaceNodeStatusClassification::Active => Value::Active as i32,
-            WorkspaceNodeStatusClassification::Attention => Value::Attention as i32,
-            WorkspaceNodeStatusClassification::Idle => Value::Idle as i32,
-        }),
-    }
 }
 
 fn notion_read_failure(

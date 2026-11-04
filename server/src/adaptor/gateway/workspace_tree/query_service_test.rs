@@ -331,16 +331,5 @@ fn test_node詳細_node実行idと名前とmodelを配る() {
 
 #[test]
 fn test_実行木概要_空と全idleとactiveとattentionを既存分類で集約する() {
-    use WorkspaceNodeStatusClassification::{Active, Attention, Idle};
-    // Given / When / Then
-    for (statuses, expected) in [
-        (vec![], Idle),
-        (vec![Idle, Idle], Idle),
-        (vec![Idle, Active], Active),
-        (vec![Active, Idle], Active),
-        (vec![Idle, Active, Attention], Attention),
-        (vec![Attention, Active, Idle], Attention),
-    ] {
-        assert_eq!(overview_status(statuses), expected);
-    }
+    todo!()
 }
