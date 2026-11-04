@@ -74,7 +74,7 @@ struct SessionHistoryView: View {
       defer { busy = false }
       do {
         if let selection = try await action() {
-          model.openSession(selection)
+          model.openSession(selection, path: path)
           dismiss()
         }
       } catch { failure = model.failureMessage(error) }

@@ -622,7 +622,7 @@ final class SessionTabPaneTests: XCTestCase {
     var selection = Releash_Client_V1_SessionSelection()
     selection.agentSessionID = "agent"
     selection.nodeID = "node"
-    model.openSession(selection)
+    model.openSession(selection, path: "/repo")
     try await eventually { model.pendingSaves["/repo"] == nil }
     // Then: タブは増えず、端末が見え、枠を得た端末が自分の寸法を報告し、端末の購読は解放されていない
     XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
@@ -677,7 +677,7 @@ final class SessionTabPaneTests: XCTestCase {
     var selection = Releash_Client_V1_SessionSelection()
     selection.agentSessionID = "agent2"
     selection.nodeID = "node2"
-    model.openSession(selection)
+    model.openSession(selection, path: "/repo")
     try await eventually { model.pendingSaves["/repo"] == nil }
     // Then: 足されたタブの中身が作られ、会話を購読し、端末が表示される
     try await eventually {
@@ -796,27 +796,29 @@ final class SessionTabPaneTests: XCTestCase {
           try http.publish(payload, target: "node-detail")
           try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
         }
+        var historyHost: ViewHarness?
         if history {
-          let historyHost = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
-          try await eventuallyView(historyHost) { historyHost.element("Codex · history") != nil }
-          try await historyHost.press("Codex · history")
+          let harness = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
+          historyHost = harness
+          try await eventuallyView(harness) { harness.element("Codex · history") != nil }
+          try await harness.press("Codex · history")
           try await eventually { http.requests("RestoreAgentSession").count == 1 }
-          try await eventually { model.pendingSaves["/repo"] == nil }
-          guard case .pane(let id, var tabs, let active) = try model.panes.layout() else {
-            return XCTFail("Expected a single pane")
-          }
-          tabs[0].nodeID = nil
-          tabs[0].agentSessionID = "agent-session"
-          var state = Releash_Client_V1_StatePayload()
-          state.workspaceState.value.version = 1
-          state.workspaceState.value.paneLayout =
-            PaneLayout.pane(id: id, tabs: tabs, active: active).message
-          try http.publish(state, target: "workspace-state")
-          try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
-          historyHost.close()
         } else {
           try await model.startSession(provider: "codex", path: "/repo")
         }
+        // サーバが仮タブに Session を結び付けた配置を配信する（画面はタブを作らず、届いたタブを選ぶ）
+        try await eventually { model.pendingSaves["/repo"] == nil }
+        guard case .pane(let id, var tabs, let active) = try model.panes.layout() else {
+          return XCTFail("Expected a single pane")
+        }
+        tabs[0].nodeID = nil
+        tabs[0].agentSessionID = "agent-session"
+        var state = Releash_Client_V1_StatePayload()
+        state.workspaceState.value.version = 1
+        state.workspaceState.value.paneLayout =
+          PaneLayout.pane(id: id, tabs: tabs, active: active).message
+        try http.publish(state, target: "workspace-state")
+        historyHost?.close()
         try await eventuallyView(host) { host.element("terminal:agent-session") != nil }
         if !notificationFirst { try http.publish(payload, target: "node-detail") }
         // Then
@@ -824,19 +826,7 @@ final class SessionTabPaneTests: XCTestCase {
         XCTAssertEqual(model.panes.controller.allTabIds, [tab])
         XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent-session")
         XCTAssertNil(try model.panes.layout().tabs.first?.nodeID)
-        if history {
-          XCTAssertEqual(
-            model.layout.tabs.first?.agentSessionID,
-            "agent-session")
-        } else {
-          try await eventually {
-            guard let data = http.requests("SaveWorkspaceState").last?.message,
-              let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data)
-            else { return false }
-            return (try? PaneLayout(saved.state.paneLayout).tabs.first?.agentSessionID)
-              == "agent-session"
-          }
-        }
+        XCTAssertEqual(model.layout.tabs.first?.agentSessionID, "agent-session")
         host.close()
         await model.stop()
       }
