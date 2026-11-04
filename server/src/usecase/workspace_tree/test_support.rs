@@ -28,7 +28,10 @@ impl WorkspaceQueryService for TestWorkspaceQueryService {
     async fn execution_overview(
         &self,
     ) -> Result<super::execution_overview::ExecutionOverviewDto, WorkflowError> {
-        todo!()
+        Ok(super::execution_overview::ExecutionOverviewDto {
+            status: crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Idle,
+            executions: Vec::new(),
+        })
     }
 
     async fn resolve_session_nodes(
