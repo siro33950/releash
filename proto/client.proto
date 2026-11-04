@@ -1703,6 +1703,18 @@ message NullableWorkflowDto {
   optional WorkflowDto value = 1 [json_name = "value", (json_nullable) = true];
 }
 
+message ExecutionOverviewDto {
+  WorkspaceStatusClassification status = 1;
+  repeated ExecutionOverviewEntryDto executions = 2;
+}
+
+message ExecutionOverviewEntryDto {
+  string worktree_path = 1;
+  string worktree_name = 2;
+  string name = 3;
+  WorkspaceStatusClassification status = 4;
+}
+
 message WorkspaceTreeSelectionSnapshot {
   optional WorkspaceTreeSnapshot snapshot = 1 [json_name = "snapshot", (json_required) = true];
   optional WorkspaceSelectionReconciliation reconciliation = 2 [json_name = "reconciliation", (json_required) = true];
@@ -2954,6 +2966,7 @@ message StatePayload {
     FileTabView file_tab = 73;
     FileThreadsSnapshot file_threads = 74;
     ProviderUsageSnapshot provider_usage = 70;
+    ExecutionOverviewDto execution_overview = 76;
   }
 }
 message FileThreadsSnapshot {

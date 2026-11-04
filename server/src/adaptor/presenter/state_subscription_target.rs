@@ -169,6 +169,7 @@ impl SubscriptionTarget {
             ("workflow-config", []) => Ok(Self::WorkflowConfig),
             ("provider-usage", []) => Ok(Self::ProviderUsage),
             ("provider-hook-health", []) => Ok(Self::ProviderHookHealth),
+            ("execution-overview", []) => Ok(Self::ExecutionOverview),
             _ => Err(SubscriptionError::UnknownTarget),
         }?;
         Ok(target)
@@ -287,7 +288,7 @@ impl SubscriptionTarget {
             Self::WorkflowConfig => ("workflow-config", vec![]),
             Self::ProviderUsage => ("provider-usage", vec![]),
             Self::ProviderHookHealth => ("provider-hook-health", vec![]),
-            Self::ExecutionOverview => todo!(),
+            Self::ExecutionOverview => ("execution-overview", vec![]),
         }
     }
 }
