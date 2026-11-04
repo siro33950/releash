@@ -167,6 +167,41 @@ final class SessionTabTests: XCTestCase {
     }
   }
 
+  @MainActor func test_会話の新規作成_待っている会話より後に開いた会話を選んだら待ちを捨てる() async throws {
+    // Given: 会話 "agent-session" の応答を受けたが、そのタブはまだ届いていない
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    let other = PaneTab(id: "session-other", kind: .session, agentSessionID: "other")
+    let added = PaneTab(
+      id: "session-agent-session", kind: .session, agentSessionID: "agent-session")
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(id: "pane", tabs: [other], active: nil).message
+    payload.workspaceState.value.etag = "1"
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventually { model.panes.controller.allTabIds.count == 1 }
+    try await model.startSession(provider: "codex", path: "/repo")
+    // When: 既に届いている別の会話 "other" を開き、その後に "agent-session" のタブが届く
+    var later = Releash_Client_V1_SessionSelection()
+    later.agentSessionID = "other"
+    model.openSession(later, path: "/repo")
+    try await eventually { model.pendingSaves["/repo"] == nil }
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(id: "pane", tabs: [other, added], active: other.id).message
+    payload.workspaceState.value.etag = http.state.withLock { $0.layouts["/repo"]?.etag ?? "2" }
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventually { model.panes.controller.allTabIds.count == 2 }
+    // Then: 後に開いた "other" の選択が保たれる
+    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let selected = try XCTUnwrap(model.panes.controller.selectedTab(inPane: pane)?.id)
+    XCTAssertEqual(model.panes.tab(selected)?.agentSessionID, "other")
+    await model.stop()
+  }
+
   @MainActor func test_会話タブ_準備中タブなしで会話を開いた後も古い一覧から同じタブを選ぶ() throws {
     for alreadyOpen in [false, true] {
       // Given

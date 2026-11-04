@@ -703,6 +703,7 @@ extension AppModel {
   /// まだ届いていなければ届いたときに選ぶ。
   func openSession(_ selection: Releash_Client_V1_SessionSelection, path: String) {
     if selectedWorktree == path, layoutLoaded, panes.selectSession(selection.agentSessionID) {
+      pendingSessionSelections.removeValue(forKey: path)
       savePaneLayout()
     } else {
       pendingSessionSelections[path] = selection.agentSessionID
