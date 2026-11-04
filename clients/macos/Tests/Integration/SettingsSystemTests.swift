@@ -5,6 +5,80 @@ import XCTest
 @testable import Releash
 
 final class SettingsSystemTests: XCTestCase {
+  @MainActor func test_ログイン項目_設定を開いたまま登録後の承認待ちと解除後の表示を更新する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock { $0.loginRegistration.status = .allowed }
+    let model = try await testModel(http)
+    var status: SMAppService.Status = .notRegistered
+    var registered = 0
+    var unregistered = 0
+    let item = LoginItemRegistration()
+    item.status = { status }
+    item.register = {
+      registered += 1
+      status = .requiresApproval
+    }
+    item.unregister = {
+      unregistered += 1
+      status = .notRegistered
+    }
+    let delegate = WorkspaceWindows(model: model, loginItem: item)
+    delegate.prepareLaunch(event: nil)
+    defer {
+      for window in NSApp.windows where window.delegate === delegate { window.close() }
+    }
+    let state = SystemSettingsState()
+    state.loginItemStatus = { status }
+    var opened = false
+    let host = await ViewHarness(
+      SystemSettingsView(model: model, state: state, openLoginItems: { opened = true }))
+    defer { host.close() }
+    try await eventuallyView(host) {
+      host.element("settings-auto-launch")?.value == "0"
+        && host.element("settings-auto-launch")?.enabled == true
+    }
+    XCTAssertNil(host.element("settings-open-login-items"))
+    // When
+    try await host.press("settings-auto-launch")
+    try await eventually {
+      http.requests("UpdateLoginItemPreference").count == 1 && state.saving.isEmpty
+    }
+    // Then
+    XCTAssertEqual(registered, 0)
+    XCTAssertNil(host.element("settings-open-login-items"))
+    // When
+    var payload = Releash_Client_V1_StatePayload()
+    payload.desktopSettings.autoLaunch = true
+    try http.publish(payload, target: "desktop-settings")
+    // Then
+    try await eventuallyView(host) {
+      host.texts().contains("ログイン項目は承認待ちです")
+        && host.element("settings-open-login-items") != nil
+    }
+    XCTAssertEqual(registered, 1)
+    XCTAssertTrue(state.requiresApproval, "OS status: \(status)")
+    try await host.press("settings-open-login-items")
+    XCTAssertTrue(opened)
+    // When
+    try await host.press("settings-auto-launch")
+    try await eventually {
+      http.requests("UpdateLoginItemPreference").count == 2 && state.saving.isEmpty
+    }
+    // Then
+    XCTAssertEqual(unregistered, 0)
+    // When
+    payload.desktopSettings.autoLaunch = false
+    try http.publish(payload, target: "desktop-settings")
+    // Then
+    try await eventuallyView(host) {
+      host.element("settings-open-login-items") == nil
+        && !host.texts().contains("ログイン項目は承認待ちです")
+    }
+    XCTAssertEqual(unregistered, 1)
+    await model.stop()
+  }
+
   @MainActor func test_System未接続_未受信の設定を変更できない() async throws {
     // Given
     let host = await ViewHarness(SystemSettingsView(model: AppModel()))
