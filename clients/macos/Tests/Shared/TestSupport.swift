@@ -18,6 +18,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
     var providerUsage = Releash_Client_V1_ProviderUsageSnapshot()
     var hookHealth = Releash_Client_V1_ProviderHookHealthSnapshot()
+    var executionOverview = Releash_Client_V1_ExecutionOverviewDto()
     var daemonInfo = Releash_Client_V1_ServerInfo()
     var desktopSettings = Releash_Client_V1_DesktopSettings()
     var loginRegistration = Releash_Client_V1_LoginRegistrationResult()
@@ -153,6 +154,8 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.providerUsage = state.providerUsage
           } else if subscription.target == "provider-hook-health" {
             payload.providerHookHealth = state.hookHealth
+          } else if subscription.target == "execution-overview" {
+            payload.executionOverview = state.executionOverview
           } else if subscription.target == "daemon-info" {
             payload.daemonInfo = state.daemonInfo
           } else if subscription.target == "desktop-settings" {
@@ -291,6 +294,7 @@ final class TestHTTPClient: HTTPClientInterface {
     let (subscriptions, stream) = state.withLock { state in
       switch payload.value {
       case .desktopSettings(let value): state.desktopSettings = value
+      case .executionOverview(let value): state.executionOverview = value
       case .daemonInfo(let value): state.daemonInfo = value
       case .workspaces(let value): state.repositories = value.repositories.items
       case .sessionHistory(let value): state.history = value
