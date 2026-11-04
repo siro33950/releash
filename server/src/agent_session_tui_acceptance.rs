@@ -266,10 +266,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 composition.availability_reader.clone(),
             ));
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-                crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                    store.clone(),
-                ),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new(
+                store.clone(),
             );
         let mut driver = WorkflowRuntimeHost::new_canonical(
             data_dir.join("acceptance-workflows"),

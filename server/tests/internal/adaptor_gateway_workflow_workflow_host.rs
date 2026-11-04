@@ -499,9 +499,7 @@ pub async fn test_workflow永続化_本番構成で起動から完了とabortま
         let app = crate::adaptor_gateway_workflow_workflow_host_test_helpers::dependencies(Some(
             store.clone(),
         ));
-        let query = SqliteWorkspaceQueryService::with_repository(
-            SqliteWorkspaceTreeRepository::new(store.clone()),
-        );
+        let query = SqliteWorkspaceQueryService::new(store.clone());
         let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
             directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),

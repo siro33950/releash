@@ -26,8 +26,8 @@ use releashd::test_support::integration::workspace::WorkspaceVisibleNode;
 use releashd::test_support::integration::workspace::{session_detail, StandaloneReferences};
 use std::sync::Arc;
 
-fn service(repository: &Arc<SqliteWorkspaceTreeRepository>) -> Arc<SqliteWorkspaceQueryService> {
-    SqliteWorkspaceQueryService::with_repository(repository.clone())
+fn service(store: &Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
+    SqliteWorkspaceQueryService::new(store.clone())
 }
 
 async fn load_tree(
@@ -76,8 +76,8 @@ async fn visible_rows(
 
 async fn assert_working_session_projection(store: Arc<LocalEventStore>) {
     let workspace = WorkspaceIdentity::new("workspace-activity-read");
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
 
     let snapshot = visible_rows(&repository, &workspace).await;
     let node = &snapshot[0];
@@ -98,8 +98,8 @@ async fn assert_workflow_child_activity_projection(
     expected_classification: &str,
 ) {
     let workspace = WorkspaceIdentity::new("/repo/workflow-child-activity");
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
 
     let snapshot = visible_rows(&repository, &workspace).await;
     let sequence = &snapshot[0];
@@ -198,8 +198,8 @@ pub async fn test_workspace_tree_query_活動未観測の単独sessionは完了n
         .any(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_))));
 
     // When: Workspace query service から一覧と詳細を読む
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
     let snapshot = visible_rows(&repository, &workspace).await;
     let node = &snapshot[0];
     assert_eq!(node.kind, WorkspaceNodeKind::WorkflowSession);
@@ -273,8 +273,8 @@ pub async fn test_workspace_tree_query_resume直後の単独sessionは緑にな�
         .unwrap();
 
     // When: Workspace query service から一覧と詳細を読む
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
     let snapshot = visible_rows(&repository, &workspace).await;
     let node = &snapshot[0];
     assert_eq!(node.kind, WorkspaceNodeKind::WorkflowSession);
@@ -384,8 +384,8 @@ pub async fn test_workspace_tree_query_活動終了と再開の反復を一覧�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
     let projected_statuses = async || {
         let snapshot = visible_rows(&repository, &workspace).await;
         let node = &snapshot[0];
@@ -483,8 +483,8 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
         .unwrap();
     };
     let projected_classification = async |store: Arc<LocalEventStore>| {
-        let repository = SqliteWorkspaceTreeRepository::new(store);
-        let query = service(&repository);
+        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let query = service(&store);
         let snapshot = visible_rows(&repository, &workspace).await;
         let node = &snapshot[0];
         assert_eq!(node.kind, WorkspaceNodeKind::WorkflowSession);
@@ -582,8 +582,8 @@ pub async fn launch区分が同じworktreeのworkflow一覧とsession一覧を�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
 
     let workflow_ids = query
         .execution_summaries(Some(&WorkspaceIdentity::new("/repo")), None)
@@ -630,7 +630,7 @@ pub async fn test_workspace_tree_query_workspace同定子がworktreeと異なる
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
 
     // When: workspace identity から snapshot と Session 一覧を取得する
     let tree = load_tree(&repository, &workspace).await;
@@ -718,8 +718,8 @@ pub async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
 
     // When
     let snapshot = visible_rows(&repository, &workspace).await;
@@ -761,8 +761,8 @@ pub async fn test_workspaceノード詳細_public_rootと子nodeの名前はnode
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
-    let query = service(&repository);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&store);
     let root_node = repository
         .load_node(&workspace, execution_id)
         .await
@@ -860,7 +860,7 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
             .await
             .unwrap()
             .unwrap();
-            let query = service(&repository);
+            let query = service(&store);
             let workspace = WorkspaceIdentity::new("/repo");
 
             // When
@@ -1019,7 +1019,7 @@ pub async fn test_workflow単一取得_単独sessionをworkflow_summaryとして
     )
     .await
     .unwrap();
-    let query = service(&SqliteWorkspaceTreeRepository::new(store));
+    let query = service(&store);
     // When / Then
     let ids = query
         .execution_summaries(None, None)
@@ -1044,7 +1044,7 @@ pub async fn test_workspace読取_実経路で失敗分類を保持する() {
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+    let query = service(&store);
     let workspace = WorkspaceIdentity::new("/repo");
     for (failure, expected) in ReadFailure::cases() {
         for mode in 0..2 {
@@ -1096,7 +1096,7 @@ pub async fn test_session選択_記録済みsessionとnodeのdtoを返し対象�
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
 
     let workspace = WorkspaceIdentity::new("/repo/selection");
     let tree = load_tree(&repository, &workspace).await;
@@ -1263,7 +1263,7 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
                 .await
                 .unwrap()
                 .unwrap();
-                let detail = service(&repository)
+                let detail = service(&store)
                     .node_detail(&workspace, &node.id)
                     .await
                     .unwrap()
@@ -1404,7 +1404,7 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
                 .unwrap();
             assert_eq!(old.failure_reason().as_deref(), Some(reason));
             assert_eq!(old.is_retry_history, retried);
-            let detail = service(&reader)
+            let detail = service(&store)
                 .node_detail(&workspace, &old.id)
                 .await
                 .unwrap()
@@ -1480,7 +1480,7 @@ pub async fn test_command詳細_完了済み実行のabort不可をrepositoryか
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
     let workspace = WorkspaceIdentity::new("/repo");
     let node = releashd::test_support::integration::workspace::node_for_execution(
         &*repository,
@@ -1491,7 +1491,7 @@ pub async fn test_command詳細_完了済み実行のabort不可をrepositoryか
     .unwrap()
     .unwrap();
     // When
-    let detail = service(&repository)
+    let detail = service(&store)
         .node_detail(&workspace, &node.id)
         .await
         .unwrap()
@@ -1540,7 +1540,7 @@ pub async fn test_node_artifact購読_同名の周回と再提出をnode実行id
         .await
         .unwrap();
     }
-    let query = service(&SqliteWorkspaceTreeRepository::new(store));
+    let query = service(&store);
     // When / Then
     for (id, expected) in [("first", "first"), ("second", "second")] {
         let WorkflowGetOutputResult::Submitted {
@@ -1751,7 +1751,7 @@ pub async fn test_準備中の会話詳細_起動失敗の理由を返し紐付�
         .iter()
         .find(|node| node.node_execution_id.as_deref() == Some("pending-node"))
         .unwrap();
-    let query = service(&repository);
+    let query = service(&store);
     assert!(query
         .node_detail(&WorkspaceIdentity::new("/repo"), &node.id)
         .await
@@ -1816,7 +1816,7 @@ pub async fn test_sessionタブ詳細_実行木と異なるrootの終端を子�
             .await;
         assert_ne!(parent.tree_id, parent.node_execution_id);
         let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-        let query = service(&repository);
+        let query = service(&store);
         assert!(
             session_detail(
                 &*repository,
@@ -1987,7 +1987,7 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
     .await
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+    let query = service(&store);
     let ids = vec![
         tree.into(),
         first.node_execution_id.clone(),
@@ -2138,7 +2138,7 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
         ))
         .unwrap();
         let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-        let query = service(&repository);
+        let query = service(&store);
         let boundary = records.len() - if retry { 3 } else { 4 };
         for (index, record) in records.iter().enumerate() {
             append_single_fact(&store, &record.meta, &record.fact, record.timestamp_ms)
@@ -2210,7 +2210,7 @@ pub async fn test_旧会話参照照会_保持した動的並列の親と出現�
     ))
     .unwrap();
     let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+    let query = service(&store);
     // Given
     let boundary = records
         .iter()
@@ -2274,7 +2274,7 @@ pub async fn test_旧会話参照照会_保持した動的並列の親と出現�
     let first = expected.keys().min().unwrap();
     rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap()
         .execute("UPDATE node_events SET detail = 'broken' WHERE node_execution_id = ?1 AND event_type = 'started'", [first]).unwrap();
-    let query = service(&repository);
+    let query = service(&store);
     let root = &records[0].meta.node_execution_id;
     let mut damaged_ids = ids;
     damaged_ids.push(root.clone());
@@ -2600,7 +2600,7 @@ pub async fn test_旧参照取得失敗_相関idが毎回変わっても失敗�
         Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let query = service(&SqliteWorkspaceTreeRepository::new(store.clone()));
+    let query = service(&store);
     let references = vec!["first-reference".into(), "second-reference".into()];
     let mut messages = Vec::new();
     for _ in 0..2 {
@@ -2647,8 +2647,7 @@ pub async fn test_旧会話参照照会_未発見の単独参照で全workspace�
         Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = service(&repository);
+    let query = service(&store);
     let searches = Arc::new(AtomicUsize::new(0));
     let observed = searches.clone();
     query.set_reference_search_observer(Some(Arc::new(move || {
@@ -2700,6 +2699,352 @@ pub async fn test_旧会話参照照会_未発見の単独参照で全workspace�
 }
 
 #[tokio::test]
-pub async fn test_実行木概要_全worktreeの表示名と状態を返しarchiveを除外する() {
-    todo!()
+pub async fn test_workflow一覧_fact_storeから項目と順序と絞り込みを復元する() {
+    use releashd::test_support::integration::workflow::{
+        append_facts_for_events, ExecutionOrigin, ExecutionStatusFilter, NodeKindName,
+        WorkflowDefinitionContent, WorkflowEvent,
+    };
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let query = service(&store);
+    assert!(query
+        .execution_records(None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    for (id, workspace, started, completed) in [
+        ("b", "/repo", 2.0, false),
+        ("a", "/repo", 2.0, false),
+        ("older", "/repo", 1.0, false),
+        ("completed", "/repo", 3.0, true),
+        ("other", "/other", 4.0, false),
+    ] {
+        let definition: WorkflowDefinitionContent = serde_saphyr::from_str(
+            "name: listed\ndescription: test\nnodes:\n  main: {command: 'true'}\n",
+        )
+        .unwrap();
+        let mut events = vec![WorkflowEvent::ExecutionStarted {
+            repository_root: None,
+            execution_id: id.into(),
+            workflow_name: "listed".into(),
+            worktree_path: workspace.into(),
+            created_from: ExecutionOrigin::DesktopUi,
+            request: String::new(),
+            definition,
+            timestamp: started,
+        }];
+        events.push(WorkflowEvent::NodeStarted {
+            execution_id: id.into(),
+            node_execution_id: format!("{id}-main"),
+            node_name: "main".into(),
+            kind: NodeKindName::Command,
+            attempt: 1,
+            parent: None,
+            worktree: None,
+            timestamp: started,
+        });
+        if completed {
+            events.push(WorkflowEvent::ExecutionCompleted {
+                execution_id: id.into(),
+                total_token_usage: Default::default(),
+                timestamp: 10.0,
+            });
+        }
+        append_facts_for_events(&store, &events).await.unwrap();
+    }
+    // When
+    let all = query.execution_records(None, None).await.unwrap();
+    let workspace = WorkspaceIdentity::new("/repo");
+    let selected = query
+        .execution_records(Some(&workspace), None)
+        .await
+        .unwrap();
+    let active = query
+        .execution_records(Some(&workspace), Some(ExecutionStatusFilter::Active))
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(
+        all.iter()
+            .map(|record| record.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        ["other", "a", "b", "older", "completed"]
+    );
+    assert_eq!(
+        selected
+            .iter()
+            .map(|record| record.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "older", "completed"]
+    );
+    assert_eq!(
+        active
+            .iter()
+            .map(|record| record.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b", "older"]
+    );
+    assert!(selected
+        .iter()
+        .all(|record| record.workflow_name == "listed"
+            && record.worktree_path == "/repo"
+            && record.created_from == ExecutionOrigin::DesktopUi));
+
+    // When
+    append_facts_for_events(
+        &store,
+        &[WorkflowEvent::ExecutionCompleted {
+            execution_id: "a".into(),
+            total_token_usage: Default::default(),
+            timestamp: 20.0,
+        }],
+    )
+    .await
+    .unwrap();
+    let updated = query
+        .execution_records(Some(&workspace), None)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(
+        updated
+            .iter()
+            .map(|record| record.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        ["b", "older", "a", "completed"]
+    );
+    assert_eq!(f64::from_bits(updated[2].completed_at_bits.unwrap()), 20.0);
+}
+
+#[tokio::test]
+pub async fn test_node詳細_fact_storeとprocess読み口から存在状態と失敗を返す() {
+    use releashd::test_support::integration::workflow::{
+        NodeKindName, NodeProcessPresence, NodeProcessReader, WorkflowError,
+    };
+    struct Processes(bool);
+    impl NodeProcessReader for Processes {
+        fn presence(
+            &self,
+            workspace: &str,
+            _: &str,
+            _: NodeKindName,
+            _: Option<&str>,
+        ) -> Result<NodeProcessPresence, WorkflowError> {
+            assert_eq!(workspace, "/repo");
+            if self.0 {
+                Err(WorkflowError::CorruptStoredState(
+                    "process read failed".into(),
+                ))
+            } else {
+                Ok(NodeProcessPresence::ConfirmedAbsent)
+            }
+        }
+    }
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let tree_id = "00000000-0000-4000-8000-000000001764";
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "process",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: tree_id,
+            node_execution_id: "process-node",
+            session_id: "process-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+    for fails in [false, true] {
+        let mut query = service(&store);
+        Arc::get_mut(&mut query).unwrap().processes = Some(Arc::new(Processes(fails)));
+        // When
+        let result = query
+            .node_detail(&WorkspaceIdentity::new("/repo"), tree_id)
+            .await;
+        // Then
+        if fails {
+            assert!(
+                matches!(result, Err(WorkflowError::CorruptStoredState(reason)) if reason.contains("process read failed"))
+            );
+        } else {
+            assert_eq!(
+                result.unwrap().unwrap().process_presence,
+                "confirmed_absent"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_一覧と詳細の継続読取_未変更の事実を読まず追記と無効化から復元する() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, read_tree_records, tree_fold_count, AgentActivityObservedFact,
+    };
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let tree = "00000000-0000-4000-8000-000000001765";
+    let other = "00000000-0000-4000-8000-000000001766";
+    for (id, workspace, node, session) in [
+        (tree, "/repo", "delta-node", "delta-session"),
+        (other, "/other", "other-node", "other-session"),
+    ] {
+        seed_workflow_session_facts(
+            &store,
+            WorkflowSessionFactSeed {
+                workflow_name: "delta",
+                request: "test",
+                worktree_path: workspace,
+                provider: ProviderKind::Codex,
+                workflow_execution_id: id,
+                node_execution_id: node,
+                session_id: session,
+                initial_instruction_admitted: true,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let facts = read_tree_records(&store, tree).await.unwrap();
+    let session = facts
+        .iter()
+        .find(|record| matches!(record.fact, NodeFact::SessionAttached(_)))
+        .unwrap();
+    let query = service(&store);
+    let before = query.execution_summaries(None, None).await.unwrap();
+    let folds = tree_fold_count();
+    let workspace = WorkspaceIdentity::new("/repo");
+    let initial = query.node_detail(&workspace, tree).await.unwrap().unwrap();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    let saved: String = connection
+        .query_row(
+            "SELECT detail FROM node_events WHERE tree_id = ?1 AND event_type = 'session_attached'",
+            [tree],
+            |row| row.get(0),
+        )
+        .unwrap();
+    connection.execute("UPDATE node_events SET detail = 'already consumed' WHERE event_type = 'session_attached'", []).unwrap();
+    // When / Then: the detail and list share the folds, including across workspaces.
+    assert_eq!(query.execution_summaries(None, None).await.unwrap(), before);
+    assert_eq!(
+        query.node_detail(&workspace, tree).await.unwrap().unwrap(),
+        initial
+    );
+    query
+        .node_detail(&WorkspaceIdentity::new("/other"), other)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(tree_fold_count(), folds);
+    append_single_fact(
+        &store,
+        &session.meta,
+        &NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::Working,
+        }),
+        20_000,
+    )
+    .await
+    .unwrap();
+    let changed = query.node_detail(&workspace, tree).await.unwrap().unwrap();
+    assert_eq!(changed.classification, "active");
+    assert_eq!(changed.updated_at, initial.updated_at);
+    assert_eq!(
+        query.execution_summaries(None, None).await.unwrap()[0].execution_id,
+        tree
+    );
+    assert_eq!(tree_fold_count(), folds);
+
+    // Given: full restoration must see valid historical facts again.
+    connection.execute("UPDATE node_events SET detail = ?2 WHERE tree_id = ?1 AND event_type = 'session_attached'", rusqlite::params![tree, saved]).unwrap();
+    // When / Then: terminal facts require full restoration, and subsequent reads reuse it.
+    append_single_fact(
+        &store,
+        &facts[0].meta,
+        &NodeFact::ExecutionCompleted,
+        30_000,
+    )
+    .await
+    .unwrap();
+    let completed = query
+        .execution_summaries(Some(&workspace), None)
+        .await
+        .unwrap();
+    assert_eq!(completed[0].status, ExecutionStatus::Completed);
+    assert_eq!(tree_fold_count(), folds + 1);
+    query.node_detail(&workspace, tree).await.unwrap().unwrap();
+    assert_eq!(tree_fold_count(), folds + 1);
+
+    // When / Then: truncation invalidates the fold and restores the remaining facts.
+    connection
+        .execute(
+            "DELETE FROM node_events WHERE tree_id = ?1 AND event_type = 'execution_completed'",
+            [tree],
+        )
+        .unwrap();
+    assert_eq!(
+        query.node_detail(&workspace, tree).await.unwrap().unwrap(),
+        changed
+    );
+    assert_eq!(tree_fold_count(), folds + 2);
+    let restored = service(&store)
+        .execution_summaries(Some(&workspace), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        query
+            .execution_summaries(Some(&workspace), None)
+            .await
+            .unwrap(),
+        restored
+    );
+    let folds = tree_fold_count();
+    append_single_fact(
+        &store,
+        &facts[0].meta,
+        &NodeFact::RepositoryRootObserved("/repo".into()),
+        40_000,
+    )
+    .await
+    .unwrap();
+    let restarted = query
+        .execution_summaries(Some(&workspace), None)
+        .await
+        .unwrap();
+    assert_eq!(tree_fold_count(), folds + 1);
+    assert_eq!(
+        restarted,
+        service(&store)
+            .execution_summaries(Some(&workspace), None)
+            .await
+            .unwrap()
+    );
+    connection
+        .execute("DELETE FROM node_events WHERE tree_id = ?1", [tree])
+        .unwrap();
+    assert!(query
+        .execution_records(Some(&workspace), None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(query.node_detail(&workspace, tree).await.unwrap().is_none());
 }

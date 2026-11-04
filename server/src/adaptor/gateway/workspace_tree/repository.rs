@@ -14,8 +14,8 @@ use crate::domain::workflow::services::fact_replay::{self, FoldedTree, TreeFold}
 use crate::domain::workflow::{ExecutionTreeLaunch, WorkflowError};
 use crate::domain::workspace_tree::WorkspaceExecution;
 use crate::domain::workspace_tree::{
-    RuntimeSnapshotNodeProjection, WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact,
-    WorkspaceTree, WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
+    WorkspaceIdentity, WorkspacePublicRoot, WorkspaceStructureFact, WorkspaceTree,
+    WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
 };
 
 #[derive(Clone)]
@@ -32,7 +32,6 @@ type SessionRoot = Arc<(SessionLocation, SessionExecutionContext)>;
 #[derive(Clone)]
 pub(super) struct TreeRoot {
     pub(super) workspace_identity: String,
-    pub(super) worktree_path: String,
     pub(super) launched_as: ExecutionTreeLaunch,
     started_at_ms: i64,
 }
@@ -44,7 +43,6 @@ impl TreeRoot {
             .map(|header| {
                 header.map(|header| Self {
                     workspace_identity: header.workspace_identity,
-                    worktree_path: header.worktree_path,
                     launched_as: header.launched_as,
                     started_at_ms: row.timestamp_ms,
                 })
@@ -227,13 +225,6 @@ impl SqliteWorkspaceTreeRepository {
             used_at: std::time::Instant::now(),
         });
         Ok(Some(view))
-    }
-
-    /// 保持している木の所属（root started の追記順）。
-    pub(super) async fn tree_roots(&self) -> Result<Vec<(String, TreeRoot)>, LocalEventQueryError> {
-        let mut held = self.held.lock().await;
-        self.sync(&mut held).await?;
-        Ok(ordered_roots(&held))
     }
 
     /// workspace identity が一致する全実行木の fold と metadata。
@@ -459,43 +450,8 @@ impl SqliteWorkspaceTreeRepository {
         folded: &FoldedTree,
         record: &WorkflowExecutionMetadataRecord,
     ) -> Result<Vec<WorkspaceTreeNode>, LocalEventQueryError> {
-        let mut process_presences = std::collections::HashMap::new();
-        if let Some(processes) = &self.processes {
-            for node in &folded.aggregate.node_executions {
-                process_presences.insert(
-                    node.id.clone(),
-                    processes
-                        .presence(workspace, &node.id, node.kind, node.session_id.as_deref())
-                        .map_err(|error| invariant_query_error(error.to_string()))?,
-                );
-            }
-        }
-        let delegate_waiting_node_ids = folded
-            .aggregate
-            .node_executions
-            .iter()
-            .filter(|node| folded.aggregate.delegate_waits_for_child(&node.id))
-            .map(|node| node.id.clone())
-            .collect();
-        crate::domain::workspace_tree::runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
-            command_failure_reasons: &folded.command_failure_reasons,
-            process_presences: &process_presences,
-            execution_id: &folded.aggregate.id,
-            workflow_name: &folded.aggregate.workflow_name,
-            workspace_identity: workspace,
-            workflow_definition: folded.aggregate.workflow.as_ref(),
-            node_executions: &folded.aggregate.node_executions,
-            retry_predecessors: &folded.aggregate.retry_predecessors,
-            delegate_waiting_node_ids: &delegate_waiting_node_ids,
-            execution_active: folded.aggregate.is_active(),
-            started_at: folded.aggregate.started_at,
-            updated_at: folded.aggregate.updated_at,
-            execution: record,
-
-            session_activities: &folded.session_activities,
-            session_display_names: &folded.session_display_names,
-        })
-        .map_err(invariant_query_error)
+        super::snapshot_nodes(workspace, folded, record, &self.processes)
+            .map_err(invariant_query_error)
     }
 
     /// Workspace の実行木を、実行ごとの状態と一緒に組み立てる。
