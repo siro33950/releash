@@ -130,7 +130,6 @@ impl ExecutionReads {
                     (
                         tree.head,
                         tree.root_identity,
-                        tree.root.is_none(),
                         session_root.is_some()
                             && tree.session_root.is_none()
                             && tree.root.as_ref().is_some_and(|root| {
@@ -158,9 +157,8 @@ impl ExecutionReads {
                     .iter()
                     .filter_map(|(id, head)| {
                         let needs_root = known.get(id).is_none_or(
-                            |(previous_head, identity, missing_root, missing_session)| {
+                            |(previous_head, identity, missing_session)| {
                                 head < previous_head
-                                    || *missing_root
                                     || *missing_session
                                     || if check_all_roots {
                                         identities.get(id) != identity.as_ref()
@@ -469,15 +467,27 @@ pub(super) fn fold_query_error(error: fact_log::FactReadError) -> LocalEventQuer
     error.into()
 }
 
-#[cfg(test)]
-#[path = "execution_reads_test.rs"]
-mod execution_reads_tests;
-
 pub(super) fn execution_read_error(error: LocalEventQueryError) -> WorkflowError {
     match error {
         error @ LocalEventQueryError::StorageAccessRequired { .. } => {
             WorkflowError::Store(error.into())
         }
-        error => super::query_service::query_error(error),
+        LocalEventQueryError::Technical(stopped) => WorkflowError::Technical(stopped),
+        error @ (LocalEventQueryError::StorageUnavailable { .. }
+        | LocalEventQueryError::QueryBusy) => {
+            let message = error.to_string();
+            WorkflowError::storage(error, message)
+        }
+        error @ LocalEventQueryError::Corrupt { .. } => {
+            WorkflowError::CorruptStoredState(error.to_string())
+        }
+        error @ LocalEventQueryError::IncompatibleStoredEvent { .. } => {
+            WorkflowError::IncompatibleStoredEvent(error.to_string())
+        }
+        error => WorkflowError::external(error.to_string()),
     }
 }
+
+#[cfg(test)]
+#[path = "execution_reads_test.rs"]
+mod execution_reads_tests;

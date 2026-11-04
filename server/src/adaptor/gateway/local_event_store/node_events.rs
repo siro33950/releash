@@ -192,19 +192,13 @@ pub(crate) fn standalone_roots_after(
 }
 
 /// First root fact (`parent_id IS NULL`) of the given event type in one tree,
-/// in the same order [`list_tree_roots`] uses.
+/// selected by the smallest seq.
 pub fn first_root_row_of_tree(
     connection: &Connection,
     tree_id: &str,
     root_event_type: &str,
 ) -> Result<Option<NodeEventRow>, rusqlite::Error> {
-    let mut statement = connection.prepare(&format!(
-        "SELECT {ROW_COLUMNS} FROM node_events
-         WHERE tree_id = ?1 AND event_type = ?2 AND parent_id IS NULL
-         ORDER BY timestamp, seq LIMIT 1"
-    ))?;
-    let mut rows = statement.query_map([tree_id, root_event_type], row_from_sql)?;
-    rows.next().transpose()
+    Ok(first_root_rows_for_trees(connection, &[tree_id.to_string()], root_event_type)?.pop())
 }
 
 pub(crate) fn read_node(
@@ -325,22 +319,24 @@ pub fn list_tree_roots(
     rows.collect()
 }
 
-pub(crate) fn tree_root_identities(
+const FIRST_ROOT_SEQUENCES: &str = "SELECT tree_id, MIN(seq) FROM node_events
+    WHERE parent_id IS NULL AND event_type = ?1";
+
+pub fn tree_root_identities(
     connection: &Connection,
     root_event_type: &str,
 ) -> Result<std::collections::HashMap<String, (i64, i64)>, rusqlite::Error> {
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare(&format!(
         "SELECT tree_id, seq, timestamp FROM node_events WHERE (tree_id, seq) IN (
-            SELECT tree_id, MIN(seq) FROM node_events
-            WHERE parent_id IS NULL AND event_type = ?1 GROUP BY tree_id)",
-    )?;
+            {FIRST_ROOT_SEQUENCES} GROUP BY tree_id)"
+    ))?;
     let rows = statement.query_map([root_event_type], |row| {
         Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
     })?;
     rows.collect()
 }
 
-pub(crate) fn first_root_rows_for_trees(
+pub fn first_root_rows_for_trees(
     connection: &Connection,
     tree_ids: &[String],
     root_event_type: &str,
@@ -350,14 +346,13 @@ pub(crate) fn first_root_rows_for_trees(
     }
     let mut statement = connection.prepare(&format!(
         "SELECT {ROW_COLUMNS} FROM node_events WHERE (tree_id, seq) IN (
-            SELECT tree_id, MIN(seq) FROM node_events
-            WHERE tree_id IN (SELECT value FROM json_each(?1)) AND parent_id IS NULL AND event_type = ?2
-            GROUP BY tree_id)"
+            {FIRST_ROOT_SEQUENCES}
+            AND tree_id IN (SELECT value FROM json_each(?2)) GROUP BY tree_id)"
     ))?;
     let rows = statement.query_map(
         rusqlite::params![
-            serde_json::to_string(tree_ids).expect("serializable tree ids"),
-            root_event_type
+            root_event_type,
+            serde_json::to_string(tree_ids).expect("serializable tree ids")
         ],
         row_from_sql,
     )?;

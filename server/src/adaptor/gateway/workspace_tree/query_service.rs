@@ -464,7 +464,9 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 }
             }
             Err(error) => {
-                let failure = crate::domain::failure::WorkFailure::from_error(&query_error(error));
+                let failure = crate::domain::failure::WorkFailure::from_error(
+                    &super::execution_reads::execution_read_error(error),
+                );
                 result.failures.extend(node_ids.iter().map(|id| {
                     crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
                         reference_id: id.clone(),
@@ -680,28 +682,6 @@ pub fn execution_summary(
         error_reason: record.error_reason,
         total_token_usage: record.total_token_usage,
     })
-}
-
-pub(super) fn query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> WorkflowError {
-    use crate::domain::local_event::LocalEventQueryError;
-
-    match error {
-        LocalEventQueryError::Technical(stopped) => WorkflowError::Technical(stopped),
-        error @ (LocalEventQueryError::StorageUnavailable { .. }
-        | LocalEventQueryError::QueryBusy) => {
-            let message = error.to_string();
-            WorkflowError::storage(error, message)
-        }
-        error @ LocalEventQueryError::Corrupt { .. } => {
-            WorkflowError::CorruptStoredState(error.to_string())
-        }
-        error @ LocalEventQueryError::IncompatibleStoredEvent { .. } => {
-            WorkflowError::IncompatibleStoredEvent(error.to_string())
-        }
-        error => WorkflowError::external(error.to_string()),
-    }
 }
 
 fn record_projection_error(context: &str) -> WorkflowError {
