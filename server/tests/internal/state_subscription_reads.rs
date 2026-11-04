@@ -966,7 +966,9 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1047,7 +1049,9 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1138,7 +1142,9 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1251,7 +1257,9 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1349,7 +1357,7 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(store.clone()),
             None,
             None,
         )
@@ -2005,7 +2013,9 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -2343,7 +2353,9 @@ async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_li
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )

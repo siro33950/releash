@@ -37,6 +37,8 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
+    let execution_reads =
+        releashd::test_support::integration::workspace::ExecutionReads::new(store.clone());
     let config = Arc::new(AppConfig::new(
         ReleashConfig::default(),
         data_dir.join("releash.toml"),
@@ -57,7 +59,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         ),
         retrying: retrying.clone(),
         state_publisher: None,
-        store: store.clone(),
+        execution_reads: execution_reads.clone(),
         data_dir: data_dir.clone(),
         provider_executable_config: config.clone(),
         provider_executable_probe: Arc::new(LocalProviderExecutableProbeGateway::with_search_path(
@@ -76,7 +78,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
         data_dir,
         repository.clone(),
         config.clone(),
-        store.clone(),
+        execution_reads.clone(),
         processes.clone(),
         releashd::test_support::integration::platform::WorkflowEditorDependencies {
             settings: Arc::new(
@@ -178,7 +180,7 @@ pub(crate) mod tests {
         .unwrap();
         std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
         let read = workflow_read(
-            _store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(_store.clone()),
             data.path(),
             Some(workflows.path().to_path_buf()),
         );
@@ -247,7 +249,7 @@ pub(crate) mod tests {
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(store.clone()),
             None,
             None,
         );
@@ -309,6 +311,8 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
     let mut configuration = ReleashConfig::default();
     configuration.agents.claude.cli_path = Some(executable.to_string_lossy().into_owned());
     configuration.app.last_repo_paths = vec![repo_path.to_owned()];
+    let execution_reads =
+        releashd::test_support::integration::workspace::ExecutionReads::new(store.clone());
     let config = Arc::new(AppConfig::new(configuration, data_dir.join("releash.toml")));
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = releashd::test_support::integration::platform::build_terminal_surface_application_with_data_dir(data_dir.clone());
@@ -326,7 +330,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         ),
         retrying: retrying.clone(),
         state_publisher: None,
-        store: store.clone(),
+        execution_reads: execution_reads.clone(),
         data_dir: data_dir.clone(),
         provider_executable_config: config.clone(),
         provider_executable_probe: Arc::new(LocalProviderExecutableProbeGateway::with_search_path(
@@ -345,7 +349,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         data_dir,
         repository.clone(),
         config.clone(),
-        store.clone(),
+        execution_reads.clone(),
         processes.clone(),
         releashd::test_support::integration::platform::WorkflowEditorDependencies {
             settings: Arc::new(

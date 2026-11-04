@@ -72,11 +72,15 @@ impl WorkflowDelegateAcceptanceHost {
             std::sync::Arc::new(crate::common::retry::RetryLimiter::new()),
         ))
         .unwrap();
+        let execution_reads =
+            crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads::new(
+                store.clone(),
+            );
         let archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
             store.clone(),
             data_dir,
         ));
-        let workspace_query = SqliteWorkspaceQueryService::new(store.clone());
+        let workspace_query = SqliteWorkspaceQueryService::with_reads(execution_reads.clone());
         let sessions = Arc::new(AcceptanceSessions::default());
         let host = WorkflowRuntimeHost::with_runtime_ports(
             data_dir.join("acceptance-workflows"),
@@ -112,7 +116,7 @@ impl WorkflowDelegateAcceptanceHost {
             )),
             crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
                 Arc::new(crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(data_dir.into(), store.clone())),
-                SqliteWorkspaceTreeRepository::new(store.clone()),
+                SqliteWorkspaceTreeRepository::with_reads(execution_reads.clone()),
                 dependencies.state_changes.clone(),
             ),
         ));

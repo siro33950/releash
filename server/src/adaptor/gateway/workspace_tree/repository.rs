@@ -1,16 +1,17 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use crate::adaptor::gateway::agent_session::{
     agent_session_from_fields, read_session_context, SessionContextReadError, SessionLocation,
 };
 use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow};
+#[cfg(feature = "test-support")]
 use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::agent_session::services::{session_fields_from_facts, SessionExecutionContext};
 use crate::domain::local_event::{LocalEventQueryError, WorkflowExecutionMetadataRecord};
-use crate::domain::workflow::services::fact_replay::{self, FoldedTree, TreeFold};
+use crate::domain::workflow::services::fact_replay::FoldedTree;
 use crate::domain::workflow::{ExecutionTreeLaunch, WorkflowError};
 use crate::domain::workspace_tree::WorkspaceExecution;
 use crate::domain::workspace_tree::{
@@ -18,213 +19,41 @@ use crate::domain::workspace_tree::{
     WorkspaceTreeNode, WorkspaceTreeProjector, WorkspaceTreeRepository,
 };
 
-#[derive(Clone)]
-enum WorkspaceSqliteBackend {
-    Live(Arc<LocalEventStore>),
-}
-
-/// 1 tree の fold 済みの結果と、そこから導出した metadata。
-pub(super) type FoldedExecution = Arc<(FoldedTree, WorkflowExecutionMetadataRecord)>;
-
+#[cfg(test)]
+use super::execution_reads::fold_query_error;
+pub(super) use super::execution_reads::FoldedExecution;
+use super::execution_reads::{ExecutionReads, FOLD_IDLE_LIMIT};
 type SessionRoot = Arc<(SessionLocation, SessionExecutionContext)>;
-
-/// root started に記録された木の所属。
-#[derive(Clone)]
-pub(super) struct TreeRoot {
-    pub(super) workspace_identity: String,
-    pub(super) launched_as: ExecutionTreeLaunch,
-    started_at_ms: i64,
-}
-
-impl TreeRoot {
-    fn from_row(row: &NodeEventRow) -> Result<Option<Self>, LocalEventQueryError> {
-        crate::adaptor::gateway::workflow::stored_definition::read_tree_header(&row.detail)
-            .map_err(|reason| fold_query_error(fact_log::FactReadError::Corrupt(reason)))
-            .map(|header| {
-                header.map(|header| Self {
-                    workspace_identity: header.workspace_identity,
-                    launched_as: header.launched_as,
-                    started_at_ms: row.timestamp_ms,
-                })
-            })
-    }
-}
-
-#[derive(Default)]
-struct HeldTree {
-    /// 直近に確かめた store の最新 seq。
-    head: i64,
-    root: Option<TreeRoot>,
-    root_identity: Option<(i64, [u8; 32])>,
-    /// root を探した時点の最新 seq。root が無い木は、事実が足されたら探し直す。
-    root_checked_at: i64,
-    fold: Option<HeldFold>,
-}
-
-struct HeldFold {
-    fold: TreeFold,
-    /// ここまでの事実を fold に足した。
-    read_through: i64,
-    /// 終端の事実を持つ木は、started の復元の仕方が変わる。
-    terminal: bool,
-    view: FoldedExecution,
-    /// 最後に読まれた時刻。読まれなくなった木の fold は捨てる。
-    used_at: std::time::Instant,
-}
-
-/// 読まれなくなった木の fold を持ち続ける時間。一覧に出ている worktree の木は
-/// 定期の読み取りで使われ続けるので、消えた worktree の木だけが捨てられる。
-const FOLD_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The only concrete `WorkspaceTreeRepository` implementation.
 ///
 /// tree ごとに fold 済みの結果を保持し、読むときに追記された事実だけを足す。
 pub struct SqliteWorkspaceTreeRepository {
-    backend: WorkspaceSqliteBackend,
+    reads: Arc<ExecutionReads>,
     pub processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
     pub failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
     pub fold_idle_limit: std::time::Duration,
-    // ponytail: 全 tree で 1 つの排他。読み取りが競合するなら tree ごとに分ける。
-    held: tokio::sync::Mutex<BTreeMap<String, HeldTree>>,
-    /// Session として起動した木の root の位置と実行の文脈。root started から決まり、変わらない。
-    session_roots: parking_lot::Mutex<HashMap<String, SessionRoot>>,
 }
 
 impl SqliteWorkspaceTreeRepository {
+    #[cfg(feature = "test-support")]
     pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
+        Self::with_reads(ExecutionReads::new(store))
+    }
+
+    pub fn with_reads(reads: Arc<ExecutionReads>) -> Arc<Self> {
         Arc::new(Self {
-            backend: WorkspaceSqliteBackend::Live(store),
+            reads,
             processes: None,
             failures: Arc::new(
                 crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
             ),
             fold_idle_limit: FOLD_IDLE_LIMIT,
-            held: Default::default(),
-            session_roots: Default::default(),
         })
     }
 
     pub(super) fn fact_backend(&self) -> FactLogReadBackend {
-        match &self.backend {
-            WorkspaceSqliteBackend::Live(store) => FactLogReadBackend::Live(Arc::clone(store)),
-        }
-    }
-
-    /// store にある tree とその最新 seq を確かめ、保持している一覧を合わせる。
-    async fn sync(
-        &self,
-        held: &mut BTreeMap<String, HeldTree>,
-    ) -> Result<(), LocalEventQueryError> {
-        let known = held
-            .iter()
-            .map(|(tree_id, tree)| (tree_id.clone(), (tree.root.is_some(), tree.root_checked_at)))
-            .collect::<HashMap<_, _>>();
-        let (heads, roots) = self
-            .fact_backend()
-            .run_indexed(move |connection| {
-                let unavailable = |error: rusqlite::Error| {
-                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
-                };
-                let heads = node_events::tree_heads(connection).map_err(unavailable)?;
-                let mut roots = Vec::new();
-                for (tree_id, head) in &heads {
-                    let root_is_current = known
-                        .get(tree_id)
-                        .is_some_and(|(has_root, checked_at)| *has_root || checked_at == head);
-                    if !root_is_current {
-                        roots.push((
-                            tree_id.clone(),
-                            node_events::first_root_row_of_tree(connection, tree_id, "started")
-                                .map_err(unavailable)?,
-                        ));
-                    }
-                }
-                Ok((heads, roots))
-            })
-            .await?;
-        let present = heads
-            .iter()
-            .map(|(tree_id, _)| tree_id.as_str())
-            .collect::<HashSet<_>>();
-        held.retain(|tree_id, _| present.contains(tree_id.as_str()));
-        self.session_roots
-            .lock()
-            .retain(|tree_id, _| present.contains(tree_id.as_str()));
-        for (tree_id, head) in heads {
-            let tree = held.entry(tree_id).or_default();
-            if head < tree.head {
-                // 削除された tree と同じ識別子で作り直された。
-                *tree = HeldTree::default();
-            }
-            tree.head = head;
-            if tree
-                .fold
-                .as_ref()
-                .is_some_and(|fold| fold.used_at.elapsed() > self.fold_idle_limit)
-            {
-                tree.fold = None;
-            }
-        }
-        for (tree_id, row) in roots {
-            let tree = held.entry(tree_id).or_default();
-            tree.root_checked_at = tree.head;
-            tree.root_identity = row.as_ref().map(root_identity);
-            tree.root = row.as_ref().map(TreeRoot::from_row).transpose()?.flatten();
-        }
-        Ok(())
-    }
-
-    /// 保持している fold を store の最新まで進めて返す。木が存在しなければ None。
-    async fn catch_up(
-        &self,
-        tree_id: &str,
-        tree: &mut HeldTree,
-    ) -> Result<Option<FoldedExecution>, LocalEventQueryError> {
-        let backend = self.fact_backend();
-        if let Some(held) = &mut tree.fold {
-            held.used_at = std::time::Instant::now();
-            if held.read_through >= tree.head {
-                return Ok(Some(Arc::clone(&held.view)));
-            }
-            let (requested, after) = (tree_id.to_string(), held.read_through);
-            let rows = backend
-                .run_indexed(move |connection| {
-                    node_events::read_tree_after(connection, &requested, after).map_err(|error| {
-                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-                            &error,
-                        )
-                    })
-                })
-                .await?;
-            if let Some(view) = append_rows(held, &rows) {
-                return Ok(Some(view));
-            }
-            // 追記として足せない事実だったので、最初から読み直す。
-            tree.fold = None;
-        }
-        let requested = tree_id.to_string();
-        let rows = backend
-            .run_indexed(move |connection| {
-                node_events::read_tree(connection, &requested).map_err(|error| {
-                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
-                })
-            })
-            .await?;
-        let corrupt = |reason: String| fold_query_error(fact_log::FactReadError::Corrupt(reason));
-        let records = fact_log::records_from_tree_rows(&rows).map_err(corrupt)?;
-        let Some((fold, folded)) = TreeFold::from_records(tree_id, &records).map_err(corrupt)?
-        else {
-            return Ok(None);
-        };
-        let view = folded_execution(folded);
-        tree.fold = Some(HeldFold {
-            fold,
-            read_through: rows.last().map_or(0, |row| row.seq),
-            terminal: fact_log::terminal_fact_in_rows(&rows).map_err(corrupt)?,
-            view: Arc::clone(&view),
-            used_at: std::time::Instant::now(),
-        });
-        Ok(Some(view))
+        self.reads.backend()
     }
 
     /// workspace identity が一致する全実行木の fold と metadata。
@@ -243,158 +72,15 @@ impl SqliteWorkspaceTreeRepository {
         &self,
         workspaces: &[&str],
     ) -> Vec<Result<Vec<FoldedExecution>, LocalEventQueryError>> {
-        let mut held = self.held.lock().await;
-        if let Err(error) = self.sync(&mut held).await {
-            return workspaces.iter().map(|_| Err(error.clone())).collect();
-        }
-        let roots = ordered_roots(&held);
-        let mut results = Vec::with_capacity(workspaces.len());
-        for workspace in workspaces {
-            let mut trees = Ok(Vec::new());
-            for (tree_id, root) in &roots {
-                if root.workspace_identity != *workspace {
-                    continue;
-                }
-                let tree = held.get_mut(tree_id).expect("root belongs to a held tree");
-                match self.catch_up(tree_id, tree).await {
-                    Ok(Some(folded)) => {
-                        if let Ok(trees) = &mut trees {
-                            trees.push(folded);
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        trees = Err(error);
-                        break;
-                    }
-                }
-            }
-            results.push(trees);
-        }
-        results
+        self.reads
+            .workspaces(workspaces, self.fold_idle_limit)
+            .await
     }
 
     async fn folded_all(&self) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
-        let mut held = self.held.lock().await;
-        let known = held
-            .iter_mut()
-            .map(|(id, tree)| {
-                if tree
-                    .fold
-                    .as_ref()
-                    .is_some_and(|fold| fold.used_at.elapsed() > self.fold_idle_limit)
-                {
-                    tree.fold = None;
-                }
-                (
-                    id.clone(),
-                    tree.fold.as_ref().map_or(0, |fold| fold.read_through),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let (heads, roots, rows) = self
-            .fact_backend()
-            .run_indexed(move |connection| {
-                let unavailable =
-                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
-                let transaction = connection
-                    .unchecked_transaction()
-                    .map_err(|e| unavailable(&e))?;
-                let heads = node_events::tree_heads(&transaction).map_err(|e| unavailable(&e))?;
-                let roots = node_events::list_tree_roots(&transaction, "started")
-                    .map_err(|e| unavailable(&e))?;
-                let after = heads
-                    .iter()
-                    .map(|(id, head)| {
-                        let after = known
-                            .get(id)
-                            .copied()
-                            .filter(|after| after <= head)
-                            .unwrap_or(0);
-                        (id.clone(), after)
-                    })
-                    .collect::<HashMap<_, _>>();
-                let rows = read_all_after(&transaction, &after).map_err(|e| unavailable(&e))?;
-                Ok((heads, roots, rows))
-            })
-            .await?;
-        let present = heads
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect::<HashSet<_>>();
-        held.retain(|id, _| present.contains(id.as_str()));
-        self.session_roots
-            .lock()
-            .retain(|id, _| present.contains(id.as_str()));
-        for (id, head) in heads {
-            let tree = held.entry(id.clone()).or_default();
-            if head < tree.head {
-                *tree = HeldTree::default();
-                self.session_roots.lock().remove(&id);
-            }
-            tree.head = head;
-        }
-        for row in roots {
-            let tree = held.get_mut(&row.tree_id).expect("root has a head");
-            if tree.root.is_none() {
-                tree.root = TreeRoot::from_row(&row)?;
-                tree.root_identity = Some(root_identity(&row));
-                tree.root_checked_at = tree.head;
-            }
-            if tree
-                .root
-                .as_ref()
-                .is_some_and(|root| root.launched_as == ExecutionTreeLaunch::Session)
-            {
-                let mut session_roots = self.session_roots.lock();
-                if !session_roots.contains_key(&row.tree_id) {
-                    session_roots.insert(row.tree_id.clone(), session_root_from_row(&row)?);
-                }
-            }
-        }
-        let mut grouped = HashMap::<String, Vec<NodeEventRow>>::new();
-        for row in rows {
-            grouped.entry(row.tree_id.clone()).or_default().push(row);
-        }
-        let mut restart = HashMap::new();
-        for (id, tree) in held.iter_mut() {
-            let rows = grouped.remove(id).unwrap_or_default();
-            if let Some(fold) = &mut tree.fold {
-                fold.used_at = std::time::Instant::now();
-                if rows.is_empty() {
-                    continue;
-                }
-                if append_rows(fold, &rows).is_some() {
-                    continue;
-                }
-                restart.insert(id.clone(), 0);
-            } else {
-                tree.fold = restore_fold(id, &rows)?;
-            }
-        }
-        if !restart.is_empty() {
-            let rows = self
-                .fact_backend()
-                .run_indexed(move |connection| {
-                    read_all_after(connection, &restart).map_err(|error| {
-                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-                            &error,
-                        )
-                    })
-                })
-                .await?;
-            let mut grouped = HashMap::<String, Vec<NodeEventRow>>::new();
-            for row in rows {
-                grouped.entry(row.tree_id.clone()).or_default().push(row);
-            }
-            for (id, rows) in grouped {
-                held.get_mut(&id).expect("restarted tree is held").fold = restore_fold(&id, &rows)?;
-            }
-        }
-        Ok(ordered_roots(&held)
-            .iter()
-            .filter_map(|(id, _)| held[id].fold.as_ref().map(|fold| Arc::clone(&fold.view)))
-            .collect())
+        self.reads
+            .all(self.fold_idle_limit, session_root_from_row)
+            .await
     }
 
     /// 1 tree の fold と metadata。
@@ -402,46 +88,7 @@ impl SqliteWorkspaceTreeRepository {
         &self,
         tree_id: &str,
     ) -> Result<Option<FoldedExecution>, LocalEventQueryError> {
-        let mut held = self.held.lock().await;
-        let requested = tree_id.to_string();
-        let (head, root) = self
-            .fact_backend()
-            .run_indexed(move |connection| {
-                let unavailable = |error: rusqlite::Error| {
-                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
-                };
-                let transaction = connection.unchecked_transaction().map_err(unavailable)?;
-                let head =
-                    node_events::reference_heads(&transaction, &HashSet::from([requested.clone()]))
-                        .map_err(unavailable)?;
-                let root = node_events::first_root_row_of_tree(&transaction, &requested, "started")
-                    .map_err(unavailable)?;
-                Ok((head.first().map(|(_, head)| *head), root))
-            })
-            .await?;
-        let (Some(head), Some(root)) = (head, root) else {
-            held.remove(tree_id);
-            self.session_roots.lock().remove(tree_id);
-            return Ok(None);
-        };
-        let identity = root_identity(&root);
-        let tree = held.entry(tree_id.to_string()).or_default();
-        if tree.root_identity != Some(identity) || head < tree.head {
-            *tree = HeldTree::default();
-            self.session_roots.lock().remove(tree_id);
-            tree.root = TreeRoot::from_row(&root)?;
-            tree.root_identity = Some(identity);
-        }
-        tree.head = head;
-        tree.root_checked_at = head;
-        if tree
-            .fold
-            .as_ref()
-            .is_some_and(|fold| fold.used_at.elapsed() > self.fold_idle_limit)
-        {
-            tree.fold = None;
-        }
-        self.catch_up(tree_id, tree).await
+        self.reads.tree(tree_id, self.fold_idle_limit).await
     }
 
     pub(super) fn tree_nodes(
@@ -551,8 +198,8 @@ impl SqliteWorkspaceTreeRepository {
         &self,
         tree_id: &str,
     ) -> Result<Option<SessionRoot>, LocalEventQueryError> {
-        if let Some(root) = self.session_roots.lock().get(tree_id) {
-            return Ok(Some(Arc::clone(root)));
+        if let Some(root) = self.reads.session_root(tree_id).await {
+            return Ok(Some(Arc::clone(&root)));
         }
         let backend = self.fact_backend();
         let requested = tree_id.to_string();
@@ -582,9 +229,9 @@ impl SqliteWorkspaceTreeRepository {
                     SessionContextReadError::Corrupt(reason) => invariant_query_error(reason),
                 })?;
         let root = Arc::new((location, context));
-        self.session_roots
-            .lock()
-            .insert(tree_id.to_string(), Arc::clone(&root));
+        self.reads
+            .record_session_root(tree_id, Arc::clone(&root))
+            .await;
         Ok(Some(root))
     }
 
@@ -729,51 +376,6 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
     }
 }
 
-fn read_all_after(
-    connection: &rusqlite::Connection,
-    after: &HashMap<String, i64>,
-) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
-    let mut statement = connection.prepare(
-        "SELECT e.tree_id, e.seq, e.node_execution_id, e.parent_id, e.node_name, e.kind, e.attempt, e.event_type, e.session_id, e.detail, e.timestamp
-         FROM json_each(?1) AS known JOIN node_events AS e ON e.tree_id = known.key AND e.seq > known.value
-         ORDER BY e.tree_id, e.seq"
-    )?;
-    let rows = statement.query_map(
-        [serde_json::to_string(after).expect("serializable heads")],
-        |row| {
-            Ok(NodeEventRow {
-                tree_id: row.get(0)?,
-                seq: row.get(1)?,
-                node_execution_id: row.get(2)?,
-                parent_id: row.get(3)?,
-                node_name: row.get(4)?,
-                kind: row.get(5)?,
-                attempt: row.get(6)?,
-                event_type: row.get(7)?,
-                session_id: row.get(8)?,
-                detail: row.get(9)?,
-                timestamp_ms: row.get(10)?,
-            })
-        },
-    )?;
-    rows.collect()
-}
-
-fn restore_fold(id: &str, rows: &[NodeEventRow]) -> Result<Option<HeldFold>, LocalEventQueryError> {
-    let corrupt = |reason: String| fold_query_error(fact_log::FactReadError::Corrupt(reason));
-    let records = fact_log::records_from_tree_rows(rows).map_err(corrupt)?;
-    let Some((fold, folded)) = TreeFold::from_records(id, &records).map_err(corrupt)? else {
-        return Ok(None);
-    };
-    Ok(Some(HeldFold {
-        fold,
-        read_through: rows.last().map_or(0, |row| row.seq),
-        terminal: fact_log::terminal_fact_in_rows(rows).map_err(corrupt)?,
-        view: folded_execution(folded),
-        used_at: std::time::Instant::now(),
-    }))
-}
-
 fn session_root_from_row(row: &NodeEventRow) -> Result<SessionRoot, LocalEventQueryError> {
     let root = crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
         .map_err(invariant_query_error)?
@@ -825,52 +427,6 @@ fn session_root_from_row(row: &NodeEventRow) -> Result<SessionRoot, LocalEventQu
     )))
 }
 
-fn root_identity(row: &NodeEventRow) -> (i64, [u8; 32]) {
-    use sha2::Digest;
-    (
-        row.timestamp_ms,
-        sha2::Sha256::new()
-            .chain_update(row.node_execution_id.len().to_le_bytes())
-            .chain_update(row.node_execution_id.as_bytes())
-            .chain_update(row.detail.as_bytes())
-            .finalize()
-            .into(),
-    )
-}
-
-fn ordered_roots(held: &BTreeMap<String, HeldTree>) -> Vec<(String, TreeRoot)> {
-    let mut roots = held
-        .iter()
-        .filter_map(|(tree_id, tree)| Some((tree_id.clone(), tree.root.clone()?)))
-        .collect::<Vec<_>>();
-    roots.sort_by(|left, right| {
-        (left.1.started_at_ms, &left.0).cmp(&(right.1.started_at_ms, &right.0))
-    });
-    roots
-}
-
-fn folded_execution(folded: FoldedTree) -> FoldedExecution {
-    let model = fact_replay::derive_read_model(&folded);
-    let record = fact_log::metadata_record_from_read_model(&model);
-    Arc::new((folded, record))
-}
-
-/// 追記された行を fold に足す。足せない事実が含まれていれば None。
-fn append_rows(held: &mut HeldFold, rows: &[NodeEventRow]) -> Option<FoldedExecution> {
-    let records = fact_log::records_from_appended_rows(rows, held.terminal).ok()??;
-    for record in &records {
-        if held.fold.requires_restart(record) {
-            return None;
-        }
-        held.fold.push(record).ok()?;
-    }
-    held.view = folded_execution(held.fold.view().ok()?);
-    if let Some(row) = rows.last() {
-        held.read_through = row.seq;
-    }
-    Some(Arc::clone(&held.view))
-}
-
 fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> WorkspaceStructureFact {
     WorkspaceStructureFact::WorkflowSummaryProjected {
         execution_id: execution.execution_id.clone(),
@@ -878,10 +434,6 @@ fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> Worksp
         status: execution.status,
         updated_at: f64::from_bits(execution.updated_at_bits),
     }
-}
-
-pub(super) fn fold_query_error(error: fact_log::FactReadError) -> LocalEventQueryError {
-    error.into()
 }
 
 fn repository_error(error: LocalEventQueryError) -> WorkflowError {

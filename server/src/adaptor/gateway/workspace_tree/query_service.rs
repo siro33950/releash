@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use crate::adaptor::gateway::local_event_store::{node_events, LocalEventStore};
-use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
-use crate::domain::local_event::WorkflowExecutionMetadataRecord;
-use crate::domain::workflow::services::fact_replay::{FoldedTree, TreeFold};
+#[cfg(feature = "test-support")]
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::workflow::fact_log::{FactLogReadBackend, FactReadError};
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
@@ -16,218 +15,18 @@ use crate::usecase::workflow::{
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
+use super::execution_reads::{ExecutionReads, FoldedExecution as ExecutionView, FOLD_IDLE_LIMIT};
+
 #[cfg(feature = "test-support")]
 type ReferenceSearchObserver = Arc<dyn Fn() + Send + Sync>;
 
 pub struct SqliteWorkspaceQueryService {
     backend: FactLogReadBackend,
-    executions: tokio::sync::Mutex<ExecutionReads>,
+    executions: Arc<ExecutionReads>,
     pub processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
     #[cfg(feature = "test-support")]
     reference_search_observer: parking_lot::Mutex<Option<ReferenceSearchObserver>>,
     references: Arc<parking_lot::Mutex<ReferenceIndex>>,
-}
-
-type ExecutionView = Arc<(FoldedTree, WorkflowExecutionMetadataRecord)>;
-
-#[derive(Default)]
-struct ExecutionReads {
-    trees: std::collections::BTreeMap<String, ReadTree>,
-}
-
-#[derive(Default)]
-struct ReadTree {
-    head: i64,
-    root: Option<ReadRoot>,
-    fold: Option<ReadFold>,
-}
-
-struct ReadRoot {
-    header: crate::adaptor::gateway::workflow::stored_definition::TreeRootHeader,
-    started_at_ms: i64,
-    identity: [u8; 32],
-}
-
-struct ReadFold {
-    fold: TreeFold,
-    read_through: i64,
-    terminal: bool,
-    view: ExecutionView,
-    used_at: std::time::Instant,
-}
-
-impl ExecutionReads {
-    async fn sync(&mut self, backend: &FactLogReadBackend) -> Result<(), WorkflowError> {
-        let known = self
-            .trees
-            .iter()
-            .map(|(id, tree)| (id.clone(), tree.head))
-            .collect::<std::collections::HashMap<_, _>>();
-        let (heads, roots) = backend
-            .run_indexed(move |connection| {
-                let unavailable =
-                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
-                let transaction = connection
-                    .unchecked_transaction()
-                    .map_err(|error| unavailable(&error))?;
-                let heads =
-                    node_events::tree_heads(&transaction).map_err(|error| unavailable(&error))?;
-                let mut roots = Vec::new();
-                for (id, head) in &heads {
-                    if known.get(id) != Some(head) {
-                        roots.push((
-                            id.clone(),
-                            node_events::first_root_row_of_tree(&transaction, id, "started")
-                                .map_err(|error| unavailable(&error))?,
-                        ));
-                    }
-                }
-                Ok((heads, roots))
-            })
-            .await
-            .map_err(fact_log::FactReadError::Query)?;
-        let roots = roots
-            .into_iter()
-            .map(|(id, row)| {
-                let root = row
-                    .map(|row| {
-                        use sha2::Digest;
-                        let identity = sha2::Sha256::new()
-                            .chain_update(row.timestamp_ms.to_le_bytes())
-                            .chain_update(row.node_execution_id.len().to_le_bytes())
-                            .chain_update(row.node_execution_id.as_bytes())
-                            .chain_update(row.detail.as_bytes())
-                            .finalize()
-                            .into();
-                        crate::adaptor::gateway::workflow::stored_definition::read_tree_header(
-                            &row.detail,
-                        )
-                        .map(|header| {
-                            header.map(|header| ReadRoot {
-                                header,
-                                started_at_ms: row.timestamp_ms,
-                                identity,
-                            })
-                        })
-                        .map_err(WorkflowError::CorruptStoredState)
-                    })
-                    .transpose()?
-                    .flatten();
-                Ok((id, root))
-            })
-            .collect::<Result<Vec<_>, WorkflowError>>()?;
-        let present = heads
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        self.trees.retain(|id, _| present.contains(id.as_str()));
-        for (id, head) in heads {
-            let tree = self.trees.entry(id).or_default();
-            if head < tree.head {
-                *tree = ReadTree::default();
-            }
-            tree.head = head;
-            tree.expire();
-        }
-        for (id, root) in roots {
-            let tree = self
-                .trees
-                .get_mut(&id)
-                .expect("root belongs to a current tree");
-            if tree.root.as_ref().map(|root| root.identity)
-                != root.as_ref().map(|root| root.identity)
-            {
-                tree.fold = None;
-            }
-            tree.root = root;
-        }
-        Ok(())
-    }
-}
-
-impl ReadTree {
-    fn expire(&mut self) {
-        if self
-            .fold
-            .as_ref()
-            .is_some_and(|fold| fold.used_at.elapsed() > std::time::Duration::from_secs(600))
-        {
-            self.fold = None;
-        }
-    }
-
-    async fn read(
-        &mut self,
-        backend: &FactLogReadBackend,
-        id: &str,
-    ) -> Result<Option<ExecutionView>, WorkflowError> {
-        if let Some(held) = &mut self.fold {
-            held.used_at = std::time::Instant::now();
-            if held.read_through >= self.head {
-                return Ok(Some(held.view.clone()));
-            }
-            let (requested, after) = (id.to_string(), held.read_through);
-            let rows = backend
-                .run_indexed(move |connection| {
-                    node_events::read_tree_after(connection, &requested, after).map_err(|error| {
-                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
-                            &error,
-                        )
-                    })
-                })
-                .await
-                .map_err(fact_log::FactReadError::Query)?;
-            if held.append(&rows).is_some() {
-                return Ok(Some(held.view.clone()));
-            }
-            self.fold = None;
-        }
-        let requested = id.to_string();
-        let rows = backend
-            .run_indexed(move |connection| {
-                node_events::read_tree(connection, &requested).map_err(|error| {
-                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
-                })
-            })
-            .await
-            .map_err(fact_log::FactReadError::Query)?;
-        let corrupt = WorkflowError::CorruptStoredState;
-        let records = fact_log::records_from_tree_rows(&rows).map_err(corrupt)?;
-        let Some((fold, folded)) = TreeFold::from_records(id, &records).map_err(corrupt)? else {
-            return Ok(None);
-        };
-        let view = execution_view(folded);
-        self.fold = Some(ReadFold {
-            fold,
-            read_through: rows.last().map_or(0, |row| row.seq),
-            terminal: fact_log::terminal_fact_in_rows(&rows).map_err(corrupt)?,
-            view: view.clone(),
-            used_at: std::time::Instant::now(),
-        });
-        Ok(Some(view))
-    }
-}
-
-impl ReadFold {
-    fn append(&mut self, rows: &[node_events::NodeEventRow]) -> Option<()> {
-        let records = fact_log::records_from_appended_rows(rows, self.terminal).ok()??;
-        for record in &records {
-            if self.fold.requires_restart(record) {
-                return None;
-            }
-            self.fold.push(record).ok()?;
-        }
-        self.view = execution_view(self.fold.view().ok()?);
-        if let Some(row) = rows.last() {
-            self.read_through = row.seq;
-        }
-        Some(())
-    }
-}
-
-fn execution_view(folded: FoldedTree) -> ExecutionView {
-    let model = crate::domain::workflow::services::fact_replay::derive_read_model(&folded);
-    Arc::new((folded, fact_log::metadata_record_from_read_model(&model)))
 }
 
 #[derive(Default)]
@@ -477,10 +276,15 @@ struct ReferenceTree {
 }
 
 impl SqliteWorkspaceQueryService {
+    #[cfg(feature = "test-support")]
     pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
+        Self::with_reads(ExecutionReads::new(store))
+    }
+
+    pub fn with_reads(executions: Arc<ExecutionReads>) -> Arc<Self> {
         Arc::new(Self {
-            backend: FactLogReadBackend::Live(store),
-            executions: Default::default(),
+            backend: executions.backend(),
+            executions,
             processes: None,
             references: Default::default(),
             #[cfg(feature = "test-support")]
@@ -495,32 +299,17 @@ impl SqliteWorkspaceQueryService {
 
     async fn read_executions(
         &self,
-        include: impl Fn(&crate::adaptor::gateway::workflow::stored_definition::TreeRootHeader) -> bool,
+        include: impl Fn(&super::execution_reads::TreeRoot) -> bool,
     ) -> Result<Vec<ExecutionView>, WorkflowError> {
-        let mut reads = self.executions.lock().await;
-        reads.sync(&self.backend).await?;
-        let mut roots = reads
-            .trees
-            .iter()
-            .filter_map(|(id, tree)| {
-                let root = tree.root.as_ref()?;
-                include(&root.header).then_some((root.started_at_ms, id.clone()))
+        self.executions
+            .selected(include, FOLD_IDLE_LIMIT)
+            .await
+            .map_err(|error| match error {
+                crate::domain::local_event::LocalEventQueryError::Corrupt { .. } => {
+                    query_error(error)
+                }
+                error => WorkflowError::from(FactReadError::Query(error)),
             })
-            .collect::<Vec<_>>();
-        roots.sort();
-        let mut executions = Vec::with_capacity(roots.len());
-        for (_, id) in roots {
-            if let Some(execution) = reads
-                .trees
-                .get_mut(&id)
-                .expect("selected tree is held")
-                .read(&self.backend, &id)
-                .await?
-            {
-                executions.push(execution);
-            }
-        }
-        Ok(executions)
     }
 
     pub async fn execution_records(

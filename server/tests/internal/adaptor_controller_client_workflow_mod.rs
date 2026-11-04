@@ -622,7 +622,7 @@ pub(crate) mod tests {
                 data_dir.clone(),
                 git_usecase.clone(),
                 config_repository.clone(),
-                local_event_store.clone(),
+                releashd::test_support::integration::workspace::ExecutionReads::new(local_event_store.clone()),
                 Arc::new(
                     releashd::test_support::integration::workflow::WorkflowNodeProcesses::default(
                     ),

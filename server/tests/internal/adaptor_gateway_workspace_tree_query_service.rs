@@ -1653,7 +1653,7 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
             ),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            store,
+            releashd::test_support::integration::workspace::ExecutionReads::new(store),
             None,
             None,
         )
@@ -3047,4 +3047,107 @@ pub async fn test_一覧と詳細の継続読取_未変更の事実を読まず�
         .unwrap()
         .is_empty());
     assert!(query.node_detail(&workspace, tree).await.unwrap().is_none());
+}
+
+#[tokio::test]
+pub async fn test_実行木読取_保存事実の破損を保存先障害と区別して返す() {
+    use releashd::test_support::integration::workflow::WorkflowError;
+    // Given
+    for event_type in ["started", "session_attached"] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalEventStore::open(LocalEventStoreConfig::production(
+            directory.path().into(),
+            Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+        ))
+        .unwrap();
+        let tree = "00000000-0000-4000-8000-000000001767";
+        seed_workflow_session_facts(
+            &store,
+            WorkflowSessionFactSeed {
+                workflow_name: "corrupt",
+                request: "test",
+                worktree_path: "/repo",
+                provider: ProviderKind::Codex,
+                workflow_execution_id: tree,
+                node_execution_id: "corrupt-node",
+                session_id: "corrupt-session",
+                initial_instruction_admitted: true,
+            },
+        )
+        .await
+        .unwrap();
+        let connection =
+            rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+        connection
+            .execute(
+                "UPDATE node_events SET detail = 'broken' WHERE tree_id = ?1 AND event_type = ?2",
+                rusqlite::params![tree, event_type],
+            )
+            .unwrap();
+        let query = service(&store);
+        // When / Then
+        for _ in 0..2 {
+            assert!(matches!(
+                query.execution_records(None, None).await,
+                Err(WorkflowError::CorruptStoredState(_))
+            ));
+            assert!(matches!(
+                query
+                    .node_detail(&WorkspaceIdentity::new("/repo"), tree)
+                    .await,
+                Err(WorkflowError::CorruptStoredState(_))
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_実行木読取_複数repositoryとqueryが同じfoldを共有する() {
+    use releashd::test_support::integration::workflow::tree_fold_count;
+    use releashd::test_support::integration::workspace::ExecutionReads;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let tree = "00000000-0000-4000-8000-000000001768";
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "shared",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: tree,
+            node_execution_id: "shared-node",
+            session_id: "shared-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+    let reads = ExecutionReads::new(store);
+    let repositories = (0..3)
+        .map(|_| SqliteWorkspaceTreeRepository::with_reads(reads.clone()))
+        .collect::<Vec<_>>();
+    let query = SqliteWorkspaceQueryService::with_reads(reads);
+    let workspace = WorkspaceIdentity::new("/repo");
+    let first = load_tree(&repositories[0], &workspace).await;
+    let folds = tree_fold_count();
+    // When / Then
+    assert_eq!(
+        query.execution_records(None, None).await.unwrap()[0].execution_id,
+        tree
+    );
+    assert!(query.node_detail(&workspace, tree).await.unwrap().is_some());
+    for repository in repositories {
+        assert_eq!(load_tree(&repository, &workspace).await, first);
+        assert_eq!(
+            repository.load_all_trees().await.unwrap(),
+            vec![first.clone()]
+        );
+        assert_eq!(tree_fold_count(), folds);
+    }
 }

@@ -2472,3 +2472,106 @@ pub async fn test_全実行木読取_空のstoreと読取失敗と保持期限�
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+pub async fn test_全実行木読取_同じidとseqのroot差し替えで所属とsessionを復元し直す() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let before = repository.load_all_trees().await.unwrap();
+    assert_eq!(before[0].workspace_identity(), &workspace);
+    assert!(before[0].session_node("session").is_some());
+    let folds = tree_fold_count();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+
+    // When
+    connection.execute("UPDATE node_events SET detail = json_set(detail, '$.root.workspaceIdentity', '/relocated') WHERE tree_id = 'session' AND event_type = 'started'", []).unwrap();
+    let actual = repository.load_all_trees().await.unwrap();
+
+    // Then
+    let relocated = WorkspaceIdentity::new("/relocated");
+    assert_eq!(actual.len(), 1);
+    assert_eq!(actual[0].workspace_identity(), &relocated);
+    assert_eq!(
+        actual[0].executions()[0]
+            .session
+            .as_ref()
+            .unwrap()
+            .workspace(),
+        &relocated
+    );
+    assert!(actual[0].session_node("session").is_some());
+    assert!(tree_fold_count() > folds);
+    let folds = tree_fold_count();
+    assert_eq!(repository.load_all_trees().await.unwrap(), actual);
+    assert_eq!(tree_fold_count(), folds);
+    assert_eq!(
+        repository
+            .load_trees(std::slice::from_ref(&relocated))
+            .await
+            .remove(0)
+            .unwrap(),
+        actual[0]
+    );
+    assert_eq!(
+        repository
+            .load_execution_tree(&relocated, "session")
+            .await
+            .unwrap()
+            .unwrap(),
+        actual[0]
+    );
+    assert_eq!(tree_fold_count(), folds);
+}
+
+#[tokio::test]
+pub async fn test_限定実行木読取_変更のない対象外rootを読み直さず全件読取は検証する() {
+    use releashd::test_support::integration::workspace::{
+        ExecutionReads, SqliteWorkspaceQueryService, WorkspaceQueryService,
+    };
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    LocalAgentSessionRepository::new(store.clone())
+        .create(
+            AgentSession::create(
+                "other-session",
+                WorkspaceIdentity::new("/other"),
+                "/other",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root("other-session").unwrap(),
+            )
+            .unwrap(),
+            "create-other-session",
+        )
+        .await
+        .unwrap();
+    let reads = ExecutionReads::new(store);
+    let repository = SqliteWorkspaceTreeRepository::with_reads(reads.clone());
+    let query = SqliteWorkspaceQueryService::with_reads(reads);
+    let before = repository.load_all_trees().await.unwrap();
+    let expected = before
+        .iter()
+        .find(|tree| tree.workspace_identity() == &workspace)
+        .unwrap();
+    let folds = tree_fold_count();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'already consumed' WHERE tree_id = 'other-session' AND event_type = 'started'", []).unwrap();
+    // When / Then
+    for _ in 0..2 {
+        assert_eq!(
+            repository
+                .load_trees(std::slice::from_ref(&workspace))
+                .await
+                .remove(0)
+                .unwrap(),
+            *expected
+        );
+        query.node_detail(&workspace, "session").await.unwrap();
+        assert_eq!(tree_fold_count(), folds);
+    }
+    assert!(repository.load_all_trees().await.is_err());
+}
