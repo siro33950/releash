@@ -520,7 +520,7 @@ pub(crate) fn take_workflow_execution_broadcasts(
 }
 
 pub(crate) fn workspace_query(store: Arc<LocalEventStore>) -> Arc<SqliteWorkspaceQueryService> {
-    SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(store))
+    SqliteWorkspaceQueryService::new(store)
 }
 
 pub(crate) fn dependencies(store: Option<Arc<LocalEventStore>>) -> WorkflowRuntimeDependencies {
@@ -586,7 +586,7 @@ pub(crate) fn archive_fixture_with_resolver(
         directory.path(),
     ));
     let trees = SqliteWorkspaceTreeRepository::new(store.clone());
-    let query = SqliteWorkspaceQueryService::with_repository(trees.clone());
+    let query = SqliteWorkspaceQueryService::new(store.clone());
     let app = crate::adaptor_gateway_workflow_workflow_host_test_helpers::dependencies(Some(
         store.clone(),
     ));

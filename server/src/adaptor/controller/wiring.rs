@@ -280,10 +280,12 @@ pub fn build_workflow_services_with_gateways(
     Arc::get_mut(&mut workspace_nodes)
         .expect("new workspace repository")
         .failures = failures.clone();
-    let workspace_query: Arc<dyn WorkspaceQueryService> =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-            workspace_nodes.clone(),
-        );
+    let mut workspace_query =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new(store.clone());
+    Arc::get_mut(&mut workspace_query)
+        .expect("new workspace query service")
+        .processes = processes.clone();
+    let workspace_query: Arc<dyn WorkspaceQueryService> = workspace_query;
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
         facets_base_dir.clone(),

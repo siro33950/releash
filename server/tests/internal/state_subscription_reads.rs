@@ -2041,7 +2041,9 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .into(),
     );
     assert_eq!(actual, expected);
-    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::new(
+        archive.store.clone(),
+    );
     use releashd::test_support::integration::workspace::WorkspaceQueryService;
     let mut individual_failures = Vec::new();
     for (id, fails) in [
@@ -2082,7 +2084,9 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     connection.execute(
         "UPDATE node_events SET detail = json_set(?1, '$.root.worktreePath', '') WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [&original_root],
     ).unwrap();
-    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::new(
+        archive.store.clone(),
+    );
     let resolution = query
         .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[broken_root_alias])
         .await;

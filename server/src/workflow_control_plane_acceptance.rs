@@ -506,10 +506,8 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
 
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-                crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                    store.clone(),
-                ),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::new(
+                store.clone(),
             );
 
         let workflows_dir = config.data_dir.join("acceptance-workflows");
