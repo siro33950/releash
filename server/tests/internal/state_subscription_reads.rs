@@ -2285,6 +2285,111 @@ async fn test_workspace状態購読_sessionタブ追加を設定未保存のま�
 }
 
 #[tokio::test]
-async fn test_実行木概要購読_非同期queryを経由して状態と失敗を返す() {
-    todo!()
+async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_list通知で配信する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, FailureRecordingUsecase, TechnicalFailureNature,
+        WorkFailure,
+    };
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::{
+        AgentSessionTreeLocation, LocalAgentSessionRepository,
+    };
+    use releashd::test_support::integration::workflow::AgentSessionActivity;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+
+    // Given
+    let fixture = Fixture::new();
+    let archive = archive_fixture();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(archive.store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
+    for (id, workspace) in [
+        ("session-tab", fixture.path.as_str()),
+        ("other-session", "/other-worktree"),
+    ] {
+        sessions
+            .create(
+                id,
+                WorkspaceIdentity::new(workspace),
+                workspace,
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+                &format!("create-{id}"),
+            )
+            .await
+            .unwrap();
+        sessions
+            .observe_activity(
+                id,
+                AgentSessionActivity::AwaitingInstruction,
+                &format!("idle-{id}"),
+            )
+            .await
+            .unwrap();
+    }
+    let failures = Arc::new(FailureRecordStore::default());
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            failures.clone(),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
+            archive.store.clone(),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
+    let target = SubscriptionTarget::ExecutionOverview;
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    start_read(&subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    let initial = reads.read(&target).await.unwrap();
+    assert!(
+        matches!(&initial, StateValue::ExecutionOverview(trees) if trees.len() == 2 && trees.iter().all(|tree| tree.visible().roots()[0].node().status_classification.as_public_str() == "idle"))
+    );
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
+    );
+    stream.next().await;
+
+    // When / Then
+    let key = FailureKey::new("workflow_delegate_injection", "session-tab");
+    for expected_classification in ["attention", "idle"] {
+        if expected_classification == "attention" {
+            recording.observed(
+                &key,
+                WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Other),
+                    message: "delegate injection failed".into(),
+                },
+            );
+        } else {
+            recording.resolved(&key);
+        }
+        let expected = reads.read(&target).await.unwrap();
+        assert!(
+            matches!(&expected, StateValue::ExecutionOverview(trees) if trees.len() == 2 && trees.iter().find(|tree| tree.nodes().iter().any(|node| node.session_id.as_deref() == Some("session-tab"))).unwrap().visible().roots()[0].node().status_classification.as_public_str() == expected_classification)
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("WorkspaceList notification must update the execution overview");
+        assert!(
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
+        );
+    }
 }

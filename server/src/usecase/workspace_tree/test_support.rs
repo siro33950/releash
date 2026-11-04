@@ -71,7 +71,7 @@ impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTre
     async fn load_all_trees(
         &self,
     ) -> Result<Vec<crate::domain::workspace_tree::WorkspaceTree>, WorkflowError> {
-        todo!()
+        Ok(Vec::new())
     }
 
     async fn load_trees(

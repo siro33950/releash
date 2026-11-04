@@ -320,9 +320,10 @@ fn test_sessionタブ購読_idだけを受け取りworktree変化で更新する
 }
 
 #[test]
-fn test_実行木概要購読_全worktreeの実行通知だけで更新し外部監視を追加しない() {
+fn test_実行木概要購読_全worktreeと失敗の通知で更新し外部監視を追加しない() {
     // Given
     let target = SubscriptionTarget::ExecutionOverview;
+    assert!(target.affected_by(&StateChangeSource::WorkspaceList));
     // When / Then
     for path in ["/repo", "/other"] {
         assert!(target.affected_by(&StateChangeSource::Worktree(path.into())));
@@ -330,7 +331,6 @@ fn test_実行木概要購読_全worktreeの実行通知だけで更新し外部
     }
     for source in [
         StateChangeSource::Repositories,
-        StateChangeSource::WorkspaceList,
         StateChangeSource::WorkspaceState("workspace".into()),
         StateChangeSource::WorkflowDefinitions,
         StateChangeSource::Providers,

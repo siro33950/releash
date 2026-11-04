@@ -87,7 +87,7 @@ impl Trees {
 #[async_trait::async_trait]
 impl releashd::test_support::integration::workspace::WorkspaceTreeRepository for Trees {
     async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
-        todo!()
+        self.results.lock().values().cloned().collect()
     }
 
     async fn load_trees(
@@ -233,13 +233,20 @@ pub async fn test_一覧の実行木_一覧から外れた木の保持を捨て�
 
 /// 実行中の session を 1 つ持つ workflow を、実在する worktree に作る。worktree の場所を返す。
 async fn seeded_workflow(
-    _failures: Arc<releashd::test_support::integration::platform::FailureRecordStore>,
+    failures: Arc<releashd::test_support::integration::platform::FailureRecordStore>,
     execution_id: &str,
 ) -> (tempfile::TempDir, WorkflowUsecase, String) {
     use releashd::test_support::integration::workflow::seed_workflow_session_facts;
     use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
     let directory = tempfile::tempdir().unwrap();
-    let (usecase, store) = build_workflow_usecase_and_store(directory.path().join("data"), None);
+    let (mut usecase, store) =
+        build_workflow_usecase_and_store(directory.path().join("data"), None);
+    let mut repository =
+        releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+        );
+    Arc::get_mut(&mut repository).unwrap().failures = failures;
+    usecase.test_replace_workspace_tree_repository(repository);
     let worktree = directory
         .path()
         .canonicalize()

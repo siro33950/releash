@@ -84,6 +84,7 @@ const FOLD_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(600)
 pub struct SqliteWorkspaceTreeRepository {
     backend: WorkspaceSqliteBackend,
     pub processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
+    pub failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
     pub fold_idle_limit: std::time::Duration,
     // ponytail: 全 tree で 1 つの排他。読み取りが競合するなら tree ごとに分ける。
     held: tokio::sync::Mutex<BTreeMap<String, HeldTree>>,
@@ -96,6 +97,9 @@ impl SqliteWorkspaceTreeRepository {
         Arc::new(Self {
             backend: WorkspaceSqliteBackend::Live(store),
             processes: None,
+            failures: Arc::new(
+                crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
+            ),
             fold_idle_limit: FOLD_IDLE_LIMIT,
             held: Default::default(),
             session_roots: Default::default(),
@@ -279,6 +283,129 @@ impl SqliteWorkspaceTreeRepository {
         results
     }
 
+    async fn folded_all(&self) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
+        let mut held = self.held.lock().await;
+        let known = held
+            .iter_mut()
+            .map(|(id, tree)| {
+                if tree
+                    .fold
+                    .as_ref()
+                    .is_some_and(|fold| fold.used_at.elapsed() > self.fold_idle_limit)
+                {
+                    tree.fold = None;
+                }
+                (
+                    id.clone(),
+                    tree.fold.as_ref().map_or(0, |fold| fold.read_through),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let (heads, roots, rows) = self
+            .fact_backend()
+            .run_indexed(move |connection| {
+                let unavailable =
+                    crate::adaptor::gateway::local_event_store::reader::storage_unavailable;
+                let transaction = connection
+                    .unchecked_transaction()
+                    .map_err(|e| unavailable(&e))?;
+                let heads = node_events::tree_heads(&transaction).map_err(|e| unavailable(&e))?;
+                let roots = node_events::list_tree_roots(&transaction, "started")
+                    .map_err(|e| unavailable(&e))?;
+                let after = heads
+                    .iter()
+                    .map(|(id, head)| {
+                        let after = known
+                            .get(id)
+                            .copied()
+                            .filter(|after| after <= head)
+                            .unwrap_or(0);
+                        (id.clone(), after)
+                    })
+                    .collect::<HashMap<_, _>>();
+                let rows = read_all_after(&transaction, &after).map_err(|e| unavailable(&e))?;
+                Ok((heads, roots, rows))
+            })
+            .await?;
+        let present = heads
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<HashSet<_>>();
+        held.retain(|id, _| present.contains(id.as_str()));
+        self.session_roots
+            .lock()
+            .retain(|id, _| present.contains(id.as_str()));
+        for (id, head) in heads {
+            let tree = held.entry(id.clone()).or_default();
+            if head < tree.head {
+                *tree = HeldTree::default();
+                self.session_roots.lock().remove(&id);
+            }
+            tree.head = head;
+        }
+        for row in roots {
+            let tree = held.get_mut(&row.tree_id).expect("root has a head");
+            if tree.root.is_none() {
+                tree.root = TreeRoot::from_row(&row)?;
+                tree.root_identity = Some(root_identity(&row));
+                tree.root_checked_at = tree.head;
+            }
+            if tree
+                .root
+                .as_ref()
+                .is_some_and(|root| root.launched_as == ExecutionTreeLaunch::Session)
+            {
+                let mut session_roots = self.session_roots.lock();
+                if !session_roots.contains_key(&row.tree_id) {
+                    session_roots.insert(row.tree_id.clone(), session_root_from_row(&row)?);
+                }
+            }
+        }
+        let mut grouped = HashMap::<String, Vec<NodeEventRow>>::new();
+        for row in rows {
+            grouped.entry(row.tree_id.clone()).or_default().push(row);
+        }
+        let mut restart = HashMap::new();
+        for (id, tree) in held.iter_mut() {
+            let rows = grouped.remove(id).unwrap_or_default();
+            if let Some(fold) = &mut tree.fold {
+                fold.used_at = std::time::Instant::now();
+                if rows.is_empty() {
+                    continue;
+                }
+                if append_rows(fold, &rows).is_some() {
+                    continue;
+                }
+                restart.insert(id.clone(), 0);
+            } else {
+                tree.fold = restore_fold(id, &rows)?;
+            }
+        }
+        if !restart.is_empty() {
+            let rows = self
+                .fact_backend()
+                .run_indexed(move |connection| {
+                    read_all_after(connection, &restart).map_err(|error| {
+                        crate::adaptor::gateway::local_event_store::reader::storage_unavailable(
+                            &error,
+                        )
+                    })
+                })
+                .await?;
+            let mut grouped = HashMap::<String, Vec<NodeEventRow>>::new();
+            for row in rows {
+                grouped.entry(row.tree_id.clone()).or_default().push(row);
+            }
+            for (id, rows) in grouped {
+                held.get_mut(&id).expect("restarted tree is held").fold = restore_fold(&id, &rows)?;
+            }
+        }
+        Ok(ordered_roots(&held)
+            .iter()
+            .filter_map(|(id, _)| held[id].fold.as_ref().map(|fold| Arc::clone(&fold.view)))
+            .collect())
+    }
+
     /// 1 tree の fold と metadata。
     pub async fn folded_tree(
         &self,
@@ -395,7 +522,28 @@ impl SqliteWorkspaceTreeRepository {
             });
         }
         tree.record_executions(executions);
+        self.observe_failures(&mut tree);
         Ok(tree)
+    }
+
+    fn observe_failures(&self, tree: &mut WorkspaceTree) {
+        let targets = tree
+            .nodes()
+            .iter()
+            .flat_map(|node| {
+                [
+                    Some(node.id.clone()),
+                    node.node_execution_id.clone(),
+                    node.execution_id.clone(),
+                ]
+            })
+            .flatten()
+            .collect::<HashSet<_>>();
+        for target in targets {
+            for message in self.failures.attention_messages(&target) {
+                tree.observe_background_failure(&target, &message);
+            }
+        }
     }
 
     /// Session として起動した実行木の session を、保持している事実の導出から復元する。
@@ -509,14 +657,45 @@ impl SqliteWorkspaceTreeRepository {
 #[async_trait::async_trait]
 impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
     async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
-        todo!()
+        let folded = self.folded_all().await.map_err(repository_error)?;
+        let mut workspaces = BTreeMap::<String, Vec<FoldedExecution>>::new();
+        for execution in folded {
+            workspaces
+                .entry(execution.0.root.workspace_identity.clone())
+                .or_default()
+                .push(execution);
+        }
+        let mut trees = Vec::with_capacity(workspaces.len());
+        for (workspace, folded) in workspaces {
+            trees.push(
+                self.workspace_tree(&workspace, &folded)
+                    .await
+                    .map_err(repository_error)?,
+            );
+        }
+        Ok(trees)
     }
 
     async fn load_trees(
         &self,
         workspace_identities: &[WorkspaceIdentity],
     ) -> Vec<Result<WorkspaceTree, WorkflowError>> {
-        todo!()
+        let workspaces = workspace_identities
+            .iter()
+            .map(WorkspaceIdentity::as_str)
+            .collect::<Vec<_>>();
+        let folded = self.folded_workspaces(&workspaces).await;
+        let mut trees = Vec::with_capacity(workspaces.len());
+        for (workspace, folded) in workspaces.iter().zip(folded) {
+            trees.push(
+                match folded {
+                    Ok(folded) => self.workspace_tree(workspace, &folded).await,
+                    Err(error) => Err(error),
+                }
+                .map_err(super::query_service::query_error),
+            );
+        }
+        trees
     }
 
     async fn load_execution_tree(
@@ -524,7 +703,20 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         workspace_identity: &WorkspaceIdentity,
         execution_id: &str,
     ) -> Result<Option<WorkspaceTree>, crate::domain::workflow::WorkflowError> {
-        todo!()
+        let Some(execution) = self
+            .folded_tree(execution_id)
+            .await
+            .map_err(super::query_service::query_error)?
+        else {
+            return Ok(None);
+        };
+        if execution.0.root.workspace_identity != workspace_identity.as_str() {
+            return Ok(None);
+        }
+        self.workspace_tree(workspace_identity.as_str(), &[execution])
+            .await
+            .map(Some)
+            .map_err(super::query_service::query_error)
     }
 
     async fn load_node_by_session_id(
@@ -579,6 +771,102 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         }
         Ok(None)
     }
+}
+
+fn read_all_after(
+    connection: &rusqlite::Connection,
+    after: &HashMap<String, i64>,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT e.tree_id, e.seq, e.node_execution_id, e.parent_id, e.node_name, e.kind, e.attempt, e.event_type, e.session_id, e.detail, e.timestamp
+         FROM json_each(?1) AS known JOIN node_events AS e ON e.tree_id = known.key AND e.seq > known.value
+         ORDER BY e.tree_id, e.seq"
+    )?;
+    let rows = statement.query_map(
+        [serde_json::to_string(after).expect("serializable heads")],
+        |row| {
+            Ok(NodeEventRow {
+                tree_id: row.get(0)?,
+                seq: row.get(1)?,
+                node_execution_id: row.get(2)?,
+                parent_id: row.get(3)?,
+                node_name: row.get(4)?,
+                kind: row.get(5)?,
+                attempt: row.get(6)?,
+                event_type: row.get(7)?,
+                session_id: row.get(8)?,
+                detail: row.get(9)?,
+                timestamp_ms: row.get(10)?,
+            })
+        },
+    )?;
+    rows.collect()
+}
+
+fn restore_fold(id: &str, rows: &[NodeEventRow]) -> Result<Option<HeldFold>, LocalEventQueryError> {
+    let corrupt = |reason: String| fold_query_error(fact_log::FactReadError::Corrupt(reason));
+    let records = fact_log::records_from_tree_rows(rows).map_err(corrupt)?;
+    let Some((fold, folded)) = TreeFold::from_records(id, &records).map_err(corrupt)? else {
+        return Ok(None);
+    };
+    Ok(Some(HeldFold {
+        fold,
+        read_through: rows.last().map_or(0, |row| row.seq),
+        terminal: fact_log::terminal_fact_in_rows(rows).map_err(corrupt)?,
+        view: folded_execution(folded),
+        used_at: std::time::Instant::now(),
+    }))
+}
+
+fn session_root_from_row(row: &NodeEventRow) -> Result<SessionRoot, LocalEventQueryError> {
+    let root = crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
+        .map_err(invariant_query_error)?
+        .ok_or_else(|| invariant_query_error("session tree root metadata is missing"))?;
+    let meta = fact_log::node_meta_from_row(row).map_err(invariant_query_error)?;
+    let definition = &root.definition["nodes"][&row.node_name];
+    let provider = match definition["session"]["provider"].as_str() {
+        Some("claude") => crate::domain::provider_lifecycle::ProviderKind::Claude,
+        Some("codex") => crate::domain::provider_lifecycle::ProviderKind::Codex,
+        _ => {
+            return Err(invariant_query_error(
+                "session provider is unavailable or unsupported",
+            ))
+        }
+    };
+    let mode = definition
+        .get("worktree")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(invariant_query_error)?;
+    let rule = crate::domain::workflow::WorktreeInheritance::new(mode);
+    let isolated = rule
+        .for_attempt(
+            root.header.repository_root.as_deref(),
+            &meta.node_execution_id,
+            meta.attempt,
+        )
+        .map_err(invariant_query_error)?;
+    let worktree_path = rule
+        .isolated_path(isolated.as_ref())
+        .unwrap_or(&root.header.worktree_path)
+        .to_string();
+    Ok(Arc::new((
+        SessionLocation {
+            tree_id: meta.tree_id,
+            node_execution_id: meta.node_execution_id,
+            parent_id: meta.parent_id,
+            node_name: meta.node_name,
+            attempt: meta.attempt,
+        },
+        SessionExecutionContext {
+            workspace_identity: root.header.workspace_identity,
+            workspace_worktree_path: root.header.worktree_path,
+            worktree_path,
+            launched_as: root.header.launched_as,
+            provider,
+        },
+    )))
 }
 
 fn root_identity(row: &NodeEventRow) -> (i64, [u8; 32]) {
@@ -638,6 +926,15 @@ fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> Worksp
 
 pub(super) fn fold_query_error(error: fact_log::FactReadError) -> LocalEventQueryError {
     error.into()
+}
+
+fn repository_error(error: LocalEventQueryError) -> WorkflowError {
+    match error {
+        error @ LocalEventQueryError::StorageAccessRequired { .. } => {
+            WorkflowError::Store(error.into())
+        }
+        error => super::query_service::query_error(error),
+    }
 }
 
 fn invariant_query_error(error: impl std::fmt::Display) -> LocalEventQueryError {

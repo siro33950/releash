@@ -1136,7 +1136,7 @@ pub async fn test_session選択_欠落はcorruptとしqueryの技術的性質を
             Vec<releashd::test_support::integration::workspace::WorkspaceTree>,
             releashd::test_support::integration::workflow::WorkflowError,
         > {
-            todo!()
+            panic!("unexpected overview read")
         }
 
         async fn load_trees(
