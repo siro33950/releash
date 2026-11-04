@@ -180,7 +180,10 @@ pub enum StateChangeSource {
 impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
         if matches!(self, Self::ExecutionOverview) {
-            return matches!(change, StateChangeSource::Worktree(_));
+            return matches!(
+                change,
+                StateChangeSource::Worktree(_) | StateChangeSource::WorkspaceList
+            );
         }
         use StateChangeSource as C;
         match change {

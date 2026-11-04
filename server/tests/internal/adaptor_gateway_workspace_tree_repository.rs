@@ -1943,6 +1943,7 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
             .collect::<Vec<_>>(),
         vec!["archived-session"]
     );
+    assert_eq!(repository.load_all_trees().await.unwrap(), vec![tree]);
 }
 
 #[tokio::test]
@@ -2310,4 +2311,164 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
             assert_eq!(detail.capabilities.can_approve, list.can_approve);
         }
     }
+}
+
+#[tokio::test]
+pub async fn test_全実行木読取_全worktreeを返し保持済みのfoldへ追記だけを反映する() {
+    use releashd::test_support::integration::workflow::{AbortRequestedFact, AgentSessionActivity};
+    // Given
+    let first = WorkspaceIdentity::new("/repo/first");
+    let second = WorkspaceIdentity::new("/repo/second");
+    let (_directory, store) = standalone_session_store("first-session", &first).await;
+    let sessions = LocalAgentSessionRepository::new(store.clone());
+    sessions
+        .create(
+            AgentSession::create(
+                "second-session",
+                second.clone(),
+                second.as_str(),
+                ProviderKind::Claude,
+                AgentSessionTreeLocation::session_tree_root("second-session").unwrap(),
+            )
+            .unwrap(),
+            "second",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+
+    // When / Then
+    let before = repository.load_all_trees().await.unwrap();
+    assert_eq!(
+        before
+            .iter()
+            .map(|tree| tree.workspace_identity().as_str())
+            .collect::<Vec<_>>(),
+        vec![first.as_str(), second.as_str()]
+    );
+    let folds = tree_fold_count();
+    assert_eq!(repository.load_all_trees().await.unwrap(), before);
+    assert_eq!(tree_fold_count(), folds);
+    let mut meta = standalone_session_meta("first-session");
+    meta.node_name = before[0]
+        .session_node("first-session")
+        .unwrap()
+        .node_name
+        .clone()
+        .unwrap();
+    append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::AwaitingAnswer,
+        }),
+        10_000,
+    )
+    .await
+    .unwrap();
+    let changed = repository.load_all_trees().await.unwrap();
+    assert_eq!(
+        changed[0].session_node("first-session").unwrap().activity,
+        Some(AgentSessionActivity::AwaitingAnswer)
+    );
+    assert_eq!(changed[1], before[1]);
+    assert_eq!(tree_fold_count(), folds);
+    append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AbortRequested(AbortRequestedFact::default()),
+        11_000,
+    )
+    .await
+    .unwrap();
+    let completed = repository.load_all_trees().await.unwrap();
+    let direct = SqliteWorkspaceTreeRepository::new(store.clone())
+        .load_all_trees()
+        .await
+        .unwrap();
+    assert_eq!(completed, direct);
+}
+
+#[tokio::test]
+pub async fn test_repository読取_全件と指定worktreeと単木で背景失敗を反映し解消する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, TechnicalFailureNature, WorkFailure,
+    };
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("session", &workspace).await;
+    let failures = Arc::new(FailureRecordStore::default());
+    let mut repository = SqliteWorkspaceTreeRepository::new(store);
+    Arc::get_mut(&mut repository).unwrap().failures = failures.clone();
+    let before = repository.load_all_trees().await.unwrap().remove(0);
+    let key = FailureKey::new("workflow_recovery", "session");
+    // When / Then
+    for attention in [true, false] {
+        if attention {
+            failures.observe(
+                &key,
+                WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Other),
+                    message: "repair required".into(),
+                },
+            );
+        } else {
+            failures.resolve(&key);
+        }
+        let all = repository.load_all_trees().await.unwrap().remove(0);
+        let listed = repository
+            .load_trees(std::slice::from_ref(&workspace))
+            .await
+            .remove(0)
+            .unwrap();
+        let single = repository
+            .load_execution_tree(&workspace, "session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(all, listed);
+        assert_eq!(single, listed);
+        assert_eq!(
+            all.session_node("session").unwrap().error_reason.as_deref(),
+            attention.then_some("repair required")
+        );
+        if !attention {
+            assert_eq!(all, before);
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_全実行木読取_空のstoreと読取失敗と保持期限切れを扱う() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("session", &workspace).await;
+    let mut repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    Arc::get_mut(&mut repository).unwrap().fold_idle_limit = std::time::Duration::ZERO;
+    let before = repository.load_all_trees().await.unwrap();
+    let folds = tree_fold_count();
+    // When / Then
+    assert_eq!(repository.load_all_trees().await.unwrap(), before);
+    assert_eq!(tree_fold_count(), folds + 1);
+    for (failure, expected) in ReadFailure::cases() {
+        store.fail_next_read(failure);
+        let error = repository.load_all_trees().await.unwrap_err();
+        assert_eq!(
+            releashd::test_support::integration::transport::classified_error(error).code,
+            expected
+        );
+        assert_eq!(repository.load_all_trees().await.unwrap(), before);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let empty = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    assert!(SqliteWorkspaceTreeRepository::new(empty)
+        .load_all_trees()
+        .await
+        .unwrap()
+        .is_empty());
 }

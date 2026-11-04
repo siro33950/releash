@@ -3566,7 +3566,7 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
     #[async_trait::async_trait]
     impl WorkspaceTreeRepository for Trees {
         async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
-            todo!()
+            panic!("unexpected overview read")
         }
 
         async fn load_trees(
