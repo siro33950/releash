@@ -99,6 +99,11 @@ struct SystemSettingsView: View {
       state.refreshLoginItemStatus()
     }
     .onDisappear { state.unsubscribe(model) }
+    .onReceive(NotificationCenter.default.publisher(for: LoginItemRegistration.didSynchronize)) {
+      notification in
+      guard notification.object as? AppModel === model else { return }
+      state.refreshLoginItemStatus()
+    }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active { state.refreshLoginItemStatus() }
     }
