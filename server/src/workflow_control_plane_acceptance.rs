@@ -475,10 +475,12 @@ impl WorkflowControlPlaneAcceptanceHost {
             ),
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
                 execution_reads.clone(),
+                work.failures.clone(),
             ),
             terminal.subscriptions(),
         );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            failures: work.failures.clone(),
             session_tabs: session_tabs.clone(),
             git: Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(Arc::new(
                 crate::adaptor::gateway::app_config::AppConfig::new(Default::default(), std::path::PathBuf::new()),
@@ -975,6 +977,9 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         let repository =
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
                 self.execution_reads.clone(),
+                std::sync::Arc::new(
+                    crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
+                ),
             );
         let backend = crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
             self.store.clone(),

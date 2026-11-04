@@ -6,6 +6,7 @@ use releashd::test_support::integration::platform::build_workflow_runtime_usecas
 use releashd::test_support::integration::platform::build_workflow_services_with_repository_worktrees;
 use releashd::test_support::integration::platform::compose_agent_sessions;
 use releashd::test_support::integration::platform::AgentSessionCompositionInput;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::platform::WorktreeExecutionArchiver;
 use releashd::test_support::integration::repository::WorktreeDeletionTarget;
 use releashd::test_support::integration::sessions::LocalProviderExecutableProbeGateway;
@@ -46,6 +47,7 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = Arc::new(build_terminal_surface_application_for_tests());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        failures: std::sync::Arc::new(FailureRecordStore::default()),
         session_tabs: releashd::test_support::integration::workspace::test_session_tabs(),
         git: Arc::new(
             releashd::test_support::integration::repository::GitGateway::new(config.clone()),
@@ -317,6 +319,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
     let publisher = releashd::test_support::integration::subscriptions::test_subscriptions();
     let terminal = releashd::test_support::integration::platform::build_terminal_surface_application_with_data_dir(data_dir.clone());
     let sessions = compose_agent_sessions(AgentSessionCompositionInput {
+        failures: std::sync::Arc::new(FailureRecordStore::default()),
         session_tabs: releashd::test_support::integration::workspace::test_session_tabs(),
         git: Arc::new(
             releashd::test_support::integration::repository::GitGateway::new(config.clone()),

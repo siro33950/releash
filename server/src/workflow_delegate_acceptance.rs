@@ -116,7 +116,7 @@ impl WorkflowDelegateAcceptanceHost {
             )),
             crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
                 Arc::new(crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(data_dir.into(), store.clone())),
-                SqliteWorkspaceTreeRepository::with_reads(execution_reads.clone()),
+                SqliteWorkspaceTreeRepository::with_reads(execution_reads.clone(), work.failures.clone()),
                 dependencies.state_changes.clone(),
             ),
         ));

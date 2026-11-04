@@ -1,4 +1,5 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::*;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::workflow::current_timestamp;
 use releashd::test_support::integration::workflow::ControlPlaneCommitCandidate;
 use releashd::test_support::integration::workflow::ManagedWorktreeResolver;
@@ -1247,6 +1248,7 @@ pub async fn test_プロセス在否_実供給元の変化が読取と通知と�
         let mut workspace =
             releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
                 fixture.store.clone(),
+                std::sync::Arc::new(FailureRecordStore::default()),
             );
         Arc::get_mut(&mut workspace).unwrap().processes = Some(fixture.host.node_processes.clone());
         for expected in [

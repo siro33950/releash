@@ -1,4 +1,5 @@
 use releashd::test_support::integration::platform::install_capturing_logger;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecase;
 use std::sync::atomic::AtomicUsize;
@@ -167,7 +168,7 @@ Arc::new(FixedHistory {
         }),
 hook_health_usecase(),
 started_execution_trees(),
-tokio::sync::mpsc::unbounded_channel().0, releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(store.clone()),releashd::test_support::integration::workspace::test_session_tabs(),
+tokio::sync::mpsc::unbounded_channel().0, releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(store.clone(), std::sync::Arc::new(FailureRecordStore::default())),releashd::test_support::integration::workspace::test_session_tabs(),
 );
     let request = AgentSessionHistoryResumeRequest {
         workspace: WorkspaceIdentity::new("/repo"),

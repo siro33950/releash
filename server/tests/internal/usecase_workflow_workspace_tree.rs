@@ -241,11 +241,11 @@ async fn seeded_workflow(
     let directory = tempfile::tempdir().unwrap();
     let (mut usecase, store) =
         build_workflow_usecase_and_store(directory.path().join("data"), None);
-    let mut repository =
+    let repository =
         releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
             store.clone(),
+            failures,
         );
-    Arc::get_mut(&mut repository).unwrap().failures = failures;
     usecase.test_replace_workspace_tree_repository(repository);
     let worktree = directory
         .path()

@@ -205,10 +205,12 @@ impl AgentSessionTuiAcceptanceHost {
             ),
             crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
                 execution_reads.clone(),
+                work.failures.clone(),
             ),
             subscriptions.clone(),
         );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            failures: work.failures.clone(),
             session_tabs: session_tabs.clone(),
             git: Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(Arc::new(
                 crate::adaptor::gateway::app_config::AppConfig::new(Default::default(), std::path::PathBuf::new()),
