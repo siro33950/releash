@@ -170,11 +170,7 @@ final class WorkspaceActionsTests: XCTestCase {
     repository.worktrees.items = [tree]
     model.repositories = [repository]
     try await model.startWorkflow(name: "review", path: branch.worktreePath)
-    XCTAssertEqual(try model.panes.layout().tabs.map(\.kind), [.session])
-    model.panes.closeCurrentTab()
-    model.panes.closeCurrentTab()
-    XCTAssertTrue(http.requests("DeleteAgentSession").isEmpty)
-    XCTAssertTrue(http.requests("AbortWorkflow").isEmpty)
+    XCTAssertTrue(try model.panes.layout().tabs.isEmpty)
     try await eventually {
       !http.requests("CreateAgentSession").isEmpty && !http.requests("StartWorkflow").isEmpty
     }

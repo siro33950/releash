@@ -72,6 +72,7 @@ import SwiftProtobuf
   @ObservationIgnored var pendingSaves: [String: Int] = [:]
   @ObservationIgnored private var saves: [String: Task<Void, Never>] = [:]
   @ObservationIgnored private var etags: [String: String] = [:]
+  @ObservationIgnored private var pendingSessionSelections: [String: String] = [:]
   @ObservationIgnored private var staleSaves: Set<String> = []
 
   @ObservationIgnored private let httpClient: any HTTPClientInterface
@@ -511,6 +512,10 @@ import SwiftProtobuf
     syncTerminalTabs((try? panes.layout()) ?? layout)
     syncNodeTabTitles()
     openPendingRoot()
+    if let sessionID = pendingSessionSelections[path], panes.selectSession(sessionID) {
+      pendingSessionSelections.removeValue(forKey: path)
+      savePaneLayout()
+    }
   }
   func editLayout(_ edit: (inout PaneLayout) -> Void) {
     guard layoutLoaded, let path = selectedWorktree, let client else { return }
@@ -694,9 +699,15 @@ extension AppModel {
     savePaneLayout()
   }
 
-  func openSession(_ selection: Releash_Client_V1_SessionSelection) {
-    panes.openSession(id: selection.agentSessionID, nodeID: selection.nodeID, title: "Session")
-    savePaneLayout()
+  /// 開発者がこの画面から起動した Session のタブを選ぶ。タブはサーバが足して配信するので、
+  /// まだ届いていなければ届いたときに選ぶ。
+  func openSession(_ selection: Releash_Client_V1_SessionSelection, path: String) {
+    if selectedWorktree == path, layoutLoaded, panes.selectSession(selection.agentSessionID) {
+      pendingSessionSelections.removeValue(forKey: path)
+      savePaneLayout()
+    } else {
+      pendingSessionSelections[path] = selection.agentSessionID
+    }
   }
 
   private func syncNodeTabTitles() {
@@ -717,7 +728,7 @@ extension AppModel {
     request.callerRequestID = UUID().uuidString
     let selection = try await client.createAgentSession(request: request, headers: headers).result
       .get()
-    openSession(selection)
+    openSession(selection, path: path)
   }
 
   func startWorkflow(name: String, path: String) async throws {

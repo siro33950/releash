@@ -72,13 +72,133 @@ final class SessionTabTests: XCTestCase {
         return pending
       }())
     let original = try XCTUnwrap(model.panes.controller.allTabIds.first)
-    // When
+    // When: 起動の応答は仮タブに触れない
     try await model.startSession(provider: "codex", path: "/repo")
+    // Then
+    XCTAssertEqual(model.panes.controller.allTabIds, [original])
+    XCTAssertEqual(try model.panes.layout().tabs.first?.nodeID, "session-tree")
+    XCTAssertNil(try model.panes.layout().tabs.first?.agentSessionID)
+    // When: サーバが仮タブに Session を結び付けた配置を配信し、一覧からも同じ会話を開く
+    try await eventually { model.pendingSaves["/repo"] == nil }
+    guard case .pane(let paneID, _, _) = try model.panes.layout() else {
+      return XCTFail("Expected a single pane")
+    }
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(
+        id: paneID,
+        tabs: [
+          PaneTab(id: original.id.uuidString, kind: .session, agentSessionID: "agent-session")
+        ],
+        active: original.id.uuidString
+      ).message
+    payload.workspaceState.value.etag = "9"
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventually {
+      (try? model.panes.layout().tabs.first?.agentSessionID) == "agent-session"
+    }
     model.openRoot(root)
     // Then
     XCTAssertEqual(model.panes.controller.allTabIds, [original])
     XCTAssertEqual(try model.panes.layout().tabs.first?.agentSessionID, "agent-session")
     XCTAssertNil(try model.panes.layout().tabs.first?.nodeID)
+    await model.stop()
+  }
+
+  @MainActor func test_会話の新規作成_画面はタブを作らず配信で届いたタブを応答の前後どちらでも選ぶ() async throws {
+    for pushFirst in [false, true] {
+      // Given: 別の会話のタブを 1 つ選択している
+      let http = TestHTTPClient()
+      let model = try await testModel(http)
+      model.selectWorktree("/repo")
+      try await eventually { model.layoutLoaded }
+      let other = PaneTab(id: "other", kind: .session, agentSessionID: "other")
+      let added = PaneTab(
+        id: "session-agent-session", kind: .session, agentSessionID: "agent-session")
+      var payload = Releash_Client_V1_StatePayload()
+      payload.workspaceState.value.paneLayout =
+        PaneLayout.pane(id: "pane", tabs: [other], active: other.id).message
+      payload.workspaceState.value.etag = "1"
+      http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+      try http.publish(payload, target: "workspace-state")
+      try await eventually { model.panes.controller.allTabIds.count == 1 }
+      func selectedSession() -> String? {
+        guard let pane = model.panes.controller.allPaneIds.first,
+          let tab = model.panes.controller.selectedTab(inPane: pane)?.id
+        else { return nil }
+        return model.panes.tab(tab)?.agentSessionID
+      }
+      func pushAdded() throws {
+        payload.workspaceState.value.paneLayout =
+          PaneLayout.pane(id: "pane", tabs: [other, added], active: other.id).message
+        payload.workspaceState.value.etag = "2"
+        http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+        try http.publish(payload, target: "workspace-state")
+      }
+      if pushFirst {
+        try pushAdded()
+        try await eventually { model.panes.controller.allTabIds.count == 2 }
+      }
+      let saves = http.requests("SaveWorkspaceState").count
+      // When: 起動の応答が届く
+      try await model.startSession(provider: "codex", path: "/repo")
+      if !pushFirst {
+        // Then: 画面はタブを作らず、保存もせず、選択も変えない
+        XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
+        XCTAssertEqual(http.requests("SaveWorkspaceState").count, saves)
+        XCTAssertEqual(selectedSession(), "other")
+        // When: サーバが末尾にタブを足した配置を配信する
+        try pushAdded()
+      }
+      // Then: 足されたタブが選ばれ、その選択が保存される
+      try await eventually { model.panes.controller.allTabIds.count == 2 }
+      try await eventually { selectedSession() == "agent-session" }
+      try await eventually {
+        guard let data = http.requests("SaveWorkspaceState").last?.message,
+          let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data),
+          let layout = try? PaneLayout(saved.state.paneLayout),
+          case .pane(_, _, let active) = layout
+        else { return false }
+        return active == added.id
+      }
+      XCTAssertEqual(try model.panes.layout().tabs.map(\.id), [other.id, added.id])
+      await model.stop()
+    }
+  }
+
+  @MainActor func test_会話の新規作成_待っている会話より後に開いた会話を選んだら待ちを捨てる() async throws {
+    // Given: 会話 "agent-session" の応答を受けたが、そのタブはまだ届いていない
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    let other = PaneTab(id: "session-other", kind: .session, agentSessionID: "other")
+    let added = PaneTab(
+      id: "session-agent-session", kind: .session, agentSessionID: "agent-session")
+    var payload = Releash_Client_V1_StatePayload()
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(id: "pane", tabs: [other], active: nil).message
+    payload.workspaceState.value.etag = "1"
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventually { model.panes.controller.allTabIds.count == 1 }
+    try await model.startSession(provider: "codex", path: "/repo")
+    // When: 既に届いている別の会話 "other" を開き、その後に "agent-session" のタブが届く
+    var later = Releash_Client_V1_SessionSelection()
+    later.agentSessionID = "other"
+    model.openSession(later, path: "/repo")
+    try await eventually { model.pendingSaves["/repo"] == nil }
+    payload.workspaceState.value.paneLayout =
+      PaneLayout.pane(id: "pane", tabs: [other, added], active: other.id).message
+    payload.workspaceState.value.etag = http.state.withLock { $0.layouts["/repo"]?.etag ?? "2" }
+    http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
+    try http.publish(payload, target: "workspace-state")
+    try await eventually { model.panes.controller.allTabIds.count == 2 }
+    // Then: 後に開いた "other" の選択が保たれる
+    let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let selected = try XCTUnwrap(model.panes.controller.selectedTab(inPane: pane)?.id)
+    XCTAssertEqual(model.panes.tab(selected)?.agentSessionID, "other")
     await model.stop()
   }
 

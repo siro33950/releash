@@ -82,19 +82,25 @@ final class SessionHistoryViewTests: XCTestCase {
           serializedBytes: XCTUnwrap(http.requests(method).last?.message))
         XCTAssertEqual(request.agentSessionID, "archived")
       } else {
+        // サーバがタブを足す（Restore）か、仮タブに Session を結び付ける（Resume）配置を配信する
+        guard case .pane(let id, var tabs, let active) = try model.panes.layout() else {
+          return XCTFail("Expected a single pane")
+        }
         if method == "RestoreAgentSession" {
-          let current = try model.panes.layout()
-          guard case .pane(let id, let tabs, let active) = current else {
-            return XCTFail("Expected a single pane")
-          }
-          let restored = PaneTab(
-            kind: .session, agentSessionID: "agent-session")
-          let layout = PaneLayout.pane(id: id, tabs: tabs + [restored], active: active)
-          var state = Releash_Client_V1_StatePayload()
-          state.workspaceState.value.version = 1
-          state.workspaceState.value.paneLayout = layout.message
-          try http.publish(state, target: "workspace-state")
-          try await eventually { (try? model.panes.layout()) == layout }
+          tabs.append(PaneTab(kind: .session, agentSessionID: "agent-session"))
+        } else {
+          let pending = try XCTUnwrap(
+            tabs.firstIndex { $0.kind == .session && $0.nodeID == "session-tree" })
+          tabs[pending].nodeID = nil
+          tabs[pending].agentSessionID = "agent-session"
+        }
+        let layout = PaneLayout.pane(id: id, tabs: tabs, active: active)
+        var state = Releash_Client_V1_StatePayload()
+        state.workspaceState.value.version = 1
+        state.workspaceState.value.paneLayout = layout.message
+        try http.publish(state, target: "workspace-state")
+        try await eventually { (try? model.panes.layout()) == layout }
+        if method == "RestoreAgentSession" {
           let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
           XCTAssertEqual(model.panes.controller.selectedTab(inPane: pane)?.id, originalTabs.first)
         }

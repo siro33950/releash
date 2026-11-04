@@ -275,6 +275,18 @@ import SwiftUI
     return id
   }
 
+  @discardableResult
+  func selectSession(_ sessionID: String) -> Bool {
+    guard
+      let tab = controller.allTabIds.first(where: {
+        tabs[$0.id.uuidString]?.kind == .session
+          && tabs[$0.id.uuidString]?.agentSessionID == sessionID
+      })
+    else { return false }
+    controller.selectTab(tab)
+    return true
+  }
+
   func openSession(id sessionID: String, nodeID: String, title: String) {
     if let pending = controller.allTabIds.first(where: {
       tabs[$0.id.uuidString]?.kind == .session && tabs[$0.id.uuidString]?.nodeID == nodeID
