@@ -2698,3 +2698,176 @@ pub async fn test_旧会話参照照会_未発見の単独参照で全workspace�
         assert_eq!(searches.load(Ordering::SeqCst), 1);
     }
 }
+
+#[tokio::test]
+pub async fn test_実行木概要_全worktreeの表示名と状態を返しarchiveを除外する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().to_path_buf(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let query = service(&repository);
+    let empty = query.execution_overview().await.unwrap();
+    assert!(empty.executions.is_empty());
+    assert_eq!(empty.status.as_public_str(), "idle");
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
+    for (id, path, provider, activity) in [
+        (
+            "00000000-0000-4000-8000-000000001766",
+            "/repo/z-worktree",
+            ProviderKind::Codex,
+            AgentSessionActivity::Working,
+        ),
+        (
+            "overview-claude",
+            "/repo/a-worktree",
+            ProviderKind::Claude,
+            AgentSessionActivity::AwaitingAnswer,
+        ),
+    ] {
+        sessions
+            .create(
+                id,
+                WorkspaceIdentity::new(path),
+                path,
+                provider,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+                &format!("create-{id}"),
+            )
+            .await
+            .unwrap();
+        sessions
+            .observe_activity(id, activity, &format!("activity-{id}"))
+            .await
+            .unwrap();
+    }
+    let workflow_id = "00000000-0000-4000-8000-000000001764";
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "overview-workflow",
+            request: "test",
+            worktree_path: "/repo/a-worktree",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: workflow_id,
+            node_execution_id: "overview-workflow-node",
+            session_id: "overview-workflow-session",
+            initial_instruction_admitted: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    sessions
+        .observe_activity(
+            "overview-workflow-session",
+            AgentSessionActivity::Working,
+            "overview-workflow-working",
+        )
+        .await
+        .unwrap();
+
+    // When
+    let overview = query.execution_overview().await.unwrap();
+    // Then
+    assert_eq!(overview.status.as_public_str(), "attention");
+    assert!(overview
+        .executions
+        .windows(2)
+        .all(|entries| entries[0].worktree_path <= entries[1].worktree_path));
+    let mut rows = overview
+        .executions
+        .iter()
+        .map(|entry| {
+            (
+                entry.worktree_path.as_str(),
+                entry.worktree_name.as_str(),
+                entry.name.as_str(),
+                entry.status.as_public_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            ("/repo/a-worktree", "a-worktree", "Claude", "attention"),
+            (
+                "/repo/a-worktree",
+                "a-worktree",
+                "overview-workflow",
+                "active"
+            ),
+            ("/repo/z-worktree", "z-worktree", "Codex", "active"),
+        ]
+    );
+    let workflow_tree = load_tree(&repository, &WorkspaceIdentity::new("/repo/a-worktree")).await;
+    assert_eq!(
+        overview
+            .executions
+            .iter()
+            .find(|entry| entry.name == "overview-workflow")
+            .unwrap()
+            .status,
+        workflow_tree
+            .card_executions()
+            .iter()
+            .find(|(_, nodes)| nodes.is_workflow())
+            .unwrap()
+            .1
+            .node()
+            .status_classification
+    );
+
+    // When: cached trees change and one is archived
+    sessions
+        .observe_activity(
+            "overview-claude",
+            AgentSessionActivity::AwaitingInstruction,
+            "overview-idle-claude",
+        )
+        .await
+        .unwrap();
+    archive_aborted(&store, directory.path(), workflow_id, 10.0, "manual").await;
+    let updated = query.execution_overview().await.unwrap();
+    // Then
+    assert_eq!(updated.executions.len(), 2);
+    assert_eq!(updated.status.as_public_str(), "active");
+    sessions
+        .observe_activity(
+            "00000000-0000-4000-8000-000000001766",
+            AgentSessionActivity::AwaitingInstruction,
+            "overview-idle-codex",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        query
+            .execution_overview()
+            .await
+            .unwrap()
+            .status
+            .as_public_str(),
+        "idle"
+    );
+    archive_aborted(
+        &store,
+        directory.path(),
+        "00000000-0000-4000-8000-000000001766",
+        11.0,
+        "manual",
+    )
+    .await;
+    assert_eq!(
+        query.execution_overview().await.unwrap().executions.len(),
+        1
+    );
+}

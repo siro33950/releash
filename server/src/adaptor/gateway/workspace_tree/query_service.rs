@@ -343,7 +343,73 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         crate::usecase::workspace_tree::execution_overview::ExecutionOverviewDto,
         WorkflowError,
     > {
-        todo!()
+        use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
+        use crate::domain::provider_lifecycle::ProviderKind;
+        use crate::usecase::workspace_tree::execution_overview::{
+            ExecutionOverviewDto, ExecutionOverviewEntryDto,
+        };
+
+        let mut executions = Vec::new();
+        for (tree_id, root) in self.repository.tree_roots().await.map_err(query_error)? {
+            let Some(execution) = self
+                .repository
+                .folded_tree(&tree_id)
+                .await
+                .map_err(query_error)?
+            else {
+                continue;
+            };
+            let (folded, record) = &*execution;
+            if folded.aggregate.archive_record().is_some() {
+                continue;
+            }
+            let name = match root.launched_as {
+                ExecutionTreeLaunch::Workflow => record.workflow_name.clone(),
+                ExecutionTreeLaunch::Session => {
+                    let (_, fields) = self
+                        .repository
+                        .execution_session_fields(folded)
+                        .await
+                        .map_err(query_error)?
+                        .ok_or_else(|| record_projection_error("Session tree has no session"))?;
+                    if fields.lifecycle == AgentSessionLifecycle::Archived {
+                        continue;
+                    }
+                    match fields.provider {
+                        ProviderKind::Claude => "Claude",
+                        ProviderKind::Codex => "Codex",
+                    }
+                    .to_string()
+                }
+            };
+            let nodes = self
+                .repository
+                .tree_nodes(&root.workspace_identity, folded, record)
+                .map_err(query_error)?;
+            let owner = nodes
+                .iter()
+                .find(|node| node.kind == WorkspaceNodeKind::Workflow)
+                .ok_or_else(|| record_projection_error("Execution tree has no root"))?;
+            let public_root = WorkspacePublicRoot::for_owner(nodes.iter(), owner);
+            let status = match root.launched_as {
+                ExecutionTreeLaunch::Session => public_root.node().status_classification,
+                ExecutionTreeLaunch::Workflow => owner.status_classification,
+            };
+            executions.push(ExecutionOverviewEntryDto {
+                worktree_name: std::path::Path::new(&root.worktree_path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.worktree_path.clone()),
+                worktree_path: root.worktree_path,
+                name,
+                status,
+            });
+        }
+        executions.sort_by(|left, right| left.worktree_path.cmp(&right.worktree_path));
+        Ok(ExecutionOverviewDto {
+            status: overview_status(executions.iter().map(|execution| execution.status)),
+            executions,
+        })
     }
 
     async fn resolve_session_nodes(
@@ -569,6 +635,28 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             .map(execution_summary)
             .collect()
     }
+}
+
+fn overview_status(
+    statuses: impl IntoIterator<Item = crate::domain::workspace_tree::WorkspaceNodeStatusClassification>,
+) -> crate::domain::workspace_tree::WorkspaceNodeStatusClassification {
+    use crate::domain::workspace_tree::{WorkspaceNodeClassification, WorkspaceNodeStatus};
+    WorkspaceNodeClassification {
+        id: String::new(),
+        parent_id: None,
+        execution_id: None,
+        node_execution_id: None,
+        kind: WorkspaceNodeKind::Workflow,
+        status: WorkspaceNodeStatus::Completed,
+        process_presence: Default::default(),
+        delegate_waits_for_child: false,
+        background_failure: false,
+        activity: None,
+        has_session: false,
+        completion_signals: Default::default(),
+        hidden: false,
+    }
+    .classify(statuses)
 }
 
 fn node_detail_with_workflow(

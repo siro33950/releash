@@ -372,7 +372,6 @@ impl WorkspaceStateReads {
     ) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         Ok(match target {
-            SubscriptionTarget::ExecutionOverview => todo!(),
             T::RepositoryPaths => StateValue::RepositoryPaths(self.repositories.get()),
             T::Providers => StateValue::Providers(
                 self.providers
@@ -485,7 +484,7 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
+            T::ExecutionOverview | T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
             | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_) | T::FilteredIssues(..)
             | T::Terminal(_)
             | T::Workspaces
