@@ -1,5 +1,54 @@
 use super::*;
 
+#[test]
+fn test_表示状態集約_空ならidle() {
+    // Given
+    let statuses = [];
+    // When
+    let status = WorkspaceNodeStatusClassification::aggregate(statuses);
+    // Then
+    assert_eq!(status, WorkspaceNodeStatusClassification::Idle);
+}
+
+#[test]
+fn test_表示状態集約_idleのみならidle() {
+    use WorkspaceNodeStatusClassification as C;
+    // Given
+    let statuses = [C::Idle, C::Idle];
+    // When
+    let status = C::aggregate(statuses);
+    // Then
+    assert_eq!(status, C::Idle);
+}
+
+#[test]
+fn test_表示状態集約_activeを含むとactive() {
+    use WorkspaceNodeStatusClassification as C;
+    // Given
+    for statuses in [[C::Active, C::Idle], [C::Idle, C::Active]] {
+        // When
+        let status = C::aggregate(statuses);
+        // Then
+        assert_eq!(status, C::Active);
+    }
+}
+
+#[test]
+fn test_表示状態集約_attentionを含むとattention() {
+    use WorkspaceNodeStatusClassification as C;
+    // Given
+    for statuses in [
+        [C::Attention, C::Active, C::Idle],
+        [C::Active, C::Attention, C::Idle],
+        [C::Idle, C::Active, C::Attention],
+    ] {
+        // When
+        let status = C::aggregate(statuses);
+        // Then
+        assert_eq!(status, C::Attention);
+    }
+}
+
 fn node(kind: WorkspaceNodeKind, status: WorkspaceNodeStatus) -> WorkspaceTreeNode {
     WorkspaceTreeNode {
         process_presence: NodeProcessPresence::Unknown,
