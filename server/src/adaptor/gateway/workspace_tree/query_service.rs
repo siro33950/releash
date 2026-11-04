@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "test-support")]
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-use crate::adaptor::gateway::workflow::fact_log::{FactLogReadBackend, FactReadError};
+use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
@@ -304,12 +304,7 @@ impl SqliteWorkspaceQueryService {
         self.executions
             .selected(include, FOLD_IDLE_LIMIT)
             .await
-            .map_err(|error| match error {
-                crate::domain::local_event::LocalEventQueryError::Corrupt { .. } => {
-                    query_error(error)
-                }
-                error => WorkflowError::from(FactReadError::Query(error)),
-            })
+            .map_err(super::execution_reads::execution_read_error)
     }
 
     pub async fn execution_records(

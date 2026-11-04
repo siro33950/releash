@@ -325,6 +325,45 @@ pub fn list_tree_roots(
     rows.collect()
 }
 
+pub(crate) fn tree_root_identities(
+    connection: &Connection,
+    root_event_type: &str,
+) -> Result<std::collections::HashMap<String, (i64, i64)>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT tree_id, seq, timestamp FROM node_events WHERE (tree_id, seq) IN (
+            SELECT tree_id, MIN(seq) FROM node_events
+            WHERE parent_id IS NULL AND event_type = ?1 GROUP BY tree_id)",
+    )?;
+    let rows = statement.query_map([root_event_type], |row| {
+        Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+    })?;
+    rows.collect()
+}
+
+pub(crate) fn first_root_rows_for_trees(
+    connection: &Connection,
+    tree_ids: &[String],
+    root_event_type: &str,
+) -> Result<Vec<NodeEventRow>, rusqlite::Error> {
+    if tree_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM node_events WHERE (tree_id, seq) IN (
+            SELECT tree_id, MIN(seq) FROM node_events
+            WHERE tree_id IN (SELECT value FROM json_each(?1)) AND parent_id IS NULL AND event_type = ?2
+            GROUP BY tree_id)"
+    ))?;
+    let rows = statement.query_map(
+        rusqlite::params![
+            serde_json::to_string(tree_ids).expect("serializable tree ids"),
+            root_event_type
+        ],
+        row_from_sql,
+    )?;
+    rows.collect()
+}
+
 pub(crate) fn latest_session_attachment(
     connection: &Connection,
     session_id: &str,

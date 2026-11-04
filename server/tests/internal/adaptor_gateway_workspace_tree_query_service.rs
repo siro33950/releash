@@ -3243,3 +3243,32 @@ pub async fn test_実行木読取_複数repositoryとqueryが同じfoldを共有
         assert_eq!(tree_fold_count(), folds);
     }
 }
+
+#[tokio::test]
+pub async fn test_実行記録読取_全実行木読取と失敗のvariantと分類が一致する() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::transport::classified_error;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let repository =
+        SqliteWorkspaceTreeRepository::new(store.clone(), Arc::new(FailureRecordStore::default()));
+    let query = service(&store);
+    // When / Then
+    for (failure, code) in ReadFailure::cases() {
+        store.fail_next_read(failure.clone());
+        let all = repository.load_all_trees().await.unwrap_err();
+        store.fail_next_read(failure);
+        let records = query.execution_records(None, None).await.unwrap_err();
+        assert_eq!(
+            std::mem::discriminant(&all),
+            std::mem::discriminant(&records)
+        );
+        assert_eq!(classified_error(all).code, code);
+        assert_eq!(classified_error(records).code, code);
+    }
+}

@@ -9,7 +9,7 @@ use crate::adaptor::gateway::local_event_store::node_events::{self, NodeEventRow
 use crate::adaptor::gateway::local_event_store::store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log::{self, FactLogReadBackend};
 use crate::domain::agent_session::aggregates::AgentSession;
-use crate::domain::agent_session::services::{session_fields_from_facts, SessionExecutionContext};
+use crate::domain::agent_session::services::session_fields_from_facts;
 use crate::domain::local_event::{LocalEventQueryError, WorkflowExecutionMetadataRecord};
 use crate::domain::workflow::services::fact_replay::FoldedTree;
 use crate::domain::workflow::{ExecutionTreeLaunch, WorkflowError};
@@ -22,8 +22,9 @@ use crate::domain::workspace_tree::{
 #[cfg(test)]
 use super::execution_reads::fold_query_error;
 pub(super) use super::execution_reads::FoldedExecution;
-use super::execution_reads::{ExecutionReads, FOLD_IDLE_LIMIT};
-type SessionRoot = Arc<(SessionLocation, SessionExecutionContext)>;
+use super::execution_reads::{
+    execution_read_error as repository_error, ExecutionReads, SessionRoot, FOLD_IDLE_LIMIT,
+};
 
 /// The only concrete `WorkspaceTreeRepository` implementation.
 ///
@@ -399,15 +400,6 @@ fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> Worksp
         workflow_name: execution.workflow_name.clone(),
         status: execution.status,
         updated_at: f64::from_bits(execution.updated_at_bits),
-    }
-}
-
-fn repository_error(error: LocalEventQueryError) -> WorkflowError {
-    match error {
-        error @ LocalEventQueryError::StorageAccessRequired { .. } => {
-            WorkflowError::Store(error.into())
-        }
-        error => super::query_service::query_error(error),
     }
 }
 
