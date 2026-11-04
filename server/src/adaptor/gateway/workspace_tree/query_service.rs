@@ -337,6 +337,15 @@ impl SqliteWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for SqliteWorkspaceQueryService {
+    async fn execution_overview(
+        &self,
+    ) -> Result<
+        crate::usecase::workspace_tree::execution_overview::ExecutionOverviewDto,
+        WorkflowError,
+    > {
+        todo!()
+    }
+
     async fn resolve_session_nodes(
         &self,
         workspace_identity: &WorkspaceIdentity,

@@ -1,5 +1,6 @@
 //! Shared Workspace read contract and source-fact projection helpers.
 
+pub(crate) mod execution_overview;
 pub(crate) mod query_service;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;

@@ -191,6 +191,14 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
+            T::ExecutionOverview => {
+                return self
+                    .workflow
+                    .execution_overview()
+                    .await
+                    .map(StateValue::ExecutionOverview)
+                    .map_err(error);
+            }
             T::DaemonInfo => return Ok(StateValue::DaemonInfo(self.daemon.info().await)),
             T::WorkflowExecution(id) => {
                 return self
@@ -364,6 +372,7 @@ impl WorkspaceStateReads {
     ) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         Ok(match target {
+            SubscriptionTarget::ExecutionOverview => todo!(),
             T::RepositoryPaths => StateValue::RepositoryPaths(self.repositories.get()),
             T::Providers => StateValue::Providers(
                 self.providers

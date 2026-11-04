@@ -287,6 +287,7 @@ impl SubscriptionTarget {
             Self::WorkflowConfig => ("workflow-config", vec![]),
             Self::ProviderUsage => ("provider-usage", vec![]),
             Self::ProviderHookHealth => ("provider-hook-health", vec![]),
+            Self::ExecutionOverview => todo!(),
         }
     }
 }

@@ -25,6 +25,12 @@ impl TestWorkspaceQueryService {
 
 #[async_trait::async_trait]
 impl WorkspaceQueryService for TestWorkspaceQueryService {
+    async fn execution_overview(
+        &self,
+    ) -> Result<super::execution_overview::ExecutionOverviewDto, WorkflowError> {
+        todo!()
+    }
+
     async fn resolve_session_nodes(
         &self,
         _: &WorkspaceIdentity,
