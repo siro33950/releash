@@ -70,11 +70,48 @@ pub async fn read_session_context(
         .await
         .map_err(SessionContextReadError::Read)?
         .ok_or_else(|| SessionContextReadError::Corrupt("session tree root is missing".into()))?;
-    let root = crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
+    session_context_from_stored_row(backend, &row, location).await
+}
+
+async fn session_context_from_stored_row(
+    backend: &FactLogReadBackend,
+    row: &crate::adaptor::gateway::local_event_store::node_events::NodeEventRow,
+    location: &SessionLocation,
+) -> Result<SessionExecutionContext, SessionContextReadError> {
+    let root_meta = fact_log::node_meta_from_row(row).map_err(SessionContextReadError::Corrupt)?;
+    let mut context = session_context_from_row(row, location)?;
+    if location.parent_id.is_some() {
+        let root = session_root_context(row)?;
+        context.worktree_path =
+            crate::adaptor::gateway::workflow::worktree_context::execution_worktree_path(
+                backend,
+                location.meta(),
+                root_meta,
+                root,
+            )
+            .await?;
+    }
+    Ok(context)
+}
+
+fn session_root_context(
+    row: &crate::adaptor::gateway::local_event_store::node_events::NodeEventRow,
+) -> Result<
+    crate::adaptor::gateway::workflow::stored_definition::TreeRootContext,
+    SessionContextReadError,
+> {
+    crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
         .map_err(SessionContextReadError::Corrupt)?
         .ok_or_else(|| {
             SessionContextReadError::Corrupt("session tree root metadata is missing".into())
-        })?;
+        })
+}
+
+pub(crate) fn session_context_from_row(
+    row: &crate::adaptor::gateway::local_event_store::node_events::NodeEventRow,
+    location: &SessionLocation,
+) -> Result<SessionExecutionContext, SessionContextReadError> {
+    let root = session_root_context(row)?;
     let provider = root
         .definition
         .get("nodes")
@@ -93,24 +130,16 @@ pub async fn read_session_context(
             ))
         }
     };
-    let root_meta = fact_log::node_meta_from_row(&row).map_err(SessionContextReadError::Corrupt)?;
-    let workspace_identity = root.header.workspace_identity.clone();
-    let workspace_worktree_path = root.header.worktree_path.clone();
-    let launched_as = root.header.launched_as;
     let worktree_path =
-        crate::adaptor::gateway::workflow::worktree_context::execution_worktree_path(
-            backend,
-            location.meta(),
-            root_meta,
-            root,
-        )
-        .await
-        .map_err(SessionContextReadError::from)?;
+        crate::adaptor::gateway::workflow::worktree_context::root_execution_worktree_path(
+            &location.meta(),
+            &root,
+        )?;
     Ok(SessionExecutionContext {
-        workspace_identity,
-        workspace_worktree_path,
+        workspace_identity: root.header.workspace_identity,
+        workspace_worktree_path: root.header.worktree_path,
         worktree_path,
-        launched_as,
+        launched_as: root.header.launched_as,
         provider,
     })
 }

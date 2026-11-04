@@ -1,3 +1,4 @@
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::sessions::session_location;
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::workflow_location;
@@ -712,6 +713,7 @@ fn setup_with_lifecycle_events(
         execution_trees.clone(),
         releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
             store.clone(),
+            std::sync::Arc::new(FailureRecordStore::default()),
         ),
     ));
     *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&usecase);

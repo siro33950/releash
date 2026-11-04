@@ -1,5 +1,6 @@
 use releashd::test_support::integration::persistence::LocalEventStore;
 use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::providers::ProviderKind;
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::AgentSession;
@@ -76,7 +77,10 @@ async fn visible_rows(
 
 async fn assert_working_session_projection(store: Arc<LocalEventStore>) {
     let workspace = WorkspaceIdentity::new("workspace-activity-read");
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
 
     let snapshot = visible_rows(&repository, &workspace).await;
@@ -98,7 +102,10 @@ async fn assert_workflow_child_activity_projection(
     expected_classification: &str,
 ) {
     let workspace = WorkspaceIdentity::new("/repo/workflow-child-activity");
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
 
     let snapshot = visible_rows(&repository, &workspace).await;
@@ -198,7 +205,10 @@ pub async fn test_workspace_tree_query_活動未観測の単独sessionは完了n
         .any(|record| matches!(record.fact, NodeFact::AgentActivityObserved(_))));
 
     // When: Workspace query service から一覧と詳細を読む
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     let snapshot = visible_rows(&repository, &workspace).await;
     let node = &snapshot[0];
@@ -273,7 +283,10 @@ pub async fn test_workspace_tree_query_resume直後の単独sessionは緑にな�
         .unwrap();
 
     // When: Workspace query service から一覧と詳細を読む
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     let snapshot = visible_rows(&repository, &workspace).await;
     let node = &snapshot[0];
@@ -384,7 +397,10 @@ pub async fn test_workspace_tree_query_活動終了と再開の反復を一覧�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     let projected_statuses = async || {
         let snapshot = visible_rows(&repository, &workspace).await;
@@ -483,7 +499,10 @@ pub async fn test_workspace_tree_query_stop事実と後続活動を一覧と詳�
         .unwrap();
     };
     let projected_classification = async |store: Arc<LocalEventStore>| {
-        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let repository = SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            std::sync::Arc::new(FailureRecordStore::default()),
+        );
         let query = service(&store);
         let snapshot = visible_rows(&repository, &workspace).await;
         let node = &snapshot[0];
@@ -582,7 +601,10 @@ pub async fn launch区分が同じworktreeのworkflow一覧とsession一覧を�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
 
     let workflow_ids = query
@@ -630,7 +652,10 @@ pub async fn test_workspace_tree_query_workspace同定子がworktreeと異なる
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When: workspace identity から snapshot と Session 一覧を取得する
     let tree = load_tree(&repository, &workspace).await;
@@ -675,7 +700,10 @@ pub async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示�
     .await
     .unwrap();
     let workspace = WorkspaceIdentity::new("/repo");
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let snapshot = visible_rows(&repository, &workspace).await;
@@ -718,7 +746,10 @@ pub async fn test_workspaceツリー投影_単独agent_sessionのpublic_root表�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
 
     // When
@@ -761,7 +792,10 @@ pub async fn test_workspaceノード詳細_public_rootと子nodeの名前はnode
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     let root_node = repository
         .load_node(&workspace, execution_id)
@@ -843,7 +877,10 @@ pub async fn test_workspace読取_未対応定義がabort済みでもcommand出�
             .unwrap();
         }
         {
-            let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+            let repository = SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+                std::sync::Arc::new(FailureRecordStore::default()),
+            );
             let command = releashd::test_support::integration::workspace::node_for_execution(
                 &*repository,
                 &releashd::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
@@ -906,7 +943,10 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let fixtures = [
         ("00000000-0000-4000-8000-000000000901", 12.345678, "manual"),
         (
@@ -1043,18 +1083,14 @@ pub async fn test_workspace読取_実経路で失敗分類を保持する() {
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     let workspace = WorkspaceIdentity::new("/repo");
     for (failure, expected) in ReadFailure::cases() {
         for mode in 0..2 {
-            let expected = if mode != 0
-                && matches!(failure, ReadFailure::Sqlite(rusqlite::ffi::SQLITE_IOERR))
-            {
-                connectrpc::ErrorCode::Internal
-            } else {
-                expected
-            };
             store.fail_next_read(failure.clone());
             // When
             let result = if mode == 1 {
@@ -1096,7 +1132,10 @@ pub async fn test_session選択_記録済みsessionとnodeのdtoを返し対象�
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     let workspace = WorkspaceIdentity::new("/repo/selection");
     let tree = load_tree(&repository, &workspace).await;
@@ -1247,8 +1286,14 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
         append_facts_for_events(&store, &events).await.unwrap();
         // When / Then
         for repository in [
-            SqliteWorkspaceTreeRepository::new(store.clone()),
-            SqliteWorkspaceTreeRepository::new(store.clone()),
+            SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+                std::sync::Arc::new(FailureRecordStore::default()),
+            ),
+            SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+                std::sync::Arc::new(FailureRecordStore::default()),
+            ),
         ] {
             let workspace = WorkspaceIdentity::new("/repo");
             for (id, stdout, exit_code, reason) in [
@@ -1343,7 +1388,10 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let workspace = WorkspaceIdentity::new("/repo");
     let initial = load_tree(&repository, &workspace).await;
     assert!(initial
@@ -1394,7 +1442,10 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
         }
         for reader in [
             repository.clone(),
-            SqliteWorkspaceTreeRepository::new(store.clone()),
+            SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+                std::sync::Arc::new(FailureRecordStore::default()),
+            ),
         ] {
             let tree = load_tree(&reader, &workspace).await;
             let old = tree
@@ -1480,7 +1531,10 @@ pub async fn test_command詳細_完了済み実行のabort不可をrepositoryか
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let workspace = WorkspaceIdentity::new("/repo");
     let node = releashd::test_support::integration::workspace::node_for_execution(
         &*repository,
@@ -1597,7 +1651,10 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     use releashd::test_support::integration::sessions::{
         AgentSessionQueryService, LocalAgentSessionQueryService,
@@ -1744,7 +1801,10 @@ pub async fn test_準備中の会話詳細_起動失敗の理由を返し紐付�
             [tree_id],
         )
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let tree = load_tree(&repository, &WorkspaceIdentity::new("/repo")).await;
     let node = tree
         .nodes()
@@ -1815,7 +1875,10 @@ pub async fn test_sessionタブ詳細_実行木と異なるrootの終端を子�
             )
             .await;
         assert_ne!(parent.tree_id, parent.node_execution_id);
-        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let repository = SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            std::sync::Arc::new(FailureRecordStore::default()),
+        );
         let query = service(&store);
         assert!(
             session_detail(
@@ -1889,7 +1952,10 @@ pub async fn test_sessionタブ詳細_保存定義と異なる終了履歴を復
             [&child.node_execution_id],
         )
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When / Then
     assert!(session_detail(
@@ -1986,7 +2052,10 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     let ids = vec![
         tree.into(),
@@ -2137,7 +2206,10 @@ pub async fn test_sessionタブ詳細_再試行した親の旧委任子と動的
             Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
         ))
         .unwrap();
-        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let repository = SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            std::sync::Arc::new(FailureRecordStore::default()),
+        );
         let query = service(&store);
         let boundary = records.len() - if retry { 3 } else { 4 };
         for (index, record) in records.iter().enumerate() {
@@ -2209,7 +2281,10 @@ pub async fn test_旧会話参照照会_保持した動的並列の親と出現�
         Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = service(&store);
     // Given
     let boundary = records
@@ -2296,7 +2371,10 @@ pub async fn test_session更新時刻_兄弟の受理済み操作を含め未受
         Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     let workspace = WorkspaceIdentity::new("/repo");
     for record in &records {
@@ -2347,7 +2425,10 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
         Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     let workspace = WorkspaceIdentity::new("/repo");
     let tree = &records[0].meta.tree_id;
@@ -2459,7 +2540,10 @@ pub async fn test_session更新時刻_兄弟合成子の承認を差分で反映
         .unwrap()
         .unwrap();
     let listed = releashd::test_support::integration::workspace::node_for_execution(
-        &*SqliteWorkspaceTreeRepository::new(store.clone()),
+        &*SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            std::sync::Arc::new(FailureRecordStore::default()),
+        ),
         &workspace,
         "node-main",
     )
@@ -2483,7 +2567,10 @@ pub async fn test_隔離sessionの成果再提出_受理済みworktree情報を�
         Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     let workspace = WorkspaceIdentity::new("/repo");
     for record in &records {
@@ -3130,7 +3217,12 @@ pub async fn test_実行木読取_複数repositoryとqueryが同じfoldを共有
     .unwrap();
     let reads = ExecutionReads::new(store);
     let repositories = (0..3)
-        .map(|_| SqliteWorkspaceTreeRepository::with_reads(reads.clone()))
+        .map(|_| {
+            SqliteWorkspaceTreeRepository::with_reads(
+                reads.clone(),
+                std::sync::Arc::new(FailureRecordStore::default()),
+            )
+        })
         .collect::<Vec<_>>();
     let query = SqliteWorkspaceQueryService::with_reads(reads);
     let workspace = WorkspaceIdentity::new("/repo");

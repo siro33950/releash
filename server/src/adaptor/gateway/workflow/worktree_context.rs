@@ -9,6 +9,43 @@ pub enum WorktreeContextReadError {
     Corrupt(String),
 }
 
+fn isolated_execution_worktree_path(
+    node: &NodeFactMeta,
+    root: &stored_definition::TreeRootContext,
+) -> Result<Option<String>, WorktreeContextReadError> {
+    let definition = root.definition["nodes"]
+        .get(&node.node_name)
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            WorktreeContextReadError::Corrupt(
+                "worktree node definition is missing or invalid".into(),
+            )
+        })?;
+    let mode = definition.get("worktree");
+    let mode: Option<WorktreeMode> = mode
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| WorktreeContextReadError::Corrupt(error.to_string()))?;
+    let rule = WorktreeInheritance::new(mode);
+    let worktree = rule
+        .for_attempt(
+            root.header.repository_root.as_deref(),
+            &node.node_execution_id,
+            node.attempt,
+        )
+        .map_err(|error| WorktreeContextReadError::Corrupt(error.into()))?;
+    Ok(rule.isolated_path(worktree.as_ref()).map(str::to_string))
+}
+
+pub(crate) fn root_execution_worktree_path(
+    node: &NodeFactMeta,
+    root: &stored_definition::TreeRootContext,
+) -> Result<String, WorktreeContextReadError> {
+    Ok(isolated_execution_worktree_path(node, root)?
+        .unwrap_or_else(|| root.header.worktree_path.clone()))
+}
+
 pub async fn execution_worktree_path(
     backend: &FactLogReadBackend,
     mut node: NodeFactMeta,
@@ -27,34 +64,13 @@ pub async fn execution_worktree_path(
                             "invalid worktree execution ancestry".into(),
                         ));
                     }
-                    let definition = root.definition["nodes"]
-                        .get(&node.node_name)
-                        .and_then(serde_json::Value::as_object)
-                        .ok_or_else(|| {
-                            WorktreeContextReadError::Corrupt(
-                                "worktree node definition is missing or invalid".into(),
-                            )
-                        })?;
-                    let mode = definition.get("worktree");
-                    let mode: Option<WorktreeMode> = mode
-                        .cloned()
-                        .map(serde_json::from_value)
-                        .transpose()
-                        .map_err(|error| WorktreeContextReadError::Corrupt(error.to_string()))?;
-                    let rule = WorktreeInheritance::new(mode);
-                    let worktree = rule
-                        .for_attempt(
-                            root.header.repository_root.as_deref(),
-                            &node.node_execution_id,
-                            node.attempt,
-                        )
-                        .map_err(|error| WorktreeContextReadError::Corrupt(error.into()))?;
-                    if let Some(path) = rule.isolated_path(worktree.as_ref()) {
-                        return Ok(path.to_string());
+                    if node.parent_id.is_none() {
+                        return root_execution_worktree_path(&node, &root);
                     }
-                    let Some(parent_id) = &node.parent_id else {
-                        return Ok(root.header.worktree_path);
-                    };
+                    if let Some(path) = isolated_execution_worktree_path(&node, &root)? {
+                        return Ok(path);
+                    }
+                    let parent_id = node.parent_id.as_ref().expect("non-root node has a parent");
                     if parent_id == root_id {
                         node = root_meta.clone();
                     } else {

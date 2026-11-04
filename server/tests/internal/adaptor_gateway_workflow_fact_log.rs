@@ -1,6 +1,7 @@
 use releashd::test_support::integration::persistence::LocalEventReadStore;
 use releashd::test_support::integration::persistence::LocalEventStore;
 use releashd::test_support::integration::persistence::NewNodeEventRow;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::platform::LocalEventQueryError;
 use releashd::test_support::integration::workflow::append_fact_batch_for_seed;
 use releashd::test_support::integration::workflow::append_facts_for_events;
@@ -755,11 +756,14 @@ pub(crate) mod reconciliation_tests {
             .unwrap()
             .iter()
             .any(|record| matches!(record.fact, NodeFact::ProcessExited(_))));
-        let node = SqliteWorkspaceTreeRepository::new(store)
-            .load_node(&WorkspaceIdentity::new("/repo"), session_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let node = SqliteWorkspaceTreeRepository::new(
+            store,
+            std::sync::Arc::new(FailureRecordStore::default()),
+        )
+        .load_node(&WorkspaceIdentity::new("/repo"), session_id)
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(
             node.status_classification,
             WorkspaceNodeStatusClassification::Idle

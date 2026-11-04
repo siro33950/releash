@@ -256,6 +256,7 @@ pub async fn compose(
         workspace_state_store.clone(),
         adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
             execution_reads.clone(),
+            failure_store.clone(),
         ),
         state_subscriptions.clone(),
     );
@@ -283,6 +284,7 @@ pub async fn compose(
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        failures: failure_store.clone(),
                         session_tabs: session_tabs.clone(),
                         hook_token: hook_token_value,
                         retrying: retrying.clone(),

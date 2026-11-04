@@ -1,5 +1,6 @@
 use releashd::test_support::integration::persistence::LocalEventStore;
 use releashd::test_support::integration::persistence::LocalEventStoreConfig;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::providers::ProviderKind;
 use releashd::test_support::integration::workflow::current_timestamp;
 use releashd::test_support::integration::workflow::ExecutionOrigin;
@@ -585,7 +586,10 @@ pub(crate) fn archive_fixture_with_resolver(
         store.clone(),
         directory.path(),
     ));
-    let trees = SqliteWorkspaceTreeRepository::new(store.clone());
+    let trees = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let query = SqliteWorkspaceQueryService::new(store.clone());
     let app = crate::adaptor_gateway_workflow_workflow_host_test_helpers::dependencies(Some(
         store.clone(),

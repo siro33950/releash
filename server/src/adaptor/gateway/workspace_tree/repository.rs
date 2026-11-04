@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::adaptor::gateway::agent_session::{
@@ -37,17 +37,21 @@ pub struct SqliteWorkspaceTreeRepository {
 
 impl SqliteWorkspaceTreeRepository {
     #[cfg(feature = "test-support")]
-    pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
-        Self::with_reads(ExecutionReads::new(store))
+    pub fn new(
+        store: Arc<LocalEventStore>,
+        failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
+    ) -> Arc<Self> {
+        Self::with_reads(ExecutionReads::new(store), failures)
     }
 
-    pub fn with_reads(reads: Arc<ExecutionReads>) -> Arc<Self> {
+    pub fn with_reads(
+        reads: Arc<ExecutionReads>,
+        failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             reads,
             processes: None,
-            failures: Arc::new(
-                crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
-            ),
+            failures,
             fold_idle_limit: FOLD_IDLE_LIMIT,
         })
     }
@@ -141,7 +145,7 @@ impl SqliteWorkspaceTreeRepository {
                 ]
             })
             .flatten()
-            .collect::<HashSet<_>>();
+            .collect::<Vec<_>>();
         for target in targets {
             for message in self.failures.attention_messages(&target) {
                 tree.observe_background_failure(&target, &message);
@@ -295,7 +299,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
                     Ok(folded) => self.workspace_tree(workspace, &folded).await,
                     Err(error) => Err(error),
                 }
-                .map_err(super::query_service::query_error),
+                .map_err(repository_error),
             );
         }
         trees
@@ -309,7 +313,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         let Some(execution) = self
             .folded_tree(execution_id)
             .await
-            .map_err(super::query_service::query_error)?
+            .map_err(repository_error)?
         else {
             return Ok(None);
         };
@@ -319,7 +323,7 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
         self.workspace_tree(workspace_identity.as_str(), &[execution])
             .await
             .map(Some)
-            .map_err(super::query_service::query_error)
+            .map_err(repository_error)
     }
 
     async fn load_node_by_session_id(
@@ -377,54 +381,16 @@ impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
 }
 
 fn session_root_from_row(row: &NodeEventRow) -> Result<SessionRoot, LocalEventQueryError> {
-    let root = crate::adaptor::gateway::workflow::stored_definition::read_tree_context(&row.detail)
-        .map_err(invariant_query_error)?
-        .ok_or_else(|| invariant_query_error("session tree root metadata is missing"))?;
     let meta = fact_log::node_meta_from_row(row).map_err(invariant_query_error)?;
-    let definition = &root.definition["nodes"][&row.node_name];
-    let provider = match definition["session"]["provider"].as_str() {
-        Some("claude") => crate::domain::provider_lifecycle::ProviderKind::Claude,
-        Some("codex") => crate::domain::provider_lifecycle::ProviderKind::Codex,
-        _ => {
-            return Err(invariant_query_error(
-                "session provider is unavailable or unsupported",
-            ))
-        }
-    };
-    let mode = definition
-        .get("worktree")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(invariant_query_error)?;
-    let rule = crate::domain::workflow::WorktreeInheritance::new(mode);
-    let isolated = rule
-        .for_attempt(
-            root.header.repository_root.as_deref(),
-            &meta.node_execution_id,
-            meta.attempt,
-        )
-        .map_err(invariant_query_error)?;
-    let worktree_path = rule
-        .isolated_path(isolated.as_ref())
-        .unwrap_or(&root.header.worktree_path)
-        .to_string();
-    Ok(Arc::new((
-        SessionLocation {
-            tree_id: meta.tree_id,
-            node_execution_id: meta.node_execution_id,
-            parent_id: meta.parent_id,
-            node_name: meta.node_name,
-            attempt: meta.attempt,
-        },
-        SessionExecutionContext {
-            workspace_identity: root.header.workspace_identity,
-            workspace_worktree_path: root.header.worktree_path,
-            worktree_path,
-            launched_as: root.header.launched_as,
-            provider,
-        },
-    )))
+    let location = SessionLocation::from_meta(&meta);
+    let context = crate::adaptor::gateway::agent_session::session_facts::session_context_from_row(
+        row, &location,
+    )
+    .map_err(|error| match error {
+        SessionContextReadError::Read(error) => error,
+        SessionContextReadError::Corrupt(reason) => invariant_query_error(reason),
+    })?;
+    Ok(Arc::new((location, context)))
 }
 
 fn execution_summary_fact(execution: &WorkflowExecutionMetadataRecord) -> WorkspaceStructureFact {

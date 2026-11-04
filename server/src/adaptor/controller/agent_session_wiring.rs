@@ -28,6 +28,7 @@ use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub struct AgentSessionCompositionInput {
+    pub failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
     pub session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     pub launch_retention:
         tokio::sync::mpsc::UnboundedSender<crate::usecase::agent_session::LaunchRetention>,
@@ -399,6 +400,7 @@ pub fn compose_agent_sessions(
     let workspace_trees =
         crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
             input.execution_reads.clone(),
+            input.failures.clone(),
         );
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),

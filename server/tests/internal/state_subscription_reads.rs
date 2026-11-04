@@ -1,4 +1,5 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget as T;
@@ -1818,11 +1819,14 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     use releashd::test_support::integration::workspace::{
         SqliteWorkspaceTreeRepository, WorkspaceTreeRepository,
     };
-    let tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
-        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
-        .await
-        .remove(0)
-        .unwrap();
+    let tree = SqliteWorkspaceTreeRepository::new(
+        archive.store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    )
+    .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+    .await
+    .remove(0)
+    .unwrap();
     let ready_node = tree
         .nodes()
         .iter()
@@ -1875,11 +1879,14 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
         WorkflowDefinitionContent,
     };
-    let child_tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
-        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
-        .await
-        .remove(0)
-        .unwrap();
+    let child_tree = SqliteWorkspaceTreeRepository::new(
+        archive.store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    )
+    .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+    .await
+    .remove(0)
+    .unwrap();
     let broken_child_alias = child_tree
         .nodes()
         .iter()
