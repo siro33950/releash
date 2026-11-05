@@ -68,6 +68,18 @@ impl TestWorkspaceTreeRepository {
 
 #[async_trait::async_trait]
 impl crate::domain::workspace_tree::WorkspaceTreeRepository for TestWorkspaceTreeRepository {
+    async fn load_all_trees(
+        &self,
+    ) -> Result<
+        (
+            Vec<crate::domain::workspace_tree::WorkspaceTree>,
+            Vec<(String, WorkflowError)>,
+        ),
+        WorkflowError,
+    > {
+        Ok((Vec::new(), Vec::new()))
+    }
+
     async fn load_trees(
         &self,
         workspaces: &[WorkspaceIdentity],

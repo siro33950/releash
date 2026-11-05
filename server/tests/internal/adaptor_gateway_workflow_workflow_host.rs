@@ -1,5 +1,6 @@
 use releashd::test_support::integration::fixtures::adaptor_gateway_workflow_workflow_host_EFFECT_AGENT_SESSION_ID as EFFECT_AGENT_SESSION_ID;
 use releashd::test_support::integration::fixtures::adaptor_gateway_workflow_workflow_host_RecordingWorkflowAgentSessions as RecordingWorkflowAgentSessions;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::sessions::AgentSessionRepository;
 use releashd::test_support::integration::workflow::ApprovalCommand;
 use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
@@ -499,9 +500,7 @@ pub async fn test_workflow永続化_本番構成で起動から完了とabortま
         let app = crate::adaptor_gateway_workflow_workflow_host_test_helpers::dependencies(Some(
             store.clone(),
         ));
-        let query = SqliteWorkspaceQueryService::with_repository(
-            SqliteWorkspaceTreeRepository::new(store.clone()),
-        );
+        let query = SqliteWorkspaceQueryService::new(store.clone());
         let host = Arc::new(WorkflowRuntimeHost::with_runtime_ports(
             directory.path().join("workflows"),
             releashd::test_support::integration::platform::shared().clone(),
@@ -4137,7 +4136,10 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
     )
     .await
     .unwrap();
-    let mut repository = SqliteWorkspaceTreeRepository::new(fixture.store.clone());
+    let mut repository = SqliteWorkspaceTreeRepository::new(
+        fixture.store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     Arc::get_mut(&mut repository).unwrap().processes = Some(Arc::new(LiveSessionProcess));
     let standalone_node_id = standalone_id.to_string();
     for node_id in [&fixture.first_node_execution_id, &standalone_node_id] {
@@ -4457,6 +4459,7 @@ pub(crate) mod workflow_host_tests {
     use releashd::test_support::integration::workflow::StartedFact;
     use releashd::test_support::integration::workflow::TreeRootFact;
 
+    use releashd::test_support::integration::platform::FailureRecordStore;
     use releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand;
     use releashd::test_support::integration::workflow::ApprovalCommand;
     use releashd::test_support::integration::workflow::ManagedWorktreeResolverError;
@@ -6053,7 +6056,10 @@ nodes:
             );
             let workspace_node =
                 releashd::test_support::integration::workspace::node_for_execution(
-                    &*SqliteWorkspaceTreeRepository::new(fixture.store.clone()),
+                    &*SqliteWorkspaceTreeRepository::new(
+                        fixture.store.clone(),
+                        std::sync::Arc::new(FailureRecordStore::default()),
+                    ),
                     &releashd::test_support::integration::workspace::WorkspaceIdentity::new(
                         EFFECT_WORKTREE_PATH,
                     ),
@@ -6105,7 +6111,10 @@ nodes:
             );
             assert_eq!(
                 releashd::test_support::integration::workspace::node_for_execution(
-                    &*SqliteWorkspaceTreeRepository::new(fixture.store.clone()),
+                    &*SqliteWorkspaceTreeRepository::new(
+                        fixture.store.clone(),
+                        std::sync::Arc::new(FailureRecordStore::default())
+                    ),
                     &releashd::test_support::integration::workspace::WorkspaceIdentity::new(
                         EFFECT_WORKTREE_PATH
                     ),

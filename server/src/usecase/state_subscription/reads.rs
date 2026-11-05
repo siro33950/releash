@@ -191,6 +191,14 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
+            T::ExecutionOverview => {
+                return self
+                    .workflow
+                    .execution_overview()
+                    .await
+                    .map(StateValue::ExecutionOverview)
+                    .map_err(error);
+            }
             T::DaemonInfo => return Ok(StateValue::DaemonInfo(self.daemon.info().await)),
             T::WorkflowExecution(id) => {
                 return self
@@ -476,7 +484,7 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
-            T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
+            T::ExecutionOverview | T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
             | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_) | T::FilteredIssues(..)
             | T::Terminal(_)
             | T::Workspaces

@@ -318,3 +318,33 @@ fn test_sessionタブ購読_idだけを受け取りworktree変化で更新する
     assert!(SubscriptionTarget::from_parts("session-tab", &["/repo", "agent-session"]).is_err());
     assert!(SubscriptionTarget::from_parts("session-tab", &[" "]).is_err());
 }
+
+#[test]
+fn test_実行木概要購読_全worktreeと失敗の通知で更新し外部監視を追加しない() {
+    // Given
+    let target = SubscriptionTarget::ExecutionOverview;
+    assert!(target.affected_by(&StateChangeSource::WorkspaceList));
+    // When / Then
+    for path in ["/repo", "/other"] {
+        assert!(target.affected_by(&StateChangeSource::Worktree(path.into())));
+        assert!(!target.affected_by(&StateChangeSource::Repository(vec![path.into()])));
+    }
+    for source in [
+        StateChangeSource::Repositories,
+        StateChangeSource::WorkspaceState("workspace".into()),
+        StateChangeSource::WorkflowDefinitions,
+        StateChangeSource::Providers,
+        StateChangeSource::Daemon,
+    ] {
+        assert!(!target.affected_by(&source));
+    }
+    assert!(target
+        .watches(
+            &["/repo".into()],
+            &["/history".into()],
+            "/comments",
+            "/workflows",
+            "/hooks"
+        )
+        .is_empty());
+}

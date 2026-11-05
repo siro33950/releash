@@ -7,6 +7,9 @@ use crate::usecase::state_subscription::StateValue;
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
+            StateValue::ExecutionOverview((trees, failures)) => wire::state_payload::Value::ExecutionOverview(
+                execution_overview(trees, failures).map_err(crate::adaptor::presenter::connect::command_error)?,
+            ),
             StateValue::RepositoryGroupState(collapsed) => wire::state_payload::Value::RepositoryGroupState(wire::RepositoryGroupState { collapsed: *collapsed }),
             StateValue::DaemonInfo(info) => wire::state_payload::Value::DaemonInfo(
                 crate::adaptor::presenter::daemon::server_info(info.clone()),
@@ -220,6 +223,69 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 })
             }
         }),
+    })
+}
+
+fn execution_overview(
+    trees: &[crate::domain::workspace_tree::WorkspaceTree],
+    failures: &[(String, crate::domain::workflow::WorkflowError)],
+) -> Result<wire::ExecutionOverviewDto, wire::CommandFailure> {
+    use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
+    use crate::domain::workflow::ExecutionTreeLaunch;
+    use crate::domain::workspace_tree::WorkspaceNodeStatusClassification;
+
+    let status_wire =
+        |status: WorkspaceNodeStatusClassification| -> Result<_, wire::CommandFailure> {
+            wire::WorkspaceStatusClassification::try_from(status.as_public_str())
+                .map_err(|error| crate::adaptor::presenter::error::AppError::new(error).into())
+        };
+    let mut executions = Vec::new();
+    let mut status = WorkspaceNodeStatusClassification::Idle;
+    for tree in trees {
+        for (execution, root) in tree.active_execution_roots() {
+            let (name, node) = match execution.launched_as {
+                ExecutionTreeLaunch::Session => {
+                    let Some(session) = execution.session.as_ref() else {
+                        continue;
+                    };
+                    if session.lifecycle() == AgentSessionLifecycle::Archived {
+                        continue;
+                    }
+                    let name = session.provider().display_name();
+                    (name, root.node())
+                }
+                ExecutionTreeLaunch::Workflow => (execution.workflow_name.as_str(), root.owner()),
+            };
+            status =
+                WorkspaceNodeStatusClassification::aggregate([status, node.status_classification]);
+            executions.push(wire::ExecutionOverviewEntryDto {
+                worktree_path: execution.worktree_path.clone(),
+                worktree_name: std::path::Path::new(&execution.worktree_path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| execution.worktree_path.clone()),
+                name: name.to_string(),
+                status: Some(status_wire(node.status_classification)?),
+            });
+        }
+    }
+    executions.sort_by(|left, right| left.worktree_path.cmp(&right.worktree_path));
+    Ok(wire::ExecutionOverviewDto {
+        status: Some(status_wire(status.with_read_failure(!failures.is_empty()))?),
+        executions,
+        failures: failures
+            .iter()
+            .map(|(id, error)| {
+                use crate::adaptor::presenter::connect::ConnectFailure;
+                (
+                    id.clone(),
+                    wire::StateReadFailure {
+                        code: error.connect_code().grpc_code() as i32,
+                        message: error.to_string(),
+                    },
+                )
+            })
+            .collect(),
     })
 }
 

@@ -68,6 +68,7 @@ pub mod persistence {
     pub use crate::adaptor::gateway::local_event_store::node_events::append_node_event;
     pub use crate::adaptor::gateway::local_event_store::node_events::delete_tree;
     pub use crate::adaptor::gateway::local_event_store::node_events::first_root_row_of_tree;
+    pub use crate::adaptor::gateway::local_event_store::node_events::first_root_rows_for_trees;
     pub use crate::adaptor::gateway::local_event_store::node_events::first_row_for_tree_with_event_types;
     pub use crate::adaptor::gateway::local_event_store::node_events::first_row_of_tree;
     pub use crate::adaptor::gateway::local_event_store::node_events::latest_root_rows_for_trees;
@@ -77,6 +78,7 @@ pub mod persistence {
     pub use crate::adaptor::gateway::local_event_store::node_events::read_tree_after;
     pub use crate::adaptor::gateway::local_event_store::node_events::rows_for_event_types;
     pub use crate::adaptor::gateway::local_event_store::node_events::tree_heads;
+    pub use crate::adaptor::gateway::local_event_store::node_events::tree_root_identities;
     pub use crate::adaptor::gateway::local_event_store::node_events::NewNodeEventRow;
     pub use crate::adaptor::gateway::local_event_store::node_events::NodeEventRow;
     pub use crate::adaptor::gateway::local_event_store::read_only::validate_reader_snapshot;
@@ -1216,6 +1218,7 @@ pub mod workspace {
     pub use crate::adaptor::controller::client::workspace_tree::shared::register_shared;
     pub use crate::adaptor::gateway::workspace_tree::query_service::SqliteWorkspaceQueryService;
 
+    pub use crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads;
     pub use crate::adaptor::gateway::workspace_tree::repository::SqliteWorkspaceTreeRepository;
     pub use crate::domain::workspace_tree::entities::WorkspaceTree;
     pub use crate::domain::workspace_tree::repository::WorkspaceTreeRepository;

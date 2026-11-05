@@ -1792,3 +1792,141 @@ fn test_ファイル監視_失敗と張り直しの配信順序を排他で保�
         );
     }
 }
+
+#[tokio::test]
+async fn test_実行概要購読_失敗中だけ定期再取得し配信成功と購読終了で解除する() {
+    // Given
+    struct Reads(std::sync::atomic::AtomicBool);
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(StateReadError::from_error(SubscriptionError::UnknownTarget))
+            } else {
+                Ok(StateValue::ExecutionOverview((vec![], vec![])))
+            }
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec![]
+        }
+    }
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(Reads(true.into()));
+    let (driver, mut workers) = tokio::sync::mpsc::unbounded_channel();
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), driver).with_reads(
+        reads.clone(),
+        None,
+        vec![],
+        String::new(),
+    );
+    let target = SubscriptionTarget::ExecutionOverview;
+    usecase.open_client("client".into()).unwrap();
+    usecase
+        .start_subscription("client", &target, &FakeDelivery)
+        .await
+        .unwrap();
+    let _worker = workers.recv().await.unwrap();
+    let mut changes = usecase.changes.subscribe();
+    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+    assert_eq!(output.failures.lock().len(), 1);
+    // When / Then
+    usecase
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    assert_eq!(output.failures.lock().len(), 2);
+    reads.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    output
+        .fail_initial
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(usecase
+        .publish_read(
+            &target,
+            Ok(StateValue::ExecutionOverview((vec![], vec![]))),
+            true
+        )
+        .is_err());
+    usecase
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    assert_eq!(
+        *output.update_values.lock(),
+        vec![StateValue::ExecutionOverview((vec![], vec![]))]
+    );
+    usecase
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    assert_eq!(output.update_values.lock().len(), 1);
+    reads.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    usecase
+        .refresh_read(&target, ReadSignal::Lagged, &mut changes, &mut waiting)
+        .await;
+    usecase
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    assert_eq!(output.failures.lock().len(), 4);
+    usecase
+        .stop_subscription("client", &target, &FakeDelivery)
+        .await
+        .unwrap();
+    assert!(!*usecase.execution_overview_read_failed.lock());
+    usecase
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .await;
+    assert_eq!(output.failures.lock().len(), 4);
+}
+
+#[tokio::test]
+async fn test_実行概要購読_部分失敗も定期再取得し全件回復後に停止する() {
+    // Given
+    struct Reads(std::sync::atomic::AtomicUsize);
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            let failures = if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                vec![(
+                    "broken".into(),
+                    crate::domain::workflow::WorkflowError::External("read failed".into()),
+                )]
+            } else {
+                vec![]
+            };
+            Ok(StateValue::ExecutionOverview((vec![], failures)))
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec![]
+        }
+    }
+    let output = Arc::new(RecordingOutput::default());
+    let reads = Arc::new(Reads(0.into()));
+    let (driver, mut workers) = tokio::sync::mpsc::unbounded_channel();
+    let usecase = StateSubscriptionUsecase::new_with_output(output.clone(), driver).with_reads(
+        reads.clone(),
+        None,
+        vec![],
+        String::new(),
+    );
+    let target = SubscriptionTarget::ExecutionOverview;
+    usecase.open_client("client".into()).unwrap();
+    usecase
+        .start_subscription("client", &target, &FakeDelivery)
+        .await
+        .unwrap();
+    let _worker = workers.recv().await.unwrap();
+    let mut changes = usecase.changes.subscribe();
+    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
+    // When / Then
+    assert!(
+        matches!(&output.initial_values.lock()[0], StateValue::ExecutionOverview((_, failures)) if failures.len() == 1)
+    );
+    for _ in 0..2 {
+        usecase
+            .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+            .await;
+    }
+    assert_eq!(reads.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        *output.update_values.lock(),
+        vec![StateValue::ExecutionOverview((vec![], vec![]))]
+    );
+    usecase.close_client("client");
+}

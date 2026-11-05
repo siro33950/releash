@@ -249,10 +249,14 @@ pub async fn compose(
         ),
     );
 
+    let execution_reads = adaptor::gateway::workspace_tree::execution_reads::ExecutionReads::new(
+        local_event_store.clone(),
+    );
     let session_tabs = usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
         workspace_state_store.clone(),
-        adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-            local_event_store.clone(),
+        adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
+            execution_reads.clone(),
+            failure_store.clone(),
         ),
         state_subscriptions.clone(),
     );
@@ -280,11 +284,12 @@ pub async fn compose(
     let agent_sessions =
                 adaptor::controller::agent_session_wiring::compose_agent_sessions(
                     adaptor::controller::agent_session_wiring::AgentSessionCompositionInput {
+                        failures: failure_store.clone(),
                         session_tabs: session_tabs.clone(),
                         hook_token: hook_token_value,
                         retrying: retrying.clone(),
                         state_publisher: Some(state_subscriptions.clone()),
-                        store: local_event_store.clone(),
+                        execution_reads: execution_reads.clone(),
                         data_dir: data_dir.clone(),
                         provider_executable_config,
                         git: Arc::new(adaptor::gateway::repository::git::GitGateway::new(app_config.clone())),
@@ -464,7 +469,7 @@ pub async fn compose(
             data_dir.clone(),
             git_usecase.clone(),
             config_repository.clone(),
-            local_event_store.clone(),
+            execution_reads.clone(),
             node_processes.clone(),
             adaptor::controller::wiring::WorkflowEditorDependencies {
                 settings: editor_settings.clone(),

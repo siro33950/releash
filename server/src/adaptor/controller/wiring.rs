@@ -18,6 +18,7 @@ use crate::adaptor::gateway::workflow::{
     summary_query::{FacetFileQueryService, WorkflowDefinitionFileQueryService},
     WorkflowEventLogRepository,
 };
+use crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use std::sync::Arc;
 
@@ -30,6 +31,7 @@ use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
 use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache, LatestPrStatuses};
+#[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(any(test, feature = "test-support"))]
 use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
@@ -209,7 +211,7 @@ pub fn build_workflow_usecase_and_store(
         Arc::new(PassthroughManagedWorktreeGateway),
         Arc::new(crate::usecase::workflow::test_support::NoopEditorSettingsGateway),
         Arc::new(crate::usecase::workflow::test_support::NoopEditorLauncherGateway),
-        local_event_store.clone(),
+        ExecutionReads::new(local_event_store.clone()),
         None,
         workflows_dir,
     )
@@ -228,7 +230,7 @@ pub fn build_workflow_services_with_repository_worktrees(
     data_dir: impl Into<std::path::PathBuf>,
     git_usecase: Arc<GitUsecase>,
     app_config: Arc<dyn AppConfigRepository>,
-    local_event_store: Arc<LocalEventStore>,
+    execution_reads: Arc<ExecutionReads>,
     processes: Arc<dyn crate::domain::workflow::NodeProcessReader>,
     editor: WorkflowEditorDependencies,
 ) -> (
@@ -245,7 +247,7 @@ pub fn build_workflow_services_with_repository_worktrees(
         )),
         editor.settings,
         editor.launcher,
-        local_event_store,
+        execution_reads,
         Some(processes),
         Some(editor.workflows_dir),
     )
@@ -260,10 +262,11 @@ pub fn build_workflow_services_with_gateways(
     worktrees: Arc<dyn ManagedWorktreeGateway>,
     editor_settings: Arc<dyn crate::domain::external_editor::EditorSettingsGateway>,
     editor_launcher: Arc<dyn crate::domain::external_editor::EditorLauncherGateway>,
-    store: Arc<LocalEventStore>,
+    execution_reads: Arc<ExecutionReads>,
     processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> (WorkflowUsecase, Arc<dyn WorkspaceQueryService>) {
+    let store = execution_reads.store.clone();
     let data_dir = data_dir.into();
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
@@ -273,14 +276,22 @@ pub fn build_workflow_services_with_gateways(
         data_dir.clone(),
     ));
     let mut workspace_nodes =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(store.clone());
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
+            execution_reads.clone(),
+            failures.clone(),
+        );
     Arc::get_mut(&mut workspace_nodes)
         .expect("new workspace repository")
         .processes = processes.clone();
-    let workspace_query: Arc<dyn WorkspaceQueryService> =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-            workspace_nodes.clone(),
+    let mut workspace_query =
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_reads(
+            execution_reads.clone(),
+            failures.clone(),
         );
+    Arc::get_mut(&mut workspace_query)
+        .expect("new workspace query service")
+        .processes = processes.clone();
+    let workspace_query: Arc<dyn WorkspaceQueryService> = workspace_query;
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
         facets_base_dir.clone(),
@@ -327,7 +338,6 @@ pub fn build_workflow_services_with_gateways(
         execution_archives.clone(),
         workspace_nodes,
         workspace_query.clone(),
-        failures,
     );
     (workflow_usecase, workspace_query)
 }

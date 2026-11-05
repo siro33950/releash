@@ -204,10 +204,11 @@ pub enum ProviderRegistryError {
 }
 
 fn provider_definition(provider: ProviderKind) -> (&'static str, &'static str) {
-    match provider {
-        ProviderKind::Claude => ("Claude", "claude"),
-        ProviderKind::Codex => ("Codex", "codex"),
-    }
+    let default_executable = match provider {
+        ProviderKind::Claude => "claude",
+        ProviderKind::Codex => "codex",
+    };
+    (provider.display_name(), default_executable)
 }
 
 #[cfg(test)]

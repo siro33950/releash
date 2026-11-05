@@ -28,12 +28,14 @@ use crate::usecase::state_subscription::StateSubscriptionUsecase;
 use crate::usecase::terminal_surface::application::TerminalSurfaceApplication;
 
 pub struct AgentSessionCompositionInput {
+    pub failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
     pub session_tabs: crate::usecase::workspace_state::session_tabs::SessionTabsUsecase,
     pub launch_retention:
         tokio::sync::mpsc::UnboundedSender<crate::usecase::agent_session::LaunchRetention>,
     pub retrying: Arc<crate::usecase::retry::Retrying>,
     pub state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
-    pub store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    pub execution_reads:
+        Arc<crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads>,
     pub data_dir: PathBuf,
     pub provider_executable_config: Arc<dyn AppConfigRepository>,
     pub git: Arc<dyn crate::domain::git::GitService>,
@@ -280,8 +282,8 @@ pub fn compose_agent_sessions(
     input: AgentSessionCompositionInput,
 ) -> Result<AgentSessionComposition, ProviderAvailabilityUsecaseError> {
     let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
-        input.store.clone();
-    let installation_id = input.store.installation_id().to_string();
+        input.execution_reads.store.clone();
+    let installation_id = input.execution_reads.store.installation_id().to_string();
     let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
         Arc::new(LocalProviderLifecycleCredentialGateway),
         Arc::new(LocalProviderLifecycleEventRepository::new(
@@ -290,7 +292,9 @@ pub fn compose_agent_sessions(
             installation_id.clone(),
         )),
     ));
-    let session_repository = Arc::new(LocalAgentSessionRepository::new(input.store.clone()));
+    let session_repository = Arc::new(LocalAgentSessionRepository::new(
+        input.execution_reads.store.clone(),
+    ));
     let sessions = Arc::new(AgentSessionUsecase::new(
         session_repository.clone(),
         Arc::new(crate::adaptor::gateway::comment::ThreadRepositoryImpl::new(
@@ -394,8 +398,9 @@ pub fn compose_agent_sessions(
         input.terminal.clone(),
     );
     let workspace_trees =
-        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-            input.store.clone(),
+        crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
+            input.execution_reads.clone(),
+            input.failures.clone(),
         );
     let launch = Arc::new(AgentSessionLaunchUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::telemetry::TelemetryGateway),
@@ -419,8 +424,9 @@ pub fn compose_agent_sessions(
         execution_tree_registrations.clone(),
         workspace_trees.clone(),
     ));
-    let query: Arc<dyn AgentSessionQueryService> =
-        Arc::new(LocalAgentSessionQueryService::new(input.store.clone()));
+    let query: Arc<dyn AgentSessionQueryService> = Arc::new(LocalAgentSessionQueryService::new(
+        input.execution_reads.store.clone(),
+    ));
     let read = Arc::new(AgentSessionReadUsecase::new(
         std::sync::Arc::new(crate::adaptor::gateway::identity::RandomIdentityIssuer),
         query,

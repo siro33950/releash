@@ -73,7 +73,6 @@ pub struct WorkflowUsecase {
     execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
     workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-    failures: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
     /// 一覧に出す worktree ごとの、最後に読めた実行木と直近の失敗。
     retained_trees: std::sync::Arc<
         parking_lot::Mutex<
@@ -106,7 +105,6 @@ impl WorkflowUsecase {
         execution_archives: std::sync::Arc<dyn ExecutionTreeArchiveRepository>,
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
         workspace_query: std::sync::Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService>,
-        failures: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(
             definitions.clone(),
@@ -127,7 +125,6 @@ impl WorkflowUsecase {
             execution_archives,
             workspace_nodes,
             workspace_query,
-            failures,
             retained_trees: Default::default(),
             diagnostics,
             definition_query,
@@ -294,13 +291,6 @@ impl WorkflowUsecase {
         workspace_nodes: std::sync::Arc<dyn crate::domain::workspace_tree::WorkspaceTreeRepository>,
     ) {
         self.workspace_nodes = workspace_nodes;
-    }
-
-    pub fn test_replace_failure_repository(
-        &mut self,
-        failures: std::sync::Arc<dyn crate::domain::failure::FailureRecordRepository>,
-    ) {
-        self.failures = failures;
     }
 }
 

@@ -3,6 +3,233 @@ use crate::infrastructure::state_subscription::Version;
 use crate::usecase::state_subscription::SubscriptionTarget;
 use std::sync::Arc;
 
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionTreeLocation};
+use crate::domain::provider_lifecycle::ProviderKind;
+use crate::domain::workflow::{ExecutionStatus, ExecutionTreeArchiveRecord, ExecutionTreeLaunch};
+use crate::domain::workspace_tree::{
+    WorkspaceExecution, WorkspaceIdentity, WorkspaceNodeKind, WorkspaceNodeStatus, WorkspaceTree,
+    WorkspaceTreeNode,
+};
+
+fn overview_tree(
+    path: &str,
+    provider: Option<ProviderKind>,
+    owner_status: WorkspaceNodeStatus,
+    child_status: WorkspaceNodeStatus,
+) -> WorkspaceTree {
+    let owner = WorkspaceTreeNode {
+        worktree: None,
+        id: "execution".into(),
+        parent_id: None,
+        sibling_order: 0,
+        kind: WorkspaceNodeKind::Workflow,
+        title: "Owner title".into(),
+        status: owner_status,
+        process_presence: Default::default(),
+        status_classification:
+            crate::domain::workspace_tree::WorkspaceNodeStatusClassification::Idle,
+        delegate_waits_for_child: false,
+        background_failure: false,
+        activity: None,
+        error_reason: None,
+        updated_at_bits: 1.0f64.to_bits(),
+        execution_id: Some("execution".into()),
+        node_execution_id: None,
+        node_name: None,
+        attempt: None,
+        execution_parent: None,
+        retry_predecessor_id: None,
+        past_attempt_ids: Vec::new(),
+        is_retry_history: false,
+        completion_signals: Default::default(),
+        has_artifact: false,
+        session_id: None,
+        model: None,
+        provider: None,
+        can_rename: false,
+        can_approve: false,
+        can_retry: false,
+        can_resume_session: false,
+        can_abort: false,
+        can_archive: false,
+        display_command: None,
+        shell: None,
+        cwd: None,
+        command_result: None,
+        dynamic_fanout: false,
+    };
+    let mut child = WorkspaceTreeNode {
+        id: "child".into(),
+        parent_id: Some(owner.id.clone()),
+        node_execution_id: Some("child-execution".into()),
+        node_name: Some("main".into()),
+        attempt: Some(0),
+        kind: WorkspaceNodeKind::WorkflowCommand,
+        status: child_status,
+        ..owner.clone()
+    };
+    if provider.is_some() {
+        child.kind = WorkspaceNodeKind::WorkflowSession;
+        child.session_id = Some("session".into());
+        child.activity = Some(if child_status == WorkspaceNodeStatus::Completed {
+            crate::domain::workflow::AgentSessionActivity::AwaitingInstruction
+        } else {
+            crate::domain::workflow::AgentSessionActivity::Working
+        });
+    }
+    let mut tree = WorkspaceTree::restore(path, vec![owner, child]).unwrap();
+    tree.record_executions(vec![WorkspaceExecution {
+        execution_id: "execution".into(),
+        launched_as: if provider.is_some() {
+            ExecutionTreeLaunch::Session
+        } else {
+            ExecutionTreeLaunch::Workflow
+        },
+        worktree_path: path.into(),
+        workflow_name: "review-workflow".into(),
+        status: ExecutionStatus::Running,
+        updated_at: 1.0,
+        archive: None,
+        session: provider.map(|provider| {
+            AgentSession::create(
+                "session",
+                WorkspaceIdentity::new(path),
+                path,
+                provider,
+                AgentSessionTreeLocation::session_tree_root("session").unwrap(),
+            )
+            .unwrap()
+        }),
+    }]);
+    tree
+}
+
+fn overview(trees: Vec<WorkspaceTree>) -> wire::ExecutionOverviewDto {
+    let Some(wire::state_payload::Value::ExecutionOverview(overview)) =
+        payload(&StateValue::ExecutionOverview((trees, vec![])))
+            .unwrap()
+            .value
+    else {
+        panic!("expected execution overview");
+    };
+    overview
+}
+
+#[test]
+fn test_実行木一覧購読_集約と各実行木の三状態と表示名と選択先を転送する() {
+    use wire::workspace_status_classification::Value::{Active, Attention, Idle};
+    use WorkspaceNodeStatus::{Completed, Running, Waiting};
+    // Given
+    let trees = vec![
+        overview_tree("/repo/c", Some(ProviderKind::Codex), Waiting, Running),
+        overview_tree("/repo/b", None, Waiting, Completed),
+        overview_tree("/repo/a", Some(ProviderKind::Claude), Running, Completed),
+        overview_tree("/repo/d", None, Completed, Completed),
+    ];
+    // When
+    let result = overview(trees);
+    // Then
+    assert_eq!(result.status.unwrap().value, Some(Attention as i32));
+    assert_eq!(
+        result
+            .executions
+            .iter()
+            .map(|entry| (
+                entry.worktree_path.as_str(),
+                entry.worktree_name.as_str(),
+                entry.name.as_str(),
+                entry.status.as_ref().unwrap().value,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("/repo/a", "a", "Claude", Some(Idle as i32)),
+            ("/repo/b", "b", "review-workflow", Some(Attention as i32)),
+            ("/repo/c", "c", "Codex", Some(Active as i32)),
+            ("/repo/d", "d", "review-workflow", Some(Idle as i32)),
+        ]
+    );
+    assert_eq!(
+        overview(vec![overview_tree("/repo", None, Completed, Completed)])
+            .status
+            .unwrap()
+            .value,
+        Some(Idle as i32)
+    );
+    assert_eq!(
+        overview(vec![overview_tree("/repo", None, Running, Completed)])
+            .status
+            .unwrap()
+            .value,
+        Some(Active as i32)
+    );
+}
+
+#[test]
+fn test_実行木一覧購読_空の一覧も集約状態とともに転送する() {
+    // Given / When
+    let result = overview(Vec::new());
+    // Then
+    assert!(result.executions.is_empty());
+    assert_eq!(
+        result.status.unwrap().value,
+        Some(wire::workspace_status_classification::Value::Idle as i32)
+    );
+}
+
+#[test]
+fn test_実行木一覧購読_archiveされた木とsessionを集約から除く() {
+    use WorkspaceNodeStatus::{Completed, Waiting};
+    // Given
+    let mut archived = overview_tree("/repo/archived", None, Waiting, Completed);
+    let mut execution = archived.executions()[0].clone();
+    execution.archive = Some(ExecutionTreeArchiveRecord {
+        execution_id: execution.execution_id.clone(),
+        archived_at: 2.0,
+        archive_reason: "archived".into(),
+    });
+    archived.record_executions(vec![execution]);
+    let mut session = overview_tree(
+        "/repo/session",
+        Some(ProviderKind::Claude),
+        Waiting,
+        Waiting,
+    );
+    let mut execution = session.executions()[0].clone();
+    execution.session.as_mut().unwrap().archive().unwrap();
+    session.record_executions(vec![execution]);
+    // When
+    let result = overview(vec![archived, session]);
+    // Then
+    assert!(result.executions.is_empty());
+    assert_eq!(
+        result.status.unwrap().value,
+        Some(wire::workspace_status_classification::Value::Idle as i32)
+    );
+}
+
+#[test]
+fn test_実行木一覧購読_session未取得の木を除きルートパスを表示する() {
+    use WorkspaceNodeStatus::{Completed, Waiting};
+    // Given
+    let mut pending = overview_tree("/repo/pending", Some(ProviderKind::Codex), Waiting, Waiting);
+    let mut execution = pending.executions()[0].clone();
+    execution.session = None;
+    pending.record_executions(vec![execution]);
+    // When
+    let result = overview(vec![
+        pending,
+        overview_tree("/", None, Completed, Completed),
+    ]);
+    // Then
+    assert_eq!(result.executions.len(), 1);
+    assert_eq!(result.executions[0].worktree_path, "/");
+    assert_eq!(result.executions[0].worktree_name, "/");
+    assert_eq!(
+        result.status.unwrap().value,
+        Some(wire::workspace_status_classification::Value::Idle as i32)
+    );
+}
+
 fn wire_event(event: StateSubscriptionEvent) -> wire::StateSubscriptionEvent {
     crate::adaptor::presenter::connect_wire::to_wire(&super::event(event).unwrap()).unwrap()
 }
@@ -1272,4 +1499,40 @@ fn test_workspace購読payload_設定未保存のsession配置を転送する() 
     assert!(actual.tabs.is_none());
     assert!(actual.layout.is_none());
     assert_eq!(WorkspaceState::try_from(actual).unwrap(), state);
+}
+
+#[test]
+fn test_実行概要の部分成功_正常木と失敗idと原因を転送してattentionを示す() {
+    // Given
+    let tree = overview_tree(
+        "/repo",
+        None,
+        WorkspaceNodeStatus::Completed,
+        WorkspaceNodeStatus::Completed,
+    );
+    let failures = vec![(
+        "broken".into(),
+        crate::domain::workflow::WorkflowError::External("read failed".into()),
+    )];
+    // When / Then
+    for trees in [vec![tree], vec![]] {
+        let Some(wire::state_payload::Value::ExecutionOverview(value)) = payload(
+            &StateValue::ExecutionOverview((trees.clone(), failures.clone())),
+        )
+        .unwrap()
+        .value
+        else {
+            panic!("expected overview")
+        };
+        assert_eq!(value.executions.len(), trees.len());
+        assert_eq!(
+            value.status.unwrap().value,
+            Some(wire::workspace_status_classification::Value::Attention as i32)
+        );
+        assert_eq!(value.failures["broken"].message, "read failed");
+        assert_eq!(
+            value.failures["broken"].code,
+            connectrpc::ErrorCode::Internal.grpc_code() as i32
+        );
+    }
 }

@@ -429,6 +429,7 @@ pub struct WorkflowControlPlaneAcceptanceHost {
     retrying: Arc<crate::usecase::retry::Retrying>,
     startup: Option<Arc<crate::usecase::workflow::startup::WorkflowStartupUsecase>>,
     store: Arc<LocalEventStore>,
+    execution_reads: Arc<crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads>,
     workspace_node_commands: Arc<WorkspaceNodeCommandUsecase>,
     writer_lock_path: std::path::PathBuf,
     terminal: TerminalSurfaceRuntime,
@@ -461,6 +462,10 @@ impl WorkflowControlPlaneAcceptanceHost {
             config.data_dir.clone(),
             crate::test_support::terminal_config(""),
         );
+        let execution_reads =
+            crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads::new(
+                store.clone(),
+            );
         let session_tabs = crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
             Arc::new(
                 crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
@@ -468,12 +473,14 @@ impl WorkflowControlPlaneAcceptanceHost {
                     store.clone(),
                 ),
             ),
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                store.clone(),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
+                execution_reads.clone(),
+                work.failures.clone(),
             ),
             terminal.subscriptions(),
         );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            failures: work.failures.clone(),
             session_tabs: session_tabs.clone(),
             git: Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(Arc::new(
                 crate::adaptor::gateway::app_config::AppConfig::new(Default::default(), std::path::PathBuf::new()),
@@ -483,7 +490,7 @@ impl WorkflowControlPlaneAcceptanceHost {
 launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),
             retrying: work.retrying.clone(),
             state_publisher: None,
-			store: store.clone(),
+			execution_reads: execution_reads.clone(),
 			data_dir: config.data_dir.clone(),
 				provider_executable_config: Arc::new(
 					crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
@@ -506,10 +513,9 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 		.map_err(|error| format!("Provider availability初期化失敗: {error:?}"))?;
 
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-                crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                    store.clone(),
-                ),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_reads(
+                execution_reads.clone(),
+                work.failures.clone(),
             );
 
         let workflows_dir = config.data_dir.join("acceptance-workflows");
@@ -575,7 +581,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
 
         std::fs::create_dir_all(&workflows_dir).map_err(|error| error.to_string())?;
         let workflow_read = Arc::new(crate::acceptance_test_support::workflow_read(
-            store.clone(),
+            execution_reads.clone(),
             config.data_dir.clone(),
             Some(workflows_dir),
         ));
@@ -641,6 +647,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             retrying: work.retrying.clone(),
             startup,
             store,
+            execution_reads,
             workspace_node_commands,
             writer_lock_path: config.data_dir.join("local-event-store.lock"),
             terminal,
@@ -969,8 +976,11 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         node_execution_id: &str,
     ) -> Result<Option<AcceptanceWorkspaceNodeStatus>, String> {
         let repository =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                self.store.clone(),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
+                self.execution_reads.clone(),
+                std::sync::Arc::new(
+                    crate::adaptor::gateway::failure_records::FailureRecordStore::default(),
+                ),
             );
         let backend = crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend::Live(
             self.store.clone(),
@@ -1091,6 +1101,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             retrying,
             startup,
             store,
+            execution_reads,
             workspace_node_commands,
             writer_lock_path,
             terminal,
@@ -1129,6 +1140,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             runtime_driver,
             terminal,
             store,
+            execution_reads,
             workspace_node_commands,
             workflow_read,
         ));

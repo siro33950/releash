@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use super::SqliteWorkspaceTreeRepository;
+#[cfg(feature = "test-support")]
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
+use crate::adaptor::gateway::workflow::fact_log::FactLogReadBackend;
 use crate::domain::workflow::{
     ExecutionStatusFilter, ExecutionTreeLaunch, WorkflowError, WorkflowExecutionSummary,
 };
@@ -13,11 +15,17 @@ use crate::usecase::workflow::{
 };
 use crate::usecase::workspace_tree::WorkspaceQueryService;
 
+use super::execution_reads::{ExecutionReads, FoldedExecution as ExecutionView, FOLD_IDLE_LIMIT};
+use super::record_projection_error;
+
 #[cfg(feature = "test-support")]
 type ReferenceSearchObserver = Arc<dyn Fn() + Send + Sync>;
 
 pub struct SqliteWorkspaceQueryService {
-    repository: Arc<SqliteWorkspaceTreeRepository>,
+    backend: FactLogReadBackend,
+    executions: Arc<ExecutionReads>,
+    failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
+    pub processes: Option<Arc<dyn crate::domain::workflow::NodeProcessReader>>,
     #[cfg(feature = "test-support")]
     reference_search_observer: parking_lot::Mutex<Option<ReferenceSearchObserver>>,
     references: Arc<parking_lot::Mutex<ReferenceIndex>>,
@@ -270,9 +278,23 @@ struct ReferenceTree {
 }
 
 impl SqliteWorkspaceQueryService {
-    pub fn with_repository(repository: Arc<SqliteWorkspaceTreeRepository>) -> Arc<Self> {
+    #[cfg(feature = "test-support")]
+    pub fn new(store: Arc<LocalEventStore>) -> Arc<Self> {
+        Self::with_reads(
+            ExecutionReads::new(store),
+            Arc::new(crate::adaptor::gateway::failure_records::FailureRecordStore::default()),
+        )
+    }
+
+    pub fn with_reads(
+        executions: Arc<ExecutionReads>,
+        failures: Arc<dyn crate::domain::failure::FailureRecordRepository>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            repository,
+            backend: executions.backend(),
+            executions,
+            failures,
+            processes: None,
             references: Default::default(),
             #[cfg(feature = "test-support")]
             reference_search_observer: Default::default(),
@@ -284,34 +306,32 @@ impl SqliteWorkspaceQueryService {
         *self.reference_search_observer.lock() = observer;
     }
 
+    async fn read_executions(
+        &self,
+        include: impl Fn(&super::execution_reads::TreeRoot) -> bool,
+    ) -> Result<Vec<ExecutionView>, WorkflowError> {
+        self.executions
+            .selected(include, FOLD_IDLE_LIMIT)
+            .await
+            .map_err(super::execution_reads::execution_read_error)
+    }
+
     pub async fn execution_records(
         &self,
         workspace_identity: Option<&WorkspaceIdentity>,
         status: Option<ExecutionStatusFilter>,
     ) -> Result<Vec<crate::domain::local_event::WorkflowExecutionMetadataRecord>, WorkflowError>
     {
-        let tree_roots = self.repository.tree_roots().await.map_err(|error| {
-            WorkflowError::from(
-                crate::adaptor::gateway::workflow::fact_log::FactReadError::Query(error),
-            )
-        })?;
+        let executions = self
+            .read_executions(|root| {
+                root.launched_as == ExecutionTreeLaunch::Workflow
+                    && workspace_identity
+                        .is_none_or(|workspace| workspace.as_str() == root.worktree_path)
+            })
+            .await?;
         let mut records = Vec::new();
-        for (tree_id, root) in tree_roots {
-            if root.launched_as != ExecutionTreeLaunch::Workflow
-                || workspace_identity.is_some_and(|wanted| wanted.as_str() != root.worktree_path)
-            {
-                continue;
-            }
-            let Some(execution) = self
-                .repository
-                .folded_tree(&tree_id)
-                .await
-                .map_err(query_error)?
-            else {
-                continue;
-            };
-            let (folded, record) = &*execution;
-            debug_assert_eq!(folded.root.launched_as, ExecutionTreeLaunch::Workflow);
+        for execution in executions {
+            let (_, record) = &*execution;
             let keep = match status {
                 Some(ExecutionStatusFilter::Active) => !record.status.is_finished(),
                 None => true,
@@ -351,8 +371,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         #[cfg(feature = "test-support")]
         let observer = self.reference_search_observer.lock().clone();
         let rows = self
-            .repository
-            .fact_backend()
+            .backend
             .run_indexed(move |connection| {
                 let unavailable = |error: rusqlite::Error| {
                     crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error)
@@ -454,7 +473,9 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 }
             }
             Err(error) => {
-                let failure = crate::domain::failure::WorkFailure::from_error(&query_error(error));
+                let failure = crate::domain::failure::WorkFailure::from_error(
+                    &super::execution_reads::execution_read_error(error),
+                );
                 result.failures.extend(node_ids.iter().map(|id| {
                     crate::usecase::workspace_tree::query_service::SessionNodeResolutionFailureDto {
                         reference_id: id.clone(),
@@ -472,17 +493,19 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         node_id: &str,
     ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
         let workspace = workspace_identity.as_str();
-        let trees = self
-            .repository
-            .folded_workspace_trees(workspace)
-            .await
-            .map_err(query_error)?;
-        for execution in trees {
+        let executions = self
+            .read_executions(|root| root.workspace_identity == workspace)
+            .await?;
+        for execution in executions {
             let (folded, record) = &*execution;
-            let nodes = self
-                .repository
-                .tree_nodes(workspace, folded, record)
-                .map_err(query_error)?;
+            let mut nodes = super::snapshot_nodes(workspace, folded, record, &self.processes)?;
+            let observations = super::background_failures(&nodes, &*self.failures);
+            crate::domain::workspace_tree::entities::observe_background_failures(
+                &mut nodes,
+                observations
+                    .iter()
+                    .map(|(target, message)| (target.as_str(), message.as_str())),
+            );
             let node = WorkspacePublicRoot::resolve_node(&nodes, node_id);
             let Some(node) = node else { continue };
             let attempts = node
@@ -502,13 +525,14 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
                 node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
             });
             let pending_session = (node.kind == WorkspaceNodeKind::WorkflowSession
-                && node.session_id.is_none())
-            .then(|| node.node_execution_id.clone())
-            .flatten();
+                && node.session_id.is_none()
+                && !node.background_failure)
+                .then(|| node.node_execution_id.clone())
+                .flatten();
             let mut detail = node_detail_with_workflow(node, workflow);
             if let Some(id) = pending_session {
                 if let Some(record) = crate::adaptor::gateway::workflow::fact_log::read_latest_record_for_node_with_event_types(
-                    &self.repository.fact_backend(), &id, &["runtime_failure_observed"],
+                    &self.backend, &id, &["runtime_failure_observed"],
                 ).await.map_err(WorkflowError::from)? {
                     if let crate::domain::workflow::NodeFact::RuntimeFailureObserved(failure) = record.fact {
                         detail.error_reason = Some(failure.reason);
@@ -528,7 +552,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
         use crate::domain::workflow::NodeFact;
         use crate::usecase::workflow::WorkflowGetOutputResult;
         let record = crate::adaptor::gateway::workflow::fact_log::read_latest_record_for_node_with_event_types(
-            &self.repository.fact_backend(), node_execution_id, &["artifact_produced"],
+            &self.backend, node_execution_id, &["artifact_produced"],
         ).await.map_err(WorkflowError::from)?;
         Ok(match record {
             Some(record) => match record.fact {
@@ -674,34 +698,6 @@ pub fn execution_summary(
         error_reason: record.error_reason,
         total_token_usage: record.total_token_usage,
     })
-}
-
-pub(super) fn query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> WorkflowError {
-    use crate::domain::local_event::LocalEventQueryError;
-
-    match error {
-        LocalEventQueryError::Technical(stopped) => WorkflowError::Technical(stopped),
-        error @ (LocalEventQueryError::StorageUnavailable { .. }
-        | LocalEventQueryError::QueryBusy) => {
-            let message = error.to_string();
-            WorkflowError::storage(error, message)
-        }
-        error @ LocalEventQueryError::Corrupt { .. } => {
-            WorkflowError::CorruptStoredState(error.to_string())
-        }
-        error @ LocalEventQueryError::IncompatibleStoredEvent { .. } => {
-            WorkflowError::IncompatibleStoredEvent(error.to_string())
-        }
-        error => WorkflowError::external(error.to_string()),
-    }
-}
-
-fn record_projection_error(context: &str) -> WorkflowError {
-    let correlation_id = uuid::Uuid::new_v4();
-    log::error!("Workspace query record invariant failure [{correlation_id}]: {context}");
-    WorkflowError::CorruptStoredState(format!("{context} (correlation_id={correlation_id})"))
 }
 
 #[cfg(test)]

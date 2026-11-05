@@ -243,7 +243,6 @@ impl Fixture {
             Arc::new(NoopArchiveRepository),
             workspace_nodes.clone(),
             workspace_query,
-            Arc::new(UnexpectedFailures),
         );
         Self {
             usecase,
@@ -576,24 +575,6 @@ impl crate::usecase::workflow::FacetQueryService for FakeSummaryQuery {
             description: "desc".into(),
             builtin: true,
         }])
-    }
-}
-
-struct UnexpectedFailures;
-impl crate::domain::failure::FailureRecordRepository for UnexpectedFailures {
-    fn record_observed(
-        &self,
-        _: &crate::domain::failure::FailureKey,
-        _: crate::domain::failure::WorkFailure,
-        _: bool,
-    ) -> bool {
-        panic!("unexpected failure observation")
-    }
-    fn record_resolved(&self, _: &crate::domain::failure::FailureKey) -> bool {
-        panic!("unexpected failure resolution")
-    }
-    fn attention_messages(&self, _: &str) -> Vec<String> {
-        Vec::new()
     }
 }
 

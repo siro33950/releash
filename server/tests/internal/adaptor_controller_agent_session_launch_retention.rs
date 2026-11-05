@@ -1,3 +1,4 @@
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::providers::ProviderKind;
 use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
 use releashd::test_support::integration::sessions::hook_health_usecase;
@@ -60,7 +61,10 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
     );
     let session_tabs = releashd::test_support::integration::workspace::SessionTabsUsecase::new(
         workspace_states.clone(),
-        releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(store),
+        releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
+            store,
+            std::sync::Arc::new(FailureRecordStore::default()),
+        ),
         releashd::test_support::integration::subscriptions::test_subscriptions(),
     );
     let usecase = AgentSessionLaunchUsecase::new(

@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn test_実行木一覧購読_引数なしで往復し余計な引数を拒否する() {
+    // Given
+    let target = SubscriptionTarget::ExecutionOverview;
+    // When
+    let parsed = SubscriptionTarget::from_parts("execution-overview", &[]);
+    // Then
+    assert_eq!(parsed, Ok(target.clone()));
+    assert_eq!(target.parts(), ("execution-overview", vec![]));
+    assert_eq!(target.to_string(), "execution-overview");
+    assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
+    assert!(SubscriptionTarget::from_parts("execution-overview", &["/repo"]).is_err());
+}
+
+#[test]
 fn test_購読対象_区切り文字と日本語を含む引数が往復する() {
     // Given
     let target = SubscriptionTarget::BranchBase("/作業:repo".into(), "feat/test".into());

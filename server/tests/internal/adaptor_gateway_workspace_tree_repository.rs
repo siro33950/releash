@@ -1,3 +1,4 @@
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::workflow::AgentActivityObservedFact;
 use releashd::test_support::integration::workspace::session_detail;
 
@@ -760,7 +761,10 @@ pub async fn test_workspace_tree読み出し_報告実例の後方辺fanout既�
         releashd::test_support::integration::workflow::read_tree_records(&store, execution_id)
             .await
             .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+    let repository = SqliteWorkspaceTreeRepository::new(
+        Arc::clone(&store),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let folded = repository
@@ -955,7 +959,10 @@ pub async fn test_ツリー読み出し_command形のsession成果物を含む�
             .unwrap()
     }))
     .await;
-    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+    let repository = SqliteWorkspaceTreeRepository::new(
+        Arc::clone(&store),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let folded = repository
@@ -1047,7 +1054,10 @@ pub async fn test_workspace_tree読み出し_同一worktreeの複数executionで
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let folded = repository
@@ -1104,7 +1114,10 @@ pub async fn test_workspace_tree読み出し_同一worktreeの複数executionで
     )
     .await
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let folded = repository
@@ -1151,7 +1164,10 @@ pub async fn test_workspace_tree読み出し_session二重束縛をcorruptとし
     releashd::test_support::integration::workflow::append_canonical_events(&store, &events)
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let folded = repository
@@ -1190,7 +1206,10 @@ pub async fn public_session_root_id_loads_the_session_node_instead_of_the_intern
         .create(session, "create-request-1")
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     let node_id = repository
         .load_node_by_session_id(&workspace, "agent-session-1")
@@ -1239,7 +1258,10 @@ pub async fn test_workspace_tree_repository_workspace同定子がworktreeと異�
         )
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When: workspace identity から木、Session の公開 node、詳細を引く
     let trees = repository
@@ -1295,7 +1317,10 @@ pub async fn a_session_owned_by_another_worktree_has_no_public_node_id() {
         .create(session, "create-request-1")
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     assert!(
         repository
@@ -1328,7 +1353,10 @@ pub async fn test_workspace_repository読取_実経路で失敗分類を保持�
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     for (failure, expected) in ReadFailure::cases() {
         store.fail_next_read(failure);
         // When
@@ -1539,7 +1567,10 @@ async fn delegate_parent_status_from_store(
         restored.session_activities[&child.node_execution_id],
         activity
     );
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let node = releashd::test_support::integration::workspace::node_for_execution(
         &*repository,
         &releashd::test_support::integration::workspace::WorkspaceIdentity::new("/repo"),
@@ -1594,12 +1625,51 @@ async fn standalone_session_store(
     (directory, store)
 }
 
+fn recreate_session_tree(connection: &rusqlite::Connection, tree_id: &str, workspace: &str) {
+    use releashd::test_support::integration::persistence::{
+        append_node_event, delete_tree, read_tree, NewNodeEventRow,
+    };
+    let rows = read_tree(connection, tree_id).unwrap();
+    let head = rows.last().unwrap().seq;
+
+    delete_tree(connection, tree_id).unwrap();
+    for row in rows {
+        let mut detail: serde_json::Value = serde_json::from_str(&row.detail).unwrap();
+        if row.event_type == "started" {
+            detail["root"]["workspaceIdentity"] = workspace.into();
+        }
+        append_node_event(
+            connection,
+            &NewNodeEventRow {
+                tree_id: row.tree_id,
+                node_execution_id: row.node_execution_id,
+                parent_id: row.parent_id,
+                node_name: row.node_name,
+                kind: row.kind,
+                attempt: row.attempt,
+                event_type: row.event_type,
+                session_id: row.session_id,
+                detail: detail.to_string(),
+            },
+            row.timestamp_ms + 1000,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        read_tree(connection, tree_id).unwrap().last().unwrap().seq,
+        head
+    );
+}
+
 #[tokio::test]
 pub async fn test_実行木のid読取_一覧の復元を共有し別の木の破損から独立する() {
     // Given
     let workspace = WorkspaceIdentity::new("/repo");
     let (directory, store) = standalone_session_store("session", &workspace).await;
-    let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let listed = repository
         .load_trees(std::slice::from_ref(&workspace))
         .await
@@ -1645,8 +1715,8 @@ pub async fn test_実行木のid読取_一覧の復元を共有し別の木の�
         .unwrap()
         .is_none());
 
-    // When: the same id and sequence now belong to a reconstructed root.
-    connection.execute("UPDATE node_events SET detail = json_set(detail, '$.root.workspaceIdentity', '/relocated') WHERE tree_id = 'session' AND event_type = 'started'", []).unwrap();
+    // When
+    recreate_session_tree(&connection, "session", "/relocated");
     // Then
     assert!(repository
         .load_execution_tree(&workspace, "session")
@@ -1683,7 +1753,10 @@ pub async fn test_workspace_tree読取_追記された事実だけを足し最�
     // Given: 一度読んだ実行木
     let workspace = WorkspaceIdentity::new("/repo");
     let (_directory, store) = standalone_session_store("agent-session-1", &workspace).await;
-    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+    let repository = SqliteWorkspaceTreeRepository::new(
+        Arc::clone(&store),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let before = repository
         .load_node(&workspace, "agent-session-1")
         .await
@@ -1726,7 +1799,10 @@ pub async fn test_workspace_tree読取_終端の事実が追記された木は�
     // Given: 一度読んだ実行木
     let workspace = WorkspaceIdentity::new("/repo");
     let (_directory, store) = standalone_session_store("agent-session-1", &workspace).await;
-    let repository = SqliteWorkspaceTreeRepository::new(Arc::clone(&store));
+    let repository = SqliteWorkspaceTreeRepository::new(
+        Arc::clone(&store),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     let node = repository
         .load_node(&workspace, "agent-session-1")
         .await
@@ -1779,7 +1855,10 @@ pub async fn test_workspace_tree読取_複数workspaceをまとめて読み所�
         .create(session, "create-request-2")
         .await
         .unwrap();
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let trees = repository
@@ -1827,7 +1906,10 @@ pub async fn test_workspace_tree読取_同じworkspaceのsessionだけを実行�
             .await
             .unwrap();
     }
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let tree = repository
@@ -1896,7 +1978,10 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
             _ => {}
         }
     }
-    let repository = SqliteWorkspaceTreeRepository::new(store);
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
 
     // When
     let tree = repository
@@ -1943,6 +2028,7 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
             .collect::<Vec<_>>(),
         vec!["archived-session"]
     );
+    assert_eq!(repository.load_all_trees().await.unwrap().0, vec![tree]);
 }
 
 #[tokio::test]
@@ -1950,7 +2036,10 @@ pub async fn test_workspace_tree読取_読まれなくなった木の保持を�
     // Given: 読まれた直後に保持の期限が切れる repository
     let workspace = WorkspaceIdentity::new("/repo");
     let (_directory, store) = standalone_session_store("agent-session-1", &workspace).await;
-    let mut repository = SqliteWorkspaceTreeRepository::new(store);
+    let mut repository = SqliteWorkspaceTreeRepository::new(
+        store,
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
     Arc::get_mut(&mut repository).unwrap().fold_idle_limit = std::time::Duration::ZERO;
     repository
         .load_trees(std::slice::from_ref(&workspace))
@@ -2051,7 +2140,10 @@ pub async fn test_sessionタブ分類_delegateの次周回は前の子を保持�
                 .await
                 .unwrap();
         }
-        let repository = SqliteWorkspaceTreeRepository::new(store);
+        let repository = SqliteWorkspaceTreeRepository::new(
+            store,
+            std::sync::Arc::new(FailureRecordStore::default()),
+        );
         let listed = releashd::test_support::integration::workspace::node_for_execution(
             &*repository,
             &WorkspaceIdentity::new("/repo"),
@@ -2241,7 +2333,10 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
                 .await
                 .unwrap();
         }
-        let repository = SqliteWorkspaceTreeRepository::new(store.clone());
+        let repository = SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            std::sync::Arc::new(FailureRecordStore::default()),
+        );
 
         for index in 0..count.max(1) {
             if count > 0 {
@@ -2309,5 +2404,616 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
             );
             assert_eq!(detail.capabilities.can_approve, list.can_approve);
         }
+    }
+}
+
+#[tokio::test]
+pub async fn test_全実行木読取_全worktreeを返し保持済みのfoldへ追記だけを反映する() {
+    use releashd::test_support::integration::workflow::{AbortRequestedFact, AgentSessionActivity};
+    // Given
+    let first = WorkspaceIdentity::new("/repo/first");
+    let second = WorkspaceIdentity::new("/repo/second");
+    let (_directory, store) = standalone_session_store("first-session", &first).await;
+    let sessions = LocalAgentSessionRepository::new(store.clone());
+    sessions
+        .create(
+            AgentSession::create(
+                "second-session",
+                second.clone(),
+                second.as_str(),
+                ProviderKind::Claude,
+                AgentSessionTreeLocation::session_tree_root("second-session").unwrap(),
+            )
+            .unwrap(),
+            "second",
+        )
+        .await
+        .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
+
+    // When / Then
+    repository
+        .folded_tree("first-session")
+        .await
+        .unwrap()
+        .unwrap();
+    repository
+        .folded_workspace_trees(second.as_str())
+        .await
+        .unwrap();
+    let before = repository.load_all_trees().await.unwrap().0;
+    assert_eq!(
+        before
+            .iter()
+            .map(|tree| tree.workspace_identity().as_str())
+            .collect::<Vec<_>>(),
+        vec![first.as_str(), second.as_str()]
+    );
+    let folds = tree_fold_count();
+    assert_eq!(repository.load_all_trees().await.unwrap().0, before);
+    assert_eq!(tree_fold_count(), folds);
+    let mut meta = standalone_session_meta("first-session");
+    meta.node_name = before[0]
+        .session_node("first-session")
+        .unwrap()
+        .node_name
+        .clone()
+        .unwrap();
+    append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+            activity: AgentSessionActivity::AwaitingAnswer,
+        }),
+        10_000,
+    )
+    .await
+    .unwrap();
+    let changed = repository.load_all_trees().await.unwrap().0;
+    assert_eq!(
+        changed[0].session_node("first-session").unwrap().activity,
+        Some(AgentSessionActivity::AwaitingAnswer)
+    );
+    assert_eq!(changed[1], before[1]);
+    assert_eq!(tree_fold_count(), folds);
+    append_single_fact(
+        &store,
+        &meta,
+        &NodeFact::AbortRequested(AbortRequestedFact::default()),
+        11_000,
+    )
+    .await
+    .unwrap();
+    let completed = repository.load_all_trees().await.unwrap().0;
+    let direct = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    )
+    .load_all_trees()
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(completed, direct);
+}
+
+#[tokio::test]
+pub async fn test_repository読取_全件と指定worktreeと単木で背景失敗を反映し解消する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, TechnicalFailureNature, WorkFailure,
+    };
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("session", &workspace).await;
+    let failures = Arc::new(FailureRecordStore::default());
+    let repository = SqliteWorkspaceTreeRepository::new(store, failures.clone());
+
+    let before = repository.load_all_trees().await.unwrap().0.remove(0);
+    let key = FailureKey::new("workflow_recovery", "session");
+    // When / Then
+    for attention in [true, false] {
+        if attention {
+            failures.observe(
+                &key,
+                WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Other),
+                    message: "repair required".into(),
+                },
+            );
+        } else {
+            failures.resolve(&key);
+        }
+        let all = repository.load_all_trees().await.unwrap().0.remove(0);
+        let listed = repository
+            .load_trees(std::slice::from_ref(&workspace))
+            .await
+            .remove(0)
+            .unwrap();
+        let single = repository
+            .load_execution_tree(&workspace, "session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(all, listed);
+        assert_eq!(single, listed);
+        assert_eq!(
+            all.session_node("session").unwrap().error_reason.as_deref(),
+            attention.then_some("repair required")
+        );
+        if !attention {
+            assert_eq!(all, before);
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_全実行木読取_空のstoreと読取失敗と保持期限切れを扱う() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("session", &workspace).await;
+    let mut repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
+    Arc::get_mut(&mut repository).unwrap().fold_idle_limit = std::time::Duration::ZERO;
+    let before = repository.load_all_trees().await.unwrap().0;
+    let folds = tree_fold_count();
+    // When / Then
+    assert_eq!(repository.load_all_trees().await.unwrap().0, before);
+    assert_eq!(tree_fold_count(), folds + 1);
+    for (failure, expected) in ReadFailure::cases() {
+        store.fail_next_read(failure);
+        let error = repository.load_all_trees().await.unwrap_err();
+        assert_eq!(
+            releashd::test_support::integration::transport::classified_error(error).code,
+            expected
+        );
+        assert_eq!(repository.load_all_trees().await.unwrap().0, before);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let empty = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    assert!(SqliteWorkspaceTreeRepository::new(
+        empty,
+        std::sync::Arc::new(FailureRecordStore::default())
+    )
+    .load_all_trees()
+    .await
+    .unwrap()
+    .0
+    .is_empty());
+}
+
+#[tokio::test]
+pub async fn test_全実行木読取_削除して同じidとheadで作り直すと所属とsessionを復元し直す() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    let repository =
+        SqliteWorkspaceTreeRepository::new(store.clone(), Arc::new(FailureRecordStore::default()));
+    let single_repository =
+        SqliteWorkspaceTreeRepository::new(store, Arc::new(FailureRecordStore::default()));
+    let before = repository.load_all_trees().await.unwrap().0;
+    assert_eq!(before[0].workspace_identity(), &workspace);
+    single_repository
+        .load_execution_tree(&workspace, "session")
+        .await
+        .unwrap()
+        .unwrap();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    // When
+    recreate_session_tree(&connection, "session", "/relocated");
+    let actual = repository.load_all_trees().await.unwrap().0;
+
+    // Then
+    let relocated = WorkspaceIdentity::new("/relocated");
+    assert_eq!(actual.len(), 1);
+    assert_eq!(actual[0].workspace_identity(), &relocated);
+    assert_eq!(
+        actual[0].executions()[0]
+            .session
+            .as_ref()
+            .unwrap()
+            .workspace(),
+        &relocated
+    );
+    assert!(actual[0].session_node("session").is_some());
+    let folds = tree_fold_count();
+    assert_eq!(repository.load_all_trees().await.unwrap().0, actual);
+    assert_eq!(tree_fold_count(), folds);
+    assert_eq!(
+        repository
+            .load_trees(std::slice::from_ref(&relocated))
+            .await
+            .remove(0)
+            .unwrap(),
+        actual[0]
+    );
+    assert_eq!(
+        single_repository
+            .load_execution_tree(&relocated, "session")
+            .await
+            .unwrap()
+            .unwrap(),
+        actual[0]
+    );
+}
+
+#[tokio::test]
+pub async fn test_限定実行木読取_同じidとheadで再作成された木の所属を更新する() {
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    let repository =
+        SqliteWorkspaceTreeRepository::new(store, Arc::new(FailureRecordStore::default()));
+    let before = repository
+        .load_trees(std::slice::from_ref(&workspace))
+        .await
+        .remove(0)
+        .unwrap();
+    assert!(before.session_node("session").is_some());
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    // When
+    recreate_session_tree(&connection, "session", "/relocated");
+    let relocated = WorkspaceIdentity::new("/relocated");
+    let actual = repository.load_trees(&[workspace, relocated.clone()]).await;
+    // Then
+    assert!(actual[0].as_ref().unwrap().nodes().is_empty());
+    let tree = actual[1].as_ref().unwrap();
+    assert_eq!(tree.workspace_identity(), &relocated);
+    assert!(tree.session_node("session").is_some());
+    assert_eq!(
+        tree.executions()[0].session.as_ref().unwrap().workspace(),
+        &relocated
+    );
+}
+
+#[tokio::test]
+pub async fn test_限定実行木読取_変更のないrootを読み直さず識別値の変更時に検証する() {
+    use releashd::test_support::integration::workspace::{
+        ExecutionReads, SqliteWorkspaceQueryService, WorkspaceQueryService,
+    };
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (directory, store) = standalone_session_store("session", &workspace).await;
+    LocalAgentSessionRepository::new(store.clone())
+        .create(
+            AgentSession::create(
+                "other-session",
+                WorkspaceIdentity::new("/other"),
+                "/other",
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root("other-session").unwrap(),
+            )
+            .unwrap(),
+            "create-other-session",
+        )
+        .await
+        .unwrap();
+    let reads = ExecutionReads::new(store);
+    let repository = SqliteWorkspaceTreeRepository::with_reads(
+        reads.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
+    let query =
+        SqliteWorkspaceQueryService::with_reads(reads, Arc::new(FailureRecordStore::default()));
+    let before = repository.load_all_trees().await.unwrap().0;
+    let expected = before
+        .iter()
+        .find(|tree| tree.workspace_identity() == &workspace)
+        .unwrap();
+    let folds = tree_fold_count();
+    let connection =
+        rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+    connection.execute("UPDATE node_events SET detail = 'already consumed' WHERE tree_id = 'other-session' AND event_type = 'started'", []).unwrap();
+    // When / Then
+    for _ in 0..2 {
+        assert_eq!(
+            repository
+                .load_trees(std::slice::from_ref(&workspace))
+                .await
+                .remove(0)
+                .unwrap(),
+            *expected
+        );
+        query.node_detail(&workspace, "session").await.unwrap();
+        assert_eq!(tree_fold_count(), folds);
+    }
+    assert_eq!(repository.load_all_trees().await.unwrap().0, before);
+    connection.execute("UPDATE node_events SET timestamp = timestamp + 1000 WHERE tree_id = 'other-session' AND event_type = 'started'", []).unwrap();
+    assert!(repository.load_all_trees().await.is_err());
+}
+
+#[tokio::test]
+pub async fn test_repository読取_実行木と子nodeの背景失敗が併存しても反映順が一定である() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, TechnicalFailureNature, WorkFailure,
+    };
+    use releashd::test_support::integration::workflow::AgentSessionActivity;
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store, parent, child) =
+        delegate_fixture(workspace.as_str(), AgentSessionActivity::Working).await;
+    let failures = Arc::new(FailureRecordStore::default());
+    for (target, message) in [
+        (parent.tree_id.as_str(), "tree repair required"),
+        (child.node_execution_id.as_str(), "child repair required"),
+    ] {
+        failures.observe(
+            &FailureKey::new("workflow_recovery", target),
+            WorkFailure {
+                kind: Failure::Technical(TechnicalFailureNature::Other),
+                message: message.into(),
+            },
+        );
+    }
+    use releashd::test_support::integration::workspace::{
+        ExecutionReads, SqliteWorkspaceQueryService, WorkspaceQueryService,
+    };
+    let query = SqliteWorkspaceQueryService::with_reads(
+        ExecutionReads::new(store.clone()),
+        failures.clone(),
+    );
+    let repository = SqliteWorkspaceTreeRepository::new(store, failures);
+    let expected = repository.load_all_trees().await.unwrap().0.remove(0);
+    assert_eq!(
+        expected
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some(&child.node_execution_id))
+            .unwrap()
+            .error_reason
+            .as_deref(),
+        Some("tree repair required")
+    );
+    // When / Then
+    for node in expected.nodes() {
+        let detail = query
+            .node_detail(&workspace, &node.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detail.classification,
+            node.status_classification.as_public_str()
+        );
+        assert_eq!(detail.error_reason, node.failure_reason());
+    }
+    for _ in 0..32 {
+        assert_eq!(
+            repository.load_all_trees().await.unwrap().0,
+            vec![expected.clone()]
+        );
+        assert_eq!(
+            repository
+                .load_trees(std::slice::from_ref(&workspace))
+                .await
+                .remove(0)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            repository
+                .load_execution_tree(&workspace, &parent.tree_id)
+                .await
+                .unwrap(),
+            Some(expected.clone())
+        );
+    }
+}
+
+#[tokio::test]
+pub async fn test_repository読取_全件と指定workspaceと単木の失敗変換が一致する() {
+    use releashd::test_support::integration::persistence::ReadFailure;
+    use releashd::test_support::integration::platform::FailureRecordStore;
+    use releashd::test_support::integration::transport::classified_error;
+    // Given
+    let workspace = WorkspaceIdentity::new("/repo");
+    let (_directory, store) = standalone_session_store("session", &workspace).await;
+    let repository =
+        SqliteWorkspaceTreeRepository::new(store.clone(), Arc::new(FailureRecordStore::default()));
+    // When / Then
+    for (failure, code) in ReadFailure::cases() {
+        store.fail_next_read(failure.clone());
+        let all = repository.load_all_trees().await.unwrap_err();
+        store.fail_next_read(failure.clone());
+        let listed = repository
+            .load_trees(std::slice::from_ref(&workspace))
+            .await
+            .remove(0)
+            .unwrap_err();
+        store.fail_next_read(failure);
+        let single = repository
+            .load_execution_tree(&workspace, "session")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            std::mem::discriminant(&all),
+            std::mem::discriminant(&listed)
+        );
+        assert_eq!(
+            std::mem::discriminant(&all),
+            std::mem::discriminant(&single)
+        );
+        for error in [all, listed, single] {
+            assert_eq!(classified_error(error).code, code);
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_session文脈復元_全件と単木でproviderと隔離先が一致する() {
+    use releashd::test_support::integration::platform::FailureRecordStore;
+    use releashd::test_support::integration::workflow::IsolatedWorktree;
+    // Given
+    for (provider_name, provider) in [
+        ("claude", ProviderKind::Claude),
+        ("codex", ProviderKind::Codex),
+    ] {
+        for isolated in [false, true] {
+            let workspace = WorkspaceIdentity::new("/repo");
+            let (directory, store) = standalone_session_store("session", &workspace).await;
+            let connection =
+                rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3"))
+                    .unwrap();
+            let (node_name, detail): (String, String) = connection
+                .query_row(
+                    "SELECT node_name, detail FROM node_events WHERE event_type = 'started'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let mut detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+            detail["root"]["repositoryRoot"] = serde_json::json!("/repo");
+            detail["root"]["definition"]["nodes"][&node_name]["session"]["provider"] =
+                serde_json::json!(provider_name);
+            if isolated {
+                detail["root"]["definition"]["nodes"][&node_name]["worktree"] =
+                    serde_json::json!("isolated");
+            }
+            connection
+                .execute(
+                    "UPDATE node_events SET detail = ?1 WHERE event_type = 'started'",
+                    [detail.to_string()],
+                )
+                .unwrap();
+            let all_repository = SqliteWorkspaceTreeRepository::new(
+                store.clone(),
+                Arc::new(FailureRecordStore::default()),
+            );
+            let single_repository =
+                SqliteWorkspaceTreeRepository::new(store, Arc::new(FailureRecordStore::default()));
+            // When
+            let all = all_repository.load_all_trees().await.unwrap().0.remove(0);
+            let single = single_repository
+                .load_execution_tree(&workspace, "session")
+                .await
+                .unwrap()
+                .unwrap();
+            // Then
+            assert_eq!(all, single);
+            let session = all.executions()[0].session.as_ref().unwrap();
+            assert_eq!(session.provider(), provider);
+            let expected = if isolated {
+                IsolatedWorktree::for_attempt("/repo", "session", 1).path
+            } else {
+                "/repo".into()
+            };
+            assert_eq!(session.worktree_path(), expected);
+        }
+    }
+}
+
+#[tokio::test]
+pub async fn test_全実行木読取_同じworkspaceの破損木と正常木を分離して修復後に回復する() {
+    use releashd::test_support::integration::workflow::{
+        AgentSessionActivity, NodeProcessPresence, NodeProcessReader, WorkflowError,
+    };
+    struct Processes;
+    impl NodeProcessReader for Processes {
+        fn presence(
+            &self,
+            _: &str,
+            id: &str,
+            _: NodeKindName,
+            _: Option<&str>,
+        ) -> Result<NodeProcessPresence, WorkflowError> {
+            if id == "broken" {
+                Err(WorkflowError::External("process read failed".into()))
+            } else {
+                Ok(NodeProcessPresence::Unknown)
+            }
+        }
+    }
+    for warm in [false, true] {
+        // Given
+        let workspace = WorkspaceIdentity::new("/repo");
+        let (directory, store) = standalone_session_store("broken", &workspace).await;
+        LocalAgentSessionRepository::new(store.clone())
+            .create(
+                AgentSession::create(
+                    "healthy",
+                    workspace.clone(),
+                    "/repo",
+                    ProviderKind::Codex,
+                    AgentSessionTreeLocation::session_tree_root("healthy").unwrap(),
+                )
+                .unwrap(),
+                "create-healthy",
+            )
+            .await
+            .unwrap();
+        let mut repository = SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            Arc::new(FailureRecordStore::default()),
+        );
+        if warm {
+            let (trees, failures) = repository.load_all_trees().await.unwrap();
+            assert_eq!(trees[0].executions().len(), 2);
+            assert!(failures.is_empty());
+        }
+        let connection =
+            rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3")).unwrap();
+        let mut meta = standalone_session_meta("broken");
+        meta.node_name = connection.query_row("SELECT node_name FROM node_events WHERE tree_id = 'broken' AND event_type = 'started'", [], |row| row.get(0)).unwrap();
+        append_single_fact(
+            &store,
+            &meta,
+            &NodeFact::AgentActivityObserved(AgentActivityObservedFact {
+                activity: AgentSessionActivity::Working,
+            }),
+            10000,
+        )
+        .await
+        .unwrap();
+        let (seq, detail): (i64, String) = connection.query_row("SELECT seq, detail FROM node_events WHERE tree_id = 'broken' ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        connection
+            .execute(
+                "UPDATE node_events SET detail = 'broken' WHERE tree_id = 'broken' AND seq = ?1",
+                [seq],
+            )
+            .unwrap();
+        // When / Then
+        for _ in 0..2 {
+            let (trees, failures) = repository.load_all_trees().await.unwrap();
+            assert_eq!(trees.len(), 1);
+            assert_eq!(trees[0].executions().len(), 1);
+            assert_eq!(trees[0].executions()[0].execution_id, "healthy");
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].0, "broken");
+            assert!(matches!(
+                failures[0].1,
+                WorkflowError::CorruptStoredState(_)
+            ));
+        }
+        // When / Then
+        connection
+            .execute(
+                "UPDATE node_events SET detail = ?1 WHERE tree_id = 'broken' AND seq = ?2",
+                rusqlite::params![detail, seq],
+            )
+            .unwrap();
+        let (trees, failures) = repository.load_all_trees().await.unwrap();
+        assert_eq!(trees[0].executions().len(), 2);
+        assert!(failures.is_empty());
+        Arc::get_mut(&mut repository).unwrap().processes = Some(Arc::new(Processes));
+        let (trees, failures) = repository.load_all_trees().await.unwrap();
+        assert_eq!(trees[0].executions().len(), 1);
+        assert_eq!(trees[0].executions()[0].execution_id, "healthy");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, "broken");
+        assert_eq!(
+            releashd::test_support::integration::transport::classified_error(failures[0].1.clone())
+                .code,
+            connectrpc::ErrorCode::Internal
+        );
     }
 }

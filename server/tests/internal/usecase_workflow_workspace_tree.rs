@@ -86,6 +86,17 @@ impl Trees {
 
 #[async_trait::async_trait]
 impl releashd::test_support::integration::workspace::WorkspaceTreeRepository for Trees {
+    async fn load_all_trees(
+        &self,
+    ) -> Result<(Vec<WorkspaceTree>, Vec<(String, WorkflowError)>), WorkflowError> {
+        self.results
+            .lock()
+            .values()
+            .cloned()
+            .collect::<Result<Vec<_>, _>>()
+            .map(|trees| (trees, Vec::new()))
+    }
+
     async fn load_trees(
         &self,
         workspace_identities: &[WorkspaceIdentity],
@@ -237,7 +248,12 @@ async fn seeded_workflow(
     let directory = tempfile::tempdir().unwrap();
     let (mut usecase, store) =
         build_workflow_usecase_and_store(directory.path().join("data"), None);
-    usecase.test_replace_failure_repository(failures);
+    let repository =
+        releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            failures,
+        );
+    usecase.test_replace_workspace_tree_repository(repository);
     let worktree = directory
         .path()
         .canonicalize()

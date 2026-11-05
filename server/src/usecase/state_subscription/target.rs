@@ -7,6 +7,8 @@ pub enum SubscriptionTarget {
     Terminal(crate::domain::terminal_surface::TerminalSurfaceOwner),
     RepositoryPaths,
     Workspaces,
+    /// 全 worktree の実行木の一覧と集約状態。
+    ExecutionOverview,
     Selection(String, String),
     NodeDetail(String, String),
     AgentSession(String),
@@ -72,6 +74,7 @@ impl SubscriptionTarget {
         hook_health_markers: &str,
     ) -> Vec<WatchRequirement> {
         match self {
+            Self::ExecutionOverview => vec![],
             Self::Directory(path, directory) => vec![
                 WatchRequirement::Git(path.clone()),
                 WatchRequirement::Files(
@@ -176,6 +179,12 @@ pub enum StateChangeSource {
 
 impl SubscriptionTarget {
     pub fn affected_by(&self, change: &StateChangeSource) -> bool {
+        if matches!(self, Self::ExecutionOverview) {
+            return matches!(
+                change,
+                StateChangeSource::Worktree(_) | StateChangeSource::WorkspaceList
+            );
+        }
         use StateChangeSource as C;
         match change {
             C::RepositoryGroupState(path) => {

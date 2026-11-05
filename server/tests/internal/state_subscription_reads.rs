@@ -1,4 +1,5 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
+use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget as T;
@@ -966,7 +967,9 @@ pub async fn test_終了済み実行木の選択_初期購読でツリーを配�
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1047,7 +1050,9 @@ pub async fn test_終了済み実行木のarchive_取り直しなしで空のツ
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1138,7 +1143,9 @@ pub async fn test_終了済み実行木のrestore_取り直しなしでツリー
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1251,7 +1258,9 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -1349,7 +1358,7 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(store.clone()),
             None,
             None,
         )
@@ -1810,11 +1819,14 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     use releashd::test_support::integration::workspace::{
         SqliteWorkspaceTreeRepository, WorkspaceTreeRepository,
     };
-    let tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
-        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
-        .await
-        .remove(0)
-        .unwrap();
+    let tree = SqliteWorkspaceTreeRepository::new(
+        archive.store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    )
+    .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+    .await
+    .remove(0)
+    .unwrap();
     let ready_node = tree
         .nodes()
         .iter()
@@ -1867,11 +1879,14 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
         WorkflowDefinitionContent,
     };
-    let child_tree = SqliteWorkspaceTreeRepository::new(archive.store.clone())
-        .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
-        .await
-        .remove(0)
-        .unwrap();
+    let child_tree = SqliteWorkspaceTreeRepository::new(
+        archive.store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    )
+    .load_trees(&[WorkspaceIdentity::new(&fixture.path)])
+    .await
+    .remove(0)
+    .unwrap();
     let broken_child_alias = child_tree
         .nodes()
         .iter()
@@ -2005,7 +2020,9 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            archive.store.clone(),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
             None,
             None,
         )
@@ -2041,7 +2058,9 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .into(),
     );
     assert_eq!(actual, expected);
-    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::new(
+        archive.store.clone(),
+    );
     use releashd::test_support::integration::workspace::WorkspaceQueryService;
     let mut individual_failures = Vec::new();
     for (id, fails) in [
@@ -2082,7 +2101,9 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
     connection.execute(
         "UPDATE node_events SET detail = json_set(?1, '$.root.worktreePath', '') WHERE node_execution_id = 'broken-root-alias' AND event_type = 'started'", [&original_root],
     ).unwrap();
-    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::with_repository(SqliteWorkspaceTreeRepository::new(archive.store.clone()));
+    let query = releashd::test_support::integration::workspace::SqliteWorkspaceQueryService::new(
+        archive.store.clone(),
+    );
     let resolution = query
         .resolve_session_nodes(&WorkspaceIdentity::new(&fixture.path), &[broken_root_alias])
         .await;
@@ -2282,4 +2303,116 @@ async fn test_workspace状態購読_sessionタブ追加を設定未保存のま�
     assert!(actual.tabs.is_none());
     assert!(actual.layout.is_none());
     assert_eq!(WorkspaceState::try_from(actual).unwrap(), expected);
+}
+
+#[tokio::test]
+async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_list通知で配信する() {
+    use releashd::test_support::integration::platform::{
+        Failure, FailureKey, FailureRecordStore, FailureRecordingUsecase, TechnicalFailureNature,
+        WorkFailure,
+    };
+    use releashd::test_support::integration::providers::ProviderKind;
+    use releashd::test_support::integration::sessions::{
+        AgentSessionTreeLocation, LocalAgentSessionRepository,
+    };
+    use releashd::test_support::integration::workflow::AgentSessionActivity;
+    use releashd::test_support::integration::workspace::WorkspaceIdentity;
+
+    // Given
+    let fixture = Fixture::new();
+    let archive = archive_fixture();
+    let sessions = test_sessions(
+        Arc::new(LocalAgentSessionRepository::new(archive.store.clone())),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    );
+    for (id, workspace) in [
+        ("session-tab", fixture.path.as_str()),
+        ("other-session", "/other-worktree"),
+    ] {
+        sessions
+            .create(
+                id,
+                WorkspaceIdentity::new(workspace),
+                workspace,
+                ProviderKind::Codex,
+                AgentSessionTreeLocation::session_tree_root(id).unwrap(),
+                &format!("create-{id}"),
+            )
+            .await
+            .unwrap();
+        sessions
+            .observe_activity(
+                id,
+                AgentSessionActivity::AwaitingInstruction,
+                &format!("idle-{id}"),
+            )
+            .await
+            .unwrap();
+    }
+    let failures = Arc::new(FailureRecordStore::default());
+    let mut reads = fixture.reads.clone();
+    reads.workflow = Arc::new(
+        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
+            failures.clone(),
+            archive.directory.path(),
+            Arc::new(PassthroughManagedWorktreeGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
+            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
+            releashd::test_support::integration::workspace::ExecutionReads::new(
+                archive.store.clone(),
+            ),
+            None,
+            None,
+        )
+        .0,
+    );
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let recording = FailureRecordingUsecase::new(failures, Some(subscriptions.clone()));
+    let target = SubscriptionTarget::ExecutionOverview;
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    stream.next().await;
+    start_read(&subscriptions, "client", &target.to_string(), None)
+        .await
+        .unwrap();
+    let initial = reads.read(&target).await.unwrap();
+    assert!(
+        matches!(&initial, StateValue::ExecutionOverview((trees, failures)) if failures.is_empty() && trees.len() == 2 && trees.iter().all(|tree| tree.visible().roots()[0].node().status_classification.as_public_str() == "idle"))
+    );
+    assert!(
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
+    );
+    stream.next().await;
+
+    // When / Then
+    let key = FailureKey::new("workflow_delegate_injection", "session-tab");
+    for expected_classification in ["attention", "idle"] {
+        if expected_classification == "attention" {
+            recording.observed(
+                &key,
+                WorkFailure {
+                    kind: Failure::Technical(TechnicalFailureNature::Other),
+                    message: "delegate injection failed".into(),
+                },
+            );
+        } else {
+            recording.resolved(&key);
+        }
+        let expected = reads.read(&target).await.unwrap();
+        assert!(
+            matches!(&expected, StateValue::ExecutionOverview((trees, failures)) if failures.is_empty() && trees.len() == 2 && trees.iter().find(|tree| tree.nodes().iter().any(|node| node.session_id.as_deref() == Some("session-tab"))).unwrap().visible().roots()[0].node().status_classification.as_public_str() == expected_classification)
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("WorkspaceList notification must update the execution overview");
+        assert!(
+            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
+        );
+    }
 }

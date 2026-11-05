@@ -192,6 +192,10 @@ impl AgentSessionTuiAcceptanceHost {
         );
         let data_dir = config.data_dir.clone();
         let subscriptions = terminal.subscriptions();
+        let execution_reads =
+            crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads::new(
+                store.clone(),
+            );
         let session_tabs = crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
             Arc::new(
                 crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
@@ -199,12 +203,14 @@ impl AgentSessionTuiAcceptanceHost {
                     store.clone(),
                 ),
             ),
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                store.clone(),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::with_reads(
+                execution_reads.clone(),
+                work.failures.clone(),
             ),
             subscriptions.clone(),
         );
         let composition = compose_agent_sessions(AgentSessionCompositionInput {
+            failures: work.failures.clone(),
             session_tabs: session_tabs.clone(),
             git: Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(Arc::new(
                 crate::adaptor::gateway::app_config::AppConfig::new(Default::default(), std::path::PathBuf::new()),
@@ -214,7 +220,7 @@ impl AgentSessionTuiAcceptanceHost {
 launch_retention: crate::adaptor::controller::agent_session_launch_retention::run(crate::infrastructure::timer::delays(crate::adaptor::controller::agent_session_launch_retention::RETENTION)),
             retrying: work.retrying.clone(),
             state_publisher: None,
-            store: store.clone(),
+            execution_reads: execution_reads.clone(),
             data_dir: data_dir.clone(),
             provider_executable_config: Arc::new(
                 crate::adaptor::gateway::agent_session::InMemoryProviderExecutableConfigRepository::new(
@@ -266,10 +272,9 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 composition.availability_reader.clone(),
             ));
         let workspace_query: Arc<dyn crate::usecase::workspace_tree::WorkspaceQueryService> =
-            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_repository(
-                crate::adaptor::gateway::workspace_tree::SqliteWorkspaceTreeRepository::new(
-                    store.clone(),
-                ),
+            crate::adaptor::gateway::workspace_tree::SqliteWorkspaceQueryService::with_reads(
+                execution_reads.clone(),
+                work.failures.clone(),
             );
         let mut driver = WorkflowRuntimeHost::new_canonical(
             data_dir.join("acceptance-workflows"),
