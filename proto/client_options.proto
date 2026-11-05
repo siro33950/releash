@@ -56,4 +56,6 @@ extend google.protobuf.FileOptions {
   optional string data_dir_name = 51050;
   optional string development_data_dir_suffix = 51051;
   optional string data_dir_env = 51052;
+  // 移行前の既定のデータフォルダ名。既定のデータフォルダに自分のサーバが無いとき、CLI とサーバはこの名前の保存先を見る。
+  optional string legacy_data_dir_name = 51053;
 }

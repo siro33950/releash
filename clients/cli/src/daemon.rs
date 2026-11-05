@@ -74,6 +74,14 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     Ok(Some(discovery))
 }
 
+/// コマンドが操作する data dir を決める。
+/// `path` にサーバが動いていればそれを、動いていなくて旧 data dir にサーバが動いていれば旧 data dir を、
+/// どちらにも動いていなければ `path` を返す。旧 data dir の記録の生存を確かめられなければ失敗にする。
+pub fn locate(data_dir: &crate::data_dir::DataDir) -> Result<PathBuf, DaemonError> {
+    let _ = data_dir;
+    todo!()
+}
+
 pub fn current_executable() -> Result<PathBuf, std::io::Error> {
     std::env::current_exe()?.canonicalize()
 }

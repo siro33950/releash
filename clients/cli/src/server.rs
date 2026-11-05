@@ -154,33 +154,22 @@ fn app_bundle(executable: &Path) -> Option<&Path> {
         .find(|path| path.extension().is_some_and(|extension| extension == "app"))
 }
 
-pub async fn launch(dir: &Path) -> Result<String, ConnectError> {
+pub async fn launch(dir: &Path, resolved: &data_dir::DataDir) -> Result<String, ConnectError> {
     start(dir).await?;
     let executable = current_executable()?;
-    launch_started(dir, &executable, open_app).await
+    launch_started(dir, resolved, &executable, open_app).await
 }
 
+/// サーバを起動した後にアプリを開くかを決める。`dir` が既定の data dir か、その旧 data dir ならアプリを開く。
+/// それ以外の data dir ではアプリを開かず、開かなかった理由と状態表示を返す。
 async fn launch_started(
     dir: &Path,
+    resolved: &data_dir::DataDir,
     executable: &Path,
     open_app: impl FnOnce(&Path) -> Result<(), ConnectError>,
 ) -> Result<String, ConnectError> {
-    if let Some(app) = app_bundle(executable) {
-        let resolved = dir
-            .canonicalize()
-            .map_err(|error| ConnectError::unavailable(error.to_string()))?;
-        let default = data_dir::default_data_dir_for_profile(data_dir::BuildProfile::current())
-            .and_then(|path| path.canonicalize().ok());
-        if default.as_ref() == Some(&resolved) {
-            open_app(app)?;
-            return Ok(String::new());
-        }
-        return Ok(format!(
-            "app was not opened: data dir differs from the desktop default\n{}",
-            status(dir, false).await?,
-        ));
-    }
-    status(dir, false).await
+    let _ = (dir, resolved, executable, open_app);
+    todo!()
 }
 
 #[cfg(target_os = "macos")]

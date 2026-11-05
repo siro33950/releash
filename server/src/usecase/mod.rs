@@ -8,6 +8,7 @@ pub(crate) mod code_query_service;
 pub(crate) mod code_usecase;
 pub(crate) mod comment;
 pub(crate) mod daemon;
+pub(crate) mod data_home;
 pub(crate) mod external_editor;
 pub(crate) mod fetched;
 pub(crate) mod git_host;

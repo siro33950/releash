@@ -53,15 +53,40 @@ pub fn default_data_dir_for_profile(profile: BuildProfile) -> Option<PathBuf> {
     dirs::data_dir().map(|base| base.join(default_data_dir_name_for_profile(profile)))
 }
 
-pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
-    explicit
-        .or_else(|| {
-            std::env::var_os(protocol_constant("data_dir_env"))
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        })
-        .or_else(|| default_data_dir_for_profile(BuildProfile::current()))
-        .ok_or_else(|| "OS data directory is unavailable".to_string())
+/// 移行前の既定 data dir の名前。本番は `legacy_data_dir_name`、開発はそれに開発用の接尾辞を付けたもの。
+pub fn legacy_data_dir_name_for_profile(profile: BuildProfile) -> &'static str {
+    static PRODUCTION: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| protocol_constant("legacy_data_dir_name"));
+    static DEVELOPMENT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "{}{}",
+            *PRODUCTION,
+            protocol_constant("development_data_dir_suffix")
+        )
+    });
+    match profile {
+        BuildProfile::Production => &PRODUCTION,
+        BuildProfile::Development => &DEVELOPMENT,
+    }
+}
+
+/// 起動環境別の、移行前の既定 data dir。OS の data dir を解決できないときは `None`。
+pub fn legacy_data_dir_for_profile(profile: BuildProfile) -> Option<PathBuf> {
+    dirs::data_dir().map(|base| base.join(legacy_data_dir_name_for_profile(profile)))
+}
+
+/// 解決した data dir。既定の data dir のときだけ、移行前の旧既定の data dir を持つ。
+/// 明示指定（`--data-dir`、`RELEASH_DATA_DIR`）は旧 data dir を持たない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataDir {
+    pub path: PathBuf,
+    pub legacy: Option<PathBuf>,
+}
+
+/// `--data-dir`、`RELEASH_DATA_DIR`、ビルドの既定値の順で data dir を決める。
+pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<DataDir, String> {
+    let _ = explicit;
+    todo!()
 }
 
 #[cfg(test)]

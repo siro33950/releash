@@ -18,6 +18,9 @@ packages:
   Textual:
     url: https://github.com/gonzalezreal/textual
     exactVersion: 0.5.0
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.1
 settings:
   base:
     SWIFT_VERSION: '6.0'
@@ -90,6 +93,7 @@ targets:
       - package: Connect
       - package: SwiftProtobuf
       - package: Textual
+      - package: Sparkle
   ReleashUnitTests:
     type: bundle.unit-test
     platform: macOS

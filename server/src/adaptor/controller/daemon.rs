@@ -108,6 +108,31 @@ fn compose_daemon_repository(
     ))
 }
 
+/// 起動を失敗で終える。Daemon を Failed にし、利用者に見せられる説明だけを持つ error を返す。
+async fn fail_startup(
+    daemon: &usecase::daemon::DaemonUsecase,
+    kind: domain::daemon::StartupFailureKind,
+) -> std::io::Error {
+    daemon
+        .fail(domain::daemon::StartupFailure::new(
+            kind,
+            uuid::Uuid::new_v4().to_string(),
+        ))
+        .await;
+    let domain::daemon::ServingStatus::Failed(failure) = daemon.info().await.serving_status else {
+        unreachable!("failed startup")
+    };
+    log::error!(
+        "application startup admission failed: {} ({})",
+        failure.safe_description,
+        failure.correlation_id
+    );
+    std::io::Error::other(format!(
+        "{} ({})",
+        failure.safe_description, failure.correlation_id
+    ))
+}
+
 pub async fn compose(
     data_dir: PathBuf,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
@@ -132,34 +157,37 @@ pub async fn compose(
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
+    // 旧既定の保存先のデータは、store を開く前に新既定の保存先へ移す
+    let profile = infrastructure::platform::data_dir::BuildProfile::current();
+    let home = domain::daemon::data_home::DataHome::for_startup(
+        data_dir.clone(),
+        infrastructure::platform::data_dir::default_data_dir_for_profile(profile).as_deref(),
+        infrastructure::platform::data_dir::legacy_data_dir_for_profile(profile).as_deref(),
+    );
+    let relocation = usecase::data_home::DataHomeRelocationUsecase::new(Arc::new(
+        adaptor::gateway::data_home::LocalDataHomeStore,
+    ));
+    if let Err(error) = relocation.run(&home) {
+        let kind = match error {
+            usecase::data_home::RelocationError::Blocked(block) => {
+                domain::daemon::StartupFailureKind::DataRelocationBlocked(block)
+            }
+            usecase::data_home::RelocationError::Technical(failure) => {
+                domain::daemon::StartupFailureKind::DataRelocationFailed(failure.nature)
+            }
+        };
+        return Err(fail_startup(&daemon, kind).await.into());
+    }
+    // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
+    let aliases = infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())?;
+    infrastructure::platform::path_aliases::ensure_alias_wrapper(aliases.releash())?;
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(
         data_dir.clone(),
         retry_limiter.clone(),
     );
     let local_event_store = match app_data.open_local_event_store() {
         Ok(store) => store,
-        Err(error) => {
-            daemon
-                .fail(domain::daemon::StartupFailure::new(
-                    error.into(),
-                    uuid::Uuid::new_v4().to_string(),
-                ))
-                .await;
-            let domain::daemon::ServingStatus::Failed(failure) = daemon.info().await.serving_status
-            else {
-                unreachable!("failed startup")
-            };
-            log::error!(
-                "application startup admission failed: {} ({})",
-                failure.safe_description,
-                failure.correlation_id
-            );
-            return Err(std::io::Error::other(format!(
-                "{} ({})",
-                failure.safe_description, failure.correlation_id
-            ))
-            .into());
-        }
+        Err(error) => return Err(fail_startup(&daemon, error.into()).await.into()),
     };
     let state_presenter =
         Arc::new(adaptor::presenter::state_subscription::StateSubscriptionPresenter::new());

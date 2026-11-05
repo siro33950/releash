@@ -4,8 +4,8 @@
 //! 子プロセス起動経路（PTY / oneshot / agent bridge）が同じソースから値を引く。
 //!
 //! [01] CLI alias と実行対象の一意な対応:
-//! 本番ビルド (release) → alias 名 `releash` / data dir `com.releash.app`
-//! dev ビルド (debug)   → alias 名 `releash-dev` / data dir `com.releash.app.dev`
+//! 本番ビルド (release) → alias 名 `releash` / data dir `releash`
+//! dev ビルド (debug)   → alias 名 `releash-dev` / data dir `releash.dev`
 
 use std::path::{Path, PathBuf};
 
