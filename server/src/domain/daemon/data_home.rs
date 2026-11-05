@@ -115,3 +115,7 @@ pub(crate) trait DataHomeStore: Send + Sync {
     /// 後の方は失敗にしない。新保存先に同じ名前のディレクトリがあれば中身を合わせ、同じ名前の空のファイルは置き換える。
     fn relocate(&self, home: &DataHome, entries: &[String]) -> Result<(), TechnicalFailure>;
 }
+
+#[cfg(test)]
+#[path = "data_home_test.rs"]
+mod data_home_tests;

@@ -75,3 +75,40 @@ async fn test_daemon起動_配置観測に失敗しても起動し未判定の�
         ));
     }
 }
+
+#[tokio::test]
+async fn test_起動失敗_failedに遷移して安全な説明と相関idだけを返す() {
+    use crate::domain::daemon::{DaemonIdentity, ServingStatus};
+    use crate::usecase::installation::{installation_tests::FakeInstallation, InstallationUsecase};
+    // Given
+    let installation = InstallationUsecase(std::sync::Arc::new(FakeInstallation::default()));
+    let repository = compose_daemon_repository(
+        DaemonIdentity {
+            daemon_id: "test".into(),
+            pid: 1,
+            process_started_at: 1,
+        },
+        1,
+        &installation,
+    );
+    let daemon = crate::usecase::daemon::DaemonUsecase::new(repository);
+    // When
+    let error = fail_startup(
+        &daemon,
+        K::DataRelocationBlocked(domain::daemon::data_home::RelocationBlock::BothHaveData),
+    )
+    .await;
+    // Then
+    let ServingStatus::Failed(failure) = daemon.info().await.serving_status else {
+        panic!("起動失敗が記録されていない")
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    assert!(uuid::Uuid::parse_str(&failure.correlation_id).is_ok());
+    assert_eq!(
+        error.to_string(),
+        format!("{} ({})", failure.safe_description, failure.correlation_id)
+    );
+    assert!(failure
+        .safe_description
+        .contains("Both the previous and the new data folders"));
+}

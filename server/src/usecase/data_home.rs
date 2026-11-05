@@ -35,3 +35,7 @@ impl DataHomeRelocationUsecase {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "data_home_test.rs"]
+mod data_home_tests;

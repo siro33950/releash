@@ -16,12 +16,28 @@ fn test_data_dir解決_明示指定と環境変数と既定の優先順() {
     let explicit = PathBuf::from("explicit");
     let environment = PathBuf::from("environment");
     let default = default_data_dir_for_profile(BuildProfile::current())
+        .map(|path| DataDir {
+            path,
+            legacy: legacy_data_dir_for_profile(BuildProfile::current()),
+        })
         .ok_or_else(|| "OS data directory is unavailable".to_string());
 
     // When / Then
     std::env::set_var("RELEASH_DATA_DIR", &environment);
-    assert_eq!(resolve_data_dir(Some(explicit.clone())), Ok(explicit));
-    assert_eq!(resolve_data_dir(None), Ok(environment));
+    assert_eq!(
+        resolve_data_dir(Some(explicit.clone())),
+        Ok(DataDir {
+            path: explicit,
+            legacy: None
+        })
+    );
+    assert_eq!(
+        resolve_data_dir(None),
+        Ok(DataDir {
+            path: environment,
+            legacy: None
+        })
+    );
     std::env::set_var("RELEASH_DATA_DIR", "");
     assert_eq!(resolve_data_dir(None), default);
     std::env::remove_var("RELEASH_DATA_DIR");
@@ -29,13 +45,15 @@ fn test_data_dir解決_明示指定と環境変数と既定の優先順() {
 }
 
 #[test]
-fn default_data_dir_name_distinguishes_dev_and_production() {
-    assert_eq!(
-        default_data_dir_name_for_profile(BuildProfile::Production),
-        "com.releash.app"
-    );
-    assert_eq!(
-        default_data_dir_name_for_profile(BuildProfile::Development),
-        "com.releash.app.dev"
-    );
+fn test_旧保存先_ビルド種別ごとのos保存先を返す() {
+    // Given / When / Then
+    for (profile, name) in [
+        (BuildProfile::Production, "com.releash.app"),
+        (BuildProfile::Development, "com.releash.app.dev"),
+    ] {
+        assert_eq!(
+            legacy_data_dir_for_profile(profile),
+            dirs::data_dir().map(|base| base.join(name))
+        );
+    }
 }
