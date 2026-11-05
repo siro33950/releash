@@ -10,7 +10,10 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
   private var windows: [NSWindow] = []
   private var settingsSubscription: UUID?
   private var registrationTask: Task<Void, Never>?
+  private var terminationTask: Task<Void, Never>?
   private var awaitingLaunchSettings = false
+  var terminationTimeout: Duration = .seconds(5)
+  var replyToTermination: (Bool) -> Void = { NSApp.reply(toApplicationShouldTerminate: $0) }
 
   override convenience init() {
     self.init(model: AppModel())
@@ -25,7 +28,12 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
     prepareLaunch(event: NSAppleEventManager.shared().currentAppleEvent)
-    Task { await model.start() }
+    Task { await start() }
+  }
+
+  func start() async {
+    await model.start()
+    if awaitingLaunchSettings && model.connectionFailure != nil { showWindow() }
   }
 
   func prepareLaunch(event: NSAppleEventDescriptor?) {
@@ -34,7 +42,8 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
     awaitingLaunchSettings = Self.isLoginItemLaunch(event)
     if !awaitingLaunchSettings { openWindow() }
     settingsSubscription = model.subscribe("desktop-settings") { [weak self] payload in
-      guard let self, case .desktopSettings(let settings) = payload.value else { return }
+      guard let self, terminationTask == nil, case .desktopSettings(let settings) = payload.value
+      else { return }
       if awaitingLaunchSettings {
         awaitingLaunchSettings = false
         if !settings.autoLaunch || !settings.startMinimized { showWindow() }
@@ -46,6 +55,7 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
         } catch {
           if !Task.isCancelled { model.failure = model.failureMessage(error) }
         }
+        if !Task.isCancelled { registrationTask = nil }
       }
     }
   }
@@ -118,7 +128,25 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    .terminateNow
+    if terminationTask != nil { return .terminateLater }
+    guard let registrationTask else { return .terminateNow }
+    terminationTask = Task {
+      do { try await Task.sleep(for: terminationTimeout) } catch { return }
+      finishTermination()
+    }
+    Task {
+      await registrationTask.value
+      finishTermination()
+    }
+    return .terminateLater
+  }
+
+  private func finishTermination() {
+    guard let terminationTask else { return }
+    self.terminationTask = nil
+    terminationTask.cancel()
+    registrationTask?.cancel()
+    replyToTermination(true)
   }
 
   func windowWillClose(_ notification: Notification) {

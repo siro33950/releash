@@ -86,8 +86,15 @@ impl Trees {
 
 #[async_trait::async_trait]
 impl releashd::test_support::integration::workspace::WorkspaceTreeRepository for Trees {
-    async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
-        self.results.lock().values().cloned().collect()
+    async fn load_all_trees(
+        &self,
+    ) -> Result<(Vec<WorkspaceTree>, Vec<(String, WorkflowError)>), WorkflowError> {
+        self.results
+            .lock()
+            .values()
+            .cloned()
+            .collect::<Result<Vec<_>, _>>()
+            .map(|trees| (trees, Vec::new()))
     }
 
     async fn load_trees(

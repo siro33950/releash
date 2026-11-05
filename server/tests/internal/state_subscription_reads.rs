@@ -2383,7 +2383,7 @@ async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_li
         .unwrap();
     let initial = reads.read(&target).await.unwrap();
     assert!(
-        matches!(&initial, StateValue::ExecutionOverview(trees) if trees.len() == 2 && trees.iter().all(|tree| tree.visible().roots()[0].node().status_classification.as_public_str() == "idle"))
+        matches!(&initial, StateValue::ExecutionOverview((trees, failures)) if failures.is_empty() && trees.len() == 2 && trees.iter().all(|tree| tree.visible().roots()[0].node().status_classification.as_public_str() == "idle"))
     );
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if releashd::test_support::integration::subscriptions::same(&value, initial))
@@ -2406,7 +2406,7 @@ async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_li
         }
         let expected = reads.read(&target).await.unwrap();
         assert!(
-            matches!(&expected, StateValue::ExecutionOverview(trees) if trees.len() == 2 && trees.iter().find(|tree| tree.nodes().iter().any(|node| node.session_id.as_deref() == Some("session-tab"))).unwrap().visible().roots()[0].node().status_classification.as_public_str() == expected_classification)
+            matches!(&expected, StateValue::ExecutionOverview((trees, failures)) if failures.is_empty() && trees.len() == 2 && trees.iter().find(|tree| tree.nodes().iter().any(|node| node.session_id.as_deref() == Some("session-tab"))).unwrap().visible().roots()[0].node().status_classification.as_public_str() == expected_classification)
         );
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
             .await

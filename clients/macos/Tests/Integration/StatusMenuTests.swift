@@ -21,7 +21,10 @@ final class StatusMenuTests: XCTestCase {
     menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "設定…" }))
     // Then
     try await eventually {
-      NSApp.windows.contains { !before.contains(ObjectIdentifier($0)) && $0.isVisible }
+      NSApp.windows.contains {
+        !before.contains(ObjectIdentifier($0)) && $0.isVisible
+          && $0.identifier?.rawValue == "com_apple_SwiftUI_Settings_window"
+      }
     }
   }
 

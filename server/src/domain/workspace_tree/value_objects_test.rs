@@ -542,3 +542,13 @@ fn test_背景失敗の観測_理由と分類を反映する() {
         WorkspaceNodeStatusClassification::Attention
     );
 }
+
+#[test]
+fn test_実行概要の状態_読取失敗があればattentionでなければ元の状態を保つ() {
+    use WorkspaceNodeStatusClassification as C;
+    // Given / When / Then
+    for status in [C::Idle, C::Active, C::Attention] {
+        assert_eq!(status.with_read_failure(false), status);
+        assert_eq!(status.with_read_failure(true), C::Attention);
+    }
+}

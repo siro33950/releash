@@ -78,7 +78,15 @@ import SwiftUI
           }
         }
       }
-      if !overview.executions.isEmpty { menu.addItem(.separator()) }
+      for id in overview.failures.keys.sorted() {
+        guard let failure = overview.failures[id] else { continue }
+        let row = menu.addItem(
+          withTitle: "実行木 \(id) を読み取れません: \(failure.message)", action: nil,
+          keyEquivalent: "")
+        row.isEnabled = false
+        row.toolTip = failure.message
+      }
+      if !overview.executions.isEmpty || !overview.failures.isEmpty { menu.addItem(.separator()) }
     }
     add("開く", action: #selector(open(_:)), to: menu)
     add("設定…", action: #selector(settings(_:)), to: menu)

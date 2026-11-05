@@ -121,7 +121,6 @@ impl ExecutionReads {
         idle: std::time::Duration,
         session_root: Option<&SessionRootReader<'_>>,
     ) -> Result<(), LocalEventQueryError> {
-        let check_all_roots = session_root.is_some();
         let known = held
             .iter()
             .map(|(id, tree)| {
@@ -147,12 +146,8 @@ impl ExecutionReads {
                 };
                 let transaction = connection.unchecked_transaction().map_err(unavailable)?;
                 let heads = node_events::tree_heads(&transaction).map_err(unavailable)?;
-                let identities = if check_all_roots {
-                    node_events::tree_root_identities(&transaction, "started")
-                        .map_err(unavailable)?
-                } else {
-                    HashMap::new()
-                };
+                let identities = node_events::tree_root_identities(&transaction, "started")
+                    .map_err(unavailable)?;
                 let ids = heads
                     .iter()
                     .filter_map(|(id, head)| {
@@ -160,11 +155,7 @@ impl ExecutionReads {
                             |(previous_head, identity, missing_session)| {
                                 head < previous_head
                                     || *missing_session
-                                    || if check_all_roots {
-                                        identities.get(id) != identity.as_ref()
-                                    } else {
-                                        head != previous_head
-                                    }
+                                    || identities.get(id) != identity.as_ref()
                             },
                         );
                         needs_root.then_some(id.clone())
@@ -222,14 +213,15 @@ impl ExecutionReads {
         &self,
         idle: std::time::Duration,
         session_root: impl Fn(&NodeEventRow) -> Result<SessionRoot, LocalEventQueryError> + Sync,
-    ) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
+    ) -> Result<(Vec<FoldedExecution>, Vec<(String, LocalEventQueryError)>), LocalEventQueryError>
+    {
         let mut held = self.held.lock().await;
         self.sync(&mut held, idle, Some(&session_root)).await?;
         let ids = ordered_roots(&held)
             .into_iter()
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
-        self.advance(&mut held, &ids).await
+        self.advance_partial(&mut held, &ids).await
     }
 
     async fn advance(
@@ -237,6 +229,20 @@ impl ExecutionReads {
         held: &mut BTreeMap<String, HeldTree>,
         ids: &[String],
     ) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
+        let (trees, failures) = self.advance_partial(held, ids).await?;
+        if let Some((_, error)) = failures.into_iter().next() {
+            return Err(error);
+        }
+        Ok(trees)
+    }
+
+    async fn advance_partial(
+        &self,
+        held: &mut BTreeMap<String, HeldTree>,
+        ids: &[String],
+    ) -> Result<(Vec<FoldedExecution>, Vec<(String, LocalEventQueryError)>), LocalEventQueryError>
+    {
+        let mut failures = Vec::new();
         let after = ids
             .iter()
             .filter_map(|id| {
@@ -267,7 +273,10 @@ impl ExecutionReads {
                         restart.insert(id.clone(), 0);
                     }
                 } else {
-                    tree.fold = restore_fold(id, &rows)?;
+                    match restore_fold(id, &rows) {
+                        Ok(fold) => tree.fold = fold,
+                        Err(error) => failures.push((id.clone(), error)),
+                    }
                 }
             }
             if !restart.is_empty() {
@@ -282,19 +291,23 @@ impl ExecutionReads {
                     })
                     .await?;
                 for (id, rows) in group_rows(rows) {
-                    held.get_mut(&id).expect("restarted tree is held").fold =
-                        restore_fold(&id, &rows)?;
+                    match restore_fold(&id, &rows) {
+                        Ok(fold) => held.get_mut(&id).expect("restarted tree is held").fold = fold,
+                        Err(error) => failures.push((id, error)),
+                    }
                 }
             }
         }
-        Ok(ids
-            .iter()
-            .filter_map(|id| {
-                let fold = held.get_mut(id)?.fold.as_mut()?;
-                fold.used_at = std::time::Instant::now();
-                Some(Arc::clone(&fold.view))
-            })
-            .collect())
+        Ok((
+            ids.iter()
+                .filter_map(|id| {
+                    let fold = held.get_mut(id)?.fold.as_mut()?;
+                    fold.used_at = std::time::Instant::now();
+                    Some(Arc::clone(&fold.view))
+                })
+                .collect(),
+            failures,
+        ))
     }
 
     pub(super) async fn selected(

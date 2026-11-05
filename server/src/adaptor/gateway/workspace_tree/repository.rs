@@ -82,7 +82,10 @@ impl SqliteWorkspaceTreeRepository {
             .await
     }
 
-    async fn folded_all(&self) -> Result<Vec<FoldedExecution>, LocalEventQueryError> {
+    async fn folded_all(
+        &self,
+    ) -> Result<(Vec<FoldedExecution>, Vec<(String, LocalEventQueryError)>), LocalEventQueryError>
+    {
         self.reads
             .all(self.fold_idle_limit, session_root_from_row)
             .await
@@ -102,8 +105,18 @@ impl SqliteWorkspaceTreeRepository {
         folded: &FoldedTree,
         record: &WorkflowExecutionMetadataRecord,
     ) -> Result<Vec<WorkspaceTreeNode>, LocalEventQueryError> {
-        super::snapshot_nodes(workspace, folded, record, &self.processes)
-            .map_err(invariant_query_error)
+        super::snapshot_nodes(workspace, folded, record, &self.processes).map_err(|error| {
+            match error {
+                WorkflowError::Technical(failure) => LocalEventQueryError::Technical(failure),
+                WorkflowError::External(message) => {
+                    LocalEventQueryError::Technical(crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message,
+                    })
+                }
+                error => invariant_query_error(error),
+            }
+        })
     }
 
     /// Workspace の実行木を、実行ごとの状態と一緒に組み立てる。
@@ -118,39 +131,33 @@ impl SqliteWorkspaceTreeRepository {
         let mut executions = Vec::with_capacity(trees.len());
         for execution in trees {
             let (folded, record) = &**execution;
-            executions.push(WorkspaceExecution {
-                execution_id: record.execution_id.clone(),
-                launched_as: folded.root.launched_as,
-                worktree_path: record.worktree_path.clone(),
-                workflow_name: record.workflow_name.clone(),
-                status: record.status,
-                updated_at: f64::from_bits(record.updated_at_bits),
-                archive: folded.aggregate.archive_record(),
-                session: self.execution_session(folded).await?,
-            });
+            executions.push(self.workspace_execution(folded, record).await?);
         }
         tree.record_executions(executions);
         self.observe_failures(&mut tree);
         Ok(tree)
     }
 
+    async fn workspace_execution(
+        &self,
+        folded: &FoldedTree,
+        record: &WorkflowExecutionMetadataRecord,
+    ) -> Result<WorkspaceExecution, LocalEventQueryError> {
+        Ok(WorkspaceExecution {
+            execution_id: record.execution_id.clone(),
+            launched_as: folded.root.launched_as,
+            worktree_path: record.worktree_path.clone(),
+            workflow_name: record.workflow_name.clone(),
+            status: record.status,
+            updated_at: f64::from_bits(record.updated_at_bits),
+            archive: folded.aggregate.archive_record(),
+            session: self.execution_session(folded).await?,
+        })
+    }
+
     fn observe_failures(&self, tree: &mut WorkspaceTree) {
-        let targets = tree
-            .nodes()
-            .iter()
-            .flat_map(|node| {
-                [
-                    Some(node.id.clone()),
-                    node.node_execution_id.clone(),
-                    node.execution_id.clone(),
-                ]
-            })
-            .flatten()
-            .collect::<Vec<_>>();
-        for target in targets {
-            for message in self.failures.attention_messages(&target) {
-                tree.observe_background_failure(&target, &message);
-            }
+        for (target, message) in super::background_failures(tree.nodes(), &*self.failures) {
+            tree.observe_background_failure(&target, &message);
         }
     }
 
@@ -264,24 +271,54 @@ impl SqliteWorkspaceTreeRepository {
 
 #[async_trait::async_trait]
 impl WorkspaceTreeRepository for SqliteWorkspaceTreeRepository {
-    async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
-        let folded = self.folded_all().await.map_err(repository_error)?;
-        let mut workspaces = BTreeMap::<String, Vec<FoldedExecution>>::new();
+    async fn load_all_trees(
+        &self,
+    ) -> Result<(Vec<WorkspaceTree>, Vec<(String, WorkflowError)>), WorkflowError> {
+        let (folded, read_failures) = self.folded_all().await.map_err(repository_error)?;
+        let mut failures = read_failures
+            .into_iter()
+            .map(|(id, error)| (id, repository_error(error)))
+            .collect::<Vec<_>>();
+        let mut workspaces = BTreeMap::<
+            String,
+            (
+                Vec<WorkspaceTreeNode>,
+                Vec<WorkspaceExecution>,
+                Vec<WorkspaceStructureFact>,
+            ),
+        >::new();
         for execution in folded {
-            workspaces
-                .entry(execution.0.root.workspace_identity.clone())
-                .or_default()
-                .push(execution);
+            let (folded, record) = &*execution;
+            let workspace = &folded.root.workspace_identity;
+            let result = async {
+                let nodes = self.tree_nodes(workspace, folded, record)?;
+                let execution = self.workspace_execution(folded, record).await?;
+                Ok::<_, LocalEventQueryError>((nodes, execution))
+            }
+            .await;
+            match result {
+                Ok((nodes, execution)) => {
+                    let entry = workspaces.entry(workspace.clone()).or_default();
+                    entry.0.extend(nodes);
+                    entry.1.push(execution);
+                    entry.2.push(execution_summary_fact(record));
+                }
+                Err(error) => failures.push((record.execution_id.clone(), repository_error(error))),
+            }
         }
         let mut trees = Vec::with_capacity(workspaces.len());
-        for (workspace, folded) in workspaces {
-            trees.push(
-                self.workspace_tree(&workspace, &folded)
-                    .await
-                    .map_err(repository_error)?,
-            );
+        for (workspace, (nodes, executions, facts)) in workspaces {
+            let mut tree = WorkspaceTree::restore(workspace, nodes)
+                .map_err(invariant_query_error)
+                .map_err(repository_error)?;
+            WorkspaceTreeProjector::project(&mut tree, facts)
+                .map_err(invariant_query_error)
+                .map_err(repository_error)?;
+            tree.record_executions(executions);
+            self.observe_failures(&mut tree);
+            trees.push(tree);
         }
-        Ok(trees)
+        Ok((trees, failures))
     }
 
     async fn load_trees(

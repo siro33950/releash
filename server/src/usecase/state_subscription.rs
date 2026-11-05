@@ -129,6 +129,7 @@ pub struct StateSubscriptionUsecase {
     starting_target: Arc<Mutex<Option<SubscriptionTarget>>>,
     watches: Arc<Mutex<std::collections::HashMap<WatchRequirement, u64>>>,
     pending_watch_stops: Arc<Mutex<Vec<u64>>>,
+    execution_overview_read_failed: Arc<Mutex<bool>>,
     watch_failures: Arc<
         Mutex<std::collections::HashMap<WatchRequirement, crate::domain::failure::WorkFailure>>,
     >,
@@ -156,6 +157,7 @@ impl StateSubscriptionUsecase {
             workers: Default::default(),
             watches: Default::default(),
             pending_watch_stops: Default::default(),
+            execution_overview_read_failed: Default::default(),
             watch_failures: Default::default(),
             starts: Default::default(),
             starting_target: Default::default(),
@@ -296,7 +298,9 @@ impl StateSubscriptionUsecase {
                 let watch_failed = requirements
                     .iter()
                     .any(|requirement| self.watch_failures.lock().contains_key(requirement));
-                if !target.external_information() && !watch_failed {
+                let read_failed = matches!(target, SubscriptionTarget::ExecutionOverview)
+                    && *self.execution_overview_read_failed.lock();
+                if !target.external_information() && !watch_failed && !read_failed {
                     return;
                 }
                 refresh_external = target.external_information();
@@ -342,6 +346,9 @@ impl StateSubscriptionUsecase {
         }
         let clients = self.clients.lock();
         if !clients.values().any(|targets| targets.contains_key(target)) {
+            if matches!(target, SubscriptionTarget::ExecutionOverview) {
+                *self.execution_overview_read_failed.lock() = false;
+            }
             if let Some(reads) = &self.reads {
                 reads.release_external(target);
             }
@@ -584,11 +591,22 @@ impl StateSubscriptionUsecase {
         let requirements = self.required_watches(target, None);
         let failures = self.watch_failures.lock();
         let result = Self::with_watch_failures(result, &requirements, &failures);
-        match result {
+        let read_failed = match &result {
+            Err(_) => true,
+            Ok(StateValue::ExecutionOverview((_, failures))) => !failures.is_empty(),
+            _ => false,
+        };
+        let publication = match result {
             Ok(value) if initial => self.publisher.publish_initial(target, value),
             Ok(value) => self.publisher.publish(target, value, None),
             Err(error) => self.publisher.publish_failure(target, error),
+        };
+        if matches!(target, SubscriptionTarget::ExecutionOverview)
+            && (read_failed || publication.is_ok())
+        {
+            *self.execution_overview_read_failed.lock() = read_failed;
         }
+        publication
     }
 
     fn with_watch_failures(

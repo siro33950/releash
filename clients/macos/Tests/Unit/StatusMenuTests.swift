@@ -101,6 +101,58 @@ final class StatusMenuTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_実行概要_正常木と個別の失敗を表示し回復後に失敗表示を消す() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let status = StatusMenu(model: model) {}
+    defer { status.remove() }
+    let menu = try XCTUnwrap(status.item.menu)
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains { $0.target == "execution-overview" } }
+    }
+    var payload = Releash_Client_V1_StatePayload()
+    payload.executionOverview.status.value = .attention
+    payload.executionOverview.executions = [
+      .with {
+        $0.worktreePath = "/repo"
+        $0.worktreeName = "repo"
+        $0.name = "healthy"
+        $0.status.value = .idle
+      }
+    ]
+    payload.executionOverview.failures = [
+      "broken": .with {
+        $0.code = 13
+        $0.message = "read failed"
+      }
+    ]
+    // When / Then
+    for onlyFailure in [false, true] {
+      if onlyFailure { payload.executionOverview.executions = [] }
+      try http.publish(payload, target: "execution-overview")
+      try await eventually {
+        status.menuNeedsUpdate(menu)
+        return menu.items.contains { $0.title == "実行木 broken を読み取れません: read failed" }
+          && (menu.items.contains { $0.representedObject as? String == "/repo" }) == !onlyFailure
+      }
+      XCTAssertEqual(status.item.button?.toolTip, "Releash Preview: attention")
+      XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title.contains("broken") }).isEnabled)
+      XCTAssertTrue(menu.items.contains { $0.title == "開く" })
+    }
+    // When
+    payload.executionOverview.failures = [:]
+    payload.executionOverview.status.value = .idle
+    try http.publish(payload, target: "execution-overview")
+    // Then
+    try await eventually {
+      status.menuNeedsUpdate(menu)
+      return status.item.button?.toolTip == "Releash Preview: idle"
+        && !menu.items.contains { $0.title.contains("broken") }
+    }
+    await model.stop()
+  }
+
   @MainActor func test_メニューバー_標準操作へ渡す() throws {
     // Given
     let model = AppModel()

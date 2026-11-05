@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import Connect
 import ServiceManagement
 import XCTest
 
@@ -51,7 +52,7 @@ final class WorkspaceWindowsTests: XCTestCase {
     }
   }
 
-  @MainActor func test_ログイン起動_接続失敗では非表示を保ち明示の再表示後は画面を増やさない() async throws {
+  @MainActor func test_ログイン起動_接続失敗で画面を表示し明示の再表示後は画面を増やさない() async throws {
     // Given
     let http = TestHTTPClient()
     let model = AppModel(
@@ -65,15 +66,18 @@ final class WorkspaceWindowsTests: XCTestCase {
     defer { for window in windows(delegate) { window.close() } }
     // When
     delegate.prepareLaunch(event: loginEvent())
-    await model.start()
+    await delegate.start()
     // Then
     XCTAssertNotNil(model.connectionFailure)
-    XCTAssertTrue(windows(delegate).isEmpty)
+    XCTAssertEqual(windows(delegate).count, 1)
+    let original = try XCTUnwrap(windows(delegate).first)
+    XCTAssertTrue(original.isVisible)
     XCTAssertTrue(http.requests("InstallCli").isEmpty)
     // When
     XCTAssertFalse(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
     // Then
     XCTAssertEqual(windows(delegate).count, 1)
+    XCTAssertTrue(windows(delegate).first === original)
     XCTAssertTrue(windows(delegate)[0].isVisible)
     XCTAssertTrue(http.requests("OpenStateStream").isEmpty)
     await model.stop()
@@ -183,6 +187,50 @@ final class WorkspaceWindowsTests: XCTestCase {
     XCTAssertTrue(windows(delegate).isEmpty)
     XCTAssertTrue(http.requests("InstallCli").isEmpty)
     await model.stop()
+  }
+
+  @MainActor func test_終了_登録完了と失敗を待ち期限超過でも一度だけ終了を許可する() async throws {
+    for outcome in ["success", "failure", "timeout"] {
+      // Given
+      let http = TestHTTPClient()
+      http.state.withLock {
+        $0.desktopSettings.autoLaunch = true
+        $0.desktopSettings.startMinimized = true
+        $0.deferredTerminalMethod = "CheckLoginRegistration"
+      }
+      let model = try await testModel(http)
+      let item = LoginItemRegistration()
+      item.status = { .notRegistered }
+      var registered = 0
+      item.register = { registered += 1 }
+      let delegate = WorkspaceWindows(model: model, loginItem: item)
+      if outcome == "timeout" { delegate.terminationTimeout = .milliseconds(20) }
+      var replies: [Bool] = []
+      delegate.replyToTermination = { replies.append($0) }
+      delegate.prepareLaunch(event: loginEvent())
+      try await eventually { http.state.withLock { $0.pendingTerminal != nil } }
+      let completion = try XCTUnwrap(http.state.withLock { $0.pendingTerminal })
+      // When
+      XCTAssertEqual(delegate.applicationShouldTerminate(NSApp), .terminateLater)
+      XCTAssertEqual(delegate.applicationShouldTerminate(NSApp), .terminateLater)
+      XCTAssertTrue(replies.isEmpty)
+      if outcome == "timeout" { try await eventually { replies == [true] } }
+      let allowed = Releash_Client_V1_LoginRegistrationResult.with { $0.status = .allowed }
+      completion(
+        HTTPResponse(
+          code: outcome == "failure" ? .internalError : .ok,
+          headers: ["content-type": ["application/proto"]],
+          message: try allowed.serializedData(), trailers: [:],
+          error: outcome == "failure"
+            ? ConnectError(code: .internalError, message: "registration failed") : nil,
+          tracingInfo: nil))
+      // Then
+      try await eventually { replies == [true] }
+      await Task.yield()
+      XCTAssertEqual(registered, outcome == "success" ? 1 : 0)
+      XCTAssertEqual(replies, [true])
+      await model.stop()
+    }
   }
 
   @MainActor private func windows(_ delegate: WorkspaceWindows) -> [NSWindow] {

@@ -106,7 +106,7 @@ fn overview_tree(
 
 fn overview(trees: Vec<WorkspaceTree>) -> wire::ExecutionOverviewDto {
     let Some(wire::state_payload::Value::ExecutionOverview(overview)) =
-        payload(&StateValue::ExecutionOverview(trees))
+        payload(&StateValue::ExecutionOverview((trees, vec![])))
             .unwrap()
             .value
     else {
@@ -1499,4 +1499,40 @@ fn test_workspace購読payload_設定未保存のsession配置を転送する() 
     assert!(actual.tabs.is_none());
     assert!(actual.layout.is_none());
     assert_eq!(WorkspaceState::try_from(actual).unwrap(), state);
+}
+
+#[test]
+fn test_実行概要の部分成功_正常木と失敗idと原因を転送してattentionを示す() {
+    // Given
+    let tree = overview_tree(
+        "/repo",
+        None,
+        WorkspaceNodeStatus::Completed,
+        WorkspaceNodeStatus::Completed,
+    );
+    let failures = vec![(
+        "broken".into(),
+        crate::domain::workflow::WorkflowError::External("read failed".into()),
+    )];
+    // When / Then
+    for trees in [vec![tree], vec![]] {
+        let Some(wire::state_payload::Value::ExecutionOverview(value)) = payload(
+            &StateValue::ExecutionOverview((trees.clone(), failures.clone())),
+        )
+        .unwrap()
+        .value
+        else {
+            panic!("expected overview")
+        };
+        assert_eq!(value.executions.len(), trees.len());
+        assert_eq!(
+            value.status.unwrap().value,
+            Some(wire::workspace_status_classification::Value::Attention as i32)
+        );
+        assert_eq!(value.failures["broken"].message, "read failed");
+        assert_eq!(
+            value.failures["broken"].code,
+            connectrpc::ErrorCode::Internal.grpc_code() as i32
+        );
+    }
 }

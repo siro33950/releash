@@ -50,8 +50,10 @@ struct Trees {
 
 #[async_trait::async_trait]
 impl WorkspaceTreeRepository for Trees {
-    async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
-        Ok(self.tree.clone().into_iter().collect())
+    async fn load_all_trees(
+        &self,
+    ) -> Result<(Vec<WorkspaceTree>, Vec<(String, WorkflowError)>), WorkflowError> {
+        Ok((self.tree.clone().into_iter().collect(), Vec::new()))
     }
 
     async fn load_execution_tree(

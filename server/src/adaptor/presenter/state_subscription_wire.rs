@@ -7,8 +7,8 @@ use crate::usecase::state_subscription::StateValue;
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
-            StateValue::ExecutionOverview(trees) => wire::state_payload::Value::ExecutionOverview(
-                execution_overview(trees).map_err(crate::adaptor::presenter::connect::command_error)?,
+            StateValue::ExecutionOverview((trees, failures)) => wire::state_payload::Value::ExecutionOverview(
+                execution_overview(trees, failures).map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::RepositoryGroupState(collapsed) => wire::state_payload::Value::RepositoryGroupState(wire::RepositoryGroupState { collapsed: *collapsed }),
             StateValue::DaemonInfo(info) => wire::state_payload::Value::DaemonInfo(
@@ -228,6 +228,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
 
 fn execution_overview(
     trees: &[crate::domain::workspace_tree::WorkspaceTree],
+    failures: &[(String, crate::domain::workflow::WorkflowError)],
 ) -> Result<wire::ExecutionOverviewDto, wire::CommandFailure> {
     use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
     use crate::domain::workflow::ExecutionTreeLaunch;
@@ -270,8 +271,21 @@ fn execution_overview(
     }
     executions.sort_by(|left, right| left.worktree_path.cmp(&right.worktree_path));
     Ok(wire::ExecutionOverviewDto {
-        status: Some(status_wire(status)?),
+        status: Some(status_wire(status.with_read_failure(!failures.is_empty()))?),
         executions,
+        failures: failures
+            .iter()
+            .map(|(id, error)| {
+                use crate::adaptor::presenter::connect::ConnectFailure;
+                (
+                    id.clone(),
+                    wire::StateReadFailure {
+                        code: error.connect_code().grpc_code() as i32,
+                        message: error.to_string(),
+                    },
+                )
+            })
+            .collect(),
     })
 }
 

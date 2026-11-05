@@ -170,7 +170,13 @@ impl WorkflowUsecase {
     /// 全 Workspace の実行木を取得する。
     pub(crate) async fn execution_overview(
         &self,
-    ) -> Result<Vec<crate::domain::workspace_tree::WorkspaceTree>, WorkflowError> {
+    ) -> Result<
+        (
+            Vec<crate::domain::workspace_tree::WorkspaceTree>,
+            Vec<(String, WorkflowError)>,
+        ),
+        WorkflowError,
+    > {
         self.workspace_nodes.load_all_trees().await
     }
 

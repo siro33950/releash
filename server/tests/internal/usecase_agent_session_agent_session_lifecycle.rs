@@ -3567,7 +3567,9 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
     struct Trees(Option<LocalEventQueryError>);
     #[async_trait::async_trait]
     impl WorkspaceTreeRepository for Trees {
-        async fn load_all_trees(&self) -> Result<Vec<WorkspaceTree>, WorkflowError> {
+        async fn load_all_trees(
+            &self,
+        ) -> Result<(Vec<WorkspaceTree>, Vec<(String, WorkflowError)>), WorkflowError> {
             panic!("unexpected overview read")
         }
 

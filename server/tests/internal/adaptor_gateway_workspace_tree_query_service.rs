@@ -2910,10 +2910,14 @@ pub async fn test_workflow一覧_fact_storeから項目と順序と絞り込み�
 
 #[tokio::test]
 pub async fn test_node詳細_fact_storeとprocess読み口から存在状態と失敗を返す() {
+    use releashd::test_support::integration::platform::FailureRecordStore;
     use releashd::test_support::integration::workflow::{
         NodeKindName, NodeProcessPresence, NodeProcessReader, WorkflowError,
     };
-    struct Processes(bool);
+    use releashd::test_support::integration::workspace::{
+        SqliteWorkspaceTreeRepository, WorkspaceTreeRepository,
+    };
+    struct Processes(Option<WorkflowError>);
     impl NodeProcessReader for Processes {
         fn presence(
             &self,
@@ -2923,10 +2927,8 @@ pub async fn test_node詳細_fact_storeとprocess読み口から存在状態と�
             _: Option<&str>,
         ) -> Result<NodeProcessPresence, WorkflowError> {
             assert_eq!(workspace, "/repo");
-            if self.0 {
-                Err(WorkflowError::CorruptStoredState(
-                    "process read failed".into(),
-                ))
+            if let Some(error) = &self.0 {
+                Err(error.clone())
             } else {
                 Ok(NodeProcessPresence::ConfirmedAbsent)
             }
@@ -2955,18 +2957,38 @@ pub async fn test_node詳細_fact_storeとprocess読み口から存在状態と�
     )
     .await
     .unwrap();
-    for fails in [false, true] {
+    for failure in [
+        None,
+        Some(WorkflowError::CorruptStoredState(
+            "process read failed".into(),
+        )),
+        Some(WorkflowError::External(
+            "process registry unavailable".into(),
+        )),
+    ] {
         let mut query = service(&store);
-        Arc::get_mut(&mut query).unwrap().processes = Some(Arc::new(Processes(fails)));
+        Arc::get_mut(&mut query).unwrap().processes = Some(Arc::new(Processes(failure.clone())));
+        let mut repository = SqliteWorkspaceTreeRepository::new(
+            store.clone(),
+            Arc::new(FailureRecordStore::default()),
+        );
+        Arc::get_mut(&mut repository).unwrap().processes =
+            Some(Arc::new(Processes(failure.clone())));
         // When
+        let tree_result = repository
+            .load_execution_tree(&WorkspaceIdentity::new("/repo"), tree_id)
+            .await;
         let result = query
             .node_detail(&WorkspaceIdentity::new("/repo"), tree_id)
             .await;
         // Then
-        if fails {
-            assert!(
-                matches!(result, Err(WorkflowError::CorruptStoredState(reason)) if reason.contains("process read failed"))
+        if let Some(error) = failure {
+            use releashd::test_support::integration::transport::classified_error;
+            assert_eq!(
+                classified_error(tree_result.unwrap_err()).code,
+                classified_error(error.clone()).code
             );
+            assert_eq!(result.unwrap_err(), error);
         } else {
             assert_eq!(
                 result.unwrap().unwrap().process_presence,
@@ -3224,7 +3246,8 @@ pub async fn test_実行木読取_複数repositoryとqueryが同じfoldを共有
             )
         })
         .collect::<Vec<_>>();
-    let query = SqliteWorkspaceQueryService::with_reads(reads);
+    let query =
+        SqliteWorkspaceQueryService::with_reads(reads, Arc::new(FailureRecordStore::default()));
     let workspace = WorkspaceIdentity::new("/repo");
     let first = load_tree(&repositories[0], &workspace).await;
     let folds = tree_fold_count();
@@ -3237,7 +3260,7 @@ pub async fn test_実行木読取_複数repositoryとqueryが同じfoldを共有
     for repository in repositories {
         assert_eq!(load_tree(&repository, &workspace).await, first);
         assert_eq!(
-            repository.load_all_trees().await.unwrap(),
+            repository.load_all_trees().await.unwrap().0,
             vec![first.clone()]
         );
         assert_eq!(tree_fold_count(), folds);

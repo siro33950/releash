@@ -10,16 +10,17 @@ fn snapshot_nodes(
     folded: &crate::domain::workflow::services::fact_replay::FoldedTree,
     record: &crate::domain::local_event::WorkflowExecutionMetadataRecord,
     processes: &Option<std::sync::Arc<dyn crate::domain::workflow::NodeProcessReader>>,
-) -> Result<Vec<crate::domain::workspace_tree::WorkspaceTreeNode>, String> {
+) -> Result<
+    Vec<crate::domain::workspace_tree::WorkspaceTreeNode>,
+    crate::domain::workflow::WorkflowError,
+> {
     use crate::domain::workspace_tree::RuntimeSnapshotNodeProjection;
     let mut process_presences = std::collections::HashMap::new();
     if let Some(processes) = processes {
         for node in &folded.aggregate.node_executions {
             process_presences.insert(
                 node.id.clone(),
-                processes
-                    .presence(workspace, &node.id, node.kind, node.session_id.as_deref())
-                    .map_err(|error| error.to_string())?,
+                processes.presence(workspace, &node.id, node.kind, node.session_id.as_deref())?,
             );
         }
     }
@@ -48,4 +49,43 @@ fn snapshot_nodes(
         session_activities: &folded.session_activities,
         session_display_names: &folded.session_display_names,
     })
+    .map_err(|reason| record_projection_error(&reason))
+}
+
+fn record_projection_error(context: &str) -> crate::domain::workflow::WorkflowError {
+    let correlation_id = uuid::Uuid::new_v4();
+    log::error!("Workspace query record invariant failure [{correlation_id}]: {context}");
+    crate::domain::workflow::WorkflowError::CorruptStoredState(format!(
+        "{context} (correlation_id={correlation_id})"
+    ))
+}
+
+fn background_failures(
+    nodes: &[crate::domain::workspace_tree::WorkspaceTreeNode],
+    failures: &dyn crate::domain::failure::FailureRecordRepository,
+) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut targets = nodes
+        .iter()
+        .flat_map(|node| {
+            [
+                Some(node.id.as_str()),
+                node.node_execution_id.as_deref(),
+                node.execution_id.as_deref(),
+            ]
+        })
+        .flatten()
+        .rev()
+        .filter(|target| seen.insert(*target))
+        .collect::<Vec<_>>();
+    targets.reverse();
+    targets
+        .into_iter()
+        .flat_map(|target| {
+            failures
+                .attention_messages(target)
+                .into_iter()
+                .map(move |message| (target.to_string(), message))
+        })
+        .collect()
 }

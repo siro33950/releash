@@ -1134,7 +1134,13 @@ pub async fn test_session選択_欠落はcorruptとしqueryの技術的性質を
         async fn load_all_trees(
             &self,
         ) -> Result<
-            Vec<releashd::test_support::integration::workspace::WorkspaceTree>,
+            (
+                Vec<releashd::test_support::integration::workspace::WorkspaceTree>,
+                Vec<(
+                    String,
+                    releashd::test_support::integration::workflow::WorkflowError,
+                )>,
+            ),
             releashd::test_support::integration::workflow::WorkflowError,
         > {
             panic!("unexpected overview read")

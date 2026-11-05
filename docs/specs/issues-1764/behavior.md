@@ -10,6 +10,7 @@ GIVEN Swift.app がサーバに接続し、ある worktree に人の番（attent
 WHEN 開発者がメニューバーのアイコンを見る
 THEN アイコンは attention の色を示す
 AND すべての実行木が idle になると、アイコンは idle の色を示す
+AND バックグラウンド失敗があるノードの詳細には、ツリー一覧と同じ状態色と失敗理由を表示する
 
 ## B-003: 未接続時の表示
 
@@ -29,6 +30,9 @@ GIVEN Session の実行木と workflow の実行木がそれぞれ別の worktre
 WHEN 開発者がメニューバーのアイコンのメニューを開く
 THEN 各実行木が worktree 名、Session なら provider の表示名、workflow なら workflow 名、状態とともに一覧される
 AND 一覧の項目を選ぶと、ウィンドウが前面に出てその worktree が選ばれる
+AND 一部の実行木を読み取れない場合も正常な木を表示し、読めなかった木の ID と失敗理由を明示して集約状態を attention にする
+AND 個別の失敗が残る間は定期的に再取得し、回復後は失敗表示を消す
+BUT DB アクセスや同期全体の失敗は購読全体の失敗として返す
 
 ## B-006: メニューの項目
 
@@ -82,7 +86,7 @@ THEN macOS は Swift.app の起動を試みない
 GIVEN 「ログイン時に起動」と「最小化状態で起動」がともに有効である
 WHEN macOS がログイン時に Swift.app を起動する
 THEN ウィンドウは開かず、メニューバーのアイコンだけが表示される
-AND サーバに接続できなくても、ウィンドウは開かない
+BUT サーバに接続できない場合は、ウィンドウを開き、エラーと再試行操作を表示する
 
 ## B-014: 開発者による起動
 
@@ -100,7 +104,8 @@ THEN Swift.app のプロセス、サーバ、workflow は続く
 
 GIVEN Swift.app がサーバに接続し、workflow が動いている
 WHEN 開発者がアプリメニューの Quit、⌘Q、Dock アイコンの終了、メニューバーの Quit、AppleScript の quit のいずれかで終了する
-THEN Swift.app のプロセスだけが終了し、サーバと workflow は続く
+THEN ログイン項目の登録・解除中なら完了を最大 5 秒待ち、失敗または期限超過でも終了する
+AND Swift.app のプロセスだけが終了し、サーバと workflow は続く
 
 ## B-017: 終了後の再起動
 
@@ -133,6 +138,7 @@ THEN 終了の後もサーバと workflow は続き、起動し直した Swift.a
 GIVEN サーバが全 worktree の集約状態を配信している
 WHEN どの client がその購読を開始しても
 THEN 同じ形で集約状態を受け取る
+AND 実行概要の読み取り失敗中は定期的に再取得し、取得した状態の配信に成功すると変更通知待ちに戻る
 
 ## 要件IDとBehavior IDの対応表
 

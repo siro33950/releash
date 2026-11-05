@@ -1706,6 +1706,7 @@ message NullableWorkflowDto {
 message ExecutionOverviewDto {
   WorkspaceStatusClassification status = 1;
   repeated ExecutionOverviewEntryDto executions = 2;
+  map<string, StateReadFailure> failures = 3;
 }
 
 message ExecutionOverviewEntryDto {
