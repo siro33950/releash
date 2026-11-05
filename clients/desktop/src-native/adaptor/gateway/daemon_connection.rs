@@ -75,7 +75,15 @@ impl DaemonService for DaemonServiceGateway {
         Box::pin(async move {
             let cwd = std::env::current_dir()
                 .map_err(|e| DaemonConnectionFailure::TechnicalFailure(e.to_string()))?;
-            daemon::start(&self.executable, &self.data_dir, &cwd)
+            let mut resolved = releash::data_dir::resolve_data_dir(None)
+                .map_err(DaemonConnectionFailure::TechnicalFailure)?;
+            if resolved.path != self.data_dir {
+                resolved = releash::data_dir::DataDir {
+                    path: self.data_dir.clone(),
+                    legacy: None,
+                };
+            }
+            daemon::start_resolved(&self.executable, &resolved, &cwd)
                 .await
                 .map_err(daemon_failure)?;
             Ok(())

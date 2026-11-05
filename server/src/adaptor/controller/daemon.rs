@@ -136,6 +136,7 @@ async fn fail_startup(
 
 pub async fn compose(
     data_dir: PathBuf,
+    legacy_data_dir: Option<PathBuf>,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
         std::ffi::OsString,
         infrastructure::process::search_path::LoginShellPathError,
@@ -197,7 +198,7 @@ pub async fn compose(
     let home = domain::daemon::data_home::DataHome::for_startup(
         data_dir.clone(),
         infrastructure::platform::data_dir::default_data_dir_for_profile(profile).as_deref(),
-        infrastructure::platform::data_dir::legacy_data_dir_for_profile(profile).as_deref(),
+        legacy_data_dir.as_deref(),
     );
     let relocation = usecase::data_home::DataHomeRelocationUsecase::new(Arc::new(
         adaptor::gateway::data_home::LocalDataHomeStore,

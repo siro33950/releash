@@ -77,13 +77,16 @@ pub fn legacy_data_dir_for_profile(profile: BuildProfile) -> Option<PathBuf> {
     dirs::data_dir().map(|base| base.join(legacy_data_dir_name_for_profile(profile)))
 }
 
+pub(crate) fn explicit_data_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(|| {
+        std::env::var_os(protocol_constant("data_dir_env"))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
 pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
-    explicit
-        .or_else(|| {
-            std::env::var_os(protocol_constant("data_dir_env"))
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        })
+    explicit_data_dir(explicit)
         .or_else(|| default_data_dir_for_profile(BuildProfile::current()))
         .ok_or_else(|| "OS data directory is unavailable".to_string())
 }

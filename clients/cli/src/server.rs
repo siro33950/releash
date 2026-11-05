@@ -96,22 +96,38 @@ fn current_executable() -> Result<std::path::PathBuf, ConnectError> {
     daemon::current_executable().map_err(|error| ConnectError::unavailable(error.to_string()))
 }
 
-async fn start(dir: &Path) -> Result<bool, ConnectError> {
+async fn start(dir: &Path, resolved: &data_dir::DataDir) -> Result<bool, ConnectError> {
     if daemon::running(dir).map_err(daemon_error)?.is_some() {
         return Ok(false);
     }
     let executable = daemon::executable(&current_executable()?);
     let cwd =
         std::env::current_dir().map_err(|error| ConnectError::unavailable(error.to_string()))?;
-    daemon::start(&executable, dir, &cwd)
+    daemon::start_resolved(&executable, resolved, &cwd)
         .await
         .map_err(daemon_error)?;
     Ok(true)
 }
 
 pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, ConnectError> {
+    run_resolved(
+        dir,
+        &data_dir::DataDir {
+            path: dir.to_path_buf(),
+            legacy: None,
+        },
+        command,
+    )
+    .await
+}
+
+pub(crate) async fn run_resolved(
+    dir: &Path,
+    resolved: &data_dir::DataDir,
+    command: ServerSubcommand,
+) -> Result<String, ConnectError> {
     match command {
-        ServerSubcommand::Start { json } => Ok(start_output(start(dir).await?, json)),
+        ServerSubcommand::Start { json } => Ok(start_output(start(dir, resolved).await?, json)),
         ServerSubcommand::Stop => {
             let discovery = daemon::running(dir)
                 .map_err(daemon_error)?
@@ -119,16 +135,16 @@ pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, Connec
             daemon::stop(dir, &discovery).await.map_err(daemon_error)?;
             Ok("server stopped\n".into())
         }
-        ServerSubcommand::Restart => restart(dir, dir).await,
+        ServerSubcommand::Restart => restart(dir, resolved).await,
     }
 }
 
-pub(crate) async fn restart(dir: &Path, destination: &Path) -> Result<String, ConnectError> {
+async fn restart(dir: &Path, resolved: &data_dir::DataDir) -> Result<String, ConnectError> {
     let discovery = daemon::running(dir).map_err(daemon_error)?;
     if let Some(discovery) = &discovery {
         daemon::stop(dir, discovery).await.map_err(daemon_error)?;
     }
-    start(destination).await?;
+    start(&resolved.path, resolved).await?;
     Ok(if discovery.is_some() {
         "server stopped and started\n"
     } else {
@@ -157,7 +173,7 @@ fn app_bundle(executable: &Path) -> Option<&Path> {
 }
 
 pub async fn launch(dir: &Path, resolved: &data_dir::DataDir) -> Result<String, ConnectError> {
-    start(dir).await?;
+    start(dir, resolved).await?;
     let executable = current_executable()?;
     launch_started(dir, resolved, &executable, open_app).await
 }

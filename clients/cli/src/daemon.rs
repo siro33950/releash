@@ -102,12 +102,29 @@ pub async fn start(
     data_dir: &Path,
     cwd: &Path,
 ) -> Result<LocalApiDiscovery, DaemonError> {
+    start_resolved(
+        executable,
+        &crate::data_dir::DataDir {
+            path: data_dir.to_path_buf(),
+            legacy: None,
+        },
+        cwd,
+    )
+    .await
+}
+
+pub async fn start_resolved(
+    executable: &Path,
+    data_dir: &crate::data_dir::DataDir,
+    cwd: &Path,
+) -> Result<LocalApiDiscovery, DaemonError> {
     let log = tempfile::NamedTempFile::new()?;
     let stderr = log.reopen()?;
     let mut command = tokio::process::Command::new(executable);
+    if data_dir.legacy.is_none() {
+        command.arg("--data-dir").arg(&data_dir.path);
+    }
     command
-        .arg("--data-dir")
-        .arg(data_dir)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -124,7 +141,7 @@ pub async fn start(
     let mut child = command.spawn()?;
     let deadline = tokio::time::Instant::now() + timeout("min_connect_timeout_ms");
     loop {
-        if let Some(discovery) = running(data_dir)? {
+        if let Some(discovery) = running(&data_dir.path)? {
             tokio::spawn(async move {
                 let _ = child.wait().await;
             });
