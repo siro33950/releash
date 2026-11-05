@@ -18,57 +18,100 @@ import Sparkle
 
   private let controller: SPUStandardUpdaterController
   private let defaults: UserDefaults
+  private let delegate = UpdaterDelegate()
+  private var observation: NSKeyValueObservation?
 
   /// Sparkle の updater を作る。`start()` を呼ぶまで appcast は読まない。
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     controller = SPUStandardUpdaterController(
-      startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+      startingUpdater: false, updaterDelegate: delegate, userDriverDelegate: nil)
     super.init()
-    fatalError("not implemented")
+    delegate.owner = self
+    observation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) {
+      [weak self] _, change in
+      let enabled = change.newValue ?? false
+      Task { @MainActor in self?.canCheckForUpdates = enabled }
+    }
   }
 
   /// この bundle ID のアプリが更新を確認するかを決める。Debug のアプリ（`com.releash.macos.dev`）は確認しない。
   static func checksForUpdates(bundleIdentifier: String?) -> Bool {
-    fatalError("not implemented")
+    bundleIdentifier == "com.releash.macos"
   }
 
   /// updater を開始する。自動更新が ON なら Sparkle が確認とダウンロードを自動で行う。
   func start() {
-    fatalError("not implemented")
+    guard Self.checksForUpdates(bundleIdentifier: Bundle.main.bundleIdentifier) else { return }
+    controller.startUpdater()
   }
 
   /// 自動更新。ON は自動確認とダウンロードを行い、利用者がアプリを終了したときに適用する。初期値は ON。
   /// Sparkle の `automaticallyChecksForUpdates` と `automaticallyDownloadsUpdates` を正とする。
   var automaticUpdates: Bool {
-    get { fatalError("not implemented") }
-    set { fatalError("not implemented") }
+    get {
+      access(keyPath: \.automaticUpdates)
+      return controller.updater.automaticallyChecksForUpdates
+        && controller.updater.automaticallyDownloadsUpdates
+    }
+    set {
+      withMutation(keyPath: \.automaticUpdates) {
+        controller.updater.automaticallyChecksForUpdates = newValue
+        controller.updater.automaticallyDownloadsUpdates = newValue
+      }
+    }
   }
 
   /// nightly の受け入れ。ON のときだけ nightly の項目が更新候補になる。初期値は OFF。
   /// 変えたら Sparkle に更新の周期をやり直させる。
   var acceptsNightly: Bool {
-    get { fatalError("not implemented") }
-    set { fatalError("not implemented") }
+    get {
+      access(keyPath: \.acceptsNightly)
+      return defaults.bool(forKey: Self.acceptsNightlyKey)
+    }
+    set {
+      withMutation(keyPath: \.acceptsNightly) {
+        defaults.set(newValue, forKey: Self.acceptsNightlyKey)
+      }
+      availableVersion = nil
+      controller.updater.resetUpdateCycleAfterShortDelay()
+    }
   }
 
   /// Sparkle の手動確認を始め、結果を Sparkle の標準の画面で見せる。フッターの「更新」もこれを呼ぶ。
   func checkForUpdates() {
-    fatalError("not implemented")
+    guard Self.checksForUpdates(bundleIdentifier: Bundle.main.bundleIdentifier) else { return }
+    controller.checkForUpdates(nil)
   }
 
   /// 更新候補に含めるチャンネル。既定チャンネルは常に含まれ、`acceptsNightly` が ON のときだけ `nightly` を足す。
   nonisolated func allowedChannels(for updater: SPUUpdater) -> Set<String> {
-    fatalError("not implemented")
+    MainActor.assumeIsolated { acceptsNightly ? [Self.nightlyChannel] : [] }
   }
 
   /// 新しい版が見つかった。`availableVersion` にその版を置く。
   nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-    fatalError("not implemented")
+    MainActor.assumeIsolated { availableVersion = item.displayVersionString }
   }
 
   /// 新しい版が無かった。`availableVersion` を消す。
   nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
-    fatalError("not implemented")
+    MainActor.assumeIsolated { availableVersion = nil }
+  }
+}
+
+@MainActor private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
+  weak var owner: AppUpdater?
+
+  func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+    owner?.allowedChannels(for: updater) ?? []
+  }
+
+  func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+    owner?.updater(updater, didFindValidUpdate: item)
+  }
+
+  func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
+    owner?.updaterDidNotFindUpdate(updater, error: error)
   }
 }

@@ -125,6 +125,11 @@ pub fn run() {
                 .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
                 .block_on(async {
                     match cli.command {
+                        Some(TopCommand::Server {
+                            command: server::ServerSubcommand::Restart,
+                        }) => server::restart(&dir, &resolved.path)
+                            .await
+                            .map(|output| (output, 0)),
                         Some(command) => commands::run(&dir, command).await,
                         None => server::launch(&dir, &resolved)
                             .await

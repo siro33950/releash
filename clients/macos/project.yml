@@ -25,7 +25,7 @@ settings:
   base:
     SWIFT_VERSION: '6.0'
     MARKETING_VERSION: '0.4.20'
-    CURRENT_PROJECT_VERSION: '1'
+    CURRENT_PROJECT_VERSION: '$(MARKETING_VERSION)'
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: T6QN7PY57N
@@ -33,7 +33,7 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: '15.0'
 targets:
   Releash:
-    productName: Releash Preview
+    productName: Releash
     type: application
     platform: macOS
     sources:
@@ -76,7 +76,7 @@ targets:
         attributes: [CodeSignOnCopy]
     settings:
       base:
-        PRODUCT_NAME: Releash Preview
+        PRODUCT_NAME: Releash
         PRODUCT_MODULE_NAME: Releash
         INFOPLIST_FILE: Info.plist
         GENERATE_INFOPLIST_FILE: NO

@@ -9,7 +9,7 @@ on:
         type: string
 
 concurrency:
-  group: stable-release
+  group: sparkle-release
   cancel-in-progress: false
 
 permissions:
@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       release-id: ${{ steps.create.outputs.release-id }}
+      tag: ${{ steps.version.outputs.tag }}
       sha: ${{ needs.resolve.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
@@ -82,7 +83,7 @@ jobs:
               ...context.repo, per_page: 100,
             });
             const existing = releases.find(release => release.tag_name === tag);
-            if (existing && (!commit || !existing.draft || existing.prerelease)) throw new Error('Expected an unpublished stable release at the selected commit');
+            if (existing && (!commit || existing.prerelease)) throw new Error('Expected an unpublished stable release at the selected commit');
             core.setOutput('version', version);
             core.setOutput('tag', tag);
             core.setOutput('tag-exists', Boolean(commit));
@@ -117,33 +118,71 @@ jobs:
             });
             core.setOutput('release-id', data.id);
 
-  build:
-    needs: create-release
+  helpers:
+    needs: resolve
     runs-on: macos-latest
     timeout-minutes: 60
-    permissions:
-      contents: write
+    env:
+      NX_DAEMON: "false"
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.create-release.outputs.sha }}
-
+          ref: ${{ needs.resolve.outputs.sha }}
       - uses: jdx/mise-action@v3
-
-      - working-directory: clients/desktop
-        run: pnpm install --frozen-lockfile
-
+      - uses: actions/cache@v6
+        with:
+          path: .nx/installation
+          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
       - name: Install Rust toolchain
         run: |
           rustup toolchain install
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
-          shared-key: macos-universal
-          save-if: false
+          shared-key: macos-helpers-universal
+          cache-on-failure: true
+      - run: ./nx run macos:helpers -c release
+      - uses: actions/upload-artifact@v6
+        with:
+          name: helpers-universal
+          path: clients/macos/.build/Helpers/Release/
+          if-no-files-found: error
 
+  swift-build:
+    needs: [resolve, helpers]
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      NX_DAEMON: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: jdx/mise-action@v3
+      - uses: actions/cache@v6
+        with:
+          path: .nx/installation
+          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
+      - id: xcode
+        run: echo "version=$(cat clients/macos/.xcode-version)" >> "$GITHUB_OUTPUT"
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ steps.xcode.outputs.version }}
+      - run: xcodebuild -downloadComponent MetalToolchain
+      - uses: actions/cache@v6
+        with:
+          path: clients/macos/BuildTools/.build
+          key: macos-native-build-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/BuildTools/Package.resolved') }}
+      - uses: actions/cache@v6
+        with:
+          path: clients/macos/.build/SourcePackages
+          key: macos-native-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: helpers-universal
+          path: clients/macos/.build/Helpers/Release
+      - run: chmod +x clients/macos/.build/Helpers/Release/releashd clients/macos/.build/Helpers/Release/releash
       - run: node .github/scripts/load-secrets.mjs
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -153,82 +192,57 @@ jobs:
           APPLE_ID: op://releash/apple-signing/apple-id
           APPLE_PASSWORD: op://releash/apple-signing/app-password
           APPLE_TEAM_ID: op://releash/apple-signing/team-id
-          TAURI_SIGNING_PRIVATE_KEY: op://releash/tauri-updater/private-key
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
+          SPARKLE_PRIVATE_ED_KEY: op://releash/sparkle/private-key
           OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
           NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
-
-      - uses: tauri-apps/tauri-action@v1
+      - name: Archive, sign and notarize Releash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OTLP_ENDPOINT: ${{ env.OTLP_ENDPOINT }}
-          NEW_RELIC_LICENSE_KEY: ${{ env.NEW_RELIC_LICENSE_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: bash .github/scripts/macos-release.sh
+      - name: Save notarization result
+        if: always()
+        uses: actions/upload-artifact@v6
         with:
-          uploadUpdaterJson: true
-          releaseId: ${{ needs.create-release.outputs.release-id }}
-          projectPath: clients/desktop
-          tauriScript: ../../nx run desktop:tauri --
-          args: --target universal-apple-darwin --config tauri.conf.bundle.json -- --features vendored-openssl
-
-  publish:
-    needs: [create-release, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - name: Publish stable as latest
-        uses: actions/github-script@v9
-        env:
-          RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+          name: swift-notarization-${{ github.run_attempt }}
+          path: clients/macos/.build/Distribution/notary.json
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v6
         with:
-          script: |
-            const release_id = Number(process.env.RELEASE_ID);
-            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
-              ...context.repo, release_id, per_page: 100,
-            });
-            if (!assets.some(asset => asset.name === 'latest.json' && asset.size > 0)) throw new Error('Missing updater manifest');
-            await github.rest.repos.updateRelease({
-              ...context.repo, release_id,
-              draft: false, prerelease: false, make_latest: 'true',
-            });
+          name: swift-app
+          path: |
+            clients/macos/.build/Distribution/Releash_*_universal.zip
+            clients/macos/.build/Distribution/sparkle.json
+          if-no-files-found: error
 
-  bump:
-    needs: publish
+  upload:
+    needs: [resolve, create-release, swift-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: main
-
-      - uses: jdx/mise-action@v3
-      - name: Bump version with Nx
-        env:
-          BUMP: patch
-        run: |
-          ./nx release version "$BUMP"
-          VERSION=$(node -p "require('./clients/desktop/package.json').version")
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          jq --arg v "$VERSION" '.version = $v' clients/desktop/tauri.conf.json > tmp.json && mv tmp.json clients/desktop/tauri.conf.json
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          sed -i -E '/^name = "(releashd|releash|releash-desktop)"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/;}' Cargo.lock
-          sed -i -E "s/^(    MARKETING_VERSION:).*/\\1 '$VERSION'/" clients/macos/project.yml
-
-      - name: Create PR
-        uses: peter-evans/create-pull-request@v8
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/download-artifact@v8
         with:
-          base: main
-          add-paths: |
-            clients/desktop/package.json
-            clients/desktop/tauri.conf.json
-            Cargo.toml
-            Cargo.lock
-            clients/macos/project.yml
-          commit-message: "release: v${{ env.VERSION }}"
-          branch: release/v${{ env.VERSION }}
-          title: "release: v${{ env.VERSION }}"
-          body: "Bump version to ${{ env.VERSION }} (patch after stable)"
+          name: swift-app
+          path: ${{ runner.temp }}/assets
+      - name: Upload Swift asset and signature metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
+          ASSETS: ${{ runner.temp }}/assets
+        run: node .github/scripts/sparkle-release.cjs upload
+
+  publish:
+    needs: [resolve, create-release, upload]
+    uses: ./.github/workflows/sparkle-publish.yml
+    with:
+      sha: ${{ needs.resolve.outputs.sha }}
+      tag: ${{ needs.create-release.outputs.tag }}
+      nightly: false
+    permissions:
+      contents: write
+      pages: write
+      id-token: write

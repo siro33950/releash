@@ -20,8 +20,6 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["rt", "net", "time", "macros", "process"] }
 uuid = { version = "1", features = ["v4"] }
-
-[dev-dependencies]
 tempfile = "3"
 
 [build-dependencies]

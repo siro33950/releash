@@ -119,20 +119,22 @@ pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, Connec
             daemon::stop(dir, &discovery).await.map_err(daemon_error)?;
             Ok("server stopped\n".into())
         }
-        ServerSubcommand::Restart => {
-            let discovery = daemon::running(dir).map_err(daemon_error)?;
-            if let Some(discovery) = &discovery {
-                daemon::stop(dir, discovery).await.map_err(daemon_error)?;
-            }
-            start(dir).await?;
-            Ok(if discovery.is_some() {
-                "server stopped and started\n"
-            } else {
-                "server was not running; started\n"
-            }
-            .into())
-        }
+        ServerSubcommand::Restart => restart(dir, dir).await,
     }
+}
+
+pub(crate) async fn restart(dir: &Path, destination: &Path) -> Result<String, ConnectError> {
+    let discovery = daemon::running(dir).map_err(daemon_error)?;
+    if let Some(discovery) = &discovery {
+        daemon::stop(dir, discovery).await.map_err(daemon_error)?;
+    }
+    start(destination).await?;
+    Ok(if discovery.is_some() {
+        "server stopped and started\n"
+    } else {
+        "server was not running; started\n"
+    }
+    .into())
 }
 
 fn start_output(started: bool, machine: bool) -> String {
@@ -168,8 +170,28 @@ async fn launch_started(
     executable: &Path,
     open_app: impl FnOnce(&Path) -> Result<(), ConnectError>,
 ) -> Result<String, ConnectError> {
-    let _ = (dir, resolved, executable, open_app);
-    todo!()
+    if let Some(app) = app_bundle(executable) {
+        let actual = dir
+            .canonicalize()
+            .map_err(|error| ConnectError::unavailable(error.to_string()))?;
+        let default = data_dir::default_data_dir_for_profile(data_dir::BuildProfile::current())
+            .and_then(|path| path.canonicalize().ok());
+        if default.as_ref() == Some(&actual)
+            || (resolved.legacy.is_some()
+                && [&resolved.path]
+                    .into_iter()
+                    .chain(resolved.legacy.iter())
+                    .any(|path| path.canonicalize().ok().as_ref() == Some(&actual)))
+        {
+            open_app(app)?;
+            return Ok(String::new());
+        }
+        return Ok(format!(
+            "app was not opened: data dir differs from the desktop default\n{}",
+            status(dir, false).await?,
+        ));
+    }
+    status(dir, false).await
 }
 
 #[cfg(target_os = "macos")]

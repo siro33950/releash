@@ -10,6 +10,18 @@ struct SystemSettingsView: View {
 
   var body: some View {
     Form {
+      Section("更新") {
+        Toggle(
+          "自動更新",
+          isOn: Binding(
+            get: { model.updater.automaticUpdates },
+            set: { model.updater.automaticUpdates = $0 }))
+        Toggle(
+          "nightly アップデートを受け入れる",
+          isOn: Binding(
+            get: { model.updater.acceptsNightly },
+            set: { model.updater.acceptsNightly = $0 }))
+      }
       Section("ログイン項目") {
         Toggle(
           "ログイン時に起動",

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: nightly-release
+  group: sparkle-release
   cancel-in-progress: false
 
 permissions:
@@ -15,13 +15,13 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
     outputs:
       run: ${{ steps.changes.outputs.run }}
-      sha: ${{ steps.changes.outputs.sha }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
       - id: changes
         uses: actions/github-script@v9
@@ -31,6 +31,13 @@ jobs:
               ...context.repo, ref: 'heads/main',
             });
             core.setOutput('sha', main.sha);
+            const commits = await github.paginate(github.rest.repos.listCommits, { ...context.repo, sha: 'main', per_page: 100 });
+            const retry = commits.find(commit => commit.commit.message.split('\n').includes(`Nightly-Run: ${context.runId}`));
+            if (retry) {
+              core.setOutput('sha', retry.sha);
+              core.setOutput('run', true);
+              return;
+            }
             if (context.eventName !== 'workflow_dispatch') {
               const releases = await github.paginate(github.rest.repos.listReleases, {
                 ...context.repo, per_page: 100,
@@ -55,11 +62,29 @@ jobs:
               throw new Error(`No successful CI run on main for ${main.sha} (${states}). Wait for CI or fix main before starting Nightly.`);
             }
             core.setOutput('run', true);
-      - name: Verify workflow commit
-        if: steps.changes.outputs.run == 'true' && github.workflow_sha != steps.changes.outputs.sha
-        run: |
-          echo "::error::Workflow commit differs from main HEAD. Start a new Nightly run from main."
-          exit 1
+      - uses: actions/checkout@v7
+        if: steps.changes.outputs.run == 'true'
+        with:
+          ref: ${{ steps.changes.outputs.sha }}
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+        if: steps.changes.outputs.run == 'true'
+      - run: node .github/scripts/load-secrets.mjs
+        if: steps.changes.outputs.run == 'true'
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          STABLE_RELEASE_TOKEN: op://releash/releash-stable-release/token
+      - uses: actions/checkout@v7
+        if: steps.changes.outputs.run == 'true'
+        with:
+          ref: ${{ steps.changes.outputs.sha }}
+          fetch-depth: 0
+          token: ${{ env.STABLE_RELEASE_TOKEN }}
+      - id: version
+        if: steps.changes.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ env.STABLE_RELEASE_TOKEN }}
+        run: node .github/scripts/nightly-version.cjs
 
   macos-e2e:
     needs: check
@@ -248,71 +273,6 @@ jobs:
           path: clients/macos/.build/Helpers/Release/
           if-no-files-found: error
 
-  tauri-build:
-    needs: [check, helpers]
-    runs-on: macos-latest
-    timeout-minutes: 90
-    env:
-      NX_DAEMON: "false"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.check.outputs.sha }}
-      - uses: jdx/mise-action@v3
-      - uses: actions/cache@v6
-        with:
-          path: .nx/installation
-          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
-      - working-directory: clients/desktop
-        run: pnpm install --frozen-lockfile
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
-          shared-key: macos-universal
-          cache-on-failure: true
-      - uses: actions/download-artifact@v8
-        with:
-          name: helpers-universal
-          path: clients/macos/.build/Helpers/Release
-      # artifact は実行権限を保たない。tauri-build は arch ごとの名前の存在を確かめ、bundler は universal の名前を取り込む
-      - name: Place sidecars
-        working-directory: clients/desktop
-        run: |
-          mkdir -p binaries
-          for helper in releashd releash; do
-            chmod +x "../macos/.build/Helpers/Release/$helper"
-            for triple in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
-              cp "../macos/.build/Helpers/Release/$helper" "binaries/$helper-$triple"
-            done
-          done
-      - run: node .github/scripts/load-secrets.mjs
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          APPLE_CERTIFICATE: op://releash/apple-signing/certificate
-          APPLE_CERTIFICATE_PASSWORD: op://releash/apple-signing/certificate-password
-          APPLE_SIGNING_IDENTITY: op://releash/apple-signing/signing-identity
-          APPLE_ID: op://releash/apple-signing/apple-id
-          APPLE_PASSWORD: op://releash/apple-signing/app-password
-          APPLE_TEAM_ID: op://releash/apple-signing/team-id
-          TAURI_SIGNING_PRIVATE_KEY: op://releash/tauri-updater/private-key
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
-          OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
-          NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
-      - name: Build, sign and notarize Releash
-        run: ./nx run desktop:tauri -- build --target universal-apple-darwin --config tauri.conf.bundle.json --config tauri.conf.prebuilt.json -- --features vendored-openssl
-      - uses: actions/upload-artifact@v6
-        with:
-          name: tauri-app
-          path: |
-            target/universal-apple-darwin/release/bundle/dmg/Releash_*_universal.dmg
-            target/universal-apple-darwin/release/bundle/macos/Releash.app.tar.gz
-            target/universal-apple-darwin/release/bundle/macos/Releash.app.tar.gz.sig
-          if-no-files-found: error
-
   swift-build:
     needs: [check, helpers]
     runs-on: xcode-27
@@ -356,9 +316,12 @@ jobs:
           APPLE_ID: op://releash/apple-signing/apple-id
           APPLE_PASSWORD: op://releash/apple-signing/app-password
           APPLE_TEAM_ID: op://releash/apple-signing/team-id
+          SPARKLE_PRIVATE_ED_KEY: op://releash/sparkle/private-key
           OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
           NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
-      - name: Archive, sign and notarize Releash Preview
+      - name: Archive, sign and notarize Releash
+        env:
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: bash .github/scripts/macos-release.sh
       - name: Save notarization result
         if: always()
@@ -370,11 +333,13 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: swift-app
-          path: clients/macos/.build/Distribution/Releash_Preview_*_universal.zip
+          path: |
+            clients/macos/.build/Distribution/Releash_*_universal.zip
+            clients/macos/.build/Distribution/sparkle.json
           if-no-files-found: error
 
   create-release:
-    needs: [check, macos-e2e, tauri-build, swift-build]
+    needs: [check, macos-e2e, swift-build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -400,6 +365,16 @@ jobs:
           script: |
             const { version } = require('./clients/desktop/package.json');
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
+            const existing = releases.find(release => release.prerelease && release.tag_name.startsWith(`v${version}-nightly.`));
+            if (existing) {
+              const commit = (await github.rest.repos.getCommit({ ...context.repo, ref: existing.tag_name })).data;
+              if (commit.sha !== process.env.RELEASE_SHA) throw new Error('Version already belongs to another commit');
+              core.setOutput('version', existing.tag_name.slice(1));
+              core.setOutput('tag', existing.tag_name);
+              core.setOutput('release-id', existing.id);
+              return;
+            }
             const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
             const tags = await github.paginate(github.rest.repos.listTags, {
               ...context.repo, per_page: 100,
@@ -411,6 +386,7 @@ jobs:
             core.setOutput('version', tag.slice(1));
             core.setOutput('tag', tag);
       - name: Create tag and release notes with Nx
+        if: steps.version.outputs.release-id == ''
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
@@ -422,9 +398,11 @@ jobs:
         uses: actions/github-script@v9
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_ID: ${{ steps.version.outputs.release-id }}
           RELEASE_SHA: ${{ needs.check.outputs.sha }}
         with:
           script: |
+            if (process.env.RELEASE_ID) { core.setOutput('release-id', process.env.RELEASE_ID); return; }
             const { readFileSync } = require('node:fs');
             const { data } = await github.rest.repos.createRelease({
               ...context.repo, tag_name: process.env.RELEASE_TAG, target_commitish: process.env.RELEASE_SHA,
@@ -445,56 +423,30 @@ jobs:
           ref: ${{ needs.check.outputs.sha }}
       - uses: actions/download-artifact@v8
         with:
-          name: tauri-app
-          path: ${{ runner.temp }}/assets
-      - uses: actions/download-artifact@v8
-        with:
           name: swift-app
           path: ${{ runner.temp }}/assets
-      - name: Upload assets and updater manifest
-        shell: bash
+      - name: Upload Swift asset and signature metadata
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
-        run: |
-          cd "$RUNNER_TEMP/assets"
-          VERSION=$(node -p "require('$GITHUB_WORKSPACE/clients/desktop/package.json').version")
-          mv macos/Releash.app.tar.gz "Releash_${VERSION}_universal.app.tar.gz"
-          mv macos/Releash.app.tar.gz.sig "Releash_${VERSION}_universal.app.tar.gz.sig"
-          node "$GITHUB_WORKSPACE/.github/scripts/updater-manifest.mjs" "$VERSION" \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/Releash_${VERSION}_universal.app.tar.gz" \
-            "Releash_${VERSION}_universal.app.tar.gz.sig" > latest.json
-          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            "Releash_Preview_${VERSION}_universal.zip" "dmg/Releash_${VERSION}_universal.dmg" \
-            "Releash_${VERSION}_universal.app.tar.gz" "Releash_${VERSION}_universal.app.tar.gz.sig" latest.json
+          ASSETS: ${{ runner.temp }}/assets
+        run: node .github/scripts/sparkle-release.cjs upload
 
   publish:
-    needs: [create-release, upload]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    needs: [check, create-release, upload]
+    uses: ./.github/workflows/sparkle-publish.yml
+    with:
+      sha: ${{ needs.check.outputs.sha }}
+      tag: ${{ needs.create-release.outputs.tag }}
+      nightly: true
     permissions:
       contents: write
-    steps:
-      - name: Publish nightly
-        uses: actions/github-script@v9
-        env:
-          RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
-        with:
-          script: |
-            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
-              ...context.repo, release_id: Number(process.env.RELEASE_ID), per_page: 100,
-            });
-            for (const pattern of [/^Releash_Preview_.*_universal\.zip$/, /^Releash_.*_universal\.dmg$/, /^Releash_.*_universal\.app\.tar\.gz$/, /^Releash_.*_universal\.app\.tar\.gz\.sig$/, /^latest\.json$/]) {
-              if (!assets.some(asset => pattern.test(asset.name) && asset.size > 0)) throw new Error(`Missing release asset: ${pattern}`);
-            }
-            await github.rest.repos.updateRelease({
-              ...context.repo, release_id: Number(process.env.RELEASE_ID),
-              draft: false, prerelease: true, make_latest: 'false',
-            });
+      pages: write
+      id-token: write
 
   cleanup:
     needs: [create-release, upload, publish]
-    if: ${{ always() && needs.create-release.outputs.release-id != '' }}
+    if: needs.publish.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

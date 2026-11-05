@@ -6,6 +6,7 @@ import ServiceManagement
   var status: () -> SMAppService.Status = { SMAppService.mainApp.status }
   var register: () throws -> Void = { try SMAppService.mainApp.register() }
   var unregister: () throws -> Void = { try SMAppService.mainApp.unregister() }
+  var defaults: UserDefaults = .standard
   var executablePath: String? = Bundle.main.executablePath
 
   func synchronize(autoLaunch: Bool, model: AppModel) async throws {
@@ -27,6 +28,14 @@ import ServiceManagement
       .result.get()
     try Task.checkCancellation()
     guard result.status == .allowed else { return }
-    if status() == .notRegistered || status() == .notFound { try register() }
+    if status() == .enabled && defaults.string(forKey: "loginItemExecutablePath") != executablePath
+    {
+      try unregister()
+      try register()
+      defaults.set(executablePath, forKey: "loginItemExecutablePath")
+    } else if status() == .notRegistered || status() == .notFound {
+      try register()
+      defaults.set(executablePath, forKey: "loginItemExecutablePath")
+    }
   }
 }

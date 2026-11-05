@@ -85,8 +85,20 @@ pub struct DataDir {
 
 /// `--data-dir`、`RELEASH_DATA_DIR`、ビルドの既定値の順で data dir を決める。
 pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<DataDir, String> {
-    let _ = explicit;
-    todo!()
+    if let Some(path) = explicit.or_else(|| {
+        std::env::var_os(protocol_constant("data_dir_env"))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }) {
+        return Ok(DataDir { path, legacy: None });
+    }
+    let profile = BuildProfile::current();
+    let path = default_data_dir_for_profile(profile)
+        .ok_or_else(|| "OS data directory is unavailable".to_string())?;
+    Ok(DataDir {
+        path,
+        legacy: legacy_data_dir_for_profile(profile),
+    })
 }
 
 #[cfg(test)]

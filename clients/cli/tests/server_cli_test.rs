@@ -273,3 +273,41 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
         );
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_cli_旧既定サーバの再起動は新既定へ移行する() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("Library/Application Support");
+    let profile = releash::data_dir::BuildProfile::current();
+    let old = base.join(releash::data_dir::legacy_data_dir_name_for_profile(profile));
+    let current = base.join(releash::data_dir::default_data_dir_name_for_profile(
+        profile,
+    ));
+    let _old_cleanup = RunningServer(old.clone());
+    let _current_cleanup = RunningServer(current.clone());
+    let command = |explicit: bool, args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_releash"));
+        command
+            .env("HOME", root.path())
+            .env_remove("RELEASH_DATA_DIR")
+            .env("SHELL", "/bin/sh")
+            .current_dir(root.path());
+        if explicit {
+            command.arg("--data-dir").arg(&old);
+        }
+        command.args(args).output().unwrap()
+    };
+    success(command(true, &["server", "start"]));
+    std::fs::write(old.join("sentinel"), b"retained").unwrap();
+    // When
+    success(command(false, &["server", "restart"]));
+    // Then
+    assert!(discovery::read(&current).is_ok());
+    assert!(!old.join("client-api.json").exists());
+    assert_eq!(
+        std::fs::read(current.join("sentinel")).unwrap(),
+        b"retained"
+    );
+}

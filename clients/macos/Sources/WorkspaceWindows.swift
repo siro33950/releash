@@ -27,6 +27,7 @@ final class WorkspaceWindows: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+    model.updater.start()
     prepareLaunch(event: NSAppleEventManager.shared().currentAppleEvent)
     Task { await start() }
   }

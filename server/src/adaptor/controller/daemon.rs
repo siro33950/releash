@@ -83,6 +83,7 @@ pub struct Daemon {
     server: Arc<infrastructure::local_api::LocalApiServer>,
     exit: tokio::sync::mpsc::Receiver<i32>,
     daemon: usecase::daemon::DaemonUsecase,
+    _startup_lock: Option<std::fs::File>,
 }
 
 impl Daemon {
@@ -140,6 +141,22 @@ pub async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
+    let lock_dir = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
+    let parent = lock_dir.parent().ok_or("data directory has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let lock_path = parent.join(format!(
+        ".{}.startup.lock",
+        lock_dir
+            .file_name()
+            .ok_or("data directory has no name")?
+            .to_string_lossy()
+    ));
+    let startup_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)?;
     let pid = std::process::id();
     let identity = domain::daemon::DaemonIdentity {
         daemon_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -153,6 +170,24 @@ pub async fn compose(
     )));
     let daemon_repository = compose_daemon_repository(identity, protocol, &installation);
     let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
+    if let Err(error) = fs2::FileExt::try_lock_exclusive(&startup_lock) {
+        if data_dir.join("client-api.json").exists() {
+            if let Err(error) = infrastructure::local_log::init(
+                &data_dir,
+                infrastructure::local_log::LocalLogProcess::Daemon,
+            ) {
+                eprintln!("{error}");
+            }
+        }
+        let kind = if error.kind() == std::io::ErrorKind::WouldBlock {
+            domain::daemon::StartupFailureKind::StoreInUse
+        } else {
+            domain::daemon::StartupFailureKind::StorageUnavailable(
+                domain::failure::TechnicalFailureNature::Other,
+            )
+        };
+        return Err(fail_startup(&daemon, kind).await.into());
+    }
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
@@ -179,12 +214,24 @@ pub async fn compose(
         return Err(fail_startup(&daemon, kind).await.into());
     }
     // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
-    let aliases = infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())?;
+    let aliases =
+        infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())?;
     infrastructure::platform::path_aliases::ensure_alias_wrapper(aliases.releash())?;
+    if aliases.releash().name != "releash" {
+        let mut alias = aliases.releash().clone();
+        alias.name = "releash".into();
+        infrastructure::platform::path_aliases::ensure_alias_wrapper(&alias)?;
+    }
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(
         data_dir.clone(),
         retry_limiter.clone(),
     );
+    if let Err(error) = infrastructure::local_log::init(
+        &data_dir,
+        infrastructure::local_log::LocalLogProcess::Daemon,
+    ) {
+        eprintln!("{error}");
+    }
     let local_event_store = match app_data.open_local_event_store() {
         Ok(store) => store,
         Err(error) => return Err(fail_startup(&daemon, error.into()).await.into()),
@@ -755,6 +802,7 @@ pub async fn compose(
     }
 
     Ok(Daemon {
+        _startup_lock: Some(startup_lock),
         server: local_api.clone(),
         shutdown: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
@@ -821,6 +869,7 @@ impl Daemon {
         daemon: usecase::daemon::DaemonUsecase,
     ) -> Self {
         Self {
+            _startup_lock: None,
             shutdown,
             server,
             exit,

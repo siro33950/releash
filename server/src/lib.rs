@@ -44,12 +44,6 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
             std::env::set_var("PATH", search_path);
         }
         std::env::set_var("RELEASH_DATA_DIR", &data_dir);
-        if let Err(error) = infrastructure::local_log::init(
-            &data_dir,
-            infrastructure::local_log::LocalLogProcess::Daemon,
-        ) {
-            eprintln!("{error}");
-        }
         #[cfg(unix)]
         if let Err(error) = infrastructure::process::fd_limit::raise_open_file_limit() {
             log::warn!("failed to raise open file limit: {error}");

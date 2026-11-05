@@ -51,6 +51,13 @@
         "{workspaceRoot}/rust-codecov.json"
       ],
       "cache": false
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --test .github/scripts/sparkle-release.test.cjs",
+        "cwd": "."
+      }
     }
   }
 }

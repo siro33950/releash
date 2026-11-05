@@ -7,6 +7,11 @@
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
 <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+<key>SUFeedURL</key><string>https://siro33950.github.io/releash/appcast.xml</string>
+<key>SUPublicEDKey</key><string>$(SPARKLE_PUBLIC_ED_KEY)</string>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>SUAutomaticallyUpdate</key><true/>
+<key>SUShowReleaseNotes</key><false/>
 <key>ATSApplicationFontsPath</key><string>Fonts</string>
 <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 <key>NSAppTransportSecurity</key><dict>

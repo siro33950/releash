@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
+: "${SPARKLE_PUBLIC_ED_KEY:?Sparkle public key is required}"
+: "${SPARKLE_PRIVATE_ED_KEY:?Sparkle private key is required}"
 WORK=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/releash-release.XXXXXX")
 KEYCHAIN="$WORK/signing.keychain-db"
 KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
@@ -58,9 +60,9 @@ xcodebuild -project Releash.xcodeproj -scheme Releash -configuration Release \
   -skipPackagePluginValidation 'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO \
   CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$APPLE_SIGNING_IDENTITY" \
   "DEVELOPMENT_TEAM=$APPLE_TEAM_ID" "OTHER_CODE_SIGN_FLAGS=--keychain $KEYCHAIN --timestamp" \
-  archive
+  "SPARKLE_PUBLIC_ED_KEY=$SPARKLE_PUBLIC_ED_KEY" archive
 
-APP="$WORK/Releash.xcarchive/Products/Applications/Releash Preview.app"
+APP="$WORK/Releash.xcarchive/Products/Applications/Releash.app"
 VERSION=$(python3 - "$ROOT" "$APP" <<'PY'
 import json, plistlib, sys, tomllib
 from pathlib import Path
@@ -68,14 +70,15 @@ root, app = map(Path, sys.argv[1:])
 version = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['package']['version']
 with (app / 'Contents/Info.plist').open('rb') as file:
     info = plistlib.load(file)
+assert info['CFBundleVersion'] == version, 'Build/Cargo version mismatch'
 assert info['CFBundleShortVersionString'] == version, 'Swift/Cargo version mismatch'
 assert json.loads((root / 'clients/desktop/package.json').read_text())['version'] == version, 'Tauri/Cargo version mismatch'
 assert info['CFBundleIdentifier'] == 'com.releash.macos', 'Unexpected bundle ID'
 print(version)
 PY
 )
-lipo -verify_arch arm64 "$APP/Contents/MacOS/Releash Preview"
-lipo -verify_arch x86_64 "$APP/Contents/MacOS/Releash Preview"
+lipo -verify_arch arm64 "$APP/Contents/MacOS/Releash"
+lipo -verify_arch x86_64 "$APP/Contents/MacOS/Releash"
 codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -108,4 +111,15 @@ xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 spctl --assess --type execute --verbose=2 "$APP"
 mkdir -p .build/Distribution
-ditto -c -k --keepParent "$APP" ".build/Distribution/Releash_Preview_${VERSION}_universal.zip"
+ditto -c -k --keepParent "$APP" ".build/Distribution/Releash_${VERSION}_universal.zip"
+
+python3 - "$VERSION" <<'PYSPARKLE'
+import json, os, subprocess, sys
+from pathlib import Path
+version = sys.argv[1]
+archive = Path(f'.build/Distribution/Releash_{version}_universal.zip')
+signer = '.build/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update'
+signature = subprocess.check_output([signer, '--ed-key-file', '-', '-p', str(archive)], input=os.environ['SPARKLE_PRIVATE_ED_KEY'], text=True).strip()
+Path('.build/Distribution/sparkle.json').write_text(json.dumps({'version': version, 'signature': signature, 'length': archive.stat().st_size}))
+PYSPARKLE
+node "$ROOT/.github/scripts/sparkle-release.cjs" verify .build/Distribution/sparkle.json ".build/Distribution/Releash_${VERSION}_universal.zip"

@@ -38,7 +38,7 @@ final class StatusMenuTests: XCTestCase {
       ]
       try http.publish(payload, target: "execution-overview")
       // Then
-      try await eventually { status.item.button?.toolTip == "Releash Preview: \(value)" }
+      try await eventually { status.item.button?.toolTip == "Releash: \(value)" }
       XCTAssertEqual(status.item.button?.contentTintColor, NSColor(UIStyle.statusColor("\(value)")))
       XCTAssertEqual(status.item.button?.image?.isTemplate, true)
     }
@@ -89,7 +89,7 @@ final class StatusMenuTests: XCTestCase {
     // Then
     try await eventually { model.reconnecting && status.item.button?.contentTintColor == nil }
     try await eventually {
-      !model.reconnecting && status.item.button?.toolTip == "Releash Preview: idle"
+      !model.reconnecting && status.item.button?.toolTip == "Releash: idle"
         && http.state.withLock {
           $0.subscriptions.last { $0.target == "execution-overview" }?.subscriptionID != previous
         }
@@ -136,7 +136,7 @@ final class StatusMenuTests: XCTestCase {
         return menu.items.contains { $0.title == "実行木 broken を読み取れません: read failed" }
           && (menu.items.contains { $0.representedObject as? String == "/repo" }) == !onlyFailure
       }
-      XCTAssertEqual(status.item.button?.toolTip, "Releash Preview: attention")
+      XCTAssertEqual(status.item.button?.toolTip, "Releash: attention")
       XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title.contains("broken") }).isEnabled)
       XCTAssertTrue(menu.items.contains { $0.title == "開く" })
     }
@@ -147,7 +147,7 @@ final class StatusMenuTests: XCTestCase {
     // Then
     try await eventually {
       status.menuNeedsUpdate(menu)
-      return status.item.button?.toolTip == "Releash Preview: idle"
+      return status.item.button?.toolTip == "Releash: idle"
         && !menu.items.contains { $0.title.contains("broken") }
     }
     await model.stop()
@@ -165,10 +165,10 @@ final class StatusMenuTests: XCTestCase {
     menu.performActionForItem(at: 0)
     // Then
     XCTAssertEqual(opened, 1)
-    let about = try XCTUnwrap(menu.items.first { $0.title == "Releash Preview について" })
+    let about = try XCTUnwrap(menu.items.first { $0.title == "Releash について" })
     XCTAssertTrue(about.target === NSApp)
     XCTAssertEqual(about.action, #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
-    let quit = try XCTUnwrap(menu.items.first { $0.title == "Releash Preview を終了" })
+    let quit = try XCTUnwrap(menu.items.first { $0.title == "Releash を終了" })
     XCTAssertTrue(quit.target === NSApp)
     XCTAssertEqual(quit.action, #selector(NSApplication.terminate(_:)))
     // Given
