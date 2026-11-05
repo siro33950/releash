@@ -735,8 +735,6 @@ extension AppModelTests {
   @MainActor func testSharedSubscriptionDeliversCacheAndStopsOnlyLastSubscriber() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
-    try await eventually { http.requests("StartStateSubscription").count >= 3 }
-    let initial = http.requests("StartStateSubscription").count
     var first: [Bool] = []
     var second: [Bool] = []
     let one = model.subscribe("repository-group-state", ["/shared"]) {
@@ -747,8 +745,11 @@ extension AppModelTests {
       second.append($0.repositoryGroupState.collapsed)
     }
     XCTAssertEqual(second, [false])
-    XCTAssertEqual(http.requests("StartStateSubscription").count, initial + 1)
-    let subscription = try XCTUnwrap(http.state.withLock { $0.subscriptions.last })
+    let subscriptions = http.state.withLock {
+      $0.subscriptions.filter { $0.target == "repository-group-state" && $0.args == ["/shared"] }
+    }
+    XCTAssertEqual(subscriptions.count, 1)
+    let subscription = try XCTUnwrap(subscriptions.first)
     var event = Releash_Client_V1_StateSubscriptionEvent()
     event.subscriptionID = subscription.subscriptionID
     event.change.payload.repositoryGroupState.collapsed = true
