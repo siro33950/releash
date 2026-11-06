@@ -83,6 +83,17 @@ jobs:
       project: cli
       targets: '["lint", "test-unit", "test-integration"]'
 
+  cli-macos-checks:
+    needs: plan
+    uses: ./.github/workflows/ci-checks.yml
+    with:
+      affected: ${{ contains(fromJSON(needs.plan.outputs.projects), 'cli') || contains(fromJSON(needs.plan.outputs.projects), 'server') }}
+      ref: ${{ needs.plan.outputs.ref }}
+      group: cli
+      project: cli
+      targets: '["test-integration"]'
+      runner: macos-latest
+
   quality-checks:
     needs: plan
     uses: ./.github/workflows/ci-checks.yml
@@ -91,7 +102,7 @@ jobs:
       ref: ${{ needs.plan.outputs.ref }}
       group: quality
       project: workspace
-      targets: '["lint"]'
+      targets: '["lint","test"]'
       skip-breaking: ${{ contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
 
   macos-checks:
@@ -193,7 +204,7 @@ jobs:
         run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
 
   cli-required:
-    needs: [plan, cli-checks]
+    needs: [plan, cli-checks, cli-macos-checks]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -201,7 +212,7 @@ jobs:
       - name: Require successful cli checks
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
-          CHECK_RESULT: ${{ needs.cli-checks.result }}
+          CHECK_RESULT: ${{ needs.cli-checks.result == 'success' && needs.cli-macos-checks.result == 'success' && 'success' || 'failure' }}
         run: test "$PLAN_RESULT" = success && test "$CHECK_RESULT" = success
 
   quality-required:

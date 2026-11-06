@@ -55,7 +55,7 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node --test .github/scripts/sparkle-release.test.cjs",
+        "commands": ["node --test .github/scripts/*.test.cjs", "python3 .github/scripts/macos-e2e_test.py"],
         "cwd": "."
       }
     }

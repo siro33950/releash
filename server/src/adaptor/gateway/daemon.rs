@@ -104,19 +104,7 @@ pub(crate) fn acquire_startup_lock(
     let unavailable = |_: std::io::Error| {
         K::StorageUnavailable(crate::domain::failure::TechnicalFailureNature::Other)
     };
-    let lock_dir = data_dir
-        .canonicalize()
-        .unwrap_or_else(|_| data_dir.to_owned());
-    let (Some(parent), Some(name)) = (lock_dir.parent(), lock_dir.file_name()) else {
-        return Err(unavailable(std::io::ErrorKind::InvalidInput.into()));
-    };
-    std::fs::create_dir_all(parent).map_err(unavailable)?;
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(parent.join(format!(".{}.startup.lock", name.to_string_lossy())))
+    let lock = crate::infrastructure::platform::data_home_lock::open(data_dir, "startup")
         .map_err(unavailable)?;
     match fs2::FileExt::try_lock_exclusive(&lock) {
         Ok(()) => Ok(lock),

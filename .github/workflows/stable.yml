@@ -118,101 +118,12 @@ jobs:
             });
             core.setOutput('release-id', data.id);
 
-  helpers:
-    needs: resolve
-    runs-on: macos-latest
-    timeout-minutes: 60
-    env:
-      NX_DAEMON: "false"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.resolve.outputs.sha }}
-      - uses: jdx/mise-action@v3
-      - uses: actions/cache@v6
-        with:
-          path: .nx/installation
-          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: .
-          shared-key: macos-helpers-universal
-          cache-on-failure: true
-      - run: ./nx run macos:helpers -c release
-      - uses: actions/upload-artifact@v6
-        with:
-          name: helpers-universal
-          path: clients/macos/.build/Helpers/Release/
-          if-no-files-found: error
-
   swift-build:
-    needs: [resolve, helpers]
-    runs-on: xcode-27
-    timeout-minutes: 90
-    env:
-      NX_DAEMON: "false"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.resolve.outputs.sha }}
-      - uses: jdx/mise-action@v3
-      - uses: actions/cache@v6
-        with:
-          path: .nx/installation
-          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
-      - id: xcode
-        run: echo "version=$(cat clients/macos/.xcode-version)" >> "$GITHUB_OUTPUT"
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: ${{ steps.xcode.outputs.version }}
-      - run: xcodebuild -downloadComponent MetalToolchain
-      - uses: actions/cache@v6
-        with:
-          path: clients/macos/BuildTools/.build
-          key: macos-native-build-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/BuildTools/Package.resolved') }}
-      - uses: actions/cache@v6
-        with:
-          path: clients/macos/.build/SourcePackages
-          key: macos-native-packages-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.version }}-${{ hashFiles('clients/macos/Releash.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-      - uses: actions/download-artifact@v8
-        with:
-          name: helpers-universal
-          path: clients/macos/.build/Helpers/Release
-      - run: chmod +x clients/macos/.build/Helpers/Release/releashd clients/macos/.build/Helpers/Release/releash
-      - run: node .github/scripts/load-secrets.mjs
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          APPLE_CERTIFICATE: op://releash/apple-signing/certificate
-          APPLE_CERTIFICATE_PASSWORD: op://releash/apple-signing/certificate-password
-          APPLE_SIGNING_IDENTITY: op://releash/apple-signing/signing-identity
-          APPLE_ID: op://releash/apple-signing/apple-id
-          APPLE_PASSWORD: op://releash/apple-signing/app-password
-          APPLE_TEAM_ID: op://releash/apple-signing/team-id
-          SPARKLE_PRIVATE_ED_KEY: op://releash/sparkle/private-key
-          OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
-          NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
-      - name: Archive, sign and notarize Releash
-        env:
-          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
-        run: bash .github/scripts/macos-release.sh
-      - name: Save notarization result
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: swift-notarization-${{ github.run_attempt }}
-          path: clients/macos/.build/Distribution/notary.json
-          if-no-files-found: warn
-      - uses: actions/upload-artifact@v6
-        with:
-          name: swift-app
-          path: |
-            clients/macos/.build/Distribution/Releash_*_universal.zip
-            clients/macos/.build/Distribution/sparkle.json
-          if-no-files-found: error
+    needs: resolve
+    uses: ./.github/workflows/swift-build.yml
+    with:
+      sha: ${{ needs.resolve.outputs.sha }}
+    secrets: inherit
 
   upload:
     needs: [resolve, create-release, swift-build]

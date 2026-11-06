@@ -18,6 +18,9 @@ on:
       targets:
         required: true
         type: string
+      runner:
+        default: ubuntu-latest
+        type: string
       skip-breaking:
         default: false
         type: boolean
@@ -32,7 +35,7 @@ env:
 jobs:
   check:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false

@@ -72,8 +72,15 @@ fn test_移行_同じ項目の並行移動を一度だけ適用する() {
     fs::write(home.legacy.as_ref().unwrap().join("store"), b"retained").unwrap();
     // When
     std::thread::scope(|scope| {
-        let first = scope.spawn(|| LocalDataHomeStore.relocate(&home, &["store".into()]));
-        let second = scope.spawn(|| LocalDataHomeStore.relocate(&home, &["store".into()]));
+        let migrate = || {
+            let plan = LocalDataHomeStore.survey(&home)?.decide().unwrap();
+            if let crate::domain::daemon::data_home::RelocationPlan::Move { entries } = plan {
+                LocalDataHomeStore.relocate(&home, &entries)?;
+            }
+            Ok::<(), TechnicalFailure>(())
+        };
+        let first = scope.spawn(migrate);
+        let second = scope.spawn(migrate);
         first.join().unwrap().unwrap();
         second.join().unwrap().unwrap();
     });
@@ -93,5 +100,56 @@ fn test_移行_保存先の外を指す項目を拒否する() {
     // When / Then
     for name in ["/", "..", "../outside", "nested/file"] {
         assert!(LocalDataHomeStore.relocate(&home, &[name.into()]).is_err());
+    }
+}
+
+#[test]
+fn test_移行_途中失敗後に残りを移してデータと印を回収する() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let home = DataHome {
+        current: root.path().join("new"),
+        legacy: Some(root.path().join("old")),
+    };
+    let old = home.legacy.as_ref().unwrap();
+    fs::create_dir_all(old).unwrap();
+    fs::create_dir_all(&home.current).unwrap();
+    fs::write(old.join("first"), b"first").unwrap();
+    fs::write(old.join("second"), b"second").unwrap();
+    fs::write(home.current.join("second"), b"conflict").unwrap();
+    assert!(LocalDataHomeStore
+        .relocate(&home, &["first".into(), "second".into()])
+        .is_err());
+    assert_eq!(fs::read(home.current.join("first")).unwrap(), b"first");
+    assert!(old.join(RELOCATION_MARKER).exists());
+    fs::remove_file(home.current.join("second")).unwrap();
+    // When
+    let crate::domain::daemon::data_home::RelocationPlan::Move { entries } =
+        LocalDataHomeStore.survey(&home).unwrap().decide().unwrap()
+    else {
+        panic!("move")
+    };
+    LocalDataHomeStore.relocate(&home, &entries).unwrap();
+    // Then
+    assert_eq!(fs::read(home.current.join("first")).unwrap(), b"first");
+    assert_eq!(fs::read(home.current.join("second")).unwrap(), b"second");
+    assert!(!old.exists());
+}
+
+#[test]
+fn test_観測_旧保存先がなければ現在の内容を走査しない() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let current = root.path().join("new");
+    fs::write(&current, b"not a directory").unwrap();
+    // When / Then
+    for legacy in [None, Some(root.path().join("missing"))] {
+        let survey = LocalDataHomeStore
+            .survey(&DataHome {
+                current: current.clone(),
+                legacy,
+            })
+            .unwrap();
+        assert!(survey.current_entries.is_empty());
     }
 }

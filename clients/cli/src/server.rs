@@ -187,14 +187,17 @@ async fn launch_started(
         let actual = dir
             .canonicalize()
             .map_err(|error| ConnectError::unavailable(error.to_string()))?;
-        let default = data_dir::default_data_dir_for_profile(data_dir::BuildProfile::current())
-            .and_then(|path| path.canonicalize().ok());
+        let default = if resolved.legacy.is_some() {
+            Some(resolved.path.clone())
+        } else {
+            data_dir::default_data_dir_for_profile(data_dir::BuildProfile::current())
+        };
+        let default = default.and_then(|path| path.canonicalize().ok());
         if default.as_ref() == Some(&actual)
-            || (resolved.legacy.is_some()
-                && [&resolved.path]
-                    .into_iter()
-                    .chain(resolved.legacy.iter())
-                    .any(|path| path.canonicalize().ok().as_ref() == Some(&actual)))
+            || resolved
+                .legacy
+                .as_ref()
+                .is_some_and(|path| path.canonicalize().ok().as_ref() == Some(&actual))
         {
             open_app(app)?;
             return Ok(String::new());

@@ -45,7 +45,7 @@ def production_processes():
     for line in subprocess.check_output(['ps', '-axo', 'pid=,lstart=,stat=,comm='], text=True).splitlines():
         fields = line.split(None, 7)
         pid, started, status, command = int(fields[0]), tuple(fields[1:6]), fields[6], fields[7]
-        if 'Z' in status or Path(command).name not in {'Releash', 'Releash', 'releash-desktop', 'releashd'}:
+        if 'Z' in status or Path(command).name not in {'Releash', 'Releash Preview', 'releash-desktop', 'releashd'}:
             continue
         buffer = ctypes.create_string_buffer(4096)
         if library.proc_pidpath(pid, buffer, len(buffer)) <= 0:

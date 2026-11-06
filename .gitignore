@@ -97,3 +97,5 @@ clients/macos/Generated/
 .nx/polygraph
 .nx/release-notes.md
 **/__pycache__/
+
+/.tmp/

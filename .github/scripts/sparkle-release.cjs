@@ -10,7 +10,7 @@ function metadata(release) {
   const item = JSON.parse(match[1]);
   if (!/^\d+\.\d+\.\d+$/.test(item.version) || !/^[A-Za-z0-9+/]{86}==$/.test(item.signature)
       || !Number.isSafeInteger(item.length) || item.length <= 0) throw new Error('Invalid Sparkle metadata');
-  if (!release.tag_name.startsWith(`v${item.version}`)) throw new Error('Release version mismatch');
+  if (release.tag_name.match(/^v(\d+\.\d+\.\d+)(?:-nightly\.\d{8}\.[1-9]\d*)?$/)?.[1] !== item.version) throw new Error('Release version mismatch');
   const asset = release.assets.find(asset => asset.name === `Releash_${item.version}_universal.zip` && asset.size === item.length);
   if (!asset) throw new Error('Missing Swift asset');
   return { ...item, url: asset.browser_download_url, nightly: release.prerelease };
@@ -35,13 +35,12 @@ function verifyArchive(file, signature, publicKey) {
   if (!verify(null, readFileSync(file), key, Buffer.from(signature, 'base64'))) throw new Error('Sparkle signature does not match application public key');
 }
 
-function main(mode) {
+function main(mode, run = (...args) => execFileSync(args[0], args.slice(1), { encoding: 'utf8' }).trim()) {
   if (mode === 'verify') {
     const item = JSON.parse(readFileSync(process.argv[3]));
     verifyArchive(process.argv[4], item.signature, process.env.SPARKLE_PUBLIC_ED_KEY);
     return;
   }
-  const run = (...args) => execFileSync(args[0], args.slice(1), { encoding: 'utf8' }).trim();
   const repo = process.env.GITHUB_REPOSITORY;
   const tag = process.env.RELEASE_TAG;
   const api = path => JSON.parse(run('gh', 'api', path));
@@ -51,13 +50,12 @@ function main(mode) {
     const item = JSON.parse(readFileSync(join(process.env.ASSETS, 'sparkle.json')));
     const file = join(process.env.ASSETS, `Releash_${item.version}_universal.zip`);
     if (statSync(file).size !== item.length) throw new Error('Archive length mismatch');
-    if (release.draft) run('gh', 'release', 'upload', tag, file, '--clobber', '--repo', repo);
+    run('gh', 'release', 'upload', tag, file, '--clobber', '--repo', repo);
     const refreshed = api(`repos/${repo}/releases/tags/${tag}`);
     const body = `${(release.body || '').replace(marker, '').trim()}\n\n<!-- sparkle:${JSON.stringify(item)} -->`;
     metadata({ ...refreshed, body });
     writeFileSync(join(process.env.ASSETS, 'body.txt'), body);
-    if (release.draft) run('gh', 'release', 'edit', tag, '--notes-file', join(process.env.ASSETS, 'body.txt'), '--repo', repo);
-    else metadata(release);
+    run('gh', 'release', 'edit', tag, '--notes-file', join(process.env.ASSETS, 'body.txt'), '--repo', repo);
     return;
   }
   const releases = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)).flat();
@@ -75,5 +73,5 @@ function main(mode) {
   }
 }
 
-module.exports = { metadata, appcast, verifyArchive };
+module.exports = { metadata, appcast, verifyArchive, main };
 if (require.main === module) main(process.argv[2]);

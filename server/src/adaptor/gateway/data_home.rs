@@ -15,13 +15,23 @@ pub(crate) struct LocalDataHomeStore;
 impl DataHomeStore for LocalDataHomeStore {
     fn survey(&self, home: &DataHome) -> Result<RelocationSurvey, TechnicalFailure> {
         let legacy = home.legacy.as_deref();
+        let lock =
+            crate::infrastructure::platform::data_home_lock::open(&home.current, "relocation")
+                .map_err(failure)?;
+        fs2::FileExt::lock_exclusive(&lock).map_err(failure)?;
+        let legacy_entries = legacy
+            .map(entries)
+            .transpose()
+            .map_err(failure)?
+            .unwrap_or_default();
+        let current_entries = if !legacy_entries.iter().any(DataEntry::is_server_data) {
+            Vec::new()
+        } else {
+            entries(&home.current).map_err(failure)?
+        };
         Ok(RelocationSurvey {
-            legacy_entries: legacy
-                .map(entries)
-                .transpose()
-                .map_err(failure)?
-                .unwrap_or_default(),
-            current_entries: entries(&home.current).map_err(failure)?,
+            legacy_entries,
+            current_entries,
             legacy_server: legacy.map(server).unwrap_or(LegacyServer::Absent),
             relocation_started: legacy.is_some_and(|path| path.join(RELOCATION_MARKER).exists()),
         })
@@ -31,25 +41,9 @@ impl DataHomeStore for LocalDataHomeStore {
         let Some(legacy) = &home.legacy else {
             return Ok(());
         };
-        let parent = home
-            .current
-            .parent()
-            .ok_or_else(|| failure(io::Error::other("missing data directory parent")))?;
-        fs::create_dir_all(parent).map_err(failure)?;
-        let lock_name = format!(
-            ".{}.relocation.lock",
-            home.current
-                .file_name()
-                .ok_or_else(|| failure(io::Error::other("missing data directory name")))?
-                .to_string_lossy()
-        );
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(parent.join(lock_name))
-            .map_err(failure)?;
+        let lock =
+            crate::infrastructure::platform::data_home_lock::open(&home.current, "relocation")
+                .map_err(failure)?;
         fs2::FileExt::lock_exclusive(&lock).map_err(failure)?;
         if !legacy.exists() {
             return Ok(());
