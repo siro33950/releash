@@ -12,15 +12,21 @@ struct SystemSettingsView: View {
     Form {
       Section("更新") {
         Toggle(
-          "自動更新",
           isOn: Binding(
             get: { model.updater.automaticUpdates },
-            set: { model.updater.automaticUpdates = $0 }))
+            set: { model.updater.automaticUpdates = $0 })
+        ) {
+          Text("自動更新").accessibilityHidden(true)
+        }
+        .accessibilityLabel("自動更新")
         Toggle(
-          "nightly アップデートを受け入れる",
           isOn: Binding(
             get: { model.updater.acceptsNightly },
-            set: { model.updater.acceptsNightly = $0 }))
+            set: { model.updater.acceptsNightly = $0 })
+        ) {
+          Text("nightly アップデートを受け入れる").accessibilityHidden(true)
+        }
+        .accessibilityLabel("nightly アップデートを受け入れる")
       }
       Section("ログイン項目") {
         Toggle(
