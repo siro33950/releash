@@ -37,7 +37,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 ### サーバがロジックを所有する
 
-- **全てのアプリケーションロジックはサーバ（daemon）に置く。例外なし。**
+- **全てのアプリケーションロジックはサーバ（daemon）に置く。** 例外は、アプリ自身の更新設定（自動更新、nightly の受け入れ）だけである。この設定はクライアントが所有し、サーバに置かない。
 - client は、画面（frontend）と Tauri のシェルである。Tauri のシェルは Rust で書かれていても client であり、ロジックを置かない。
 - client に許すのは、表示とレイアウト制御、ユーザー入力の受付とフォーム状態管理、サーバの呼び出しと購読（接続、受け取り、つなぎ直し）、受け取ったデータの表示用フォーマット（日付表示形式の変換等）だけ。
 - サーバとの通信（呼び出し、購読、受け取り、つなぎ直し）は画面側の React（`clients/desktop/src/lib/client.ts`）が直接行う。Tauri のシェルは通信を中継しない。Tauri のシェルが持つのは、ウィンドウ、daemon の起動と監視、更新、接続先の受け渡しなど desktop 固有の操作だけ。
@@ -223,18 +223,19 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 
 - Conventional Commits。`type(scope): 日本語要約 (#PR番号)` の形にする。
 - type は `feat` / `fix` / `docs` / `refactor` / `chore` / `perf`。
-- main へ直接 push しない。PR 経由で入れる。
-- 版を上げるコミットは `release: vX.Y.Z`。このコミットの merge 自体ではリリースしない。
+- main へ直接 push しない。PR 経由で入れる。例外は、Nightly が自動で作る版上げのコミットだけである。
+- 版を上げるコミットは `release: vX.Y.Z`。
 
 ## リリース
 
 対応プラットフォームは macOS。
 
-1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動する。main の HEAD を対象とし、日次は直近の公開済み nightly のタグが指す commit と同じならスキップする。手動起動は常に実行する。対象の commit に成功した main push の `CI` run がなければ、その場で失敗する。
-2. PR 層の検証は main push の `CI` で済ませたものを使い、Nightly では繰り返さない。macOS の回帰 E2E と並行して、universal の helper binary（`releashd`、`releash`）を 1 つの job で作り、それを sidecar と helper に使う Tauri 版と Swift 版の署名・公証済み macOS universal ビルドを別々の job で作る。E2E と両ビルドがすべて成功してからタグと draft の Release を作り、成果物と `latest.json` を載せて同じ prerelease を公開する。Swift 版は `Releash Preview.app` として配布し、Tauri 版の `Releash.app` と共存する。`coverage` は関門に含めない。署名・公証、updater の署名、telemetry の値は 1Password から取得する。
-3. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。リポジトリとアプリの版は `X.Y.Z` のまま。nightly の Release は直近 14 件を残す。nightly は GitHub Release から手動で取得する。
-4. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit からビルド・署名・公証をやり直し、`vX.Y.Z` を stable の latest Release として公開する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。`latest.json` により既存の Tauri updater で更新できる。
-5. stable 公開後、main の版の patch を 1 つ上げ、`clients/desktop/package.json`、`clients/desktop/tauri.conf.json`、`clients/macos/project.yml` の `MARKETING_VERSION`、`Cargo.toml`、`Cargo.lock` を揃える PR を作る。別の上げ幅が必要なら、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
+1. `Nightly` は毎日（UTC 18:23 / JST 03:23）と `workflow_dispatch` で起動し、main の HEAD を対象とする。HEAD が前回の nightly の版上げコミットのままなら配らない。対象の commit に成功した main push の `CI` run がなければ、版を上げずに失敗する。
+2. Nightly は、直前に公開した版の patch を 1 つ上げた `release: vX.Y.Z` のコミットを main に push し、そのコミットから配る。同じ実行を再試行しても版は変わらない。
+3. PR 層の検証は main push の `CI` で済ませたものを使い、Nightly では繰り返さない。macOS の回帰 E2E と並行して、universal の helper binary（`releashd`、`releash`）と、それを同梱した署名・公証済みの universal の `Releash.app` を作る。E2E とビルドがどちらも成功してから、zip にした `Releash.app` を prerelease の Release に載せ、Sparkle の appcast（`https://siro33950.github.io/releash/appcast.xml`）を更新する。`coverage` は関門に含めない。署名・公証、Sparkle の署名、telemetry の値は 1Password から取得する。
+4. nightly のタグは `v{X.Y.Z}-nightly.{YYYYMMDD}.{N}`（UTC のビルド日、日ごとに 1 から採番）。nightly の Release は直近 14 件を残す。アプリの Settings で「nightly アップデートを受け入れる」を ON にすると、nightly も Sparkle で更新できる。
+5. `Stable` を `workflow_dispatch` で起動し、`nightly` に公開済み nightly のタグを指定する。その commit から `Releash.app` をビルド・署名・公証し直し、同じ版の `vX.Y.Z` を stable の latest Release として公開して、appcast を更新する。`vX.Y.Z` タグは 1Password の `releash-stable-release`（Contents / Workflows write の fine-grained PAT）で作る。`GITHUB_TOKEN` は workflow ファイルがブランチ先端と異なる commit にタグを作れないため。
+6. stable を公開しても main の版は変わらず、版上げの PR も作らない。上げ幅を変えるときは、`Bump Version` を `workflow_dispatch`（patch / minor / major）で実行して版更新 PR を作る。
 
 ## セキュリティ
 

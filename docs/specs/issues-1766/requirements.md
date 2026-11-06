@@ -6,8 +6,9 @@
 - 版は `X.Y.Z` だけで表す。nightly 用の接尾辞、CI の実行番号、版とは別の連番は使わない（ISSUE「バージョンとチャンネル」）。
 - 配布するアプリは Swift の `Releash.app` だけになる。Tauri 版の配布を止める。Tauri のコードの撤去は #1765 である。
 - 利用者の workflow 定義は `~/Library/Application Support/releash/workflows/` にある（`docs/guide/workflow/common.md:10`）。この場所はデータフォルダと独立で、本番と開発で共通である。
+- 新保存先 `releash` は、利用者の workflow 定義フォルダと同じ場所である。定義フォルダはそのまま残り、サーバの状態がその中に置かれる。
 - main は PR を経ないと変更できないが、管理者の権限では直接 push できる。stable は管理者の token で tag を push している。
-- GitHub Pages のサイトは無い（Pages の API が 404）。リポジトリは public である。
+- リポジトリは public である。
 - Sparkle の版の比較は `SUStandardVersionComparator` が行い、`-` 以降を捨てる。`X.Y.Z` 同士なら数値の大小で比べる。Apple の `CFBundleVersion` は数字と `.` だけを許す。`0.4.21` のような `X.Y.Z` はどちらにも収まる。
 - Sparkle の更新画面に appcast の `link` が出るのは、ダウンロードできない情報だけの更新のときだけである。
 
@@ -30,6 +31,7 @@ nightly と stable の配布は `Releash.app` だけになり、配る commit �
 
 調査の時点は main `f3a01a6d` である。
 ビルド、テスト、実機の更新は実行していない。
+GitHub Pages のサイトは無い（Pages の API が 404）。
 
 版と配布:
 
@@ -125,7 +127,7 @@ nightly と stable の配布は `Releash.app` だけになり、配る commit �
 - R-013: 自動更新が ON のとき、アプリは自動で確認とダウンロードを行い、利用者がアプリを終了したときに適用する。利用中の画面を自動で終了しない。利用者が Sparkle の画面で「今すぐ」を選べば、その場で適用して再起動する。
 - R-014: 更新候補になるのは、現在の版より新しい版だけである。「nightly アップデートを受け入れる」が ON のときだけ nightly の項目が候補になり、stable の項目はどちらの設定でも候補になる。OFF に戻しても古い stable へ戻さない。同じ版の stable への昇格は候補にならない。
 - R-015: メニューバーに「アップデートを確認」があり、Sparkle の手動確認を開く。確認中は項目が無効になる。
-- R-016: 新しい版が見つかると、フッターにその版と「更新」ボタンが出る。ボタンは Sparkle の標準の更新画面を開く。更新画面には版だけが出て、変更内容やリンクは出ない。ダウンロードの進行、適用の確認、失敗の表示は Sparkle の標準の画面である。
+- R-016: 新しい版が見つかると、フッターにその版と「更新」ボタンが出る。ボタンは Sparkle の標準の更新画面を開く。自動ダウンロードの間はボタンを無効にし、終わると押せるようになる。更新画面には版だけが出て、変更内容やリンクは出ない。ダウンロードの進行、適用の確認、失敗の表示は Sparkle の標準の画面である。
 - R-017: Debug のアプリ（`com.releash.macos.dev`）は appcast を読まず、更新を確認しない。
 - R-018: `AGENTS.md` の「サーバがロジックを所有する」の節に、アプリ自身の更新設定（自動更新、nightly の受け入れ）を例外として挙げる。
 
@@ -147,7 +149,6 @@ nightly と stable の配布は `Releash.app` だけになり、配る commit �
 - Sparkle の鍵対は管理者が作り、秘密鍵を 1Password に置き、公開鍵を merge 前に用意する。
 - GitHub Pages の source を「GitHub Actions」にするリポジトリ設定の変更は、merge 前に管理者が行う。
 - nightly は、管理者の権限で版上げの commit を main に直接 push する。
-- 新保存先 `releash` は、利用者の workflow 定義フォルダと同じ場所である。定義フォルダはそのまま残り、サーバの状態がその中に置かれる。
 - 旧 Tauri 版 `Releash.app` が利用者の Mac に残っていても、その扱いは利用者に任せる。
 
 # Invariants

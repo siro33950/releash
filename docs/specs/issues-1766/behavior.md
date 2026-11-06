@@ -11,12 +11,11 @@ GIVEN 直前の nightly が版上げの commit を main に入れて配ってい
 WHEN main の HEAD がその commit のまま、翌日の nightly が実行される
 THEN nightly は配らず、新しい版も Release も作らない
 
-## B-003: 同じ commit の再試行と昇格
+## B-003: 同じ commit の再試行
 
 GIVEN nightly `0.4.21` が commit A から配られている
-WHEN 同じ実行を再試行する、または commit A の nightly を指定して stable を実行する
+WHEN 同じ実行を再試行する
 THEN 版は `0.4.21` のままである
-AND stable の `Releash.app`、同梱の `releashd` と `releash`、appcast の stable の項目はすべて `0.4.21` である
 
 ## B-004: stable 公開後の版
 
@@ -36,7 +35,6 @@ AND Tauri 版の dmg、`app.tar.gz`、`.sig`、`latest.json` は載らない
 GIVEN 公開済みの nightly の tag を指定する
 WHEN stable を実行する
 THEN その nightly の commit から再ビルド、署名、公証した `Releash.app` の zip が latest の Release に載る
-AND Swift の asset か appcast がそろっていなければ、Release は公開されない
 
 ## B-007: アプリの名前
 
@@ -51,15 +49,12 @@ GIVEN stable `0.4.20` と nightly `0.4.21` が公開されている
 WHEN `https://siro33950.github.io/releash/appcast.xml` を取得する
 THEN 項目は 2 つで、`0.4.20` の項目にはチャンネルが無く、`0.4.21` の項目は `sparkle:channel` が `nightly` である
 AND 各項目の enclosure は公開済みの Release の asset を指し、その EdDSA 署名はアプリの公開鍵で検証できる
-AND `0.4.21` が stable に昇格すると、項目は `0.4.21` の stable 1 つになる
 
-## B-009: 同時公開と再実行
+## B-009: 同時公開
 
 GIVEN nightly と stable が同時に公開を進めている
 WHEN 両方が終わる
 THEN appcast には stable の項目と nightly の項目の両方がある
-AND appcast の公開に失敗した workflow は成功にならず、再実行すると同じ版の公開が完了する
-AND 直近 14 件に入らない nightly の Release を消しても、appcast は消した asset を指さない
 
 ## B-010: Release の区分
 
@@ -75,12 +70,11 @@ THEN アプリは差し替わって `0.4.21` で再起動し、動いていた�
 AND サーバと workflow は止まらずに続く
 AND フッターのサーバ表示は `0.4.20` のサーバに対して「再起動で更新できます」を出す
 
-## B-012: 更新設定の初期値と保持
+## B-012: 更新設定の初期値
 
 GIVEN `Releash.app` を初めて起動する
 WHEN Settings の System タブを開く
 THEN 「更新」の節に「自動更新」が ON、「nightly アップデートを受け入れる」が OFF で表示される
-AND 利用者が値を変えてアプリを再起動すると、変えた値のままである
 
 ## B-013: サーバ未接続での更新設定
 
@@ -93,36 +87,31 @@ THEN 「自動更新」と「nightly アップデートを受け入れる」は�
 GIVEN 「自動更新」が ON で、新しい版が appcast にある
 WHEN アプリが更新を確認する
 THEN アプリは利用者の操作なしに更新をダウンロードする
-AND 利用中の画面は終了せず、利用者がアプリを終了したときに更新が適用される
+AND 利用中の画面は終了しない
 
 ## B-015: チャンネルと更新候補
 
 GIVEN 現在の版が `0.4.20` で、appcast に stable `0.4.20` と nightly `0.4.21` がある
 WHEN 「nightly アップデートを受け入れる」が OFF で確認する
 THEN 更新は見つからない
-AND ON にして確認すると、`0.4.21` が見つかる
 
 ## B-016: 戻さない
 
 GIVEN 現在の版が nightly `0.4.21` で、appcast に stable `0.4.20` と nightly `0.4.21` がある
 WHEN 「nightly アップデートを受け入れる」を OFF にして確認する
 THEN 更新は見つからず、`0.4.20` に戻らない
-AND `0.4.21` が stable に昇格しても、同じ版の再インストールは案内されない
-AND stable `0.4.22` が公開されると、OFF のままでも `0.4.22` が見つかる
 
 ## B-017: 手動確認
 
 GIVEN `Releash.app` が起動している
 WHEN 利用者がメニューバーの「アップデートを確認」を選ぶ
 THEN Sparkle の確認が始まり、結果（新しい版がある、または最新である）が Sparkle の画面で表示される
-AND 確認中は「アップデートを確認」が無効になる
 
 ## B-018: フッターの通知
 
 GIVEN 新しい版 `0.4.21` が見つかっている
 WHEN フッターを見る
 THEN `0.4.21` と「更新」ボタンが表示される
-AND ボタンを押すと Sparkle の標準の更新画面が開き、版だけが表示され、変更内容やリンクは表示されない
 
 ## B-019: Debug のアプリ
 
@@ -215,25 +204,104 @@ GIVEN main に新しい commit があり、回帰 E2E が失敗する
 WHEN nightly が実行される
 THEN Release は作られず、ISSUE が作られる
 
+## B-033: stable への昇格の版
+
+GIVEN nightly `0.4.21` が commit A から配られている
+WHEN commit A の nightly を指定して stable を実行する
+THEN 版は `0.4.21` のままである
+AND stable の `Releash.app`、同梱の `releashd` と `releash`、appcast の stable の項目はすべて `0.4.21` である
+
+## B-034: stable の成果物の欠落
+
+GIVEN Swift の asset か appcast がそろっていない
+WHEN stable を実行する
+THEN Release は公開されない
+
+## B-035: 昇格後の appcast
+
+GIVEN stable `0.4.20` と nightly `0.4.21` が公開されている
+WHEN `0.4.21` を stable に昇格する
+THEN appcast の `0.4.21` の項目は stable の 1 つだけになる
+
+## B-036: appcast の公開の失敗と再実行
+
+GIVEN appcast の公開に失敗した workflow がある
+WHEN その workflow を再実行する
+THEN 失敗した実行は成功にならず、再実行で同じ版の公開が完了する
+
+## B-037: nightly の Release の削除
+
+GIVEN nightly の Release が 14 件を超えている
+WHEN 直近 14 件に入らない Release を消す
+THEN appcast は消した asset を指さない
+
+## B-038: 更新設定の保持
+
+GIVEN 利用者が更新設定の値を変えている
+WHEN アプリを再起動する
+THEN 変えた値のままである
+
+## B-039: 終了時の適用
+
+GIVEN 自動ダウンロードが終わった更新がある
+WHEN 利用者がアプリを終了する
+THEN 更新が適用される
+
+## B-040: nightly の受け入れが ON
+
+GIVEN 現在の版が `0.4.20` で、appcast に stable `0.4.20` と nightly `0.4.21` がある
+WHEN 「nightly アップデートを受け入れる」が ON で確認する
+THEN `0.4.21` が見つかる
+
+## B-041: 同じ版の昇格
+
+GIVEN 現在の版が nightly `0.4.21` である
+WHEN `0.4.21` が stable に昇格した appcast で確認する
+THEN 同じ版の再インストールは案内されない
+
+## B-042: 新しい stable
+
+GIVEN 現在の版が nightly `0.4.21` で、「nightly アップデートを受け入れる」が OFF である
+WHEN stable `0.4.22` が公開された appcast で確認する
+THEN `0.4.22` が見つかる
+
+## B-043: 確認中のメニュー
+
+GIVEN Sparkle が更新を確認している
+WHEN メニューバーを開く
+THEN 「アップデートを確認」は無効である
+
+## B-044: フッターのボタン
+
+GIVEN 新しい版 `0.4.21` が見つかっていて、自動ダウンロードの途中でない
+WHEN フッターの「更新」を押す
+THEN Sparkle の標準の更新画面が開き、版だけが表示され、変更内容やリンクは表示されない
+
+## B-045: 自動ダウンロード中のフッターのボタン
+
+GIVEN 新しい版 `0.4.21` を自動でダウンロードしている
+WHEN フッターを見る
+THEN 「更新」は無効である
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
 | R-001 | B-001 |
 | R-002 | B-001, B-002 |
-| R-003 | B-003 |
+| R-003 | B-003, B-033 |
 | R-004 | B-004 |
 | R-005 | B-005, B-031, B-032 |
-| R-006 | B-006 |
+| R-006 | B-006, B-034 |
 | R-007 | B-007 |
-| R-008 | B-008 |
-| R-009 | B-009 |
+| R-008 | B-008, B-035 |
+| R-009 | B-009, B-036, B-037 |
 | R-010 | B-010 |
 | R-011 | B-011 |
-| R-012 | B-012, B-013 |
-| R-013 | B-014, B-030 |
-| R-014 | B-015, B-016 |
-| R-015 | B-017 |
-| R-016 | B-018 |
+| R-012 | B-012, B-013, B-038 |
+| R-013 | B-014, B-030, B-039 |
+| R-014 | B-015, B-016, B-040, B-041, B-042 |
+| R-015 | B-017, B-043 |
+| R-016 | B-018, B-044, B-045 |
 | R-017 | B-019 |
 | R-018 | B-020 |
 | R-019 | B-021 |

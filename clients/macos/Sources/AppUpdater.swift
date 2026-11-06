@@ -16,18 +16,16 @@ import Sparkle
   /// 手動確認を始められるか。確認中は false になる。
   private(set) var canCheckForUpdates = false
 
-  private let controller: SPUStandardUpdaterController
+  @ObservationIgnored private var controller: SPUStandardUpdaterController!
   private let defaults: UserDefaults
-  private let delegate = UpdaterDelegate()
   private var observation: NSKeyValueObservation?
 
   /// Sparkle の updater を作る。`start()` を呼ぶまで appcast は読まない。
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
-    controller = SPUStandardUpdaterController(
-      startingUpdater: false, updaterDelegate: delegate, userDriverDelegate: nil)
     super.init()
-    delegate.owner = self
+    controller = SPUStandardUpdaterController(
+      startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
     observation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) {
       [weak self] _, change in
       let enabled = change.newValue ?? false
@@ -97,21 +95,5 @@ import Sparkle
   /// 新しい版が無かった。`availableVersion` を消す。
   nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
     MainActor.assumeIsolated { availableVersion = nil }
-  }
-}
-
-@MainActor private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
-  weak var owner: AppUpdater?
-
-  func allowedChannels(for updater: SPUUpdater) -> Set<String> {
-    owner?.allowedChannels(for: updater) ?? []
-  }
-
-  func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-    owner?.updater(updater, didFindValidUpdate: item)
-  }
-
-  func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
-    owner?.updaterDidNotFindUpdate(updater, error: error)
   }
 }
