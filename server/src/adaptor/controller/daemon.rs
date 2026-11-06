@@ -2,7 +2,7 @@ use crate::adaptor::controller::terminal_surface_runtime as terminal_surface;
 use crate::{adaptor, domain, infrastructure, usecase};
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
 use domain::app_config::{AppConfigRepository, ConfigSecretRepository, RepositoryConfigRepository};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn client_priority_level(path: &str) -> Option<&'static str> {
@@ -142,22 +142,6 @@ pub async fn compose(
         infrastructure::process::search_path::LoginShellPathError,
     >,
 ) -> Result<Daemon, Box<dyn std::error::Error>> {
-    let lock_dir = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
-    let parent = lock_dir.parent().ok_or("data directory has no parent")?;
-    std::fs::create_dir_all(parent)?;
-    let lock_path = parent.join(format!(
-        ".{}.startup.lock",
-        lock_dir
-            .file_name()
-            .ok_or("data directory has no name")?
-            .to_string_lossy()
-    ));
-    let startup_lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
     let pid = std::process::id();
     let identity = domain::daemon::DaemonIdentity {
         daemon_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -171,58 +155,44 @@ pub async fn compose(
     )));
     let daemon_repository = compose_daemon_repository(identity, protocol, &installation);
     let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
-    if let Err(error) = fs2::FileExt::try_lock_exclusive(&startup_lock) {
-        if data_dir.join("client-api.json").exists() {
-            if let Err(error) = infrastructure::local_log::init(
-                &data_dir,
-                infrastructure::local_log::LocalLogProcess::Daemon,
-            ) {
-                eprintln!("{error}");
+    let startup_lock = match adaptor::gateway::daemon::acquire_startup_lock(&data_dir) {
+        Ok(lock) => lock,
+        Err(kind) => {
+            if data_dir.join("client-api.json").exists() {
+                if let Err(error) = infrastructure::local_log::init(
+                    &data_dir,
+                    infrastructure::local_log::LocalLogProcess::Daemon,
+                ) {
+                    eprintln!("{error}");
+                }
             }
+            return Err(fail_startup(&daemon, kind).await.into());
         }
-        let kind = if error.kind() == std::io::ErrorKind::WouldBlock {
-            domain::daemon::StartupFailureKind::StoreInUse
-        } else {
-            domain::daemon::StartupFailureKind::StorageUnavailable(
-                domain::failure::TechnicalFailureNature::Other,
-            )
-        };
-        return Err(fail_startup(&daemon, kind).await.into());
-    }
+    };
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
     // 旧既定の保存先のデータは、store を開く前に新既定の保存先へ移す
     let profile = infrastructure::platform::data_dir::BuildProfile::current();
+    let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
     let home = domain::daemon::data_home::DataHome::for_startup(
-        data_dir.clone(),
-        infrastructure::platform::data_dir::default_data_dir_for_profile(profile).as_deref(),
+        real(&data_dir),
+        infrastructure::platform::data_dir::default_data_dir_for_profile(profile)
+            .map(|path| real(&path))
+            .as_deref(),
         legacy_data_dir.as_deref(),
     );
     let relocation = usecase::data_home::DataHomeRelocationUsecase::new(Arc::new(
         adaptor::gateway::data_home::LocalDataHomeStore,
     ));
     if let Err(error) = relocation.run(&home) {
-        let kind = match error {
-            usecase::data_home::RelocationError::Blocked(block) => {
-                domain::daemon::StartupFailureKind::DataRelocationBlocked(block)
-            }
-            usecase::data_home::RelocationError::Technical(failure) => {
-                domain::daemon::StartupFailureKind::DataRelocationFailed(failure.nature)
-            }
-        };
-        return Err(fail_startup(&daemon, kind).await.into());
+        return Err(fail_startup(&daemon, error.into()).await.into());
     }
     // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
     let aliases =
         infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())?;
-    infrastructure::platform::path_aliases::ensure_alias_wrapper(aliases.releash())?;
-    if aliases.releash().name != "releash" {
-        let mut alias = aliases.releash().clone();
-        alias.name = "releash".into();
-        infrastructure::platform::path_aliases::ensure_alias_wrapper(&alias)?;
-    }
+    aliases.ensure_wrappers()?;
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(
         data_dir.clone(),
         retry_limiter.clone(),

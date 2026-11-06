@@ -11,15 +11,14 @@ pub(crate) struct DataHome {
 
 impl DataHome {
     /// 起動する保存先が既定の保存先かを決め、既定なら旧既定の保存先を持たせる。
-    /// 比較は実体のパスで行う。既定の保存先を解決できないときは旧保存先を持たない。
+    /// 呼び出し側が実体のパスに直した値を渡す。既定の保存先を解決できないときは旧保存先を持たない。
     pub(crate) fn for_startup(
         current: PathBuf,
         default_current: Option<&Path>,
         default_legacy: Option<&Path>,
     ) -> Self {
-        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
         let legacy = default_current
-            .filter(|default| real(default) == real(&current))
+            .filter(|default| *default == current.as_path())
             .and(default_legacy)
             .map(Path::to_owned);
         Self { current, legacy }
@@ -66,6 +65,55 @@ pub(crate) enum LegacyServer {
     Unverifiable,
 }
 
+/// 旧保存先の `client-api.json` から読んだ記録。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyServerRecord {
+    /// ファイルが無い。
+    Missing,
+    /// 読めない、または解釈できない。
+    Unreadable,
+    Recorded {
+        pid: u32,
+        process_started_at: u64,
+    },
+}
+
+/// 記録の pid について OS から得た process の開始時刻。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessLookup {
+    /// process 一覧を取得できない。
+    Unavailable,
+    /// その pid の process が無い。
+    NotFound,
+    StartedAt(u64),
+}
+
+impl LegacyServer {
+    /// 記録と process の観測から、旧保存先のサーバの状態を決める。
+    /// pid か開始時刻が 0 の記録は確かめられないものとし、process を観測しない。
+    pub(crate) fn judge(
+        record: LegacyServerRecord,
+        lookup: impl FnOnce(u32) -> ProcessLookup,
+    ) -> Self {
+        let (pid, recorded) = match record {
+            LegacyServerRecord::Missing => return Self::Absent,
+            LegacyServerRecord::Recorded {
+                pid,
+                process_started_at,
+            } if pid != 0 && process_started_at != 0 => (pid, process_started_at),
+            LegacyServerRecord::Unreadable | LegacyServerRecord::Recorded { .. } => {
+                return Self::Unverifiable;
+            }
+        };
+        match lookup(pid) {
+            ProcessLookup::StartedAt(start) if start == recorded => Self::Running,
+            ProcessLookup::NotFound => Self::Stopped,
+            ProcessLookup::StartedAt(start) if start != 0 => Self::Stopped,
+            ProcessLookup::StartedAt(_) | ProcessLookup::Unavailable => Self::Unverifiable,
+        }
+    }
+}
+
 /// 移行の途中であることを示す、旧保存先に置く印のファイル名。移動を始める前に置き、旧保存先ごと消える。
 pub(crate) const RELOCATION_MARKER: &str = ".relocating";
 
@@ -79,6 +127,42 @@ pub(crate) struct RelocationSurvey {
     pub(crate) legacy_server: LegacyServer,
     /// 旧保存先に `RELOCATION_MARKER` がある。前回の移行が途中で止まっている。
     pub(crate) relocation_started: bool,
+}
+
+/// 移動元か移動先にある項目の、移動の判断に使う観測。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryShape {
+    File {
+        bytes: u64,
+    },
+    Directory,
+    /// symlink など、ファイルでもディレクトリでもないもの。
+    Other,
+}
+
+/// 一つの項目の移し方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MoveAction {
+    /// 移動元が無い。他の process が先に移した。
+    Skip,
+    /// 移動先へ名前を変えて移す。移動先が空のファイルなら置き換える。
+    Rename,
+    /// 中身を一つずつ同じ規則で移し、空になった移動元を消す。
+    MergeDirectory,
+    /// 移動先を上書きすることになるので移さない。
+    Refuse,
+}
+
+impl MoveAction {
+    pub(crate) fn decide(source: Option<EntryShape>, destination: Option<EntryShape>) -> Self {
+        match (source, destination) {
+            (None, _) => Self::Skip,
+            (Some(_), None) => Self::Rename,
+            (Some(EntryShape::Directory), Some(EntryShape::Directory)) => Self::MergeDirectory,
+            (Some(EntryShape::File { .. }), Some(EntryShape::File { bytes: 0 })) => Self::Rename,
+            (Some(_), Some(_)) => Self::Refuse,
+        }
+    }
 }
 
 /// 移行の判断の結果。
@@ -99,6 +183,24 @@ pub(crate) enum RelocationBlock {
     LegacyServerUnverifiable,
     /// 新旧の両方にサーバのデータがある。
     BothHaveData,
+}
+
+/// 移行の失敗。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelocationError {
+    /// 移行を行わなかった。サーバはこの保存先で起動しない。
+    Blocked(RelocationBlock),
+    /// 観測か移動に失敗した。
+    Technical(TechnicalFailure),
+}
+
+impl From<RelocationError> for super::StartupFailureKind {
+    fn from(error: RelocationError) -> Self {
+        match error {
+            RelocationError::Blocked(block) => Self::DataRelocationBlocked(block),
+            RelocationError::Technical(failure) => Self::DataRelocationFailed(failure.nature),
+        }
+    }
 }
 
 impl RelocationSurvey {

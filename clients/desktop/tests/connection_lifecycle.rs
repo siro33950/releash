@@ -516,7 +516,7 @@ async fn test_初回設定適用_通知のobserverが無くても適用しhidden
             let (clients, mut updates) = tokio::sync::watch::channel(None);
             let gateway = Arc::new(DaemonServiceGateway::new(
                 "/missing/releashd".into(),
-                directory.path().into(),
+                releash::data_dir::DataDir::explicit(directory.path().into()),
                 Arc::new(RetryLimiter::new()),
                 releash_desktop::test_support::integration::daemon_connection::Deadline(
                     releash::daemon::timeout("min_connect_timeout_ms"),

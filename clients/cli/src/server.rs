@@ -112,10 +112,7 @@ async fn start(dir: &Path, resolved: &data_dir::DataDir) -> Result<bool, Connect
 pub async fn run(dir: &Path, command: ServerSubcommand) -> Result<String, ConnectError> {
     run_resolved(
         dir,
-        &data_dir::DataDir {
-            path: dir.to_path_buf(),
-            legacy: None,
-        },
+        &data_dir::DataDir::explicit(dir.to_path_buf()),
         command,
     )
     .await

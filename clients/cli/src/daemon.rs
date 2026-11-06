@@ -104,10 +104,7 @@ pub async fn start(
 ) -> Result<LocalApiDiscovery, DaemonError> {
     start_resolved(
         executable,
-        &crate::data_dir::DataDir {
-            path: data_dir.to_path_buf(),
-            legacy: None,
-        },
+        &crate::data_dir::DataDir::explicit(data_dir.to_path_buf()),
         cwd,
     )
     .await

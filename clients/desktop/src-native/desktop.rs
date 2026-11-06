@@ -43,7 +43,11 @@ pub fn run() {
         let connection = Arc::new(
             adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
                 releash::daemon::executable(&releash::daemon::current_executable()?),
-                data_dir,
+                if data_dir == resolved.path {
+                    resolved
+                } else {
+                    releash::data_dir::DataDir::explicit(data_dir)
+                },
                 Arc::new(crate::common::retry::RetryLimiter::new()),
                 crate::common::deadline::Deadline(releash::daemon::timeout(
                     "min_connect_timeout_ms",

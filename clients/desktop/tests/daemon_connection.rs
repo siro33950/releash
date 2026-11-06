@@ -56,7 +56,7 @@ async fn test_接続_既存サーバのprotocolと同一性を確認し非互換
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let connection = Arc::new(DaemonServiceGateway::new(
             "/missing/releashd".into(),
-            directory.path().into(),
+            releash::data_dir::DataDir::explicit(directory.path().into()),
             Arc::new(RetryLimiter::new()),
             releash_desktop::test_support::integration::daemon_connection::Deadline(
                 releash::daemon::timeout("min_connect_timeout_ms"),
@@ -172,7 +172,7 @@ async fn test_初回設定失敗_server_infoが成功しても接続先を渡さ
         let (clients, updates) = tokio::sync::watch::channel(None);
         let gateway = DaemonServiceGateway::new(
             "/missing/releashd".into(),
-            directory.path().into(),
+            releash::data_dir::DataDir::explicit(directory.path().into()),
             Arc::new(RetryLimiter::new()),
             releash_desktop::test_support::integration::daemon_connection::Deadline(
                 std::time::Duration::from_millis(100),
@@ -247,7 +247,7 @@ async fn test_起動失敗_接続先を再要求しても終了状態とstderr�
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let gateway = Arc::new(DaemonServiceGateway::new(
         executable,
-        directory.path().into(),
+        releash::data_dir::DataDir::explicit(directory.path().into()),
         Arc::new(RetryLimiter::new()),
         releash_desktop::test_support::integration::daemon_connection::Deadline(
             releash::daemon::timeout("min_connect_timeout_ms"),

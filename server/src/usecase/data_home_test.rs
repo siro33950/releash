@@ -1,6 +1,6 @@
 use super::*;
-use crate::domain::daemon::data_home::{DataEntry, DataEntryKind, LegacyServer};
-use crate::domain::failure::TechnicalFailureNature;
+use crate::domain::daemon::data_home::{DataEntry, DataEntryKind, LegacyServer, RelocationBlock};
+use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use std::sync::Mutex;
 
 #[derive(Debug, PartialEq, Eq)]

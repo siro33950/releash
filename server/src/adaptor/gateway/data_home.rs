@@ -1,6 +1,6 @@
 use crate::domain::daemon::data_home::{
-    DataEntry, DataEntryKind, DataHome, DataHomeStore, LegacyServer, RelocationSurvey,
-    RELOCATION_MARKER,
+    DataEntry, DataEntryKind, DataHome, DataHomeStore, EntryShape, LegacyServer,
+    LegacyServerRecord, MoveAction, ProcessLookup, RelocationSurvey, RELOCATION_MARKER,
 };
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::infrastructure::local_api::{lookup_process_start_time, LocalApiDiscovery};
@@ -143,10 +143,23 @@ fn bytes(path: &Path) -> io::Result<u64> {
 }
 
 fn server(path: &Path) -> LegacyServer {
+    LegacyServer::judge(record(path), |pid| {
+        let process = lookup_process_start_time(pid);
+        match (process.process_list_available, process.start_time) {
+            (false, _) => ProcessLookup::Unavailable,
+            (true, None) => ProcessLookup::NotFound,
+            (true, Some(start)) => ProcessLookup::StartedAt(start),
+        }
+    })
+}
+
+fn record(path: &Path) -> LegacyServerRecord {
     let bytes = match fs::read(path.join("client-api.json")) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return LegacyServer::Absent,
-        Err(_) => return LegacyServer::Unverifiable,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return LegacyServerRecord::Missing
+        }
+        Err(_) => return LegacyServerRecord::Unreadable,
     };
     let descriptor = crate::infrastructure::client_protocol::descriptor::pool()
         .get_message_by_name("releash.client.v1.LocalApiDiscovery")
@@ -155,44 +168,42 @@ fn server(path: &Path) -> LegacyServer {
     let discovery = prost_reflect::DynamicMessage::deserialize(descriptor, &mut deserializer)
         .ok()
         .and_then(|message| message.transcode_to::<LocalApiDiscovery>().ok());
-    let Some(discovery) = discovery else {
-        return LegacyServer::Unverifiable;
-    };
-    if deserializer.end().is_err() || discovery.pid == 0 || discovery.process_started_at == 0 {
-        return LegacyServer::Unverifiable;
+    match discovery {
+        Some(discovery) if deserializer.end().is_ok() => LegacyServerRecord::Recorded {
+            pid: discovery.pid,
+            process_started_at: discovery.process_started_at,
+        },
+        _ => LegacyServerRecord::Unreadable,
     }
-    let process = lookup_process_start_time(discovery.pid);
-    match (process.process_list_available, process.start_time) {
-        (true, Some(start)) if start == discovery.process_started_at => LegacyServer::Running,
-        (true, None) => LegacyServer::Stopped,
-        (true, Some(start)) if start != 0 => LegacyServer::Stopped,
-        _ => LegacyServer::Unverifiable,
+}
+
+fn shape(path: &Path) -> io::Result<Option<EntryShape>> {
+    match path.symlink_metadata() {
+        Ok(metadata) if metadata.is_dir() => Ok(Some(EntryShape::Directory)),
+        Ok(metadata) if metadata.is_file() => Ok(Some(EntryShape::File {
+            bytes: metadata.len(),
+        })),
+        Ok(_) => Ok(Some(EntryShape::Other)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
 fn move_entry(source: &Path, destination: &Path) -> io::Result<()> {
-    let source_metadata = match source.symlink_metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    match destination.symlink_metadata() {
-        Ok(target) if source_metadata.is_dir() && target.is_dir() => {
+    match MoveAction::decide(shape(source)?, shape(destination)?) {
+        MoveAction::Skip => Ok(()),
+        MoveAction::Rename => fs::rename(source, destination),
+        MoveAction::MergeDirectory => {
             for entry in fs::read_dir(source)? {
                 let entry = entry?;
                 move_entry(&entry.path(), &destination.join(entry.file_name()))?;
             }
             fs::remove_dir(source)
         }
-        Ok(target) if target.is_file() && target.len() == 0 && source_metadata.is_file() => {
-            fs::rename(source, destination)
-        }
-        Ok(_) => Err(io::Error::other(format!(
+        MoveAction::Refuse => Err(io::Error::other(format!(
             "relocation would overwrite {}",
             destination.display()
         ))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(source, destination),
-        Err(error) => Err(error),
     }
 }
 

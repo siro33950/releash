@@ -83,6 +83,13 @@ pub struct DataDir {
     pub legacy: Option<PathBuf>,
 }
 
+impl DataDir {
+    /// 明示指定された data dir。旧 data dir を持たず、移行の対象にならない。
+    pub fn explicit(path: PathBuf) -> Self {
+        Self { path, legacy: None }
+    }
+}
+
 /// `--data-dir`、`RELEASH_DATA_DIR`、ビルドの既定値の順で data dir を決める。
 pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<DataDir, String> {
     if let Some(path) = explicit.or_else(|| {
@@ -90,7 +97,7 @@ pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<DataDir, String> {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     }) {
-        return Ok(DataDir { path, legacy: None });
+        return Ok(DataDir::explicit(path));
     }
     let profile = BuildProfile::current();
     let path = default_data_dir_for_profile(profile)

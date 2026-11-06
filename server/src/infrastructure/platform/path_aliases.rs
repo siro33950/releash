@@ -70,6 +70,18 @@ impl PathAliases {
     pub fn releash(&self) -> &PathAlias {
         &self.releash
     }
+
+    /// 構成ごとの alias と、どの構成からも呼べる `releash` の wrapper を書き直す。
+    pub fn ensure_wrappers(&self) -> Result<(), std::io::Error> {
+        ensure_alias_wrapper(&self.releash)?;
+        if self.releash.name != "releash" {
+            ensure_alias_wrapper(&PathAlias {
+                name: "releash".into(),
+                ..self.releash.clone()
+            })?;
+        }
+        Ok(())
+    }
 }
 
 /// 子プロセスへ alias 解決可能な PATH と alias 内包の `RELEASH_DATA_DIR` を提供する。

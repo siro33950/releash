@@ -1,21 +1,11 @@
 use crate::domain::daemon::data_home::{
-    DataHome, DataHomeStore, RelocationBlock, RelocationPlan, RelocationSurvey,
+    DataHome, DataHomeStore, RelocationError, RelocationPlan, RelocationSurvey,
 };
-use crate::domain::failure::TechnicalFailure;
 use std::sync::Arc;
 
 /// 旧既定の保存先のデータを、サーバを起動する前に新既定の保存先へ移す手順。
 pub(crate) struct DataHomeRelocationUsecase {
     store: Arc<dyn DataHomeStore>,
-}
-
-/// 移行の手順の失敗。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RelocationError {
-    /// 移行を行わなかった。サーバはこの保存先で起動しない。
-    Blocked(RelocationBlock),
-    /// 観測か移動に失敗した。
-    Technical(TechnicalFailure),
 }
 
 impl DataHomeRelocationUsecase {
