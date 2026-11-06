@@ -57,3 +57,19 @@ fn test_旧保存先_ビルド種別ごとのos保存先を返す() {
         );
     }
 }
+
+#[test]
+fn test_明示保存先_既定と同じパスでも旧保存先を持たない() {
+    // Given
+    let paths = [
+        PathBuf::from("custom"),
+        default_data_dir_for_profile(BuildProfile::current()).unwrap(),
+    ];
+    for path in paths {
+        // When
+        let actual = DataDir::explicit(path.clone());
+        // Then
+        assert_eq!(actual.path, path);
+        assert_eq!(actual.legacy, None);
+    }
+}

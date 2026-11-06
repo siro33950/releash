@@ -50,7 +50,26 @@ fn test_保存先移行_観測してから同じ保存先と判断された項�
     for result in [Ok(()), Err(failure())] {
         let store = Arc::new(Store {
             calls: Mutex::new(vec![]),
-            survey: Ok(survey()),
+            survey: Ok(RelocationSurvey {
+                legacy_entries: vec![
+                    DataEntry {
+                        name: "z".into(),
+                        kind: DataEntryKind::File,
+                        bytes: 1,
+                    },
+                    DataEntry {
+                        name: "workflows".into(),
+                        kind: DataEntryKind::Directory,
+                        bytes: 1,
+                    },
+                    DataEntry {
+                        name: "a".into(),
+                        kind: DataEntryKind::File,
+                        bytes: 1,
+                    },
+                ],
+                ..survey()
+            }),
             relocate: result.clone(),
         });
         let home = DataHome {
@@ -66,7 +85,7 @@ fn test_保存先移行_観測してから同じ保存先と判断された項�
             *store.calls.lock().unwrap(),
             vec![
                 Call::Survey(home.clone()),
-                Call::Relocate(home, vec!["store".into()])
+                Call::Relocate(home, vec!["a".into(), "z".into()])
             ]
         );
     }
