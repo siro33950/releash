@@ -1,9 +1,49 @@
 import AppKit
+import Sparkle
 import XCTest
 
 @testable import Releash
 
 final class UpdateUIAcceptanceTests: XCTestCase {
+  @MainActor func test_b045_自動ダウンロード中_更新ボタンは無効で完了後に押せる() async throws {
+    // Given
+    let model = AppModel()
+    let delegate: any SPUUpdaterDelegate = model.updater
+    let controller = SPUStandardUpdaterController(
+      startingUpdater: false, updaterDelegate: delegate, userDriverDelegate: nil)
+    let checks = controller.updater.automaticallyChecksForUpdates
+    let downloads = controller.updater.automaticallyDownloadsUpdates
+    defer {
+      controller.updater.automaticallyChecksForUpdates = checks
+      controller.updater.automaticallyDownloadsUpdates = downloads
+    }
+    model.updater.automaticUpdates = true
+    let url = try XCTUnwrap(URL(string: "https://example.invalid/update.zip"))
+    let item = try XCTUnwrap(
+      SUAppcastItem(dictionary: [
+        "enclosure": [
+          "url": url.absoluteString, "sparkle:version": "0.4.21",
+          "sparkle:shortVersionString": "0.4.21",
+        ]
+      ]))
+    model.updater.updater(controller.updater, didFindValidUpdate: item)
+    delegate.updater?(
+      controller.updater, willDownloadUpdate: item, with: NSMutableURLRequest(url: url))
+    // When
+    let host = await ViewHarness(FooterView(model: model))
+    defer { host.close() }
+    // Then
+    try await eventuallyView(host) {
+      host.element("0.4.21") != nil && host.element("更新")?.enabled == false
+    }
+    // When
+    delegate.updater?(controller.updater, didDownloadUpdate: item)
+    // Then
+    try await eventuallyView(host) {
+      host.element("0.4.21") != nil && host.element("更新")?.enabled == true
+    }
+  }
+
   @MainActor func test_b007_配布名_メニューバーのtooltipとAboutと終了がReleashになる() throws {
     // Given
     let status = StatusMenu(model: AppModel()) {}

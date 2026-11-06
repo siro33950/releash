@@ -4,7 +4,7 @@ import XCTest
 @testable import Releash
 
 final class AppUpdaterAcceptanceTests: XCTestCase {
-  @MainActor func test_b012_b013_更新設定_サーバなしでnightlyの設定を保存して再生成後も保持する() throws {
+  @MainActor func test_b012_b013_b038_更新設定_サーバなしでnightlyの設定を保存して再生成後も保持する() throws {
     // Given
     let suite = "AppUpdaterAcceptanceTests.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -25,7 +25,7 @@ final class AppUpdaterAcceptanceTests: XCTestCase {
     XCTAssertFalse(try XCTUnwrap(app).acceptsNightly)
   }
 
-  @MainActor func test_b015_b016_nightly受け入れ_設定に応じて候補のチャンネルが変わる() throws {
+  @MainActor func test_b015_b040_nightly受け入れ_設定に応じて候補のチャンネルが変わる() throws {
     // Given
     let suite = "AppUpdaterAcceptanceTests.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
