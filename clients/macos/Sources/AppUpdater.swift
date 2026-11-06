@@ -14,7 +14,7 @@ import Sparkle
   /// 見つかった新しい版（`sparkle:shortVersionString`）。無ければ nil。
   private(set) var availableVersion: String?
   /// 手動確認を始められるか。確認中は false になる。
-  private(set) var canCheckForUpdates = false
+  var canCheckForUpdates = false
 
   @ObservationIgnored private var controller: SPUStandardUpdaterController!
   private let defaults: UserDefaults
