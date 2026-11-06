@@ -17,10 +17,16 @@ impl DataHome {
         default_current: Option<&Path>,
         default_legacy: Option<&Path>,
     ) -> Self {
-        let _ = (current, default_current, default_legacy);
-        todo!()
+        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        let legacy = default_current
+            .filter(|default| real(default) == real(&current))
+            .and(default_legacy)
+            .map(Path::to_owned);
+        Self { current, legacy }
     }
 }
+
+const USER_DEFINITIONS: [&str; 2] = ["workflows", "prompts"];
 
 /// 保存先の直下にある一つの項目。`name` は保存先からの相対パスの先頭の名前である。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +47,9 @@ impl DataEntry {
     /// 利用者の定義（`workflows`、`prompts`）と、中身が空のファイル、中身が空のディレクトリは、サーバのデータでない。
     /// 移行の印（`RELOCATION_MARKER`）もサーバのデータでない。
     pub(crate) fn is_server_data(&self) -> bool {
-        todo!()
+        self.bytes > 0
+            && self.name != RELOCATION_MARKER
+            && !USER_DEFINITIONS.contains(&self.name.as_str())
     }
 }
 
@@ -102,7 +110,25 @@ impl RelocationSurvey {
     /// - 印があれば前回の続きとして、旧保存先に残る項目を移す。
     /// - 移す項目は旧保存先の項目のうち、利用者の定義（`workflows`、`prompts`）を除く全部である。
     pub(crate) fn decide(&self) -> Result<RelocationPlan, RelocationBlock> {
-        todo!()
+        if !self.legacy_entries.iter().any(DataEntry::is_server_data) {
+            return Ok(RelocationPlan::NotNeeded);
+        }
+        match self.legacy_server {
+            LegacyServer::Running => return Err(RelocationBlock::LegacyServerRunning),
+            LegacyServer::Unverifiable => return Err(RelocationBlock::LegacyServerUnverifiable),
+            LegacyServer::Absent | LegacyServer::Stopped => {}
+        }
+        if !self.relocation_started && self.current_entries.iter().any(DataEntry::is_server_data) {
+            return Err(RelocationBlock::BothHaveData);
+        }
+        let mut entries: Vec<String> = self
+            .legacy_entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .filter(|name| name != RELOCATION_MARKER && !USER_DEFINITIONS.contains(&name.as_str()))
+            .collect();
+        entries.sort();
+        Ok(RelocationPlan::Move { entries })
     }
 }
 

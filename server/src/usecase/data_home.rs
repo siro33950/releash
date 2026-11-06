@@ -25,7 +25,10 @@ impl DataHomeRelocationUsecase {
 
     /// 保存先を観測し、判断に従って移す。移すものが無ければ何もしない。
     pub(crate) fn run(&self, home: &DataHome) -> Result<(), RelocationError> {
-        let survey: RelocationSurvey = self.store.survey(home).map_err(RelocationError::Technical)?;
+        let survey: RelocationSurvey = self
+            .store
+            .survey(home)
+            .map_err(RelocationError::Technical)?;
         match survey.decide().map_err(RelocationError::Blocked)? {
             RelocationPlan::NotNeeded => Ok(()),
             RelocationPlan::Move { entries } => self
