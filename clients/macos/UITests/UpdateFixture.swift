@@ -59,7 +59,9 @@ final class UpdateFixture: @unchecked Sendable {
     listener.start(queue: .global())
   }
 
-  func prepare(automatic: Bool? = nil) async throws {
+  func prepare(
+    automatic: Bool? = nil, debug: Bool = false
+  ) async throws {
     let deadline = Date().addingTimeInterval(5)
     while (listener.port == nil || listener.port == .any) && Date() < deadline {
       try await Task.sleep(for: .milliseconds(20))
@@ -70,13 +72,28 @@ final class UpdateFixture: @unchecked Sendable {
     let source = fixture.root.appendingPathComponent(
       "clients/macos/.build/E2EDerivedData/Build/Products/Debug/Releash.app")
     let updated = fixture.directory.appendingPathComponent("new/Releash.app")
+    let updatedCLI = fixture.root.appendingPathComponent(
+      "clients/macos/.build/Helpers/Update/releash")
+    let status = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: fixture.process(updatedCLI, ["status", "--json"]))
+        as? [String: Any])
+    let cliVersion = (status["client"] as? [String: Any])?["release"] as? String
+    guard cliVersion == "0.4.21" else {
+      throw NSError(
+        domain: "UpdateFixture", code: 2,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Updated CLI must be releash 0.4.21: \(cliVersion ?? "missing")"
+        ])
+    }
     for (destination, version) in [(application, "0.4.20"), (updated, "0.4.21")] {
       try fixture.process(URL(fileURLWithPath: "/usr/bin/ditto"), [source.path, destination.path])
       let plist = destination.appendingPathComponent("Contents/Info.plist")
       var info = try XCTUnwrap(
         PropertyListSerialization.propertyList(from: Data(contentsOf: plist), format: nil)
           as? [String: Any])
-      info["CFBundleIdentifier"] = identifier
+      info["CFBundleIdentifier"] = debug ? "com.releash.macos.dev" : identifier
+      if debug { info["SUDefaultsDomain"] = identifier }
       info["CFBundleVersion"] = version
       info["CFBundleShortVersionString"] = version
       info["SUFeedURL"] = "http://127.0.0.1:\(port)/appcast.xml"
@@ -88,6 +105,11 @@ final class UpdateFixture: @unchecked Sendable {
       info["LSEnvironment"] = fixture.environment
       try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(
         to: plist)
+      if version == "0.4.21" {
+        let cli = destination.appendingPathComponent("Contents/Helpers/releash")
+        try FileManager.default.removeItem(at: cli)
+        try FileManager.default.copyItem(at: updatedCLI, to: cli)
+      }
       try fixture.process(
         URL(fileURLWithPath: "/usr/bin/codesign"),
         ["--force", "--deep", "--sign", "-", destination.path])
@@ -98,8 +120,11 @@ final class UpdateFixture: @unchecked Sendable {
       ["-c", "-k", "--sequesterRsrc", "--keepParent", updated.path, archive.path])
     let bytes = try Data(contentsOf: archive)
     let signature = try key.signature(for: bytes).base64EncodedString()
+    let enclosure = """
+      <enclosure url="http://127.0.0.1:\(port)/update.zip" length="\(bytes.count)" type="application/octet-stream" sparkle:edSignature="\(signature)"/>
+      """
     let feed = """
-      <?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Update test</title><item><title>0.4.21</title><sparkle:version>0.4.21</sparkle:version><sparkle:shortVersionString>0.4.21</sparkle:shortVersionString><enclosure url="http://127.0.0.1:\(port)/update.zip" length="\(bytes.count)" type="application/octet-stream" sparkle:edSignature="\(signature)"/></item></channel></rss>
+      <?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Update test</title><item><title>0.4.21</title><sparkle:version>0.4.21</sparkle:version><sparkle:shortVersionString>0.4.21</sparkle:shortVersionString>\(enclosure)</item></channel></rss>
       """
     try feed.write(
       to: fixture.directory.appendingPathComponent("appcast.xml"), atomically: true, encoding: .utf8

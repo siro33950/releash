@@ -6,12 +6,12 @@ import XCTest
 
 final class UpdateCandidateTests: XCTestCase {
   @MainActor func test_更新候補_チャンネルと現在版で選別し昇格で再提示しない() async throws {
-    for (current, stable, nightly, acceptsNightly, expected) in [
-      ("0.4.20", "0.4.20", "0.4.21", false, Optional<String>.none),
-      ("0.4.20", "0.4.20", "0.4.21", true, "0.4.21"),
-      ("0.4.21", "0.4.20", "0.4.21", false, nil),
-      ("0.4.21", "0.4.21", "0.4.21", false, nil),
-      ("0.4.21", "0.4.22", "0.4.21", false, "0.4.22"),
+    for (behavior, current, stable, nightly, acceptsNightly, expected) in [
+      ("B-015", "0.4.20", "0.4.20", Optional("0.4.21"), false, Optional<String>.none),
+      ("B-040", "0.4.20", "0.4.20", "0.4.21", true, "0.4.21"),
+      ("B-016", "0.4.21", "0.4.20", "0.4.21", false, nil),
+      ("B-041", "0.4.21", "0.4.21", nil, false, nil),
+      ("B-042", "0.4.21", "0.4.22", "0.4.21", false, "0.4.22"),
     ] {
       // Given
       let feed = try CandidateFeed(stable: stable, nightly: nightly)
@@ -54,7 +54,7 @@ final class UpdateCandidateTests: XCTestCase {
       XCTAssertFalse(updater.sessionInProgress)
       XCTAssertTrue(updater.canCheckForUpdates)
       XCTAssertTrue(delegate.receivedResult, "Sparkle did not report a candidate result")
-      XCTAssertEqual(app.availableVersion, expected)
+      XCTAssertEqual(app.availableVersion, expected, behavior)
     }
   }
 }
@@ -62,15 +62,16 @@ final class UpdateCandidateTests: XCTestCase {
 private final class CandidateFeed: @unchecked Sendable {
   private let listener: NWListener
 
-  init(stable: String, nightly: String) throws {
+  init(stable: String, nightly: String?) throws {
     listener = try NWListener(using: .tcp, on: .any)
     let item = { (version: String, channel: String) in
       """
       <item><sparkle:version>\(version)</sparkle:version><sparkle:shortVersionString>\(version)</sparkle:shortVersionString>\(channel)<enclosure url="https://example.invalid/update.zip" length="10" type="application/octet-stream" sparkle:edSignature="\(String(repeating: "a", count: 86))=="/></item>
       """
     }
+    let nightlyItem = nightly.map { item($0, "<sparkle:channel>nightly</sparkle:channel>") } ?? ""
     let xml = """
-      <?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Test</title>\(item(stable, ""))\(item(nightly, "<sparkle:channel>nightly</sparkle:channel>"))</channel></rss>
+      <?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Test</title>\(item(stable, ""))\(nightlyItem)</channel></rss>
       """
     let response = Data(
       "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: \(xml.utf8.count)\r\nConnection: close\r\n\r\n\(xml)"
