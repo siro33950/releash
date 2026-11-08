@@ -9,6 +9,15 @@ final class AppUpdaterTests: XCTestCase {
     XCTAssertTrue(AppUpdater.checksForUpdates(bundleIdentifier: "com.releash.macos"))
   }
 
+  @MainActor func test_更新対象_bundleIDが無い場合は確認しない() {
+    // Given
+    let bundleIdentifier: String? = nil
+    // When
+    let checks = AppUpdater.checksForUpdates(bundleIdentifier: bundleIdentifier)
+    // Then
+    XCTAssertFalse(checks)
+  }
+
   @MainActor func test_nightly設定_初期値と切り替えと再生成後の保持() throws {
     // Given
     let suite = "AppUpdaterTests.\(UUID().uuidString)"
