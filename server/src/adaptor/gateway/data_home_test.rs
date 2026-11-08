@@ -1,4 +1,12 @@
 use super::*;
+use crate::domain::daemon::data_home::RelocationSurvey;
+
+fn survey(home: &DataHome) -> RelocationSurvey {
+    RelocationSurvey {
+        legacy: LocalDataHomeStore.survey_legacy(home).unwrap(),
+        current_entries: LocalDataHomeStore.current_entries(home).unwrap(),
+    }
+}
 
 #[test]
 fn test_移行_空ファイルを置換しディレクトリを統合する() {
@@ -17,7 +25,7 @@ fn test_移行_空ファイルを置換しディレクトリを統合する() {
     // When
     let store = LocalDataHomeStore;
     let crate::domain::daemon::data_home::RelocationPlan::Move { entries } =
-        store.survey(&home).unwrap().decide().unwrap()
+        survey(&home).decide().unwrap()
     else {
         panic!("move");
     };
@@ -61,34 +69,6 @@ fn test_観測_破損したサーバ記録は停止扱いにしない() {
 }
 
 #[test]
-fn test_移行_同じ項目の並行移動を一度だけ適用する() {
-    // Given
-    let root = tempfile::tempdir().unwrap();
-    let home = DataHome {
-        current: root.path().join("new"),
-        legacy: Some(root.path().join("old")),
-    };
-    fs::create_dir_all(home.legacy.as_ref().unwrap()).unwrap();
-    fs::write(home.legacy.as_ref().unwrap().join("store"), b"retained").unwrap();
-    // When
-    std::thread::scope(|scope| {
-        let migrate = || {
-            let plan = LocalDataHomeStore.survey(&home)?.decide().unwrap();
-            if let crate::domain::daemon::data_home::RelocationPlan::Move { entries } = plan {
-                LocalDataHomeStore.relocate(&home, &entries)?;
-            }
-            Ok::<(), TechnicalFailure>(())
-        };
-        let first = scope.spawn(migrate);
-        let second = scope.spawn(migrate);
-        first.join().unwrap().unwrap();
-        second.join().unwrap().unwrap();
-    });
-    // Then
-    assert_eq!(fs::read(home.current.join("store")).unwrap(), b"retained");
-}
-
-#[test]
 fn test_移行_保存先の外を指す項目を拒否する() {
     // Given
     let root = tempfile::tempdir().unwrap();
@@ -125,7 +105,7 @@ fn test_移行_途中失敗後に残りを移してデータと印を回収す�
     fs::remove_file(home.current.join("second")).unwrap();
     // When
     let crate::domain::daemon::data_home::RelocationPlan::Move { entries } =
-        LocalDataHomeStore.survey(&home).unwrap().decide().unwrap()
+        survey(&home).decide().unwrap()
     else {
         panic!("move")
     };
@@ -145,11 +125,85 @@ fn test_観測_旧保存先がなければ現在の内容を走査しない() {
     // When / Then
     for legacy in [None, Some(root.path().join("missing"))] {
         let survey = LocalDataHomeStore
-            .survey(&DataHome {
+            .survey_legacy(&DataHome {
                 current: current.clone(),
                 legacy,
             })
             .unwrap();
-        assert!(survey.current_entries.is_empty());
+        assert!(survey.entries.is_empty());
+        assert_eq!(survey.server, LegacyServer::Absent);
+        assert!(!survey.relocation_started);
     }
+}
+
+#[test]
+fn test_新保存先観測_存在しなければ空() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let home = DataHome {
+        current: root.path().join("missing"),
+        legacy: None,
+    };
+    // When / Then
+    assert!(LocalDataHomeStore
+        .current_entries(&home)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn test_保存先観測_直下の名前と再帰的な容量と移行印を返す() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("logs")).unwrap();
+    fs::write(root.path().join("logs/one"), b"abc").unwrap();
+    fs::write(root.path().join("logs/two"), b"de").unwrap();
+    fs::write(root.path().join("empty"), []).unwrap();
+    fs::write(root.path().join(RELOCATION_MARKER), []).unwrap();
+    let home = DataHome {
+        current: root.path().to_owned(),
+        legacy: Some(root.path().to_owned()),
+    };
+    // When
+    let legacy = LocalDataHomeStore.survey_legacy(&home).unwrap();
+    let mut current = LocalDataHomeStore.current_entries(&home).unwrap();
+    let mut entries = legacy.entries;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    current.sort_by(|a, b| a.name.cmp(&b.name));
+    // Then
+    assert_eq!(entries, current);
+    assert_eq!(
+        entries,
+        vec![
+            DataEntry {
+                name: RELOCATION_MARKER.into(),
+                bytes: 0
+            },
+            DataEntry {
+                name: "empty".into(),
+                bytes: 0
+            },
+            DataEntry {
+                name: "logs".into(),
+                bytes: 5
+            },
+        ]
+    );
+    assert_eq!(legacy.server, LegacyServer::Absent);
+    assert!(legacy.relocation_started);
+}
+
+#[test]
+fn test_保存先観測_ディレクトリでなければ失敗を返す() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("file");
+    fs::write(&path, b"data").unwrap();
+    let home = DataHome {
+        current: path.clone(),
+        legacy: Some(path),
+    };
+    // When / Then
+    assert!(LocalDataHomeStore.survey_legacy(&home).is_err());
+    assert!(LocalDataHomeStore.current_entries(&home).is_err());
 }

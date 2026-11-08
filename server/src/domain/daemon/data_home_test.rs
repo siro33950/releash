@@ -1,9 +1,8 @@
 use super::*;
 
-fn entry(name: &str, kind: DataEntryKind, bytes: u64) -> DataEntry {
+fn entry(name: &str, bytes: u64) -> DataEntry {
     DataEntry {
         name: name.into(),
-        kind,
         bytes,
     }
 }
@@ -33,38 +32,71 @@ fn test_保存先_既定だけが旧保存先を持つ() {
 #[test]
 fn test_保存項目_利用者定義と移行印と空の項目はデータでない() {
     // Given / When / Then
-    for kind in [DataEntryKind::File, DataEntryKind::Directory] {
-        for name in ["workflows", "prompts", RELOCATION_MARKER] {
-            assert!(!entry(name, kind, 1).is_server_data(), "{name} {kind:?}");
-        }
-        assert!(!entry("data", kind, 0).is_server_data());
-        assert!(entry("data", kind, 1).is_server_data());
-        assert!(entry("workflows-backup", kind, 1).is_server_data());
+    for name in ["workflows", "prompts", RELOCATION_MARKER] {
+        assert!(!entry(name, 1).is_server_data(), "{name}");
     }
+    assert!(!entry("data", 0).is_server_data());
+    assert!(entry("data", 1).is_server_data());
+    assert!(entry("workflows-backup", 1).is_server_data());
 }
 
 fn survey() -> RelocationSurvey {
     RelocationSurvey {
-        legacy_entries: vec![entry("store", DataEntryKind::File, 1)],
+        legacy: LegacySurvey {
+            entries: vec![entry("store", 1)],
+            server: LegacyServer::Stopped,
+            relocation_started: false,
+        },
         current_entries: vec![],
-        legacy_server: LegacyServer::Stopped,
-        relocation_started: false,
     }
 }
 
 #[test]
-fn test_移行判断_旧データが無ければ移行不要() {
+fn test_旧保存先観測_サーバデータが一つでもあれば移行対象() {
     // Given
-    for entries in [
-        vec![],
-        vec![
-            entry("workflows", DataEntryKind::Directory, 1),
-            entry("empty", DataEntryKind::File, 0),
-        ],
+    for (entries, expected) in [
+        (vec![], false),
+        (
+            vec![
+                entry("workflows", 1),
+                entry("prompts", 1),
+                entry(RELOCATION_MARKER, 1),
+                entry("empty", 0),
+            ],
+            false,
+        ),
+        (vec![entry("empty", 0), entry("store", 1)], true),
+    ] {
+        let legacy = LegacySurvey {
+            entries,
+            ..survey().legacy
+        };
+        // When / Then
+        assert_eq!(legacy.has_server_data(), expected);
+    }
+}
+
+#[test]
+fn test_移行判断_旧データが無ければサーバ状態と新データに関わらず移行不要() {
+    // Given
+    for server in [
+        LegacyServer::Absent,
+        LegacyServer::Stopped,
+        LegacyServer::Running,
+        LegacyServer::Unverifiable,
     ] {
         let observed = RelocationSurvey {
-            legacy_entries: entries,
-            ..survey()
+            legacy: LegacySurvey {
+                entries: vec![
+                    entry("workflows", 1),
+                    entry("prompts", 1),
+                    entry(RELOCATION_MARKER, 1),
+                    entry("empty", 0),
+                ],
+                server,
+                relocation_started: false,
+            },
+            current_entries: vec![entry("store", 1)],
         };
         // When / Then
         assert_eq!(observed.decide(), Ok(RelocationPlan::NotNeeded));
@@ -82,11 +114,10 @@ fn test_移行判断_旧サーバの稼働と確認不能は再開時も拒否�
         ),
     ] {
         for relocation_started in [false, true] {
-            let observed = RelocationSurvey {
-                legacy_server: server,
-                relocation_started,
-                ..survey()
-            };
+            let mut observed = survey();
+            observed.legacy.server = server;
+            observed.legacy.relocation_started = relocation_started;
+            observed.current_entries = vec![entry("other", 1)];
             // When / Then
             assert_eq!(observed.decide(), Err(block));
         }
@@ -96,13 +127,12 @@ fn test_移行判断_旧サーバの稼働と確認不能は再開時も拒否�
 #[test]
 fn test_移行判断_両方のデータを拒否するが移行印があれば再開する() {
     // Given
-    let mut observed = RelocationSurvey {
-        current_entries: vec![entry("other", DataEntryKind::File, 1)],
-        ..survey()
-    };
+    let mut observed = survey();
+    observed.current_entries = vec![entry("other", 1)];
+    observed.legacy.entries.push(entry(RELOCATION_MARKER, 1));
     // When / Then
     assert_eq!(observed.decide(), Err(RelocationBlock::BothHaveData));
-    observed.relocation_started = true;
+    observed.legacy.relocation_started = true;
     assert_eq!(
         observed.decide(),
         Ok(RelocationPlan::Move {
@@ -116,19 +146,17 @@ fn test_移行判断_停止確認後は定義を除く全項目を名前順に�
     // Given
     for server in [LegacyServer::Absent, LegacyServer::Stopped] {
         let observed = RelocationSurvey {
-            legacy_entries: vec![
-                entry("z", DataEntryKind::File, 1),
-                entry("workflows", DataEntryKind::Directory, 1),
-                entry("prompts", DataEntryKind::Directory, 1),
-                entry("a", DataEntryKind::Directory, 0),
-            ],
-            current_entries: vec![
-                entry("workflows", DataEntryKind::Directory, 1),
-                entry("prompts", DataEntryKind::Directory, 1),
-                entry("z", DataEntryKind::File, 0),
-            ],
-            legacy_server: server,
-            ..survey()
+            legacy: LegacySurvey {
+                entries: vec![
+                    entry("z", 1),
+                    entry("workflows", 1),
+                    entry("prompts", 1),
+                    entry("a", 0),
+                ],
+                server,
+                relocation_started: false,
+            },
+            current_entries: vec![entry("workflows", 1), entry("prompts", 1), entry("z", 0)],
         };
         // When / Then
         assert_eq!(

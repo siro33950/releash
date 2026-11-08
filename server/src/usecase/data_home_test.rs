@@ -1,22 +1,34 @@
 use super::*;
-use crate::domain::daemon::data_home::{DataEntry, DataEntryKind, LegacyServer, RelocationBlock};
+use crate::domain::daemon::data_home::{DataEntry, LegacyServer, LegacySurvey, RelocationBlock};
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use std::sync::Mutex;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Call {
-    Survey(DataHome),
+    SurveyLegacy(DataHome),
+    CurrentEntries(DataHome),
     Relocate(DataHome, Vec<String>),
 }
 struct Store {
     calls: Mutex<Vec<Call>>,
-    survey: Result<RelocationSurvey, TechnicalFailure>,
+    legacy: Result<LegacySurvey, TechnicalFailure>,
+    current: Result<Vec<DataEntry>, TechnicalFailure>,
     relocate: Result<(), TechnicalFailure>,
 }
 impl DataHomeStore for Store {
-    fn survey(&self, home: &DataHome) -> Result<RelocationSurvey, TechnicalFailure> {
-        self.calls.lock().unwrap().push(Call::Survey(home.clone()));
-        self.survey.clone()
+    fn survey_legacy(&self, home: &DataHome) -> Result<LegacySurvey, TechnicalFailure> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::SurveyLegacy(home.clone()));
+        self.legacy.clone()
+    }
+    fn current_entries(&self, home: &DataHome) -> Result<Vec<DataEntry>, TechnicalFailure> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::CurrentEntries(home.clone()));
+        self.current.clone()
     }
     fn relocate(&self, home: &DataHome, entries: &[String]) -> Result<(), TechnicalFailure> {
         self.calls
@@ -26,16 +38,28 @@ impl DataHomeStore for Store {
         self.relocate.clone()
     }
 }
-fn survey() -> RelocationSurvey {
-    RelocationSurvey {
-        legacy_entries: vec![DataEntry {
-            name: "store".into(),
-            kind: DataEntryKind::File,
-            bytes: 1,
-        }],
-        current_entries: vec![],
-        legacy_server: LegacyServer::Stopped,
-        relocation_started: false,
+fn entry(name: &str, bytes: u64) -> DataEntry {
+    DataEntry {
+        name: name.into(),
+        bytes,
+    }
+}
+fn store() -> Store {
+    Store {
+        calls: Mutex::new(vec![]),
+        legacy: Ok(LegacySurvey {
+            entries: vec![entry("z", 1), entry("workflows", 1), entry("a", 0)],
+            server: LegacyServer::Stopped,
+            relocation_started: false,
+        }),
+        current: Ok(vec![]),
+        relocate: Ok(()),
+    }
+}
+fn home() -> DataHome {
+    DataHome {
+        current: "new".into(),
+        legacy: Some("old".into()),
     }
 }
 fn failure() -> TechnicalFailure {
@@ -45,102 +69,112 @@ fn failure() -> TechnicalFailure {
     }
 }
 #[test]
-fn test_保存先移行_観測してから同じ保存先と判断された項目を渡す() {
+fn test_保存先移行_旧観測と新観測の順に同じ保存先を渡して判断された項目を移す() {
     // Given
     for result in [Ok(()), Err(failure())] {
         let store = Arc::new(Store {
-            calls: Mutex::new(vec![]),
-            survey: Ok(RelocationSurvey {
-                legacy_entries: vec![
-                    DataEntry {
-                        name: "z".into(),
-                        kind: DataEntryKind::File,
-                        bytes: 1,
-                    },
-                    DataEntry {
-                        name: "workflows".into(),
-                        kind: DataEntryKind::Directory,
-                        bytes: 1,
-                    },
-                    DataEntry {
-                        name: "a".into(),
-                        kind: DataEntryKind::File,
-                        bytes: 1,
-                    },
-                ],
-                ..survey()
-            }),
             relocate: result.clone(),
+            ..store()
         });
-        let home = DataHome {
-            current: "new".into(),
-            legacy: Some("old".into()),
-        };
-        let usecase = DataHomeRelocationUsecase::new(store.clone());
+        let home = home();
         // When
-        let actual = usecase.run(&home);
+        let actual = DataHomeRelocationUsecase::new(store.clone()).run(&home);
         // Then
         assert_eq!(actual, result.map_err(RelocationError::Technical));
         assert_eq!(
             *store.calls.lock().unwrap(),
             vec![
-                Call::Survey(home.clone()),
+                Call::SurveyLegacy(home.clone()),
+                Call::CurrentEntries(home.clone()),
                 Call::Relocate(home, vec!["a".into(), "z".into()])
             ]
         );
     }
 }
 #[test]
-fn test_保存先移行_不要と拒否と観測失敗では移動しない() {
+fn test_保存先移行_旧データなしでは新保存先を観測せず移動しない() {
     // Given
-    for (observed, expected) in [
-        (
-            Ok(RelocationSurvey {
-                legacy_entries: vec![],
-                ..survey()
-            }),
-            Ok(()),
-        ),
-        (
-            Ok(RelocationSurvey {
-                legacy_server: LegacyServer::Running,
-                ..survey()
-            }),
-            Err(RelocationError::Blocked(
-                RelocationBlock::LegacyServerRunning,
-            )),
-        ),
-        (
-            Ok(RelocationSurvey {
-                legacy_server: LegacyServer::Unverifiable,
-                ..survey()
-            }),
-            Err(RelocationError::Blocked(
-                RelocationBlock::LegacyServerUnverifiable,
-            )),
-        ),
-        (
-            Ok(RelocationSurvey {
-                current_entries: survey().legacy_entries,
-                ..survey()
-            }),
-            Err(RelocationError::Blocked(RelocationBlock::BothHaveData)),
-        ),
-        (Err(failure()), Err(RelocationError::Technical(failure()))),
+    for entries in [
+        vec![],
+        vec![
+            entry("workflows", 1),
+            entry("prompts", 1),
+            entry(".relocating", 1),
+            entry("empty", 0),
+        ],
     ] {
         let store = Arc::new(Store {
-            calls: Mutex::new(vec![]),
-            survey: observed,
-            relocate: Ok(()),
+            legacy: Ok(LegacySurvey {
+                entries,
+                server: LegacyServer::Unverifiable,
+                relocation_started: true,
+            }),
+            current: Err(failure()),
+            ..store()
         });
-        let home = DataHome {
-            current: "new".into(),
-            legacy: Some("old".into()),
-        };
+        let home = home();
         // When
         let actual = DataHomeRelocationUsecase::new(store.clone()).run(&home);
         // Then
-        assert_eq!(actual, expected);
-        assert_eq!(*store.calls.lock().unwrap(), vec![Call::Survey(home)]);
+        assert_eq!(actual, Ok(()));
+        assert_eq!(*store.calls.lock().unwrap(), vec![Call::SurveyLegacy(home)]);
+    }
+}
+#[test]
+fn test_保存先移行_各観測の失敗を返して後続を呼ばない() {
+    // Given
+    for legacy_fails in [true, false] {
+        let mut store = store();
+        if legacy_fails {
+            store.legacy = Err(failure());
+        } else {
+            store.current = Err(failure());
+        }
+        let store = Arc::new(store);
+        let home = home();
+        // When
+        let actual = DataHomeRelocationUsecase::new(store.clone()).run(&home);
+        // Then
+        assert_eq!(actual, Err(RelocationError::Technical(failure())));
+        let mut expected = vec![Call::SurveyLegacy(home.clone())];
+        if !legacy_fails {
+            expected.push(Call::CurrentEntries(home));
+        }
+        assert_eq!(*store.calls.lock().unwrap(), expected);
+    }
+}
+#[test]
+fn test_保存先移行_観測結果の拒否理由を返して移動しない() {
+    // Given
+    for (server, current, block) in [
+        (
+            LegacyServer::Running,
+            vec![],
+            RelocationBlock::LegacyServerRunning,
+        ),
+        (
+            LegacyServer::Unverifiable,
+            vec![],
+            RelocationBlock::LegacyServerUnverifiable,
+        ),
+        (
+            LegacyServer::Stopped,
+            vec![entry("other", 1)],
+            RelocationBlock::BothHaveData,
+        ),
+    ] {
+        let mut store = store();
+        store.legacy.as_mut().unwrap().server = server;
+        store.current = Ok(current);
+        let store = Arc::new(store);
+        let home = home();
+        // When
+        let actual = DataHomeRelocationUsecase::new(store.clone()).run(&home);
+        // Then
+        assert_eq!(actual, Err(RelocationError::Blocked(block)));
+        assert_eq!(
+            *store.calls.lock().unwrap(),
+            vec![Call::SurveyLegacy(home.clone()), Call::CurrentEntries(home)]
+        );
     }
 }
