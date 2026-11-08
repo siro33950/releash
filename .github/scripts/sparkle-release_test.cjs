@@ -10,23 +10,33 @@ function release(version, nightly = false) {
   };
 }
 test('test_配信候補_各チャンネルの最新を残し昇格を統合する', () => {
-  // Given / When / Then
-  let xml = appcast([release('0.4.20'), release('0.4.21', true), release('0.4.19', true)]);
+  // Given
+  const releases = [release('0.4.20'), release('0.4.21', true), release('0.4.19', true)];
+  const promoted = [release('0.4.21'), release('0.4.21', true)];
+  // When
+  const xml = appcast(releases);
+  const promotedXML = appcast(promoted);
+  // Then
   assert.equal((xml.match(/<item>/g) || []).length, 2);
   assert.match(xml, /<sparkle:channel>nightly/);
   assert.ok(!xml.includes('0.4.19'));
-  xml = appcast([release('0.4.21'), release('0.4.21', true)]);
-  assert.equal((xml.match(/<item>/g) || []).length, 1);
-  assert.ok(!xml.includes('<sparkle:channel>'));
+  assert.equal((promotedXML.match(/<item>/g) || []).length, 1);
+  assert.ok(!promotedXML.includes('<sparkle:channel>'));
 });
 test('test_配布メタデータ_署名と成果物の欠落を拒否する', () => {
-  // Given / When / Then
-  assert.throws(() => metadata({ ...release('0.4.21'), body: '' }));
-  assert.throws(() => metadata({ ...release('0.4.21'), assets: [] }));
-  assert.throws(() => metadata({ ...release('0.4.21'), tag_name: 'v0.4.22' }));
+  // Given
+  const item = release('0.4.21');
+  // When
+  const missingSignature = () => metadata({ ...item, body: '' });
+  const missingAsset = () => metadata({ ...item, assets: [] });
+  const mismatchedVersion = () => metadata({ ...item, tag_name: 'v0.4.22' });
+  // Then
+  assert.throws(missingSignature);
+  assert.throws(missingAsset);
+  assert.throws(mismatchedVersion);
 });
 test('test_署名検証_改変されたアーカイブを拒否する', () => {
-  // Given / When / Then
+  // Given
   const { generateKeyPairSync, sign } = require('node:crypto');
   const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
   const { tmpdir } = require('node:os');
@@ -39,21 +49,34 @@ test('test_署名検証_改変されたアーカイブを拒否する', () => {
     const keys = generateKeyPairSync('ed25519');
     const publicKey = keys.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
     const signature = sign(null, Buffer.from('archive'), keys.privateKey).toString('base64');
-    verifyArchive(file, signature, publicKey);
+    // When
+    const verify = () => verifyArchive(file, signature, publicKey);
+    // Then
+    assert.doesNotThrow(verify);
+    // Given
     writeFileSync(file, 'changed');
-    assert.throws(() => verifyArchive(file, signature, publicKey));
+    // When
+    const verifyModified = () => verifyArchive(file, signature, publicKey);
+    // Then
+    assert.throws(verifyModified);
   } finally { rmSync(root, { recursive: true }); }
 });
 
 test('test_配布メタデータ_版の前方一致と不正タグを拒否する', () => {
   // Given
   const item = release('0.4.2');
-  // When / Then
   for (const tag_name of ['v0.4.20', 'v0.4.21-nightly.20261106.1', 'v0.4.2-other', 'v0.4.2-nightly.20261106.0']) {
-    assert.throws(() => metadata({ ...item, tag_name }), /version mismatch/);
+    // When
+    const readMetadata = () => metadata({ ...item, tag_name });
+    // Then
+    assert.throws(readMetadata, /version mismatch/);
   }
-  assert.equal(metadata(item).version, '0.4.2');
-  assert.equal(metadata(release('0.4.2', true)).version, '0.4.2');
+  // When
+  const stable = metadata(item);
+  const nightly = metadata(release('0.4.2', true));
+  // Then
+  assert.equal(stable.version, '0.4.2');
+  assert.equal(nightly.version, '0.4.2');
 });
 
 for (const [failure, nightly] of ['missing-asset', 'public-asset', 'none'].flatMap(failure => [[failure, true], [failure, false]])) {
@@ -94,21 +117,28 @@ for (const [failure, nightly] of ['missing-asset', 'public-asset', 'none'].flatM
       return '';
     };
     try {
-      // When / Then
       if (fail === 'missing-asset') {
-        assert.throws(() => main('upload', run), /Missing Swift asset/);
+        // When
+        const upload = () => main('upload', run);
+        // Then
+        assert.throws(upload, /Missing Swift asset/);
         assert.ok(!calls.some(args => args.includes('--draft=false')));
         fail = 'none';
       }
+      // When
       main('upload', run);
       if (fail === 'public-asset') {
-        assert.throws(() => main('publish', run), /unavailable asset/);
+        const publish = () => main('publish', run);
+        // Then
+        assert.throws(publish, /unavailable asset/);
         fail = 'none';
       }
+      // When
       main('upload', run);
       main('publish', run);
       const first = readFileSync('public/appcast.xml', 'utf8');
       main('publish', run);
+      // Then
       assert.equal(readFileSync('public/appcast.xml', 'utf8'), first);
       assert.ok(first.includes('0.4.21'));
       assert.equal(first.includes('0.4.20'), nightly);

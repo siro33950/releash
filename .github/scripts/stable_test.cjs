@@ -66,7 +66,12 @@ test('test_公開手順_両チャンネルを直列化しPages失敗を伝播し
   const nightly = workflow('nightly');
   const stable = workflow('stable');
   const publish = workflow('sparkle-publish').jobs.publish.steps;
-  // When / Then
+  // When
+  const deployment = publish.find(step => step.uses?.startsWith('actions/deploy-pages@'));
+  const upload = publish.find(step => step.uses?.startsWith('actions/upload-pages-artifact@'));
+  // Then
+  assert.equal(upload.with.name, 'github-pages-${{ github.run_attempt }}');
+  assert.equal(deployment.with.artifact_name, upload.with.name);
   assert.deepEqual(nightly.concurrency, stable.concurrency);
   assert.equal(nightly.concurrency['cancel-in-progress'], false);
   assert.ok(nightly.concurrency.group);
@@ -125,12 +130,16 @@ test('test_公開後の保持数制限_古いnightlyを削除しても両チャ�
     },
   } } };
   const script = workflow('nightly').jobs.cleanup.steps[0].with.script;
+  const xml = appcast(releases);
+  const publishedURLs = [...xml.matchAll(/<enclosure[^>]* url="([^"]+)"/g)].map(match => match[1]);
   // When
   await new AsyncFunction('github', 'context', script)(github, { repo: {} });
-  const xml = appcast(releases);
   // Then
   assert.equal(releases.filter(release => release.prerelease).length, 14);
   assert.deepEqual(removed, [2, 1]);
+  assert.equal(publishedURLs.length, 2);
+  const remainingURLs = releases.flatMap(release => release.assets.map(asset => asset.browser_download_url));
+  for (const url of publishedURLs) assert.ok(remainingURLs.includes(url), url);
   assert.ok(xml.includes('https://example.org/stable/10.zip'));
   assert.ok(xml.includes('https://example.org/nightly/16.zip'));
   for (const id of removed) assert.ok(!xml.includes(`https://example.org/nightly/${id}.zip`));

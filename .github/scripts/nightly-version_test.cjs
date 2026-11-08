@@ -6,10 +6,15 @@ const { join } = require('node:path');
 const { main, nextVersion } = require('./nightly-version.cjs');
 
 test('test_配布版_接尾辞を認めずpatchを上げる', () => {
-  // Given / When / Then
-  assert.equal(nextVersion('0.4.20'), '0.4.21');
-  assert.equal(nextVersion('1.2.99'), '1.2.100');
-  assert.throws(() => nextVersion('0.4.20-nightly.1'));
+  // Given
+  const versions = ['0.4.20', '1.2.99'];
+  const nightly = '0.4.20-nightly.1';
+  // When
+  const next = versions.map(nextVersion);
+  const bumpNightly = () => nextVersion(nightly);
+  // Then
+  assert.deepEqual(next, ['0.4.21', '1.2.100']);
+  assert.throws(bumpNightly);
 });
 
 
