@@ -34,10 +34,6 @@ impl DataHomeStore for LocalDataHomeStore {
         let Some(legacy) = &home.legacy else {
             return Ok(());
         };
-        let lock =
-            crate::infrastructure::platform::data_home_lock::open(&home.current, "relocation")
-                .map_err(failure)?;
-        fs2::FileExt::lock_exclusive(&lock).map_err(failure)?;
         if !legacy.exists() {
             return Ok(());
         }
@@ -59,9 +55,6 @@ impl DataHomeStore for LocalDataHomeStore {
         )
         .map_err(failure)?;
         for name in entries {
-            if name == RELOCATION_MARKER {
-                continue;
-            }
             if Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name.as_str()) {
                 return Err(failure(io::Error::other("invalid relocation entry")));
             }

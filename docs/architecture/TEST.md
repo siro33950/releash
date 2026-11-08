@@ -38,6 +38,7 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 振る舞い（desktop） | `clients/desktop/tests/behavior/` | `pnpm test:behavior` | nightly 層 |
 | 単体（macOS） | `clients/macos/Tests/Unit/` | `./nx run macos:test-unit` | PR 層 |
 | 統合（macOS） | `clients/macos/Tests/Integration/` | `./nx run macos:test-integration` | PR 層 |
+| 単体（配布スクリプト） | `.github/scripts/` の `<impl>_test.cjs`、`<impl>_test.py` | `./nx run workspace:test` | PR 層の `test` target |
 | 振る舞い（macOS） | `clients/macos/UITests/` | `./nx run macos:e2e` | Nightly の公開関門。失敗したテストは 1 回再試行し、失敗が残れば Issue を作成または追記して公開を停止 |
 
 macOS のテストは、通信や操作の境界を差し替えて状態・入出力を確かめるものを単体に置く。

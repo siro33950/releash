@@ -113,7 +113,7 @@ GitHub Pages のサイトは無い（Pages の API が 404）。
 
 配布:
 
-- R-005: nightly は、署名・公証済みの universal の `Releash.app` を zip にした asset だけを prerelease の Release に載せる。Tauri 版の成果物と `latest.json` は載らない。配る commit に成功した main push の CI が無ければ nightly は失敗し、回帰 E2E が失敗したら配らず ISSUE を作る。
+- R-005: nightly は、署名・公証済みの universal の `Releash.app` を zip にした asset だけを prerelease の Release に載せる。Tauri 版の成果物と `latest.json` は載らない。配る commit に成功した main push の CI が無ければ、nightly は版を上げずに失敗する。回帰 E2E が失敗したら配らず ISSUE を作る。
 - R-006: stable は、指定した nightly の commit から `Releash.app` を再ビルド、署名、公証し、latest の Release として公開する。公開の条件は、Swift の asset と appcast がそろっていることである。
 - R-007: 配布名は `Releash.app`、実行ファイル名は `Releash` である。メニューバー、About、終了の項目、tooltip、Release の asset 名に `Releash Preview` が残らない。
 - R-008: appcast は `https://siro33950.github.io/releash/appcast.xml` で取得できる。項目は最新の stable（チャンネル無し）と最新の nightly（`sparkle:channel` が `nightly`）の各 1 件で、同じ版が stable に昇格したら stable の項目にまとめる。各項目の enclosure は公開済みの Release の asset を指し、その EdDSA 署名はアプリに組み込んだ公開鍵で検証できる。
@@ -126,7 +126,7 @@ GitHub Pages のサイトは無い（Pages の API が 404）。
 - R-012: Settings の System タブに「更新」の節があり、「自動更新」（初期値 ON）と「nightly アップデートを受け入れる」（初期値 OFF）がある。値は再起動後も保持され、サーバに接続していなくても変更できる。
 - R-013: 自動更新が ON のとき、アプリは自動で確認とダウンロードを行い、利用者がアプリを終了したときに適用する。利用中の画面を自動で終了しない。利用者が Sparkle の画面で「今すぐ」を選べば、その場で適用して再起動する。
 - R-014: 更新候補になるのは、現在の版より新しい版だけである。「nightly アップデートを受け入れる」が ON のときだけ nightly の項目が候補になり、stable の項目はどちらの設定でも候補になる。OFF に戻しても古い stable へ戻さない。同じ版の stable への昇格は候補にならない。
-- R-015: メニューバーに「アップデートを確認」があり、Sparkle の手動確認を開く。確認中は項目が無効になる。
+- R-015: メニューバーに「アップデートを確認」があり、Sparkle の手動確認を開く。Sparkle がバックグラウンドで確認かダウンロードをしている間は、項目が無効になる。Sparkle の画面を表示している間は項目が有効で、選ぶとその画面が前面に出る。
 - R-016: 新しい版が見つかると、フッターにその版と「更新」ボタンが出る。ボタンは Sparkle の標準の更新画面を開く。自動ダウンロードの間はボタンを無効にし、終わると押せるようになる。更新画面には版だけが出て、変更内容やリンクは出ない。ダウンロードの進行、適用の確認、失敗の表示は Sparkle の標準の画面である。
 - R-017: Debug のアプリ（`com.releash.macos.dev`）は appcast を読まず、更新を確認しない。
 - R-018: `AGENTS.md` の「サーバがロジックを所有する」の節に、アプリ自身の更新設定（自動更新、nightly の受け入れ）を例外として挙げる。

@@ -123,7 +123,7 @@ pub(crate) struct LegacySurvey {
 impl LegacySurvey {
     /// 旧保存先にサーバのデータがあるか。無ければ新保存先を調べずに移行しない。
     pub(crate) fn has_server_data(&self) -> bool {
-        todo!()
+        self.entries.iter().any(DataEntry::is_server_data)
     }
 }
 
@@ -218,7 +218,28 @@ impl RelocationSurvey {
     /// - 印があれば前回の続きとして、旧保存先に残る項目を移す。
     /// - 移す項目は旧保存先の項目のうち、利用者の定義（`workflows`、`prompts`）を除く全部である。
     pub(crate) fn decide(&self) -> Result<RelocationPlan, RelocationBlock> {
-        todo!()
+        if !self.legacy.has_server_data() {
+            return Ok(RelocationPlan::NotNeeded);
+        }
+        match self.legacy.server {
+            LegacyServer::Running => return Err(RelocationBlock::LegacyServerRunning),
+            LegacyServer::Unverifiable => return Err(RelocationBlock::LegacyServerUnverifiable),
+            LegacyServer::Absent | LegacyServer::Stopped => {}
+        }
+        if !self.legacy.relocation_started
+            && self.current_entries.iter().any(DataEntry::is_server_data)
+        {
+            return Err(RelocationBlock::BothHaveData);
+        }
+        let mut entries: Vec<String> = self
+            .legacy
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .filter(|name| name != RELOCATION_MARKER && !USER_DEFINITIONS.contains(&name.as_str()))
+            .collect();
+        entries.sort();
+        Ok(RelocationPlan::Move { entries })
     }
 }
 

@@ -125,7 +125,7 @@ macos は macOS runner、それ以外は Linux runner で実行する。
 | server、cli | `lint`、`test`、`build` |
 | desktop | `lint`、`test`、`build`、`e2e`、`dev`、`tauri` |
 | macos | `lint`、`generate`、`helpers`、`build`、`test`、`test-unit`、`test-integration`、`e2e`、`dev` |
-| workspace | `lint`、`coverage` |
+| workspace | `lint`、`test`、`coverage` |
 
 `test` は各テスト target を集約する。
 server と cli の `test` は `test-unit`（単体・doc）と `test-integration`、desktop の `test` は `rust-test-unit`、`rust-test-integration`、`frontend-test-unit`、`frontend-test-integration` を集約する。
