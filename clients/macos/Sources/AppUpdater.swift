@@ -33,9 +33,9 @@ import Sparkle
     }
   }
 
-  /// この bundle ID のアプリが更新を確認するかを決める。Debug のアプリ（`com.releash.macos.dev`）は確認しない。
+  /// この bundle ID のアプリが更新を確認するかを決める。Debug のアプリ（`com.releash.macos.dev`）と bundle ID の無いものは確認しない。
   static func checksForUpdates(bundleIdentifier: String?) -> Bool {
-    bundleIdentifier == "com.releash.macos"
+    fatalError("not implemented")
   }
 
   /// updater を開始する。自動更新が ON なら Sparkle が確認とダウンロードを自動で行う。
