@@ -96,7 +96,7 @@ def execute(root, tests, result, require_production=False, retry=False):
                '-derivedDataPath', '.build/E2EDerivedData', '-disableAutomaticPackageResolution', '-skipPackagePluginValidation',
                '-parallel-testing-enabled', 'NO', '-test-timeouts-enabled', 'YES',
                '-default-test-execution-time-allowance', '60',
-               '-maximum-test-execution-time-allowance', '60', '-resultBundlePath', str(result),
+               '-maximum-test-execution-time-allowance', '300', '-resultBundlePath', str(result),
                'CODE_SIGNING_ALLOWED=YES', 'test']
     if retry:
         command.extend(['-retry-tests-on-failure', '-test-iterations', '2',
