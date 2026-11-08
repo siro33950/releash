@@ -1,6 +1,6 @@
 use crate::domain::daemon::data_home::{
-    DataEntry, DataHome, DataHomeStore, EntryShape, LegacyServer,
-    LegacyServerRecord, LegacySurvey, MoveAction, ProcessLookup, RELOCATION_MARKER,
+    DataEntry, DataHome, DataHomeStore, EntryShape, LegacyServer, LegacyServerRecord, LegacySurvey,
+    MoveAction, ProcessLookup, RELOCATION_MARKER,
 };
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::infrastructure::local_api::{lookup_process_start_time, LocalApiDiscovery};
@@ -14,11 +14,20 @@ pub(crate) struct LocalDataHomeStore;
 
 impl DataHomeStore for LocalDataHomeStore {
     fn survey_legacy(&self, home: &DataHome) -> Result<LegacySurvey, TechnicalFailure> {
-        todo!()
+        let legacy = home.legacy.as_deref();
+        Ok(LegacySurvey {
+            entries: legacy
+                .map(entries)
+                .transpose()
+                .map_err(failure)?
+                .unwrap_or_default(),
+            server: legacy.map(server).unwrap_or(LegacyServer::Absent),
+            relocation_started: legacy.is_some_and(|path| path.join(RELOCATION_MARKER).exists()),
+        })
     }
 
     fn current_entries(&self, home: &DataHome) -> Result<Vec<DataEntry>, TechnicalFailure> {
-        todo!()
+        entries(&home.current).map_err(failure)
     }
 
     fn relocate(&self, home: &DataHome, entries: &[String]) -> Result<(), TechnicalFailure> {
@@ -45,6 +54,10 @@ impl DataHomeStore for LocalDataHomeStore {
             Err(error) => return Err(failure(error)),
         }
         fs::create_dir_all(&home.current).map_err(failure)?;
+        crate::infrastructure::local_event_store_connection::set_owner_only_permissions(
+            &home.current,
+        )
+        .map_err(failure)?;
         for name in entries {
             if name == RELOCATION_MARKER {
                 continue;

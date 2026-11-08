@@ -55,7 +55,7 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "commands": ["node --test .github/scripts/*.test.cjs", "python3 .github/scripts/macos-e2e_test.py"],
+        "commands": ["node --test .github/scripts/*_test.cjs", "python3 .github/scripts/macos-e2e_test.py", "python3 .github/scripts/verify-release_test.py"],
         "cwd": "."
       }
     }

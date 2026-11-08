@@ -56,3 +56,48 @@ for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft']) {
     }
   });
 }
+
+for (const reason of ['manual-bump', 'failed-distribution']) {
+  test(`test_nightly版確定_${reason}_同じ版でも実gitで配布commitを作る`, async () => {
+    // Given
+    const { execFileSync } = require('node:child_process');
+    const { mkdirSync, writeFileSync } = require('node:fs');
+    const root = mkdtempSync(join(tmpdir(), 'nightly-git-'));
+    const previous = { ...process.env };
+    const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('config', 'user.name', 'test');
+    git('config', 'user.email', 'test@example.invalid');
+    for (const name of ['Cargo.toml', 'Cargo.lock', 'clients/desktop/package.json', 'clients/desktop/tauri.conf.json', 'clients/macos/project.yml']) {
+      mkdirSync(require('node:path').dirname(join(root, name)), { recursive: true });
+      writeFileSync(join(root, name), '0.4.21');
+    }
+    git('add', '.');
+    git('commit', '-qm', reason === 'manual-bump' ? 'chore: bump' : 'fix: after failed distribution');
+    const original = git('rev-parse', 'HEAD');
+    process.env.GITHUB_OUTPUT = join(root, 'output');
+    process.env.GITHUB_REPOSITORY = 'owner/repo';
+    process.env.GITHUB_RUN_ID = '43';
+    const run = (...args) => {
+      if (args[0] === 'gh') {
+        const path = args.at(-1);
+        if (path.includes('/commits?')) return JSON.stringify([[{ sha: original, commit: { message: git('log', '-1', '--format=%B') } }]]);
+        if (path.includes('/releases?')) return JSON.stringify([[{ draft: false, tag_name: 'v0.4.20' }]]);
+        return JSON.stringify({ workflow_runs: [{ conclusion: 'success' }] });
+      }
+      if (args[0] === 'node' || args[1] === 'push') return '';
+      return git(...args.slice(1));
+    };
+    try {
+      // When
+      await main(run);
+      // Then
+      assert.notEqual(git('rev-parse', 'HEAD'), original);
+      assert.equal(git('diff', original, 'HEAD'), '');
+      assert.match(git('log', '-1', '--format=%B'), /release: v0.4.21\n\nNightly-Run: 43/);
+    } finally {
+      process.env = previous;
+      rmSync(root, { recursive: true });
+    }
+  });
+}

@@ -1,0 +1,62 @@
+name: Create draft release
+description: Create the release tag, notes and draft for a selected commit.
+inputs:
+  version:
+    required: true
+    description: Version passed to Nx changelog
+  tag:
+    required: true
+    description: Release tag
+  sha:
+    required: true
+    description: Selected commit
+  release-id:
+    default: ''
+    description: Existing release to reuse
+  tag-exists:
+    default: 'false'
+    description: Whether the tag already exists
+  nightly:
+    required: true
+    description: Prerelease channel
+  token:
+    required: true
+    description: GitHub token
+outputs:
+  release-id:
+    value: ${{ steps.create.outputs.release-id }}
+    description: Draft or reused release
+runs:
+  using: composite
+  steps:
+    - if: inputs.release-id == ''
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        TAG_EXISTS: ${{ inputs.tag-exists }}
+      run: |
+        git config user.name 'github-actions[bot]'
+        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        ./nx release changelog "$RELEASE_VERSION" --replace-existing-contents --git-tag="$([ "$TAG_EXISTS" = true ] && echo false || echo true)" --git-push --git-push-args="refs/tags/$RELEASE_TAG"
+    - id: create
+      uses: actions/github-script@v9
+      env:
+        RELEASE_TAG: ${{ inputs.tag }}
+        RELEASE_ID: ${{ inputs.release-id }}
+        RELEASE_SHA: ${{ inputs.sha }}
+        NIGHTLY: ${{ inputs.nightly }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          if (process.env.RELEASE_ID) {
+            core.setOutput('release-id', process.env.RELEASE_ID);
+            return;
+          }
+          const { readFileSync } = require('node:fs');
+          const { data } = await github.rest.repos.createRelease({
+            ...context.repo, tag_name: process.env.RELEASE_TAG, target_commitish: process.env.RELEASE_SHA,
+            name: process.env.RELEASE_TAG, body: readFileSync('.nx/release-notes.md', 'utf8'),
+            draft: true, prerelease: process.env.NIGHTLY === 'true', make_latest: 'false',
+          });
+          core.setOutput('release-id', data.id);

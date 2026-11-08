@@ -1,11 +1,12 @@
+const { retryCommit, requireSuccessfulCI } = require('./nightly-state.cjs');
 module.exports = async ({ github, context, core }) => {
   const { data: main } = await github.rest.repos.getCommit({
     ...context.repo, ref: 'heads/main',
   });
   core.setOutput('sha', main.sha);
   const commits = await github.paginate(github.rest.repos.listCommits, { ...context.repo, sha: 'main', per_page: 100 });
-  const retry = commits.find(commit => commit.commit.message.split('\n').includes(`Nightly-Run: ${context.runId}`));
-  if (retry) {
+  const retry = retryCommit(commits, context.runId);
+  if (retry?.sameRun) {
     core.setOutput('sha', retry.sha);
     core.setOutput('run', true);
     return;
@@ -25,13 +26,15 @@ module.exports = async ({ github, context, core }) => {
       return;
     }
   }
+  if (retry) {
+    core.setOutput('sha', retry.sha);
+    core.setOutput('run', true);
+    return;
+  }
   // PR 層の検証は main push の CI が済ませている。Nightly では繰り返さず、成功した run があることだけ確かめる
   const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
     ...context.repo, workflow_id: 'ci.yml', branch: 'main', event: 'push', head_sha: main.sha, per_page: 100,
   });
-  if (!runs.some(run => run.conclusion === 'success')) {
-    const states = runs.map(run => `${run.id}: ${run.status}/${run.conclusion}`).join(', ') || 'none';
-    throw new Error(`No successful CI run on main for ${main.sha} (${states}). Wait for CI or fix main before starting Nightly.`);
-  }
+  requireSuccessfulCI(runs, main.sha);
   core.setOutput('run', true);
 };

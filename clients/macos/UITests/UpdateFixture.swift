@@ -25,6 +25,16 @@ final class UpdateFixture: @unchecked Sendable {
           try? Data().write(to: directory.appendingPathComponent("download-requested"))
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+          if !archive {
+            try? Data().write(to: directory.appendingPathComponent("feed-requested"))
+            let deadline = Date().addingTimeInterval(45)
+            while FileManager.default.fileExists(
+              atPath: directory.appendingPathComponent("hold-feed").path)
+              && Date() < deadline
+            {
+              Thread.sleep(forTimeInterval: 0.1)
+            }
+          }
           if archive {
             let deadline = Date().addingTimeInterval(45)
             let gate = directory.appendingPathComponent("release-download").path
@@ -49,7 +59,7 @@ final class UpdateFixture: @unchecked Sendable {
     listener.start(queue: .global())
   }
 
-  func prepare(automatic: Bool = true) async throws {
+  func prepare(automatic: Bool? = nil) async throws {
     let deadline = Date().addingTimeInterval(5)
     while (listener.port == nil || listener.port == .any) && Date() < deadline {
       try await Task.sleep(for: .milliseconds(20))
@@ -71,8 +81,10 @@ final class UpdateFixture: @unchecked Sendable {
       info["CFBundleShortVersionString"] = version
       info["SUFeedURL"] = "http://127.0.0.1:\(port)/appcast.xml"
       info["SUPublicEDKey"] = key.publicKey.rawRepresentation.base64EncodedString()
-      info["SUEnableAutomaticChecks"] = automatic
-      info["SUAutomaticallyUpdate"] = automatic
+      if let automatic {
+        info["SUEnableAutomaticChecks"] = automatic
+        info["SUAutomaticallyUpdate"] = automatic
+      }
       info["LSEnvironment"] = fixture.environment
       try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(
         to: plist)

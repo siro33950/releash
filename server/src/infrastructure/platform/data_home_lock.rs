@@ -8,12 +8,14 @@ pub(crate) fn open(data_dir: &Path, purpose: &str) -> io::Result<File> {
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
-    let name = data_dir
-        .file_name()
-        .ok_or_else(|| io::Error::other("missing data directory name"))?;
     let resolved = match data_dir.canonicalize() {
         Ok(path) => path,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => parent.canonicalize()?.join(name),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let name = data_dir
+                .file_name()
+                .ok_or_else(|| io::Error::other("missing data directory name"))?;
+            parent.canonicalize()?.join(name)
+        }
         Err(error) => return Err(error),
     };
     let parent = resolved

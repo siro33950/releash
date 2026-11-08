@@ -1,3 +1,4 @@
+const { retryCommit, requireSuccessfulCI } = require('./nightly-state.cjs');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, appendFileSync } = require('node:fs');
 
@@ -12,11 +13,10 @@ async function main(run = (...args) => execFileSync(args[0], args.slice(1), { en
   const repo = process.env.GITHUB_REPOSITORY;
   const marker = `Nightly-Run: ${process.env.GITHUB_RUN_ID}`;
   const commits = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/commits?sha=main&per_page=100`)).flat();
-  let sha = commits.find(commit => commit.commit.message.split('\n').includes(marker))?.sha;
-  if (!sha && /^release: v\d+\.\d+\.\d+\n/.test(commits[0].commit.message) && /^Nightly-Run: \d+$/m.test(commits[0].commit.message)) sha = commits[0].sha;
+  let sha = retryCommit(commits, process.env.GITHUB_RUN_ID)?.sha;
   if (!sha) {
     const runs = api(`repos/${repo}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${commits[0].sha}`).workflow_runs;
-    if (!runs.some(run => run.conclusion === 'success')) throw new Error(`CI has not succeeded for ${commits[0].sha}`);
+    requireSuccessfulCI(runs, commits[0].sha);
     const releases = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)).flat();
     const published = releases.filter(release => !release.draft)
       .map(release => release.tag_name.match(/^v(\d+\.\d+\.\d+)(?:-nightly\.\d{8}\.\d+)?$/)?.[1]).filter(Boolean)
@@ -29,7 +29,7 @@ async function main(run = (...args) => execFileSync(args[0], args.slice(1), { en
     run('git', 'config', 'user.name', 'github-actions[bot]');
     run('git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');
     run('git', 'add', 'Cargo.toml', 'Cargo.lock', 'clients/desktop/package.json', 'clients/desktop/tauri.conf.json', 'clients/macos/project.yml');
-    run('git', 'commit', '-m', `release: v${version}\n\n${marker}`);
+    run('git', 'commit', '--allow-empty', '-m', `release: v${version}\n\n${marker}`);
     sha = run('git', 'rev-parse', 'HEAD');
     run('git', 'push', 'origin', 'HEAD:main');
   }

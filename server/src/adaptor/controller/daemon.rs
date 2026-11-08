@@ -159,12 +159,7 @@ pub async fn compose(
         Ok(lock) => lock,
         Err(kind) => {
             if data_dir.join("client-api.json").exists() {
-                if let Err(error) = infrastructure::local_log::init(
-                    &data_dir,
-                    infrastructure::local_log::LocalLogProcess::Daemon,
-                ) {
-                    eprintln!("{error}");
-                }
+                init_local_log(&data_dir);
             }
             return Err(fail_startup(&daemon, kind).await.into());
         }
@@ -183,12 +178,20 @@ pub async fn compose(
             .as_deref(),
         legacy_data_dir.as_deref(),
     );
+    let legacy_startup_lock = match home.legacy.as_deref() {
+        Some(legacy) => match adaptor::gateway::daemon::acquire_startup_lock(legacy) {
+            Ok(lock) => Some(lock),
+            Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
+        },
+        None => None,
+    };
     let relocation = usecase::data_home::DataHomeRelocationUsecase::new(Arc::new(
         adaptor::gateway::data_home::LocalDataHomeStore,
     ));
     if let Err(error) = relocation.run(&home) {
         return Err(fail_startup(&daemon, error.into()).await.into());
     }
+    drop(legacy_startup_lock);
     // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
     let aliases =
         infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())?;
@@ -197,12 +200,7 @@ pub async fn compose(
         data_dir.clone(),
         retry_limiter.clone(),
     );
-    if let Err(error) = infrastructure::local_log::init(
-        &data_dir,
-        infrastructure::local_log::LocalLogProcess::Daemon,
-    ) {
-        eprintln!("{error}");
-    }
+    init_local_log(&data_dir);
     let local_event_store = match app_data.open_local_event_store() {
         Ok(store) => store,
         Err(error) => return Err(fail_startup(&daemon, error.into()).await.into()),
@@ -846,5 +844,14 @@ impl Daemon {
             exit,
             daemon,
         }
+    }
+}
+
+fn init_local_log(data_dir: &Path) {
+    if let Err(error) = infrastructure::local_log::init(
+        data_dir,
+        infrastructure::local_log::LocalLogProcess::Daemon,
+    ) {
+        eprintln!("{error}");
     }
 }

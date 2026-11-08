@@ -63,20 +63,7 @@ xcodebuild -project Releash.xcodeproj -scheme Releash -configuration Release \
   "SPARKLE_PUBLIC_ED_KEY=$SPARKLE_PUBLIC_ED_KEY" archive
 
 APP="$WORK/Releash.xcarchive/Products/Applications/Releash.app"
-VERSION=$(python3 - "$ROOT" "$APP" <<'PY'
-import json, plistlib, sys, tomllib
-from pathlib import Path
-root, app = map(Path, sys.argv[1:])
-version = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['package']['version']
-with (app / 'Contents/Info.plist').open('rb') as file:
-    info = plistlib.load(file)
-assert info['CFBundleVersion'] == version, 'Build/Cargo version mismatch'
-assert info['CFBundleShortVersionString'] == version, 'Swift/Cargo version mismatch'
-assert json.loads((root / 'clients/desktop/package.json').read_text())['version'] == version, 'Tauri/Cargo version mismatch'
-assert info['CFBundleIdentifier'] == 'com.releash.macos', 'Unexpected bundle ID'
-print(version)
-PY
-)
+VERSION=$(python3 "$ROOT/.github/scripts/verify-release.py" "$ROOT" "$APP")
 lipo -verify_arch arm64 "$APP/Contents/MacOS/Releash"
 lipo -verify_arch x86_64 "$APP/Contents/MacOS/Releash"
 codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$APP"

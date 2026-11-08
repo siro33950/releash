@@ -71,3 +71,22 @@ fn test_起動ロック_親の別名と保存先作成前後で同じ排他に�
     drop(first);
     assert!(super::acquire_startup_lock(&parent.join("data")).is_ok());
 }
+
+#[test]
+fn test_起動ロック_相対パスの現在と親を正規化して排他する() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("child")).unwrap();
+    for relative in [".", "child/.."] {
+        let path = root.path().join(relative);
+        let first = super::acquire_startup_lock(&path).unwrap();
+        // When
+        let second = super::acquire_startup_lock(&path.canonicalize().unwrap());
+        // Then
+        assert!(matches!(
+            second,
+            Err(crate::domain::daemon::StartupFailureKind::StoreInUse)
+        ));
+        drop(first);
+    }
+}

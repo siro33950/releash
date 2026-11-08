@@ -30,6 +30,7 @@ import XCTest
 
   @MainActor func test_手動更新確認_メニューからSparkleの標準画面を開く() async throws {
     // Given
+    try Data().write(to: fixture.directory.appendingPathComponent("hold-feed"))
     try await update.prepare(automatic: false)
     try await fixture.startServer()
     app = XCUIApplication(url: update.application)
@@ -44,6 +45,15 @@ import XCTest
     XCTAssertTrue(check.isEnabled)
     check.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
     // Then
+    try await waitUntil {
+      FileManager.default.fileExists(
+        atPath: self.fixture.directory.appendingPathComponent("feed-requested").path)
+    }
+    app.descendants(matching: .statusItem)["Releash"].click()
+    XCTAssertTrue(check.waitForExistence(timeout: 10))
+    XCTAssertFalse(check.isEnabled)
+    app.typeKey(.escape, modifierFlags: [])
+    try FileManager.default.removeItem(at: fixture.directory.appendingPathComponent("hold-feed"))
     XCTAssertTrue(
       app.windows["SUUpdateAlert"].buttons["SPUUserUpdateChoiceInstall"].waitForExistence(
         timeout: 15), app.debugDescription)

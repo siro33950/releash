@@ -263,52 +263,25 @@ jobs:
             const tag = `v${version}-nightly.${date}.${number}`;
             core.setOutput('version', tag.slice(1));
             core.setOutput('tag', tag);
-      - name: Create tag and release notes with Nx
-        if: steps.version.outputs.release-id == ''
-        env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          ./nx release changelog "$RELEASE_VERSION" --replace-existing-contents --git-tag --git-push --git-push-args="refs/tags/$RELEASE_TAG"
       - id: create
-        uses: actions/github-script@v9
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_ID: ${{ steps.version.outputs.release-id }}
-          RELEASE_SHA: ${{ needs.check.outputs.sha }}
+        uses: ./.github/actions/create-release
         with:
-          script: |
-            if (process.env.RELEASE_ID) { core.setOutput('release-id', process.env.RELEASE_ID); return; }
-            const { readFileSync } = require('node:fs');
-            const { data } = await github.rest.repos.createRelease({
-              ...context.repo, tag_name: process.env.RELEASE_TAG, target_commitish: process.env.RELEASE_SHA,
-              name: process.env.RELEASE_TAG, body: readFileSync('.nx/release-notes.md', 'utf8'),
-              draft: true, prerelease: true, make_latest: 'false',
-            });
-            core.setOutput('release-id', data.id);
+          version: ${{ steps.version.outputs.version }}
+          tag: ${{ steps.version.outputs.tag }}
+          release-id: ${{ steps.version.outputs.release-id }}
+          tag-exists: ${{ steps.version.outputs.tag-exists }}
+          sha: ${{ needs.check.outputs.sha }}
+          nightly: 'true'
+          token: ${{ github.token }}
 
   upload:
     needs: [check, create-release]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    uses: ./.github/workflows/sparkle-upload.yml
+    with:
+      sha: ${{ needs.check.outputs.sha }}
+      tag: ${{ needs.create-release.outputs.tag }}
     permissions:
       contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.check.outputs.sha }}
-      - uses: actions/download-artifact@v8
-        with:
-          name: swift-app
-          path: ${{ runner.temp }}/assets
-      - name: Upload Swift asset and signature metadata
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.create-release.outputs.tag }}
-          ASSETS: ${{ runner.temp }}/assets
-        run: node .github/scripts/sparkle-release.cjs upload
 
   publish:
     needs: [check, create-release, upload]
