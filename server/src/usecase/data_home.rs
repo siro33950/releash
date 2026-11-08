@@ -13,12 +13,23 @@ impl DataHomeRelocationUsecase {
         Self { store }
     }
 
-    /// 保存先を観測し、判断に従って移す。移すものが無ければ何もしない。
+    /// 旧保存先を観測し、サーバのデータがあるときだけ新保存先を観測して、判断に従って移す。移すものが無ければ何もしない。
     pub(crate) fn run(&self, home: &DataHome) -> Result<(), RelocationError> {
-        let survey: RelocationSurvey = self
+        let legacy = self
             .store
-            .survey(home)
+            .survey_legacy(home)
             .map_err(RelocationError::Technical)?;
+        if !legacy.has_server_data() {
+            return Ok(());
+        }
+        let current_entries = self
+            .store
+            .current_entries(home)
+            .map_err(RelocationError::Technical)?;
+        let survey = RelocationSurvey {
+            legacy,
+            current_entries,
+        };
         match survey.decide().map_err(RelocationError::Blocked)? {
             RelocationPlan::NotNeeded => Ok(()),
             RelocationPlan::Move { entries } => self

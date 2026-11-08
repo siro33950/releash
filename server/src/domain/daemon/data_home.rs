@@ -31,15 +31,8 @@ const USER_DEFINITIONS: [&str; 2] = ["workflows", "prompts"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DataEntry {
     pub(crate) name: String,
-    pub(crate) kind: DataEntryKind,
     /// ファイルの大きさ。ディレクトリは、その中の全ファイルの大きさの合計。
     pub(crate) bytes: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DataEntryKind {
-    File,
-    Directory,
 }
 
 impl DataEntry {
@@ -117,16 +110,29 @@ impl LegacyServer {
 /// 移行の途中であることを示す、旧保存先に置く印のファイル名。移動を始める前に置き、旧保存先ごと消える。
 pub(crate) const RELOCATION_MARKER: &str = ".relocating";
 
+/// 旧保存先の観測結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LegacySurvey {
+    /// 旧保存先の項目。旧保存先が無ければ空。
+    pub(crate) entries: Vec<DataEntry>,
+    pub(crate) server: LegacyServer,
+    /// 旧保存先に `RELOCATION_MARKER` がある。前回の移行が途中で止まっている。
+    pub(crate) relocation_started: bool,
+}
+
+impl LegacySurvey {
+    /// 旧保存先にサーバのデータがあるか。無ければ新保存先を調べずに移行しない。
+    pub(crate) fn has_server_data(&self) -> bool {
+        todo!()
+    }
+}
+
 /// 移行を判断するための、新旧の保存先の観測結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RelocationSurvey {
-    /// 旧保存先の項目。旧保存先が無ければ空。
-    pub(crate) legacy_entries: Vec<DataEntry>,
-    /// 新保存先の項目。新保存先が無ければ空。
+    pub(crate) legacy: LegacySurvey,
+    /// 新保存先の直下の項目。新保存先が無ければ空。
     pub(crate) current_entries: Vec<DataEntry>,
-    pub(crate) legacy_server: LegacyServer,
-    /// 旧保存先に `RELOCATION_MARKER` がある。前回の移行が途中で止まっている。
-    pub(crate) relocation_started: bool,
 }
 
 /// 移動元か移動先にある項目の、移動の判断に使う観測。
@@ -206,41 +212,25 @@ impl From<RelocationError> for super::StartupFailureKind {
 impl RelocationSurvey {
     /// 観測結果から移行を判断する。
     ///
-    /// - 旧保存先にサーバのデータが無ければ `NotNeeded`。
+    /// - 旧保存先にサーバのデータが無ければ（`LegacySurvey::has_server_data`）`NotNeeded`。
     /// - 旧保存先のサーバが `Running` なら `LegacyServerRunning`、`Unverifiable` なら `LegacyServerUnverifiable`。
     /// - 旧保存先に印が無く、新保存先にサーバのデータがあれば `BothHaveData`。
     /// - 印があれば前回の続きとして、旧保存先に残る項目を移す。
     /// - 移す項目は旧保存先の項目のうち、利用者の定義（`workflows`、`prompts`）を除く全部である。
     pub(crate) fn decide(&self) -> Result<RelocationPlan, RelocationBlock> {
-        if !self.legacy_entries.iter().any(DataEntry::is_server_data) {
-            return Ok(RelocationPlan::NotNeeded);
-        }
-        match self.legacy_server {
-            LegacyServer::Running => return Err(RelocationBlock::LegacyServerRunning),
-            LegacyServer::Unverifiable => return Err(RelocationBlock::LegacyServerUnverifiable),
-            LegacyServer::Absent | LegacyServer::Stopped => {}
-        }
-        if !self.relocation_started && self.current_entries.iter().any(DataEntry::is_server_data) {
-            return Err(RelocationBlock::BothHaveData);
-        }
-        let mut entries: Vec<String> = self
-            .legacy_entries
-            .iter()
-            .map(|entry| entry.name.clone())
-            .filter(|name| name != RELOCATION_MARKER && !USER_DEFINITIONS.contains(&name.as_str()))
-            .collect();
-        entries.sort();
-        Ok(RelocationPlan::Move { entries })
+        todo!()
     }
 }
 
 /// 保存先の観測と移動。adaptor/gateway が実装する。
+/// 呼び出し側は、新保存先の起動ロックを持った状態で呼ぶ。同じ保存先に対して同時に呼ばれることはない。
 pub(crate) trait DataHomeStore: Send + Sync {
-    /// 新旧の保存先を観測する。旧保存先が無い `DataHome` には、旧保存先が無いものとして答える。
-    fn survey(&self, home: &DataHome) -> Result<RelocationSurvey, TechnicalFailure>;
+    /// 旧保存先を観測する。旧保存先が無い `DataHome` には、項目が無く、サーバが `Absent` で、印も無いものとして答える。
+    fn survey_legacy(&self, home: &DataHome) -> Result<LegacySurvey, TechnicalFailure>;
+    /// 新保存先の直下の項目を観測する。新保存先が無ければ空。
+    fn current_entries(&self, home: &DataHome) -> Result<Vec<DataEntry>, TechnicalFailure>;
     /// 旧保存先に印を置き、`entries` を一つずつ新保存先へ移し、旧保存先を消す。
-    /// 移動は項目ごとに原子的に行う。同じ項目を二つの process が同時に移しても、先に移した方が有効で、
-    /// 後の方は失敗にしない。新保存先に同じ名前のディレクトリがあれば中身を合わせ、同じ名前の空のファイルは置き換える。
+    /// 移動は項目ごとに原子的に行う。新保存先に同じ名前のディレクトリがあれば中身を合わせ、同じ名前の空のファイルは置き換える。
     fn relocate(&self, home: &DataHome, entries: &[String]) -> Result<(), TechnicalFailure>;
 }
 

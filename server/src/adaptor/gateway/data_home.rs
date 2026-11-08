@@ -1,6 +1,6 @@
 use crate::domain::daemon::data_home::{
-    DataEntry, DataEntryKind, DataHome, DataHomeStore, EntryShape, LegacyServer,
-    LegacyServerRecord, MoveAction, ProcessLookup, RelocationSurvey, RELOCATION_MARKER,
+    DataEntry, DataHome, DataHomeStore, EntryShape, LegacyServer,
+    LegacyServerRecord, LegacySurvey, MoveAction, ProcessLookup, RELOCATION_MARKER,
 };
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::infrastructure::local_api::{lookup_process_start_time, LocalApiDiscovery};
@@ -13,28 +13,12 @@ use std::path::Path;
 pub(crate) struct LocalDataHomeStore;
 
 impl DataHomeStore for LocalDataHomeStore {
-    fn survey(&self, home: &DataHome) -> Result<RelocationSurvey, TechnicalFailure> {
-        let legacy = home.legacy.as_deref();
-        let lock =
-            crate::infrastructure::platform::data_home_lock::open(&home.current, "relocation")
-                .map_err(failure)?;
-        fs2::FileExt::lock_exclusive(&lock).map_err(failure)?;
-        let legacy_entries = legacy
-            .map(entries)
-            .transpose()
-            .map_err(failure)?
-            .unwrap_or_default();
-        let current_entries = if !legacy_entries.iter().any(DataEntry::is_server_data) {
-            Vec::new()
-        } else {
-            entries(&home.current).map_err(failure)?
-        };
-        Ok(RelocationSurvey {
-            legacy_entries,
-            current_entries,
-            legacy_server: legacy.map(server).unwrap_or(LegacyServer::Absent),
-            relocation_started: legacy.is_some_and(|path| path.join(RELOCATION_MARKER).exists()),
-        })
+    fn survey_legacy(&self, home: &DataHome) -> Result<LegacySurvey, TechnicalFailure> {
+        todo!()
+    }
+
+    fn current_entries(&self, home: &DataHome) -> Result<Vec<DataEntry>, TechnicalFailure> {
+        todo!()
     }
 
     fn relocate(&self, home: &DataHome, entries: &[String]) -> Result<(), TechnicalFailure> {
@@ -106,18 +90,12 @@ fn entries(path: &Path) -> io::Result<Vec<DataEntry>> {
     directory
         .map(|entry| {
             let entry = entry?;
-            let metadata = entry.path().symlink_metadata()?;
             let name = entry
                 .file_name()
                 .into_string()
                 .map_err(|_| io::Error::other("non-UTF-8 relocation entry"))?;
             Ok(DataEntry {
                 name,
-                kind: if metadata.is_dir() {
-                    DataEntryKind::Directory
-                } else {
-                    DataEntryKind::File
-                },
                 bytes: bytes(&entry.path())?,
             })
         })
