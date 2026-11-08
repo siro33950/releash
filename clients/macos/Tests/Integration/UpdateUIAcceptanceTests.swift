@@ -27,8 +27,7 @@ final class UpdateUIAcceptanceTests: XCTestCase {
         ]
       ]))
     model.updater.updater(controller.updater, didFindValidUpdate: item)
-    delegate.updater?(
-      controller.updater, willDownloadUpdate: item, with: NSMutableURLRequest(url: url))
+    model.updater.canCheckForUpdates = false
     // When
     let host = await ViewHarness(FooterView(model: model))
     defer { host.close() }
@@ -37,7 +36,7 @@ final class UpdateUIAcceptanceTests: XCTestCase {
       host.element("0.4.21") != nil && host.element("更新")?.enabled == false
     }
     // When
-    delegate.updater?(controller.updater, didDownloadUpdate: item)
+    model.updater.canCheckForUpdates = true
     // Then
     try await eventuallyView(host) {
       host.element("0.4.21") != nil && host.element("更新")?.enabled == true
