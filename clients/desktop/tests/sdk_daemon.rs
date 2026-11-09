@@ -1,26 +1,22 @@
 #![cfg(unix)]
 use releash::{daemon, discovery};
-use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
+// Keep executable writes from overlapping another test's fork.
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn executable(directory: &std::path::Path, body: &str) -> std::path::PathBuf {
     let path = directory.join("releashd");
-    let mut file = std::fs::File::create(&path).unwrap();
-    file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
-        .unwrap();
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    // Wait for writable handles inherited by concurrent forks to close before exec.
-    fs2::FileExt::lock_exclusive(&file).unwrap();
-    drop(file);
-    let file = std::fs::File::open(&path).unwrap();
-    fs2::FileExt::lock_shared(&file).unwrap();
     path
 }
 
 #[tokio::test]
 async fn test_独立起動_終了状態とstderrの末尾を返す() {
     // Given
+    let _guard = TEST_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("logs")).unwrap();
     std::fs::write(
@@ -44,6 +40,7 @@ async fn test_独立起動_終了状態とstderrの末尾を返す() {
 #[tokio::test]
 async fn test_独立起動_別sessionでcwdと明示data_dirを使いstdinが閉じても動き続ける() {
     // Given
+    let _guard = TEST_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().join("cwd");
     std::fs::create_dir(&cwd).unwrap();
@@ -101,6 +98,7 @@ async fn test_独立起動_別sessionでcwdと明示data_dirを使いstdinが閉
 #[tokio::test]
 async fn test_独立起動_上限を超えてもプロセスを止めずstderrを返す() {
     // Given
+    let _guard = TEST_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let executable = executable(
         directory.path(),
