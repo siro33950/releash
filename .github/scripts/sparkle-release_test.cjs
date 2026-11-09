@@ -107,7 +107,7 @@ for (const [failure, nightly] of ['missing-asset', 'public-asset', 'none'].flatM
         if (fail === 'public-asset') throw new Error('unavailable asset');
         return '';
       }
-      if (args[1] === 'api') return JSON.stringify(args.at(-1).includes('/tags/') ? target : [[stable, target]]);
+      if (args[1] === 'api') return JSON.stringify(args.at(-1).includes('/tags/') ? target : [stable, target]);
       if (args[2] === 'upload') target.assets = fail === 'missing-asset' ? [] : release('0.4.21', true).assets;
       if (args.includes('--notes-file')) target.body = readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8');
       if (args.includes('--draft=false')) {

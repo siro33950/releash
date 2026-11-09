@@ -55,10 +55,20 @@ def build_updated_cli(root):
         manifest = re.sub(r'^members = .*$', 'members = ["clients/cli"]', manifest, flags=re.M)
         (workspace / 'Cargo.toml').write_text(manifest.replace(f'version = "{version}"', f'version = "{updated}"', 1))
         target = build / 'UpdateCLI'
-        run(['cargo', 'build', '-p', 'releash', '--target-dir', str(target)], workspace)
+        result = subprocess.run([
+            'cargo', 'build', '-p', 'releash', '--bin', 'releash', '--target-dir', str(target),
+            '--message-format=json-render-diagnostics',
+        ], cwd=workspace, check=True, stdout=subprocess.PIPE, text=True)
+        artifacts = [json.loads(line) for line in result.stdout.splitlines()]
+        executables = [artifact['executable'] for artifact in artifacts
+                       if artifact.get('reason') == 'compiler-artifact'
+                       and artifact['target']['name'] == 'releash'
+                       and artifact.get('executable')]
+        if len(executables) != 1:
+            raise ValueError('Cargo did not report one CLI executable')
     output = build / 'Helpers/Update/releash'
     output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(target / 'debug/releash', output)
+    shutil.copy2(executables[0], output)
 
 
 def production_processes():

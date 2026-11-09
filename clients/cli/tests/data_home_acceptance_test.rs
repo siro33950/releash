@@ -4,6 +4,8 @@ use releash::discovery;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
+use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
 
 struct Home {
     root: tempfile::TempDir,
@@ -66,6 +68,52 @@ impl Home {
         serde_json::from_slice(&success(self.run(None, &["status", "--json"]))).unwrap()
     }
 
+    fn servers(&self) -> Vec<(u32, u64)> {
+        let executable = Path::new(env!("CARGO_BIN_EXE_releash"))
+            .with_file_name("releashd")
+            .canonicalize()
+            .unwrap();
+        let mut home = std::ffi::OsString::from("HOME=");
+        home.push(self.root.path());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing()
+                .with_exe(UpdateKind::Always)
+                .with_environ(UpdateKind::Always),
+        );
+        system
+            .processes()
+            .values()
+            .filter(|process| {
+                process.exe() == Some(executable.as_path())
+                    && process.environ().contains(&home)
+                    && process.status() != ProcessStatus::Zombie
+            })
+            .map(|process| (process.pid().as_u32(), process.start_time()))
+            .collect()
+    }
+
+    fn stop_servers(&self) {
+        let servers = self.servers();
+        for path in [&self.current, &self.legacy] {
+            let _ = self.command(Some(path), &["server", "stop"]).output();
+        }
+        for (pid, started_at) in self.servers() {
+            if servers.contains(&(pid, started_at))
+                && discovery::process_start_time(pid) == Some(started_at)
+            {
+                // discovery に記録されなかった、このテストの daemon も終了させる。
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.servers().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn assert_moved(&self) {
         assert_eq!(self.status()["data_dir"], self.current.to_str().unwrap());
         assert_eq!(self.status()["running"], true);
@@ -87,9 +135,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        for path in [&self.current, &self.legacy] {
-            let _ = self.run(Some(path), &["server", "stop"]);
-        }
+        self.stop_servers();
     }
 }
 
@@ -234,8 +280,29 @@ fn test_b026_並行起動_移行したデータを保ち一つのサーバだけ
     assert!(!home.legacy.join("client-api.json").exists());
     home.assert_moved();
     let running = discovery::read(&home.current).unwrap();
+    assert_eq!(
+        home.servers(),
+        vec![(running.pid, running.process_started_at)]
+    );
     success(home.run(None, &["server", "start"]));
     assert_eq!(discovery::read(&home.current).unwrap(), running);
+    assert_eq!(
+        home.servers(),
+        vec![(running.pid, running.process_started_at)]
+    );
+}
+
+#[test]
+fn test_サーバ追跡_discoveryに記録されていないサーバも検出して終了する() {
+    let home = Home::new();
+    success(home.run(Some(&home.current), &["server", "start"]));
+    success(home.run(Some(&home.legacy), &["server", "start"]));
+    std::fs::remove_file(home.legacy.join("client-api.json")).unwrap();
+    assert_eq!(home.servers().len(), 2);
+
+    home.stop_servers();
+
+    assert!(home.servers().is_empty());
 }
 
 #[test]
@@ -267,4 +334,42 @@ fn test_b027_旧サーバの記録を検証できない_移行せずデータを
     );
     assert!(!home.current.join("local-event-store.sqlite3").exists());
     assert!(!home.current.join("client-api.json").exists());
+}
+
+#[test]
+fn test_移行の排他_discoveryのない旧writerを待ち移行後も旧writerを拒否する() {
+    use std::os::fd::AsRawFd;
+    // Given
+    let home = Home::new();
+    home.seed_legacy();
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(home.legacy.join("local-event-store.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    // When / Then
+    assert!(!home.run(None, &["server", "start"]).status.success());
+    assert_eq!(
+        std::fs::read(home.legacy.join("other/nested.bin")).unwrap(),
+        b"\0retained\xff"
+    );
+    assert_eq!(unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_UN) }, 0);
+    success(home.run(None, &["server", "start"]));
+    home.assert_moved();
+    assert_eq!(
+        unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    success(home.run(None, &["server", "stop"]));
+    assert_eq!(
+        unsafe { libc::flock(writer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
 }

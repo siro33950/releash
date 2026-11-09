@@ -32,6 +32,11 @@ jobs:
           workspaces: .
           shared-key: macos-helpers-universal
           cache-on-failure: true
+      - run: node .github/scripts/load-secrets.mjs
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
+          NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
       - run: ./nx run macos:helpers -c release
       - uses: actions/upload-artifact@v6
         with:
@@ -84,8 +89,6 @@ jobs:
           APPLE_PASSWORD: op://releash/apple-signing/app-password
           APPLE_TEAM_ID: op://releash/apple-signing/team-id
           SPARKLE_PRIVATE_ED_KEY: op://releash/sparkle/private-key
-          OTLP_ENDPOINT: op://releash/new-relic/otlp-endpoint
-          NEW_RELIC_LICENSE_KEY: op://releash/new-relic/license-key
       - name: Archive, sign and notarize Releash
         env:
           SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}

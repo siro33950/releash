@@ -312,7 +312,10 @@ jobs:
             });
             const nightlies = releases
               .filter(release => release.prerelease && /^v\d+\.\d+\.\d+-nightly\.\d{8}\.[1-9]\d*$/.test(release.tag_name))
-              .sort((a, b) => (b.published_at || b.created_at).localeCompare(a.published_at || a.created_at) || b.id - a.id);
+              .sort((a, b) => b.tag_name.localeCompare(a.tag_name, undefined, { numeric: true }) || b.id - a.id);
+            const referenced = nightlies.find(release => !release.draft && (release.body || '').includes('<!-- sparkle:'));
+            nightlies.sort((a, b) => Number(b.id === referenced?.id) - Number(a.id === referenced?.id)
+              || (b.published_at || b.created_at).localeCompare(a.published_at || a.created_at) || b.id - a.id);
             for (const release of [...nightlies.filter(release => release.draft), ...nightlies.filter(release => !release.draft).slice(14)]) {
               await github.rest.repos.deleteRelease({ ...context.repo, release_id: release.id });
             }

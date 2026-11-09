@@ -207,3 +207,52 @@ fn test_保存先観測_ディレクトリでなければ失敗を返す() {
     assert!(LocalDataHomeStore.survey_legacy(&home).is_err());
     assert!(LocalDataHomeStore.current_entries(&home).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn test_移行_利用者定義を走査せずロックとソケットを元の場所に残す() {
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let home = DataHome {
+        current: root.path().join("new"),
+        legacy: Some(root.path().join("old")),
+    };
+    let old = home.legacy.as_ref().unwrap();
+    for directory in [old, &home.current] {
+        fs::create_dir_all(directory.join("workflows")).unwrap();
+        fs::set_permissions(
+            directory.join("workflows"),
+            fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        fs::write(directory.join("desktop.lock"), b"held").unwrap();
+        fs::write(directory.join("local-event-store.lock"), b"held").unwrap();
+    }
+    let _old_socket = UnixListener::bind(old.join("desktop.sock")).unwrap();
+    let _new_socket = UnixListener::bind(home.current.join("desktop.sock")).unwrap();
+    fs::write(old.join("store"), b"data").unwrap();
+    // When
+    let result = survey(&home).decide();
+    for directory in [old, &home.current] {
+        fs::set_permissions(
+            directory.join("workflows"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+    }
+    let crate::domain::daemon::data_home::RelocationPlan::Move { entries } = result.unwrap() else {
+        panic!("move")
+    };
+    LocalDataHomeStore.relocate(&home, &entries).unwrap();
+    // Then
+    assert_eq!(fs::read(home.current.join("store")).unwrap(), b"data");
+    for directory in [old, &home.current] {
+        assert_eq!(fs::read(directory.join("desktop.lock")).unwrap(), b"held");
+        assert_eq!(
+            fs::read(directory.join("local-event-store.lock")).unwrap(),
+            b"held"
+        );
+        std::os::unix::net::UnixStream::connect(directory.join("desktop.sock")).unwrap();
+    }
+}

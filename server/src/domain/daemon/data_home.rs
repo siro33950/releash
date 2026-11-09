@@ -10,6 +10,11 @@ pub(crate) struct DataHome {
 }
 
 const USER_DEFINITIONS: [&str; 2] = ["workflows", "prompts"];
+const RUNTIME_FILES: [&str; 3] = ["desktop.lock", "desktop.sock", "local-event-store.lock"];
+
+pub(crate) fn retained_entry(name: &str) -> bool {
+    USER_DEFINITIONS.contains(&name) || RUNTIME_FILES.contains(&name)
+}
 
 /// 保存先の直下にある一つの項目。`name` は保存先からの相対パスの先頭の名前である。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,12 +25,10 @@ pub(crate) struct DataEntry {
 }
 
 impl DataEntry {
-    /// 利用者の定義（`workflows`、`prompts`）と、中身が空のファイル、中身が空のディレクトリは、サーバのデータでない。
+    /// 利用者の定義、実行中のロック・ソケット、中身が空の項目は、移行するサーバのデータでない。
     /// 移行の印（`RELOCATION_MARKER`）もサーバのデータでない。
     pub(crate) fn is_server_data(&self) -> bool {
-        self.bytes > 0
-            && self.name != RELOCATION_MARKER
-            && !USER_DEFINITIONS.contains(&self.name.as_str())
+        self.bytes > 0 && self.name != RELOCATION_MARKER && !retained_entry(&self.name)
     }
 }
 
@@ -220,7 +223,7 @@ impl RelocationSurvey {
             .entries
             .iter()
             .map(|entry| entry.name.clone())
-            .filter(|name| name != RELOCATION_MARKER && !USER_DEFINITIONS.contains(&name.as_str()))
+            .filter(|name| name != RELOCATION_MARKER && !retained_entry(name))
             .collect();
         entries.sort();
         Ok(RelocationPlan::Move { entries })

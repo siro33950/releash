@@ -16,12 +16,16 @@ function metadata(release) {
   return { ...item, url: asset.browser_download_url, nightly: release.prerelease };
 }
 
-function appcast(releases) {
+function selectReleases(releases) {
   const candidates = releases.filter(release => !release.draft && (release.body || '').includes('<!-- sparkle:') && /^v\d+\.\d+\.\d+(?:-nightly\.\d{8}\.\d+)?$/.test(release.tag_name))
     .sort((a, b) => b.tag_name.localeCompare(a.tag_name, undefined, { numeric: true }));
   const stable = candidates.find(release => !release.prerelease);
   const nightly = candidates.find(release => release.prerelease);
-  const selected = [stable, nightly].filter(Boolean).map(metadata);
+  return [stable, nightly].filter(Boolean);
+}
+
+function appcast(releases) {
+  const selected = selectReleases(releases).map(metadata);
   const entries = selected.filter(item => !item.nightly || !selected.some(other => !other.nightly && other.version === item.version));
   const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
   return `<?xml version="1.0" encoding="utf-8"?>\n<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Releash</title>${entries.map(item => `
@@ -58,14 +62,24 @@ function main(mode, run = (...args) => execFileSync(args[0], args.slice(1), { en
     run('gh', 'release', 'edit', tag, '--notes-file', join(process.env.ASSETS, 'body.txt'), '--repo', repo);
     return;
   }
-  const releases = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)).flat();
-  const target = releases.find(release => release.tag_name === tag);
+  let target;
+  let candidates = [];
+  let latest = process.env.NIGHTLY !== 'true';
+  for (let page = 1; ; page++) {
+    const releases = api(`repos/${repo}/releases?per_page=30&page=${page}`);
+    target ??= releases.find(release => release.tag_name === tag);
+    if (releases.some(release => !release.draft && !release.prerelease && /^v\d+\.\d+\.\d+$/.test(release.tag_name)
+        && release.tag_name.localeCompare(tag, undefined, { numeric: true }) > 0)) latest = false;
+    candidates = selectReleases([...candidates, ...releases.map(release =>
+      release.tag_name === tag ? { ...release, draft: false, prerelease: process.env.NIGHTLY === 'true' } : release)]);
+    if (releases.length < 30) break;
+  }
   if (!target) throw new Error('Release not found');
   metadata(target);
-  const planned = appcast(releases.map(release => release.id === target.id ? { ...release, draft: false } : release));
+  const planned = appcast(candidates);
   mkdirSync('public', { recursive: true });
   writeFileSync('public/appcast.xml', planned);
-  run('gh', 'release', 'edit', tag, '--draft=false', `--prerelease=${process.env.NIGHTLY === 'true'}`, `--latest=${process.env.NIGHTLY !== 'true'}`, '--repo', repo);
+  run('gh', 'release', 'edit', tag, '--draft=false', `--prerelease=${process.env.NIGHTLY === 'true'}`, `--latest=${latest}`, '--repo', repo);
   // The feed is deployed only after the Release and its asset are public.
   const xml = readFileSync('public/appcast.xml', 'utf8');
   for (const url of [...xml.matchAll(/url="([^"]+)"/g)].map(match => match[1].replaceAll('&amp;', '&'))) {

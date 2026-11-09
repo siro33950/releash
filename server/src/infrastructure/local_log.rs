@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const LOG_DIRECTORY_NAME: &str = "logs";
@@ -11,6 +13,7 @@ pub const LOCK_FILE_NAME: &str = "releash.lock";
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_FILE_COUNT: usize = 5;
 const QUEUE_CAPACITY: usize = 256;
+static DEFERRED_LOGGER: OnceLock<&'static LocalFileLogger> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalLogProcess {
@@ -54,6 +57,21 @@ impl From<io::Error> for LocalLogInitError {
 
 pub fn init(data_dir: &Path, process: LocalLogProcess) -> Result<(), LocalLogInitError> {
     init_with_limits(data_dir, process, MAX_FILE_BYTES, MAX_FILE_COUNT)
+}
+
+pub fn init_deferred(process: LocalLogProcess) -> Result<(), LocalLogInitError> {
+    let logger = Box::leak(Box::new(LocalFileLogger::new_deferred(process)?));
+    log::set_logger(logger).map_err(|_| LocalLogInitError::AlreadyInitialized)?;
+    let _ = DEFERRED_LOGGER.set(logger);
+    log::set_max_level(log::LevelFilter::Warn);
+    Ok(())
+}
+
+pub fn activate(data_dir: &Path) -> io::Result<()> {
+    match DEFERRED_LOGGER.get() {
+        Some(logger) => logger.activate(data_dir),
+        None => Ok(()),
+    }
 }
 
 pub fn init_with_limits(
@@ -110,6 +128,7 @@ fn timestamp_unix_ms() -> u64 {
 enum WriterCommand {
     Record(PendingLogRecord),
     Flush(SyncSender<()>),
+    Activate(PathBuf, SyncSender<io::Result<()>>),
 }
 
 pub struct LocalFileLogger {
@@ -118,6 +137,27 @@ pub struct LocalFileLogger {
 }
 
 impl LocalFileLogger {
+    // shortcut: 接続前は最大256件をメモリに保持する。接続前終了時にもログが必要なら一時ファイルに保存する。
+    pub fn new_deferred(process: LocalLogProcess) -> Result<Self, io::Error> {
+        Self::spawn(
+            None,
+            process,
+            MAX_FILE_BYTES,
+            MAX_FILE_COUNT,
+            QUEUE_CAPACITY,
+        )
+    }
+
+    pub fn activate(&self, data_dir: &Path) -> io::Result<()> {
+        let (completed, completion) = mpsc::sync_channel(0);
+        self.sender
+            .send(WriterCommand::Activate(data_dir.to_path_buf(), completed))
+            .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))?;
+        completion
+            .recv()
+            .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))?
+    }
+
     #[cfg(feature = "test-support")]
     pub fn test_dropped_records(&self) -> u64 {
         self.dropped_records.load(Ordering::Relaxed)
@@ -145,11 +185,33 @@ impl LocalFileLogger {
         max_file_count: usize,
         queue_capacity: usize,
     ) -> Result<Self, io::Error> {
+        Self::spawn(
+            Some(data_dir),
+            process,
+            max_file_bytes,
+            max_file_count,
+            queue_capacity,
+        )
+    }
+
+    fn spawn(
+        data_dir: Option<&Path>,
+        process: LocalLogProcess,
+        max_file_bytes: u64,
+        max_file_count: usize,
+        queue_capacity: usize,
+    ) -> Result<Self, io::Error> {
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
-        let writer = LocalLogWriter::new(data_dir, process, max_file_bytes, max_file_count);
+        let deferred = data_dir.is_none();
+        let writer = LocalLogWriter::new(
+            data_dir.unwrap_or(Path::new("")),
+            process,
+            max_file_bytes,
+            max_file_count,
+        );
         std::thread::Builder::new()
             .name("releash-local-log-writer".to_string())
-            .spawn(move || writer.run(receiver))?;
+            .spawn(move || writer.run(receiver, deferred))?;
         Ok(Self {
             sender,
             dropped_records: AtomicU64::new(0),
@@ -165,7 +227,9 @@ impl LocalFileLogger {
                 self.add_dropped(record.dropped_records_before.saturating_add(1));
             }
             Err(TrySendError::Full(WriterCommand::Flush(_)))
-            | Err(TrySendError::Disconnected(WriterCommand::Flush(_))) => unreachable!(),
+            | Err(TrySendError::Disconnected(WriterCommand::Flush(_)))
+            | Err(TrySendError::Full(WriterCommand::Activate(..)))
+            | Err(TrySendError::Disconnected(WriterCommand::Activate(..))) => unreachable!(),
         }
     }
 
@@ -246,11 +310,40 @@ impl LocalLogWriter {
         }
     }
 
-    fn run(mut self, receiver: Receiver<WriterCommand>) {
+    fn run(mut self, receiver: Receiver<WriterCommand>, mut deferred: bool) {
+        let mut pending = VecDeque::<PendingLogRecord>::new();
         while let Ok(command) = receiver.recv() {
             match command {
+                WriterCommand::Record(mut record) if deferred => {
+                    if pending.len() == QUEUE_CAPACITY {
+                        let dropped = pending.pop_front().unwrap();
+                        let next = pending.front_mut().unwrap_or(&mut record);
+                        next.dropped_records_before = next
+                            .dropped_records_before
+                            .saturating_add(dropped.dropped_records_before.saturating_add(1));
+                    }
+                    pending.push_back(record);
+                }
                 WriterCommand::Record(record) => {
                     let _ = self.append(&record);
+                }
+                WriterCommand::Activate(data_dir, completed) => {
+                    self.directory = data_dir.join(LOG_DIRECTORY_NAME);
+                    self.directory_initialized = false;
+                    let result = if deferred {
+                        let result = (|| {
+                            while let Some(record) = pending.front() {
+                                self.append(record)?;
+                                pending.pop_front();
+                            }
+                            Ok(())
+                        })();
+                        deferred = result.is_err();
+                        result
+                    } else {
+                        Ok(())
+                    };
+                    let _ = completed.send(result);
                 }
                 WriterCommand::Flush(completed) => {
                     let _ = completed.send(());

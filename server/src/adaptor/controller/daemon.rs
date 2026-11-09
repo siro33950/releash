@@ -84,6 +84,7 @@ pub struct Daemon {
     exit: tokio::sync::mpsc::Receiver<i32>,
     daemon: usecase::daemon::DaemonUsecase,
     _startup_lock: Option<std::fs::File>,
+    _legacy_writer_lock: Option<std::fs::File>,
 }
 
 impl Daemon {
@@ -175,6 +176,13 @@ pub async fn compose(
     };
     let legacy_startup_lock = match home.legacy.as_deref() {
         Some(legacy) => match adaptor::gateway::daemon::acquire_startup_lock(legacy) {
+            Ok(lock) => Some(lock),
+            Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
+        },
+        None => None,
+    };
+    let legacy_writer_lock = match home.legacy.as_deref() {
+        Some(legacy) => match adaptor::gateway::daemon::acquire_legacy_writer_lock(legacy) {
             Ok(lock) => Some(lock),
             Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
         },
@@ -775,6 +783,7 @@ pub async fn compose(
 
     Ok(Daemon {
         _startup_lock: Some(startup_lock),
+        _legacy_writer_lock: legacy_writer_lock,
         server: local_api.clone(),
         shutdown: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
@@ -842,6 +851,7 @@ impl Daemon {
     ) -> Self {
         Self {
             _startup_lock: None,
+            _legacy_writer_lock: None,
             shutdown,
             server,
             exit,

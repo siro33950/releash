@@ -28,6 +28,96 @@ const CONFIGURATION_CHILD_TEST_NAME: &str =
 const CONFIGURATION_CHILD_SUCCESS_MARKER: &str = "releash-local-log-configuration-test-passed";
 const TEST_MAX_FILE_BYTES: u64 = 256;
 
+#[test]
+fn test_起動前ログ_保存先を変更せず保留し接続後に一度だけ書き出す() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let current = root.path().join("current");
+    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
+    // When
+    log::Log::log(
+        &logger,
+        &log::Record::builder()
+            .level(log::Level::Error)
+            .args(format_args!("startup failed"))
+            .build(),
+    );
+    log::Log::flush(&logger);
+    // Then
+    assert!(!current.exists());
+    fs::create_dir_all(current.join(LOG_DIRECTORY_NAME)).unwrap();
+    fs::write(
+        current.join(LOG_DIRECTORY_NAME).join(ACTIVE_FILE_NAME),
+        b"{\"message\":\"migrated log\"}\n",
+    )
+    .unwrap();
+    logger.activate(&current).unwrap();
+    logger.activate(&current).unwrap();
+    log::Log::log(
+        &logger,
+        &log::Record::builder()
+            .level(log::Level::Warn)
+            .args(format_args!("connected"))
+            .build(),
+    );
+    log::Log::flush(&logger);
+    let records = records(&current);
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["message"], "migrated log");
+    assert_eq!(records[1]["message"], "startup failed");
+    assert_eq!(records[1]["process"], "gui");
+    assert_eq!(records[2]["message"], "connected");
+}
+
+#[test]
+fn test_起動前ログ_書き出し失敗後も保留したログを再試行できる() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let current = root.path().join("current");
+    fs::write(&current, b"blocked").unwrap();
+    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
+    log::Log::log(
+        &logger,
+        &log::Record::builder()
+            .level(log::Level::Error)
+            .args(format_args!("retained"))
+            .build(),
+    );
+    // When
+    assert!(logger.activate(&current).is_err());
+    fs::remove_file(&current).unwrap();
+    logger.activate(&current).unwrap();
+    // Then
+    let records = records(&current);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["message"], "retained");
+}
+
+#[test]
+fn test_起動前ログ_保留上限を超えると古いログを除き欠落数を残す() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
+    // When
+    for index in 0..300 {
+        log::Log::log(
+            &logger,
+            &log::Record::builder()
+                .level(log::Level::Warn)
+                .args(format_args!("failure {index}"))
+                .build(),
+        );
+        log::Log::flush(&logger);
+    }
+    logger.activate(root.path()).unwrap();
+    // Then
+    let records = records(root.path());
+    assert_eq!(records.len(), 256);
+    assert_eq!(records[0]["message"], "failure 44");
+    assert_eq!(records[0]["dropped_records_before"], 44);
+    assert_eq!(records[255]["message"], "failure 299");
+}
+
 fn serialized_record_with_size(size: usize) -> Vec<u8> {
     let serialize = |message: &str| {
         let mut record = serde_json::to_vec(&serde_json::json!({

@@ -13,12 +13,14 @@ import Sparkle
 
   /// 見つかった新しい版（`sparkle:shortVersionString`）。無ければ nil。
   private(set) var availableVersion: String?
+  private var availableChannel: String?
   /// 手動確認を始められるか。確認中は false になる。
   var canCheckForUpdates = false
 
   @ObservationIgnored private var controller: SPUStandardUpdaterController!
   private let defaults: UserDefaults
   private var observation: NSKeyValueObservation?
+  @ObservationIgnored private var settingsObservations: [NSKeyValueObservation] = []
 
   /// Sparkle の updater を作る。`start()` を呼ぶまで appcast は読まない。
   init(defaults: UserDefaults = .standard) {
@@ -30,6 +32,15 @@ import Sparkle
       [weak self] _, change in
       let enabled = change.newValue ?? false
       Task { @MainActor in self?.canCheckForUpdates = enabled }
+    }
+    for keyPath in [\SPUUpdater.automaticallyChecksForUpdates, \.automaticallyDownloadsUpdates] {
+      settingsObservations.append(
+        controller.updater.observe(keyPath, options: [.new]) {
+          [weak self] _, _ in
+          MainActor.assumeIsolated {
+            self?.withMutation(keyPath: \.automaticUpdates) {}
+          }
+        })
     }
   }
 
@@ -75,7 +86,10 @@ import Sparkle
       withMutation(keyPath: \.acceptsNightly) {
         defaults.set(newValue, forKey: Self.acceptsNightlyKey)
       }
-      availableVersion = nil
+      if !newValue && availableChannel == Self.nightlyChannel {
+        availableVersion = nil
+        availableChannel = nil
+      }
       controller.updater.resetUpdateCycleAfterShortDelay()
     }
   }
@@ -93,11 +107,17 @@ import Sparkle
 
   /// 新しい版が見つかった。`availableVersion` にその版を置く。
   nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-    MainActor.assumeIsolated { availableVersion = item.displayVersionString }
+    MainActor.assumeIsolated {
+      availableVersion = item.displayVersionString
+      availableChannel = item.channel
+    }
   }
 
   /// 新しい版が無かった。`availableVersion` を消す。
   nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
-    MainActor.assumeIsolated { availableVersion = nil }
+    MainActor.assumeIsolated {
+      availableVersion = nil
+      availableChannel = nil
+    }
   }
 }

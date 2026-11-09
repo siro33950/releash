@@ -31,11 +31,15 @@ for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'm
       calls.push(args);
       if (args[0] === 'gh' && args[1] === 'api') {
         const path = args.at(-1);
-        if (path.includes('/commits?')) return JSON.stringify([[{ sha: 'original', commit: { message: scenario === 'retry' ? 'release: v0.4.21\n\nNightly-Run: 42' : scenario === 'release-head' ? 'release: v0.4.21\n\nNightly-Run: 41' : 'fix: change' } }]]);
+        assert.ok(!path.includes('/commits?'));
         if (path.includes('/releases?')) return JSON.stringify([[{ draft: false, tag_name: 'v0.4.20-nightly.20261105.1' }, ...(scenario === 'draft' ? [{ draft: true, tag_name: 'v0.4.21-nightly.20261106.1' }] : [])]]);
         return JSON.stringify({ workflow_runs: [{ status: 'completed', conclusion: scenario === 'failed-ci' ? 'failure' : 'success' }] });
       }
-      if (args[1] === 'rev-parse') return 'bumped';
+      if (args[1] === 'log') {
+        if (args.includes('--format=%H')) return scenario === 'retry' ? 'original' : '';
+        return scenario === 'release-head' ? 'release: v0.4.21\n\nNightly-Run: 41' : 'fix: change';
+      }
+      if (args[1] === 'rev-parse') return args[2] === 'origin/main' ? 'original' : 'bumped';
       return '';
     };
     try {
@@ -63,6 +67,40 @@ for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'm
   });
 }
 
+test('test_nightly版確定_過去の実行IDに完全一致するcommitをgit履歴から再利用する', async () => {
+  const { execFileSync } = require('node:child_process');
+  const root = mkdtempSync(join(tmpdir(), 'nightly-retry-'));
+  const previous = { ...process.env };
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q');
+    git('config', 'user.name', 'test');
+    git('config', 'user.email', 'test@example.invalid');
+    git('commit', '--allow-empty', '-qm', 'release: v0.4.21\n\nNightly-Run: 42');
+    const original = git('rev-parse', 'HEAD');
+    git('commit', '--allow-empty', '-qm', 'fix: later change\n\nNightly-Run: 420\nNot-Nightly-Run: 42\nNightly-Run: 42 extra');
+    const head = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', head);
+    process.env.GITHUB_OUTPUT = join(root, 'output');
+    process.env.GITHUB_REPOSITORY = 'owner/repo';
+    process.env.GITHUB_RUN_ID = '42';
+    const run = (...args) => {
+      if (args[0] === 'git') {
+        assert.ok(['log', 'rev-parse'].includes(args[1]));
+        return git(...args.slice(1));
+      }
+      assert.deepEqual(args, ['gh', 'api', `repos/owner/repo/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${original}`]);
+      return JSON.stringify({ workflow_runs: [{ conclusion: 'success' }] });
+    };
+    await main(run, () => { throw new Error('A retry must not determine a new version'); });
+    assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), `sha=${original}\n`);
+    assert.equal(git('rev-parse', 'HEAD'), head);
+  } finally {
+    process.env = previous;
+    rmSync(root, { recursive: true });
+  }
+});
+
 for (const reason of ['manual-bump', 'failed-distribution']) {
   test(`test_nightly版確定_${reason}_同じ版でも実gitで配布commitを作る`, async () => {
     // Given
@@ -81,13 +119,14 @@ for (const reason of ['manual-bump', 'failed-distribution']) {
     git('add', '.');
     git('commit', '-qm', reason === 'manual-bump' ? 'chore: bump' : 'fix: after failed distribution');
     const original = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', original);
     process.env.GITHUB_OUTPUT = join(root, 'output');
     process.env.GITHUB_REPOSITORY = 'owner/repo';
     process.env.GITHUB_RUN_ID = '43';
     const run = (...args) => {
       if (args[0] === 'gh') {
         const path = args.at(-1);
-        if (path.includes('/commits?')) return JSON.stringify([[{ sha: original, commit: { message: git('log', '-1', '--format=%B') } }]]);
+        assert.ok(!path.includes('/commits?'));
         if (path.includes('/releases?')) return JSON.stringify([[{ draft: false, tag_name: 'v0.4.20' }]]);
         return JSON.stringify({ workflow_runs: [{ conclusion: 'success' }] });
       }

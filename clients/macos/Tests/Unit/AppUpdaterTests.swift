@@ -1,9 +1,59 @@
+import Observation
 import Sparkle
 import XCTest
 
 @testable import Releash
 
 final class AppUpdaterTests: XCTestCase {
+  @MainActor func test_自動更新_Sparkle側の変更を通知する() async throws {
+    let app = AppUpdater()
+    let updater = SPUStandardUpdaterController(
+      startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+    ).updater
+    let checks = updater.automaticallyChecksForUpdates
+    let downloads = updater.automaticallyDownloadsUpdates
+    defer {
+      updater.automaticallyChecksForUpdates = checks
+      updater.automaticallyDownloadsUpdates = downloads
+    }
+    for keyPath in [\SPUUpdater.automaticallyChecksForUpdates, \.automaticallyDownloadsUpdates] {
+      app.automaticUpdates = true
+      let changed = expectation(description: "automaticUpdates changed")
+      withObservationTracking {
+        _ = app.automaticUpdates
+      } onChange: {
+        changed.fulfill()
+      }
+      updater[keyPath: keyPath] = false
+      await fulfillment(of: [changed], timeout: 1)
+      XCTAssertFalse(app.automaticUpdates)
+    }
+  }
+
+  @MainActor func test_更新通知_nightly設定変更でstableを保持しnightlyだけ除外する() throws {
+    let suite = "AppUpdaterTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let app = AppUpdater(defaults: defaults)
+    let updater = SPUStandardUpdaterController(
+      startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil
+    ).updater
+    for nightly in [false, true] {
+      app.acceptsNightly = true
+      var dictionary: [String: Any] = [
+        "enclosure": [
+          "url": "https://example.invalid/update.zip", "sparkle:version": "42",
+          "sparkle:shortVersionString": "0.4.21",
+        ]
+      ]
+      if nightly { dictionary["sparkle:channel"] = AppUpdater.nightlyChannel }
+      let item = try XCTUnwrap(SUAppcastItem(dictionary: dictionary))
+      app.updater(updater, didFindValidUpdate: item)
+      app.acceptsNightly = false
+      XCTAssertEqual(app.availableVersion, nightly ? nil : "0.4.21")
+    }
+  }
+
   @MainActor func test_更新対象_本番アプリは確認できる() {
     // Given / When / Then
     XCTAssertTrue(AppUpdater.checksForUpdates(bundleIdentifier: "com.releash.macos"))

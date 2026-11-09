@@ -10,7 +10,14 @@ fn entry(name: &str, bytes: u64) -> DataEntry {
 #[test]
 fn test_保存項目_利用者定義と移行印と空の項目はデータでない() {
     // Given / When / Then
-    for name in ["workflows", "prompts", RELOCATION_MARKER] {
+    for name in [
+        "workflows",
+        "prompts",
+        "desktop.lock",
+        "desktop.sock",
+        "local-event-store.lock",
+        RELOCATION_MARKER,
+    ] {
         assert!(!entry(name, 1).is_server_data(), "{name}");
     }
     assert!(!entry("data", 0).is_server_data());

@@ -9,6 +9,29 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[test]
+fn test_registry排他_複製fdが残っても取得とcleanupの両経路で解放する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let locks = FileWorktreeOperationLocks::new(directory.path());
+    let registry = locks.registry_lock().unwrap();
+    let _duplicate = registry.try_clone().unwrap();
+    // When
+    let lease = locks.test_lease_registered(registry).unwrap();
+    // Then
+    let next = locks.open("registry").unwrap();
+    fs2::FileExt::try_lock_exclusive(&next).unwrap();
+    fs2::FileExt::unlock(&next).unwrap();
+    let key = lease.test_key().to_string();
+    drop(lease);
+    let registry = locks.registry_lock().unwrap();
+    let _duplicate = registry.try_clone().unwrap();
+    // When
+    locks.test_remove_idle_registered(&key, registry).unwrap();
+    // Then
+    fs2::FileExt::try_lock_exclusive(&next).unwrap();
+}
+
+#[test]
 pub fn test_worktree変更排他_未認可pathの反復でも解放後のファイル数は増えない() {
     // Given
     let directory = tempfile::tempdir().unwrap();

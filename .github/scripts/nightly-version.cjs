@@ -19,11 +19,15 @@ async function main(
   const api = path => JSON.parse(run('gh', 'api', path));
   const repo = process.env.GITHUB_REPOSITORY;
   const marker = `Nightly-Run: ${process.env.GITHUB_RUN_ID}`;
-  const commits = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/commits?sha=main&per_page=100`)).flat();
-  let sha = retryCommit(commits, process.env.GITHUB_RUN_ID)?.sha;
+  const head = {
+    sha: run('git', 'rev-parse', 'origin/main'),
+    commit: { message: run('git', 'log', '-1', '--format=%B', 'origin/main') },
+  };
+  let sha = run('git', 'log', 'origin/main', '--format=%H', '--max-count=1', `--grep=^${marker}$`)
+    || retryCommit([head], process.env.GITHUB_RUN_ID)?.sha;
   if (!sha) {
-    const runs = api(`repos/${repo}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${commits[0].sha}`).workflow_runs;
-    requireSuccessfulCI(runs, commits[0].sha);
+    const runs = api(`repos/${repo}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${head.sha}`).workflow_runs;
+    requireSuccessfulCI(runs, head.sha);
     const releases = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)).flat();
     const published = releases.filter(release => !release.draft)
       .map(release => release.tag_name.match(/^v(\d+\.\d+\.\d+)(?:-nightly\.\d{8}\.\d+)?$/)?.[1]).filter(Boolean)

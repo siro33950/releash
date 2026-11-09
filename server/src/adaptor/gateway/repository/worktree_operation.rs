@@ -220,6 +220,12 @@ impl FileWorktreeOperationLocks {
     pub fn test_directory(&self) -> &PathBuf {
         &self.directory
     }
+    pub fn test_lease_registered(&self, registry: File) -> Result<FileLease, GitError> {
+        self.lease_registered("/repo/worktree", false, registry)
+    }
+    pub fn test_remove_idle_registered(&self, key: &str, registry: File) -> Result<(), GitError> {
+        self.remove_idle_registered(key, registry)
+    }
 }
 
 #[cfg(feature = "test-support")]

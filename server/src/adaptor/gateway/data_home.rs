@@ -1,6 +1,6 @@
 use crate::domain::daemon::data_home::{
-    DataEntry, DataHome, DataHomeStore, EntryShape, LegacyServer, LegacyServerRecord, LegacySurvey,
-    MoveAction, ProcessLookup, RELOCATION_MARKER,
+    retained_entry, DataEntry, DataHome, DataHomeStore, EntryShape, LegacyServer,
+    LegacyServerRecord, LegacySurvey, MoveAction, ProcessLookup, RELOCATION_MARKER,
 };
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 use crate::infrastructure::local_api::discovery::decode;
@@ -50,7 +50,11 @@ impl DataHomeStore for LocalDataHomeStore {
                     && marker.symlink_metadata().map_err(failure)?.is_file() => {}
             Err(error) => return Err(failure(error)),
         }
+        fs::File::open(legacy)
+            .and_then(|file| file.sync_all())
+            .map_err(failure)?;
         fs::create_dir_all(&home.current).map_err(failure)?;
+        sync_parent(&home.current).map_err(failure)?;
         crate::infrastructure::local_event_store_connection::set_owner_only_permissions(
             &home.current,
         )
@@ -66,8 +70,11 @@ impl DataHomeStore for LocalDataHomeStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(failure(error)),
         }
+        fs::File::open(legacy)
+            .and_then(|file| file.sync_all())
+            .map_err(failure)?;
         match fs::remove_dir(legacy) {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_parent(legacy).map_err(failure),
             Err(error)
                 if matches!(
                     error.kind(),
@@ -102,8 +109,12 @@ fn entries(path: &Path) -> io::Result<Vec<DataEntry>> {
                 .into_string()
                 .map_err(|_| io::Error::other("non-UTF-8 relocation entry"))?;
             Ok(DataEntry {
+                bytes: if retained_entry(&name) {
+                    0
+                } else {
+                    bytes(&entry.path())?
+                },
                 name,
-                bytes: bytes(&entry.path())?,
             })
         })
         .collect()
@@ -164,19 +175,32 @@ fn shape(path: &Path) -> io::Result<Option<EntryShape>> {
 fn move_entry(source: &Path, destination: &Path) -> io::Result<()> {
     match MoveAction::decide(shape(source)?, shape(destination)?) {
         MoveAction::Skip => Ok(()),
-        MoveAction::Rename => fs::rename(source, destination),
+        MoveAction::Rename => {
+            fs::rename(source, destination)?;
+            sync_parent(destination)?;
+            sync_parent(source)
+        }
         MoveAction::MergeDirectory => {
             for entry in fs::read_dir(source)? {
                 let entry = entry?;
                 move_entry(&entry.path(), &destination.join(entry.file_name()))?;
             }
-            fs::remove_dir(source)
+            fs::remove_dir(source)?;
+            sync_parent(source)
         }
         MoveAction::Refuse => Err(io::Error::other(format!(
             "relocation would overwrite {}",
             destination.display()
         ))),
     }
+}
+
+fn sync_parent(path: &Path) -> io::Result<()> {
+    fs::File::open(
+        path.parent()
+            .ok_or_else(|| io::Error::other("missing parent"))?,
+    )?
+    .sync_all()
 }
 
 #[cfg(test)]

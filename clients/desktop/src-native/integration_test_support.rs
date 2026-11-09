@@ -13,7 +13,7 @@ pub mod desktop_client {
     pub use crate::adaptor::gateway::desktop_client::POLICY;
 }
 pub mod single_instance {
-    pub use crate::infrastructure::platform::single_instance::acquire;
+    pub use crate::infrastructure::platform::single_instance::{acquire, acquire_all};
 }
 
 pub mod daemon_connection {
