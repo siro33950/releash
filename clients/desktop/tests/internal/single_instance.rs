@@ -56,3 +56,31 @@ fn test_移行前後の二重起動_旧uiを優先し両保存先で排他する
             .unwrap();
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn test_保存先の別名_同じ実体を一度だけロックし二重起動を拒否する() {
+    use releash_desktop::test_support::integration::single_instance::acquire_all;
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let current = root.path().join("new");
+    let legacy = root.path().join("old");
+    std::fs::create_dir(&current).unwrap();
+    std::os::unix::fs::symlink(&current, &legacy).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // When
+    let owner = acquire_all(&[current.clone(), legacy.clone()], move || {
+        let _ = sender.send(());
+    })
+    .unwrap()
+    .unwrap();
+    // Then
+    for path in [&current, &legacy] {
+        assert!(acquire(path, || {}).unwrap().is_none());
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+    drop(owner);
+    assert!(acquire_all(&[legacy, current], || {}).unwrap().is_some());
+}

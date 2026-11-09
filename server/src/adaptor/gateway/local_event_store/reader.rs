@@ -353,7 +353,7 @@ pub fn canonical_runtime_owner_snapshot(
     Ok(owners)
 }
 
-type ReadTask = Box<dyn FnOnce(&Connection) + Send>;
+type ReadTask = Box<dyn FnOnce(&mut Connection) + Send>;
 
 pub struct ReadJob {
     context: OperationContext,
@@ -505,13 +505,15 @@ impl ReaderPool {
     /// Worker loop for one dedicated reader thread.
     pub fn run_worker(
         self: &Arc<Self>,
-        connection: crate::infrastructure::local_event_store_connection::ManagedConnection,
+        mut connection: crate::infrastructure::local_event_store_connection::ManagedConnection,
     ) {
         #[cfg(any(test, feature = "test-support"))]
         self.running_workers
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         while let Some(job) = self.pop_blocking() {
-            crate::common::operation_context::sync_scope(job.context, || (job.task)(&connection));
+            crate::common::operation_context::sync_scope(job.context, || {
+                (job.task)(&mut connection)
+            });
         }
         #[cfg(any(test, feature = "test-support"))]
         self.running_workers

@@ -572,3 +572,86 @@ pub fn test_local_log_既存record後の上限超過recordも分割せず世代�
     );
     assert_eq!(records(directory.path()).len(), 2);
 }
+
+#[test]
+fn test_移行中ログ_旧保存先への追記失敗を保留して新保存先へ再送する() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let legacy = root.path().join("old");
+    let current = root.path().join("new");
+    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
+    logger.activate(&legacy).unwrap();
+    log::Log::log(
+        &logger,
+        &log::Record::builder()
+            .level(log::Level::Warn)
+            .args(format_args!("before"))
+            .build(),
+    );
+    log::Log::flush(&logger);
+    fs::create_dir_all(&current).unwrap();
+    fs::rename(
+        legacy.join(LOG_DIRECTORY_NAME),
+        current.join(LOG_DIRECTORY_NAME),
+    )
+    .unwrap();
+    // When
+    for message in ["during", "subscription failed"] {
+        log::Log::log(
+            &logger,
+            &log::Record::builder()
+                .level(log::Level::Warn)
+                .args(format_args!("{message}"))
+                .build(),
+        );
+    }
+    log::Log::flush(&logger);
+    assert!(!legacy.join(LOG_DIRECTORY_NAME).exists());
+    logger.activate(&current).unwrap();
+    logger.activate(&current).unwrap();
+    // Then
+    let saved = records(&current);
+    assert_eq!(
+        saved
+            .iter()
+            .map(|record| record["message"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["before", "during", "subscription failed"]
+    );
+}
+
+#[test]
+fn test_空の保留ログ_保存先確認に失敗したら後続ログを保留する() {
+    for component in ["", LOCK_FILE_NAME, ACTIVE_FILE_NAME] {
+        // Given
+        let root = tempfile::tempdir().unwrap();
+        let logs = root.path().join(LOG_DIRECTORY_NAME);
+        let blocked = logs.join(component);
+        if component.is_empty() {
+            fs::write(&logs, b"blocked").unwrap();
+        } else {
+            fs::create_dir_all(&blocked).unwrap();
+        }
+        let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
+        // When
+        assert!(logger.activate(root.path()).is_err());
+        log::Log::log(
+            &logger,
+            &log::Record::builder()
+                .level(log::Level::Warn)
+                .args(format_args!("retained"))
+                .build(),
+        );
+        log::Log::flush(&logger);
+        if component.is_empty() {
+            fs::remove_file(&logs).unwrap();
+        } else {
+            fs::remove_dir(&blocked).unwrap();
+        }
+        logger.activate(root.path()).unwrap();
+        // Then
+        let saved = records(root.path());
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0]["message"], "retained");
+    }
+}

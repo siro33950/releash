@@ -51,6 +51,8 @@ final class AppUpdaterTests: XCTestCase {
       app.updater(updater, didFindValidUpdate: item)
       app.acceptsNightly = false
       XCTAssertEqual(app.availableVersion, nightly ? nil : "0.4.21")
+      app.updater(updater, didFindValidUpdate: item)
+      XCTAssertEqual(app.availableVersion, nightly ? nil : "0.4.21")
     }
   }
 

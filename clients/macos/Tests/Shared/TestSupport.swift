@@ -10,10 +10,15 @@ import XCTest
 @testable import Releash
 
 final class TestHTTPClient: HTTPClientInterface {
+  struct InitialDelivery {
+    var subscription: Releash_Client_V1_StartStateSubscriptionRequest
+    var pending: [Releash_Client_V1_StatePayload] = []
+  }
   struct State {
     var requests: [HTTPRequest<Data?>] = []
     var streams: [ResponseCallbacks] = []
     var subscriptions: [Releash_Client_V1_StartStateSubscriptionRequest] = []
+    var initialDeliveries: [String: InitialDelivery] = [:]
     var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
     var providerUsage = Releash_Client_V1_ProviderUsageSnapshot()
@@ -119,7 +124,10 @@ final class TestHTTPClient: HTTPClientInterface {
       if method == "StartStateSubscription" {
         let subscription = try Releash_Client_V1_StartStateSubscriptionRequest(
           serializedBytes: request.message ?? Data())
+        defer { state.withLock { $0.initialDeliveries[subscription.subscriptionID] = nil } }
         let (payload, stream) = state.withLock { state in
+          state.initialDeliveries[subscription.subscriptionID] = InitialDelivery(
+            subscription: subscription)
           var payload = Releash_Client_V1_StatePayload()
           if subscription.target == "workspace-terminal" || subscription.target == "terminal" {
             payload.terminal.snapshot.replay = state.terminalReplay
@@ -195,7 +203,23 @@ final class TestHTTPClient: HTTPClientInterface {
         event.subscriptionID = subscription.subscriptionID
         event.snapshot = payload
         if let stream { try Self.send(event, on: stream) }
-        state.withLock { $0.subscriptions.append(subscription) }
+        while true {
+          let pending = state.withLock { state in
+            let pending = state.initialDeliveries[subscription.subscriptionID]?.pending ?? []
+            if pending.isEmpty {
+              state.initialDeliveries[subscription.subscriptionID] = nil
+              state.subscriptions.append(subscription)
+            } else {
+              state.initialDeliveries[subscription.subscriptionID]?.pending.removeAll()
+            }
+            return pending
+          }
+          if pending.isEmpty { break }
+          for payload in pending {
+            event.snapshot = payload
+            if let stream { try Self.send(event, on: stream) }
+          }
+        }
       } else if method == "SaveRepositoryGroupState" {
         let save = try Releash_Client_V1_SaveRepositoryGroupStateRequest(
           serializedBytes: request.message ?? Data())
@@ -323,6 +347,12 @@ final class TestHTTPClient: HTTPClientInterface {
       case .reviewThreads(let value):
         if let path = args?.first { state.reviewThreads[path] = value }
       default: break
+      }
+      for (id, delivery) in state.initialDeliveries
+      where delivery.subscription.target == target
+        && (args == nil || delivery.subscription.args == args)
+      {
+        state.initialDeliveries[id]?.pending.append(payload)
       }
       return (
         state.subscriptions.filter { $0.target == target && (args == nil || $0.args == args) },

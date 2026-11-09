@@ -137,7 +137,7 @@ pub struct LocalFileLogger {
 }
 
 impl LocalFileLogger {
-    // shortcut: 接続前は最大256件をメモリに保持する。接続前終了時にもログが必要なら一時ファイルに保存する。
+    // shortcut: 保留中は最大256件をメモリに保持する。終了時にも保留ログが必要なら一時ファイルに保存する。
     pub fn new_deferred(process: LocalLogProcess) -> Result<Self, io::Error> {
         Self::spawn(
             None,
@@ -311,10 +311,17 @@ impl LocalLogWriter {
     }
 
     fn run(mut self, receiver: Receiver<WriterCommand>, mut deferred: bool) {
+        let retain_on_failure = deferred;
         let mut pending = VecDeque::<PendingLogRecord>::new();
         while let Ok(command) = receiver.recv() {
             match command {
-                WriterCommand::Record(mut record) if deferred => {
+                WriterCommand::Record(mut record) => {
+                    if !deferred {
+                        if self.append(&record).is_ok() || !retain_on_failure {
+                            continue;
+                        }
+                        deferred = true;
+                    }
                     if pending.len() == QUEUE_CAPACITY {
                         let dropped = pending.pop_front().unwrap();
                         let next = pending.front_mut().unwrap_or(&mut record);
@@ -324,25 +331,18 @@ impl LocalLogWriter {
                     }
                     pending.push_back(record);
                 }
-                WriterCommand::Record(record) => {
-                    let _ = self.append(&record);
-                }
                 WriterCommand::Activate(data_dir, completed) => {
                     self.directory = data_dir.join(LOG_DIRECTORY_NAME);
                     self.directory_initialized = false;
-                    let result = if deferred {
-                        let result = (|| {
-                            while let Some(record) = pending.front() {
-                                self.append(record)?;
-                                pending.pop_front();
-                            }
-                            Ok(())
-                        })();
-                        deferred = result.is_err();
-                        result
-                    } else {
+                    let result = (|| {
+                        self.append_bytes(&[])?;
+                        while let Some(record) = pending.front() {
+                            self.append(record)?;
+                            pending.pop_front();
+                        }
                         Ok(())
-                    };
+                    })();
+                    deferred = result.is_err();
                     let _ = completed.send(result);
                 }
                 WriterCommand::Flush(completed) => {
@@ -365,7 +365,10 @@ impl LocalLogWriter {
     }
 
     fn append(&mut self, record: &PendingLogRecord) -> Result<(), io::Error> {
-        let record = self.serialize(record)?;
+        self.append_bytes(&self.serialize(record)?)
+    }
+
+    fn append_bytes(&mut self, record: &[u8]) -> Result<(), io::Error> {
         if !self.directory_initialized {
             fs::create_dir_all(&self.directory)?;
             self.directory_initialized = true;
@@ -377,7 +380,7 @@ impl LocalLogWriter {
             .truncate(false)
             .open(self.lock_path())?;
         fs2::FileExt::lock_exclusive(&lock)?;
-        let write_result = self.append_locked(&record);
+        let write_result = self.append_locked(record);
         let unlock_result = fs2::FileExt::unlock(&lock);
         write_result.and(unlock_result)
     }

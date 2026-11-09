@@ -5,9 +5,16 @@ pub fn acquire_all(
 ) -> std::io::Result<Option<Vec<std::fs::File>>> {
     use fs2::FileExt;
     use std::os::unix::net::{UnixListener, UnixStream};
-    let mut locks = Vec::new();
+    let mut directories = Vec::new();
     for data_dir in data_dirs {
         std::fs::create_dir_all(data_dir)?;
+        let canonical = data_dir.canonicalize()?;
+        if !directories.contains(&canonical) {
+            directories.push(canonical);
+        }
+    }
+    let mut locks = Vec::new();
+    for data_dir in &directories {
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -42,7 +49,7 @@ pub fn acquire_all(
         locks.push(lock);
     }
     let mut listeners = Vec::new();
-    for data_dir in data_dirs {
+    for data_dir in &directories {
         let socket = data_dir.join("desktop.sock");
         match std::fs::remove_file(&socket) {
             Ok(()) => {}

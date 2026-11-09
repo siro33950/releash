@@ -108,6 +108,7 @@ import Sparkle
   /// 新しい版が見つかった。`availableVersion` にその版を置く。
   nonisolated func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
     MainActor.assumeIsolated {
+      guard item.channel != Self.nightlyChannel || acceptsNightly else { return }
       availableVersion = item.displayVersionString
       availableChannel = item.channel
     }
