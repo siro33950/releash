@@ -106,7 +106,7 @@ GitHub Pages のサイトは無い（Pages の API が 404）。
 
 版:
 
-- R-001: nightly が新しい commit を配るとき、配る版は直前に配った版より `patch` が 1 つ大きい `X.Y.Z` である。配るアプリの `CFBundleShortVersionString` と `CFBundleVersion`、同梱の `releashd` と `releash` の版、appcast の項目の `sparkle:shortVersionString` と `sparkle:version` は、すべて同じ `X.Y.Z` である。
+- R-001: nightly が新しい commit を配るとき、配る版は直前に配った版より `patch` が 1 つ大きい `X.Y.Z` である。`Bump Version` で main の版を直前に配った版より大きくしたときは、nightly は main の版をそのまま配る。配るアプリの `CFBundleShortVersionString` と `CFBundleVersion`、同梱の `releashd` と `releash` の版、appcast の項目の `sparkle:shortVersionString` と `sparkle:version` は、すべて同じ `X.Y.Z` である。
 - R-002: 版上げは main の commit として残る。nightly は版を上げた commit を main に入れ、その commit から配る。翌日に main の HEAD がその commit のままなら、nightly は配らない。
 - R-003: 同じ commit の再試行、再配布、stable への昇格では版が変わらない。stable は選んだ nightly と同じ commit、同じ版で作る。
 - R-004: stable の公開後に版上げの PR を作らない。stable の公開で main の版は変わらない。

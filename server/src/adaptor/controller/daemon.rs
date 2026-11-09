@@ -184,6 +184,7 @@ pub async fn compose(
         adaptor::gateway::data_home::LocalDataHomeStore,
     ));
     if let Err(error) = relocation.run(&home) {
+        eprintln!("{error:?}");
         return Err(fail_startup(&daemon, error.into()).await.into());
     }
     drop(legacy_startup_lock);

@@ -8,7 +8,14 @@ function nextVersion(version) {
   return `${major}.${minor}.${patch + 1}`;
 }
 
-async function main(run = (...args) => execFileSync(args[0], args.slice(1), { encoding: 'utf8' }).trim()) {
+function compareVersions(a, b) {
+  return a.localeCompare(b, undefined, { numeric: true });
+}
+
+async function main(
+  run = (...args) => execFileSync(args[0], args.slice(1), { encoding: 'utf8' }).trim(),
+  mainVersion = () => JSON.parse(readFileSync('clients/desktop/package.json')).version,
+) {
   const api = path => JSON.parse(run('gh', 'api', path));
   const repo = process.env.GITHUB_REPOSITORY;
   const marker = `Nightly-Run: ${process.env.GITHUB_RUN_ID}`;
@@ -20,8 +27,10 @@ async function main(run = (...args) => execFileSync(args[0], args.slice(1), { en
     const releases = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)).flat();
     const published = releases.filter(release => !release.draft)
       .map(release => release.tag_name.match(/^v(\d+\.\d+\.\d+)(?:-nightly\.\d{8}\.\d+)?$/)?.[1]).filter(Boolean)
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    const version = nextVersion(published.at(-1) || JSON.parse(readFileSync('clients/desktop/package.json')).version);
+      .sort(compareVersions);
+    const latest = published.at(-1);
+    const current = mainVersion();
+    const version = latest && compareVersions(current, latest) > 0 ? current : nextVersion(latest || current);
     for (const release of releases.filter(release => release.draft && release.tag_name.match(/^v(\d+\.\d+\.\d+)-nightly\.\d{8}\.[1-9]\d*$/)?.[1] === version)) {
       run('gh', 'release', 'delete', release.tag_name, '--cleanup-tag', '--yes', '--repo', repo);
     }

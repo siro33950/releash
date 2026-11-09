@@ -38,9 +38,13 @@ import Sparkle
     bundleIdentifier != nil && bundleIdentifier != "com.releash.macos.dev"
   }
 
+  private var checksForUpdates: Bool {
+    Self.checksForUpdates(bundleIdentifier: Bundle.main.bundleIdentifier)
+  }
+
   /// updater を開始する。自動更新が ON なら Sparkle が確認とダウンロードを自動で行う。
   func start() {
-    guard Self.checksForUpdates(bundleIdentifier: Bundle.main.bundleIdentifier) else { return }
+    guard checksForUpdates else { return }
     controller.startUpdater()
   }
 
@@ -78,7 +82,7 @@ import Sparkle
 
   /// Sparkle の手動確認を始め、結果を Sparkle の標準の画面で見せる。フッターの「更新」もこれを呼ぶ。
   func checkForUpdates() {
-    guard Self.checksForUpdates(bundleIdentifier: Bundle.main.bundleIdentifier) else { return }
+    guard checksForUpdates else { return }
     controller.checkForUpdates(nil)
   }
 

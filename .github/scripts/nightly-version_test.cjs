@@ -18,7 +18,7 @@ test('test_配布版_接尾辞を認めずpatchを上げる', () => {
 });
 
 
-for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft']) {
+for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'minor-bump']) {
   test(`test_nightly版確定_${scenario}`, async () => {
     // Given
     const root = mkdtempSync(join(tmpdir(), 'nightly-'));
@@ -40,13 +40,14 @@ for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft']) {
     };
     try {
       // When
-      if (scenario === 'failed-ci') await assert.rejects(main(run), /CI has not succeeded/);
-      else await main(run);
+      const mainVersion = () => (scenario === 'minor-bump' ? '0.5.0' : '0.4.20');
+      if (scenario === 'failed-ci') await assert.rejects(main(run, mainVersion), /CI has not succeeded/);
+      else await main(run, mainVersion);
       // Then
       const bump = calls.find(args => args[0] === 'node');
       const push = calls.find(args => args[1] === 'push');
-      if (['new', 'draft'].includes(scenario)) {
-        assert.deepEqual(bump, ['node', '.github/scripts/bump-version.cjs', '0.4.21']);
+      if (['new', 'draft', 'minor-bump'].includes(scenario)) {
+        assert.deepEqual(bump, ['node', '.github/scripts/bump-version.cjs', scenario === 'minor-bump' ? '0.5.0' : '0.4.21']);
         assert.ok(push);
         assert.equal(calls.some(args => args.includes('--cleanup-tag')), scenario === 'draft');
         assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), 'sha=bumped\n');
@@ -95,7 +96,7 @@ for (const reason of ['manual-bump', 'failed-distribution']) {
     };
     try {
       // When
-      await main(run);
+      await main(run, () => '0.4.21');
       // Then
       assert.notEqual(git('rev-parse', 'HEAD'), original);
       assert.equal(git('diff', original, 'HEAD'), '');
