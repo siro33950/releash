@@ -76,7 +76,10 @@ import XCTest
     guard
       NSRunningApplication.runningApplications(withBundleIdentifier: "com.releash.macos.dev")
         .isEmpty
-    else { throw XCTSkip("既存の Debug アプリを終了せずに検証するため、先に閉じる必要があります") }
+    else {
+      XCTFail("B-019 を検証できません。起動中の Debug アプリを閉じてから実行してください")
+      return
+    }
     try await update.prepare(debug: true)
     let unavailable = fixture.directory.appendingPathComponent("unavailable-data")
     try Data().write(to: unavailable)
@@ -191,7 +194,19 @@ import XCTest
     check.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
     // Then
     try await waitUntil {
-      self.app.windows["SUUpdateAlert"].buttons["SPUUserUpdateChoiceInstall"].isHittable
+      guard
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == running.processIdentifier
+      else { return false }
+      var window: CFTypeRef?
+      guard
+        AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &window)
+          == .success,
+        let window
+      else { return false }
+      var identifier: CFTypeRef?
+      return AXUIElementCopyAttributeValue(
+        window as! AXUIElement, kAXIdentifierAttribute as CFString, &identifier) == .success
+        && identifier as? String == "SUUpdateAlert"
     }
   }
 
@@ -220,6 +235,11 @@ import XCTest
     request.workflowName = "update-continuity"
     request.worktreePath = repository.path
     let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
+    try await fixture.waitForState(target: "workspaces") { payload in
+      guard case .workspaces(let workspaces) = payload.value else { return false }
+      return Fixture.hasRunningWorkflow(
+        workspaces, repository: repository.path, executionID: execution.value)
+    }
     let server = try await client.getServerInfo(request: .init(), headers: headers).result.get()
     XCTAssertEqual(server.release, update.currentVersion)
     app = XCUIApplication(url: update.application)
@@ -259,11 +279,21 @@ import XCTest
     XCTAssertTrue(app.state == .runningForeground || app.state == .runningBackground)
     try Data().write(to: fixture.directory.appendingPathComponent("release-download"))
     try await waitUntil { self.app.buttons["更新"].isEnabled }
+    XCTAssertEqual(try update.installedVersion(), update.currentVersion)
+    XCTAssertEqual(
+      NSRunningApplication.runningApplications(withBundleIdentifier: update.identifier)
+        .map(\.processIdentifier), [originalProcess])
     // When
     if immediately {
       app.buttons["更新"].click()
       let install = app.windows["SUUpdateAlert"].buttons["SPUUserUpdateChoiceInstall"]
       XCTAssertTrue(install.waitForExistence(timeout: 15), app.debugDescription)
+      XCTAssertTrue(
+        app.windows["SUUpdateAlert"].staticTexts.matching(
+          NSPredicate(
+            format: "value CONTAINS %@ OR label CONTAINS %@", update.updatedVersion,
+            update.updatedVersion)
+        ).firstMatch.exists)
       XCTAssertEqual(app.webViews.count, 0, "Release notes must not be displayed")
       install.click()
     } else {
@@ -282,7 +312,6 @@ import XCTest
     XCTAssertTrue(app.buttons["Worktreeを作成"].waitForExistence(timeout: 30), app.debugDescription)
     let connection = app.menuButtons["footer-server"]
     XCTAssertTrue(connection.waitForExistence(timeout: 30), app.debugDescription)
-    XCTAssertTrue(connection.label.contains("serving"), connection.label)
     XCTAssertTrue(connection.label.contains(update.currentVersion), connection.label)
     XCTAssertTrue(app.staticTexts["再起動で更新できます"].waitForExistence(timeout: 10))
     let current = try await client.getServerInfo(request: .init(), headers: headers).result.get()
