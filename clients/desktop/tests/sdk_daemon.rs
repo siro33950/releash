@@ -1,12 +1,20 @@
 #![cfg(unix)]
 use releash::{daemon, discovery};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 fn executable(directory: &std::path::Path, body: &str) -> std::path::PathBuf {
     let path = directory.join("releashd");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Wait for writable handles inherited by concurrent forks to close before exec.
+    fs2::FileExt::lock_exclusive(&file).unwrap();
+    drop(file);
+    let file = std::fs::File::open(&path).unwrap();
+    fs2::FileExt::lock_shared(&file).unwrap();
     path
 }
 
