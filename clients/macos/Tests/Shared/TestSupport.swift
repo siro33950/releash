@@ -120,7 +120,6 @@ final class TestHTTPClient: HTTPClientInterface {
         let subscription = try Releash_Client_V1_StartStateSubscriptionRequest(
           serializedBytes: request.message ?? Data())
         let (payload, stream) = state.withLock { state in
-          state.subscriptions.append(subscription)
           var payload = Releash_Client_V1_StatePayload()
           if subscription.target == "workspace-terminal" || subscription.target == "terminal" {
             payload.terminal.snapshot.replay = state.terminalReplay
@@ -196,6 +195,7 @@ final class TestHTTPClient: HTTPClientInterface {
         event.subscriptionID = subscription.subscriptionID
         event.snapshot = payload
         if let stream { try Self.send(event, on: stream) }
+        state.withLock { $0.subscriptions.append(subscription) }
       } else if method == "SaveRepositoryGroupState" {
         let save = try Releash_Client_V1_SaveRepositoryGroupStateRequest(
           serializedBytes: request.message ?? Data())

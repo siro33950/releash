@@ -140,7 +140,14 @@ async fn test_保存先移行_設定とeventを保持して通常移行と途中
             std::fs::read(home.current.join("sentinel")).unwrap(),
             b"retained"
         );
-        assert!(!home.legacy.exists());
+        let remaining: Vec<_> = std::fs::read_dir(&home.legacy)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            remaining,
+            vec![std::ffi::OsString::from("local-event-store.lock")]
+        );
         let wire::state_payload::Value::DesktopSettings(settings) =
             snapshot(&home.current, "desktop-settings", vec![]).await
         else {

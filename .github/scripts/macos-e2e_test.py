@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,13 +50,18 @@ class UpdatedCliTests(unittest.TestCase):
             manifest = '[workspace]\nmembers = ["server", "clients/cli"]\n\n[workspace.package]\nversion = "0.4.20"\n'
             (root / 'Cargo.toml').write_text(manifest)
             built = {}
-            def build(command, workspace):
+            def build(command, *, cwd, **kwargs):
+                workspace = cwd
                 built['manifest'] = (workspace / 'Cargo.toml').read_text()
-                binary = Path(command[command.index('--target-dir') + 1]) / 'debug/releash'
+                binary = Path(command[command.index('--target-dir') + 1]) / 'aarch64-apple-darwin/debug/releash'
                 binary.parent.mkdir(parents=True)
                 binary.write_text('cli')
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({
+                    'reason': 'compiler-artifact', 'target': {'name': 'releash'},
+                    'executable': str(binary),
+                }))
             # When
-            with patch.object(module, 'run', side_effect=build):
+            with patch.object(module.subprocess, 'run', side_effect=build):
                 module.build_updated_cli(root)
             # Then
             self.assertIn('members = ["clients/cli"]', built['manifest'])
