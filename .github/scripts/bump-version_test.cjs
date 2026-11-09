@@ -24,7 +24,7 @@ fs.writeFileSync('clients/desktop/package.json', JSON.stringify({version: '0.4.2
     // When
     execFileSync(process.execPath, [join(__dirname, 'bump-version.cjs'), 'patch'], { cwd: root });
     // Then
-    assert.equal(JSON.parse(readFileSync(join(root, 'clients/desktop/tauri.conf.json'))).version, '0.4.21');
+    assert.equal(readFileSync(join(root, 'clients/desktop/tauri.conf.json'), 'utf8'), '{\n\t"version": "0.4.21",\n\t"productName": "Releash"\n}\n');
     assert.match(readFileSync(join(root, 'Cargo.toml'), 'utf8'), /version = "0.4.21"/);
     const lock = readFileSync(join(root, 'Cargo.lock'), 'utf8');
     assert.equal((lock.match(/version = "0.4.21"/g) || []).length, 3);
