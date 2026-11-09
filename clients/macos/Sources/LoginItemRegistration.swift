@@ -3,6 +3,7 @@ import ServiceManagement
 
 @MainActor final class LoginItemRegistration {
   static let didSynchronize = Notification.Name("ReleashLoginItemDidSynchronize")
+  private static let executablePathKey = "loginItemExecutablePath"
   var status: () -> SMAppService.Status = { SMAppService.mainApp.status }
   var register: () throws -> Void = { try SMAppService.mainApp.register() }
   var unregister: () throws -> Void = { try SMAppService.mainApp.unregister() }
@@ -28,14 +29,13 @@ import ServiceManagement
       .result.get()
     try Task.checkCancellation()
     guard result.status == .allowed else { return }
-    if status() == .enabled && defaults.string(forKey: "loginItemExecutablePath") != executablePath
-    {
+    if status() == .enabled && defaults.string(forKey: Self.executablePathKey) != executablePath {
       try unregister()
       try register()
-      defaults.set(executablePath, forKey: "loginItemExecutablePath")
+      defaults.set(executablePath, forKey: Self.executablePathKey)
     } else if status() == .notRegistered || status() == .notFound {
       try register()
-      defaults.set(executablePath, forKey: "loginItemExecutablePath")
+      defaults.set(executablePath, forKey: Self.executablePathKey)
     }
   }
 }

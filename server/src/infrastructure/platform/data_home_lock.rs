@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
 
-pub(crate) fn open(data_dir: &Path, purpose: &str) -> io::Result<File> {
+pub(crate) fn open(data_dir: &Path) -> io::Result<File> {
     let parent = data_dir
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -29,5 +29,5 @@ pub(crate) fn open(data_dir: &Path, purpose: &str) -> io::Result<File> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(parent.join(format!(".{}.{purpose}.lock", name.to_string_lossy())))
+        .open(parent.join(format!(".{}.startup.lock", name.to_string_lossy())))
 }

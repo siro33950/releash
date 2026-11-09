@@ -169,15 +169,10 @@ pub async fn compose(
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
     // 旧既定の保存先のデータは、store を開く前に新既定の保存先へ移す
-    let profile = infrastructure::platform::data_dir::BuildProfile::current();
-    let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
-    let home = domain::daemon::data_home::DataHome::for_startup(
-        real(&data_dir),
-        infrastructure::platform::data_dir::default_data_dir_for_profile(profile)
-            .map(|path| real(&path))
-            .as_deref(),
-        legacy_data_dir.as_deref(),
-    );
+    let home = domain::daemon::data_home::DataHome {
+        current: data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone()),
+        legacy: legacy_data_dir,
+    };
     let legacy_startup_lock = match home.legacy.as_deref() {
         Some(legacy) => match adaptor::gateway::daemon::acquire_startup_lock(legacy) {
             Ok(lock) => Some(lock),
@@ -193,9 +188,16 @@ pub async fn compose(
     }
     drop(legacy_startup_lock);
     // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
-    let aliases =
-        infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())?;
-    aliases.ensure_wrappers()?;
+    if let Err(error) =
+        infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())
+            .and_then(|aliases| aliases.ensure_wrappers())
+    {
+        eprintln!("{error}");
+        let kind = domain::daemon::StartupFailureKind::StorageUnavailable(
+            domain::failure::TechnicalFailureNature::Other,
+        );
+        return Err(fail_startup(&daemon, kind).await.into());
+    }
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(
         data_dir.clone(),
         retry_limiter.clone(),

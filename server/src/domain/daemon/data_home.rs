@@ -1,5 +1,5 @@
 use crate::domain::failure::TechnicalFailure;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// サーバの保存先。既定の保存先で起動するときだけ、移行前の旧既定の保存先を一つ持つ。
 /// 明示指定された保存先（`--data-dir`、`RELEASH_DATA_DIR`）は旧保存先を持たず、移行の対象にならない。
@@ -7,22 +7,6 @@ use std::path::{Path, PathBuf};
 pub(crate) struct DataHome {
     pub(crate) current: PathBuf,
     pub(crate) legacy: Option<PathBuf>,
-}
-
-impl DataHome {
-    /// 起動する保存先が既定の保存先かを決め、既定なら旧既定の保存先を持たせる。
-    /// 呼び出し側が実体のパスに直した値を渡す。既定の保存先を解決できないときは旧保存先を持たない。
-    pub(crate) fn for_startup(
-        current: PathBuf,
-        default_current: Option<&Path>,
-        default_legacy: Option<&Path>,
-    ) -> Self {
-        let legacy = default_current
-            .filter(|default| *default == current.as_path())
-            .and(default_legacy)
-            .map(Path::to_owned);
-        Self { current, legacy }
-    }
 }
 
 const USER_DEFINITIONS: [&str; 2] = ["workflows", "prompts"];

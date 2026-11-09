@@ -7,6 +7,8 @@ final class UpdateFixture: @unchecked Sendable {
   let fixture: Fixture
   let identifier = "test.releash.update.\(UUID().uuidString)"
   let application: URL
+  private(set) var currentVersion = ""
+  private(set) var updatedVersion = ""
   private let listener: NWListener
 
   init(fixture: Fixture) throws {
@@ -74,19 +76,9 @@ final class UpdateFixture: @unchecked Sendable {
     let updated = fixture.directory.appendingPathComponent("new/Releash.app")
     let updatedCLI = fixture.root.appendingPathComponent(
       "clients/macos/.build/Helpers/Update/releash")
-    let status = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: fixture.process(updatedCLI, ["status", "--json"]))
-        as? [String: Any])
-    let cliVersion = (status["client"] as? [String: Any])?["release"] as? String
-    guard cliVersion == "0.4.21" else {
-      throw NSError(
-        domain: "UpdateFixture", code: 2,
-        userInfo: [
-          NSLocalizedDescriptionKey:
-            "Updated CLI must be releash 0.4.21: \(cliVersion ?? "missing")"
-        ])
-    }
-    for (destination, version) in [(application, "0.4.20"), (updated, "0.4.21")] {
+    currentVersion = try release(of: fixture.cli)
+    updatedVersion = try release(of: updatedCLI)
+    for (destination, version) in [(application, currentVersion), (updated, updatedVersion)] {
       try fixture.process(URL(fileURLWithPath: "/usr/bin/ditto"), [source.path, destination.path])
       let plist = destination.appendingPathComponent("Contents/Info.plist")
       var info = try XCTUnwrap(
@@ -105,7 +97,7 @@ final class UpdateFixture: @unchecked Sendable {
       info["LSEnvironment"] = fixture.environment
       try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(
         to: plist)
-      if version == "0.4.21" {
+      if destination == updated {
         let cli = destination.appendingPathComponent("Contents/Helpers/releash")
         try FileManager.default.removeItem(at: cli)
         try FileManager.default.copyItem(at: updatedCLI, to: cli)
@@ -124,11 +116,18 @@ final class UpdateFixture: @unchecked Sendable {
       <enclosure url="http://127.0.0.1:\(port)/update.zip" length="\(bytes.count)" type="application/octet-stream" sparkle:edSignature="\(signature)"/>
       """
     let feed = """
-      <?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Update test</title><item><title>0.4.21</title><sparkle:version>0.4.21</sparkle:version><sparkle:shortVersionString>0.4.21</sparkle:shortVersionString>\(enclosure)</item></channel></rss>
+      <?xml version="1.0"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Update test</title><item><title>\(updatedVersion)</title><sparkle:version>\(updatedVersion)</sparkle:version><sparkle:shortVersionString>\(updatedVersion)</sparkle:shortVersionString>\(enclosure)</item></channel></rss>
       """
     try feed.write(
       to: fixture.directory.appendingPathComponent("appcast.xml"), atomically: true, encoding: .utf8
     )
+  }
+
+  private func release(of cli: URL) throws -> String {
+    let status = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: fixture.process(cli, ["status", "--json"]))
+        as? [String: Any])
+    return try XCTUnwrap((status["client"] as? [String: Any])?["release"] as? String)
   }
 
   func installedVersion() throws -> String? {

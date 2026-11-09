@@ -175,7 +175,9 @@ import XCTest
         timeout: 15), app.debugDescription)
     XCTAssertTrue(
       app.staticTexts.matching(
-        NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "0.4.21", "0.4.21")
+        NSPredicate(
+          format: "value CONTAINS %@ OR label CONTAINS %@", update.updatedVersion,
+          update.updatedVersion)
       ).firstMatch
         .exists)
     XCTAssertEqual(app.webViews.count, 0)
@@ -219,7 +221,7 @@ import XCTest
     request.worktreePath = repository.path
     let execution = try await client.startWorkflow(request: request, headers: headers).result.get()
     let server = try await client.getServerInfo(request: .init(), headers: headers).result.get()
-    XCTAssertEqual(server.release, "0.4.20")
+    XCTAssertEqual(server.release, update.currentVersion)
     app = XCUIApplication(url: update.application)
     app.launchEnvironment = fixture.environment
     app.launchArguments = ["-AppleLanguages", "(en)"]
@@ -246,9 +248,9 @@ import XCTest
         atPath: self.fixture.directory.appendingPathComponent("download-requested").path)
     }
     // Then
-    XCTAssertEqual(try update.installedVersion(), "0.4.20")
+    XCTAssertEqual(try update.installedVersion(), update.currentVersion)
     XCTAssertTrue(app.buttons["更新"].waitForExistence(timeout: 10))
-    XCTAssertTrue(app.staticTexts["0.4.21"].exists)
+    XCTAssertTrue(app.staticTexts[update.updatedVersion].exists)
     XCTAssertFalse(app.buttons["更新"].isEnabled)
     app.descendants(matching: .statusItem)["Releash"].click()
     XCTAssertTrue(check.waitForExistence(timeout: 10))
@@ -267,7 +269,7 @@ import XCTest
     } else {
       app.typeKey("q", modifierFlags: .command)
     }
-    try await waitUntil { try self.update.installedVersion() == "0.4.21" }
+    try await waitUntil { try self.update.installedVersion() == self.update.updatedVersion }
     // Then
     if !immediately {
       XCTAssertTrue(app.wait(for: .notRunning, timeout: 15))
@@ -281,7 +283,7 @@ import XCTest
     let connection = app.menuButtons["footer-server"]
     XCTAssertTrue(connection.waitForExistence(timeout: 30), app.debugDescription)
     XCTAssertTrue(connection.label.contains("serving"), connection.label)
-    XCTAssertTrue(connection.label.contains("0.4.20"), connection.label)
+    XCTAssertTrue(connection.label.contains(update.currentVersion), connection.label)
     XCTAssertTrue(app.staticTexts["再起動で更新できます"].waitForExistence(timeout: 10))
     let current = try await client.getServerInfo(request: .init(), headers: headers).result.get()
     XCTAssertEqual(current.pid, server.pid)

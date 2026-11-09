@@ -104,8 +104,8 @@ pub(crate) fn acquire_startup_lock(
     let unavailable = |_: std::io::Error| {
         K::StorageUnavailable(crate::domain::failure::TechnicalFailureNature::Other)
     };
-    let lock = crate::infrastructure::platform::data_home_lock::open(data_dir, "startup")
-        .map_err(unavailable)?;
+    let lock =
+        crate::infrastructure::platform::data_home_lock::open(data_dir).map_err(unavailable)?;
     match fs2::FileExt::try_lock_exclusive(&lock) {
         Ok(()) => Ok(lock),
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(K::StoreInUse),

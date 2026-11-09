@@ -36,5 +36,32 @@ class ProductionTests(unittest.TestCase):
             self.assertEqual(set(processes.values()), {'app'})
 
 
+class UpdatedCliTests(unittest.TestCase):
+    def test_更新用CLI_現在の版の次のpatchでビルドし元の版を変えない(self):
+        # Given
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'proto').mkdir()
+            (root / 'clients/cli').mkdir(parents=True)
+            (root / 'Cargo.lock').write_text('')
+            (root / 'rust-toolchain.toml').write_text('')
+            manifest = '[workspace]\nmembers = ["server", "clients/cli"]\n\n[workspace.package]\nversion = "0.4.20"\n'
+            (root / 'Cargo.toml').write_text(manifest)
+            built = {}
+            def build(command, workspace):
+                built['manifest'] = (workspace / 'Cargo.toml').read_text()
+                binary = Path(command[command.index('--target-dir') + 1]) / 'debug/releash'
+                binary.parent.mkdir(parents=True)
+                binary.write_text('cli')
+            # When
+            with patch.object(module, 'run', side_effect=build):
+                module.build_updated_cli(root)
+            # Then
+            self.assertIn('members = ["clients/cli"]', built['manifest'])
+            self.assertIn('version = "0.4.21"', built['manifest'])
+            self.assertEqual((root / 'Cargo.toml').read_text(), manifest)
+            self.assertEqual((root / 'clients/macos/.build/Helpers/Update/releash').read_text(), 'cli')
+
+
 if __name__ == '__main__':
     unittest.main()

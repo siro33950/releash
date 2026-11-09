@@ -5,8 +5,11 @@ import json
 import os
 import plistlib
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import tempfile
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = Path(tempfile.gettempdir()) / f'releash-macos-e2e-{os.getuid()}.lock'
@@ -35,6 +38,27 @@ def build_fixture(root):
     manifest = root / 'clients/macos/.build/agent-tui-fixture.json'
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({'executable': executables[0]}))
+
+
+def build_updated_cli(root):
+    manifest = (root / 'Cargo.toml').read_text()
+    version = tomllib.loads(manifest)['workspace']['package']['version']
+    major, minor, patch = version.split('.')
+    updated = f'{major}.{minor}.{int(patch) + 1}'
+    build = root / 'clients/macos/.build'
+    with tempfile.TemporaryDirectory(prefix='releash-update-cli-') as directory:
+        workspace = Path(directory)
+        shutil.copytree(root / 'proto', workspace / 'proto')
+        shutil.copytree(root / 'clients/cli', workspace / 'clients/cli')
+        shutil.copy(root / 'Cargo.lock', workspace)
+        shutil.copy(root / 'rust-toolchain.toml', workspace)
+        manifest = re.sub(r'^members = .*$', 'members = ["clients/cli"]', manifest, flags=re.M)
+        (workspace / 'Cargo.toml').write_text(manifest.replace(f'version = "{version}"', f'version = "{updated}"', 1))
+        target = build / 'UpdateCLI'
+        run(['cargo', 'build', '-p', 'releash', '--target-dir', str(target)], workspace)
+    output = build / 'Helpers/Update/releash'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target / 'debug/releash', output)
 
 
 def production_processes():
@@ -127,5 +151,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.build_fixture:
         build_fixture(ROOT)
+        build_updated_cli(ROOT)
     else:
         raise SystemExit(main(args))

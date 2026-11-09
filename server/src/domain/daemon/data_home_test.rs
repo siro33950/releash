@@ -8,28 +8,6 @@ fn entry(name: &str, bytes: u64) -> DataEntry {
 }
 
 #[test]
-fn test_保存先_既定だけが旧保存先を持つ() {
-    // Given
-    let current = PathBuf::from("/data/current");
-    let legacy = Path::new("/data/legacy");
-    // When / Then
-    for (default, old, expected) in [
-        (
-            Some(current.as_path()),
-            Some(legacy),
-            Some(legacy.to_owned()),
-        ),
-        (Some(Path::new("/data/other")), Some(legacy), None),
-        (None, Some(legacy), None),
-        (Some(current.as_path()), None, None),
-    ] {
-        let home = DataHome::for_startup(current.clone(), default, old);
-        assert_eq!(home.current, current);
-        assert_eq!(home.legacy, expected);
-    }
-}
-
-#[test]
 fn test_保存項目_利用者定義と移行印と空の項目はデータでない() {
     // Given / When / Then
     for name in ["workflows", "prompts", RELOCATION_MARKER] {

@@ -3,7 +3,8 @@ use crate::domain::daemon::data_home::{
     MoveAction, ProcessLookup, RELOCATION_MARKER,
 };
 use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
-use crate::infrastructure::local_api::{lookup_process_start_time, LocalApiDiscovery};
+use crate::infrastructure::local_api::discovery::decode;
+use crate::infrastructure::local_api::lookup_process_start_time;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -139,19 +140,12 @@ fn record(path: &Path) -> LegacyServerRecord {
         }
         Err(_) => return LegacyServerRecord::Unreadable,
     };
-    let descriptor = crate::infrastructure::client_protocol::descriptor::pool()
-        .get_message_by_name("releash.client.v1.LocalApiDiscovery")
-        .expect("discovery descriptor");
-    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
-    let discovery = prost_reflect::DynamicMessage::deserialize(descriptor, &mut deserializer)
-        .ok()
-        .and_then(|message| message.transcode_to::<LocalApiDiscovery>().ok());
-    match discovery {
-        Some(discovery) if deserializer.end().is_ok() => LegacyServerRecord::Recorded {
+    match decode(&bytes) {
+        Some(discovery) => LegacyServerRecord::Recorded {
             pid: discovery.pid,
             process_started_at: discovery.process_started_at,
         },
-        _ => LegacyServerRecord::Unreadable,
+        None => LegacyServerRecord::Unreadable,
     }
 }
 

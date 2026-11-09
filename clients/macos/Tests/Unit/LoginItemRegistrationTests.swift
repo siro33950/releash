@@ -80,9 +80,6 @@ final class LoginItemRegistrationTests: XCTestCase {
     let suite = "LoginItemRegistrationTests.\(UUID().uuidString)"
     item.defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { item.defaults.removePersistentDomain(forName: suite) }
-    item.defaults.set(
-      "/Applications/Releash Preview.app/Contents/MacOS/Releash Preview",
-      forKey: "loginItemExecutablePath")
     item.executablePath = "/Applications/Releash.app/Contents/MacOS/Releash"
     item.status = { .enabled }
     var operations: [String] = []
