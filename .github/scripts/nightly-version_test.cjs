@@ -18,7 +18,7 @@ test('test_配布版_接尾辞を認めずpatchを上げる', () => {
 });
 
 
-for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'minor-bump']) {
+for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'minor-bump', 'paginated']) {
   test(`test_nightly版確定_${scenario}`, async () => {
     // Given
     const root = mkdtempSync(join(tmpdir(), 'nightly-'));
@@ -32,7 +32,22 @@ for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'm
       if (args[0] === 'gh' && args[1] === 'api') {
         const path = args.at(-1);
         assert.ok(!path.includes('/commits?'));
-        if (path.includes('/releases?')) return JSON.stringify([[{ draft: false, tag_name: 'v0.4.20-nightly.20261105.1' }, ...(scenario === 'draft' ? [{ draft: true, tag_name: 'v0.4.21-nightly.20261106.1' }] : [])]]);
+        if (path.includes('/releases?')) {
+          assert.deepEqual(args.slice(0, 4), ['gh', 'api', '--jq', 'map({tag_name, draft})']);
+          if (scenario === 'paginated') {
+            if (path.endsWith('page=1')) return JSON.stringify([
+              { draft: true, tag_name: 'v0.6.1-nightly.20261106.1' },
+              ...Array.from({ length: 29 }, () => ({ draft: false, tag_name: 'v0.4.20' })),
+            ]);
+            assert.ok(path.endsWith('page=2'));
+            return JSON.stringify([
+              { draft: false, tag_name: 'v0.6.0' },
+              { draft: true, tag_name: 'v9.0.0-nightly.20261106.1' },
+              { draft: false, tag_name: 'not-a-version' },
+            ]);
+          }
+          return JSON.stringify([{ draft: false, tag_name: 'v0.4.20-nightly.20261105.1' }, ...(scenario === 'draft' ? [{ draft: true, tag_name: 'v0.4.21-nightly.20261106.1' }] : [])]);
+        }
         return JSON.stringify({ workflow_runs: [{ status: 'completed', conclusion: scenario === 'failed-ci' ? 'failure' : 'success' }] });
       }
       if (args[1] === 'log') {
@@ -50,10 +65,14 @@ for (const scenario of ['new', 'retry', 'release-head', 'failed-ci', 'draft', 'm
       // Then
       const bump = calls.find(args => args[0] === 'node');
       const push = calls.find(args => args[1] === 'push');
-      if (['new', 'draft', 'minor-bump'].includes(scenario)) {
-        assert.deepEqual(bump, ['node', '.github/scripts/bump-version.cjs', scenario === 'minor-bump' ? '0.5.0' : '0.4.21']);
+      if (['new', 'draft', 'minor-bump', 'paginated'].includes(scenario)) {
+        assert.deepEqual(bump, ['node', '.github/scripts/bump-version.cjs', scenario === 'minor-bump' ? '0.5.0' : scenario === 'paginated' ? '0.6.1' : '0.4.21']);
         assert.ok(push);
-        assert.equal(calls.some(args => args.includes('--cleanup-tag')), scenario === 'draft');
+        assert.equal(calls.some(args => args.includes('--cleanup-tag')), ['draft', 'paginated'].includes(scenario));
+        if (scenario === 'paginated') {
+          assert.deepEqual(calls.filter(args => args.includes('--cleanup-tag')).map(args => args[3]), ['v0.6.1-nightly.20261106.1']);
+          assert.equal(calls.filter(args => args.at(-1).includes('/releases?')).length, 2);
+        }
         assert.equal(readFileSync(process.env.GITHUB_OUTPUT, 'utf8'), 'sha=bumped\n');
       } else {
         assert.equal(bump, undefined);
@@ -127,7 +146,7 @@ for (const reason of ['manual-bump', 'failed-distribution']) {
       if (args[0] === 'gh') {
         const path = args.at(-1);
         assert.ok(!path.includes('/commits?'));
-        if (path.includes('/releases?')) return JSON.stringify([[{ draft: false, tag_name: 'v0.4.20' }]]);
+        if (path.includes('/releases?')) return JSON.stringify([{ draft: false, tag_name: 'v0.4.20' }]);
         return JSON.stringify({ workflow_runs: [{ conclusion: 'success' }] });
       }
       if (args[0] === 'node' || args[1] === 'push') return '';
