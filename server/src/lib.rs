@@ -33,7 +33,16 @@ mod usecase;
 
 pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
     let result = (|| -> Result<std::convert::Infallible, Box<dyn std::error::Error>> {
-        let data_dir = crate::infrastructure::platform::data_dir::resolve_data_dir(data_dir)?;
+        let explicit = infrastructure::platform::data_dir::explicit_data_dir(data_dir);
+        let legacy_data_dir = explicit
+            .is_none()
+            .then(|| {
+                infrastructure::platform::data_dir::legacy_data_dir_for_profile(
+                    infrastructure::platform::data_dir::BuildProfile::current(),
+                )
+            })
+            .flatten();
+        let data_dir = crate::infrastructure::platform::data_dir::resolve_data_dir(explicit)?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let provider_initial_search_path =
             infrastructure::process::search_path::capture_login_shell_path(
@@ -44,12 +53,6 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
             std::env::set_var("PATH", search_path);
         }
         std::env::set_var("RELEASH_DATA_DIR", &data_dir);
-        if let Err(error) = infrastructure::local_log::init(
-            &data_dir,
-            infrastructure::local_log::LocalLogProcess::Daemon,
-        ) {
-            eprintln!("{error}");
-        }
         #[cfg(unix)]
         if let Err(error) = infrastructure::process::fd_limit::raise_open_file_limit() {
             log::warn!("failed to raise open file limit: {error}");
@@ -58,6 +61,7 @@ pub fn run_daemon(data_dir: Option<std::path::PathBuf>) -> i32 {
         runtime.block_on(async {
             let daemon = adaptor::controller::daemon::compose(
                 data_dir,
+                legacy_data_dir,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 provider_initial_search_path,
             )

@@ -58,7 +58,7 @@ pub fn desktop_connection_app_parts<R: tauri::Runtime>(
     let connection = Arc::new(
         crate::adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
             executable.into(),
-            data_dir.into(),
+            releash::data_dir::DataDir::explicit(data_dir.into()),
             Arc::new(crate::common::retry::RetryLimiter::new()),
             crate::common::deadline::Deadline(releash::daemon::timeout("min_connect_timeout_ms")),
             clients,

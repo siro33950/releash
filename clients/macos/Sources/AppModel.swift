@@ -6,6 +6,7 @@ import Observation
 import SwiftProtobuf
 
 @MainActor @Observable final class AppModel {
+  let updater = AppUpdater()
   var pendingRoots: [String: String] = [:]
   var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
   var collapsed: [String: Bool] = [:]

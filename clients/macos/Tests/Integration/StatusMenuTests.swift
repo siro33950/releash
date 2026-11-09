@@ -64,7 +64,7 @@ final class StatusMenuTests: XCTestCase {
     try http.publish(payload, target: "execution-overview")
     try await eventually {
       status.menuNeedsUpdate(menu)
-      return status.item.button?.toolTip == "Releash Preview: active"
+      return status.item.button?.toolTip == "Releash: active"
         && menu.items.first?.representedObject as? String == "/repo/linked"
     }
     // When

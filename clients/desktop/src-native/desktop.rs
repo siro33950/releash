@@ -15,10 +15,13 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build());
     let builder = builder.setup(|app| {
         infrastructure::platform::desktop_restart::wait_for_predecessor()?;
-        let data_dir = releash::data_dir::resolve_data_dir(None)?;
+        let resolved = releash::data_dir::resolve_data_dir(None)?;
+        let data_dirs: Vec<_> = std::iter::once(resolved.path.clone())
+            .chain(resolved.legacy.iter().cloned())
+            .collect();
         let handle = app.handle().clone();
         let Some(lock) =
-            infrastructure::platform::single_instance::acquire(&data_dir, move || {
+            infrastructure::platform::single_instance::acquire_all(&data_dirs, move || {
                 let handle = handle.clone();
                 let main = handle.clone();
                 let _ = handle.run_on_main_thread(move || {
@@ -31,8 +34,7 @@ pub fn run() {
             std::process::exit(0);
         };
         app.manage(lock);
-        if let Err(error) = releashd::desktop_api::init_local_log(
-            &data_dir,
+        if let Err(error) = releashd::desktop_api::init_deferred_local_log(
             releashd::desktop_api::LocalLogProcess::Gui,
         ) {
             eprintln!("{error}");
@@ -42,7 +44,7 @@ pub fn run() {
         let connection = Arc::new(
             adaptor::gateway::daemon_connection::DaemonServiceGateway::new(
                 releash::daemon::executable(&releash::daemon::current_executable()?),
-                data_dir,
+                resolved,
                 Arc::new(crate::common::retry::RetryLimiter::new()),
                 crate::common::deadline::Deadline(releash::daemon::timeout(
                     "min_connect_timeout_ms",

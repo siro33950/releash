@@ -78,9 +78,17 @@ async fn test_引数なし起動_独自data_dirではアプリ起動を要求せ
     let dir = tempfile::tempdir().unwrap();
     let executable = dir.path().join("Releash.app/Contents/MacOS/releash");
     // When
-    let output = launch_started(dir.path(), &executable, |app| {
-        panic!("アプリ起動を要求してはいけない: {}", app.display());
-    })
+    let output = launch_started(
+        dir.path(),
+        &data_dir::DataDir {
+            path: dir.path().to_owned(),
+            legacy: None,
+        },
+        &executable,
+        |app| {
+            panic!("アプリ起動を要求してはいけない: {}", app.display());
+        },
+    )
     .await
     .unwrap();
     // Then
@@ -91,4 +99,67 @@ async fn test_引数なし起動_独自data_dirではアプリ起動を要求せ
             status(dir.path(), false).await.unwrap(),
         ),
     );
+}
+
+#[tokio::test]
+async fn test_引数なし起動_既定と旧既定ではアプリを開く() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let resolved = data_dir::DataDir {
+        path: root.path().join("current"),
+        legacy: Some(root.path().join("legacy")),
+    };
+    let executable = root.path().join("Releash.app/Contents/MacOS/releash");
+    for dir in [&resolved.path, resolved.legacy.as_ref().unwrap()] {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut opened = false;
+        // When
+        let result = launch_started(dir, &resolved, &executable, |app| {
+            assert_eq!(app, root.path().join("Releash.app"));
+            opened = true;
+            Ok(())
+        })
+        .await;
+        // Then
+        assert_eq!(result.unwrap(), "");
+        assert!(opened);
+    }
+}
+
+#[tokio::test]
+async fn test_引数なし起動_アプリを開く失敗を返す() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let resolved = data_dir::DataDir {
+        path: root.path().to_owned(),
+        legacy: Some(root.path().join("legacy")),
+    };
+    // When
+    let result = launch_started(
+        &resolved.path,
+        &resolved,
+        &root.path().join("Releash.app/Contents/MacOS/releash"),
+        |_| Err(ConnectError::unavailable("open failed")),
+    )
+    .await;
+    // Then
+    assert_eq!(result.unwrap_err().code, connectrpc::ErrorCode::Unavailable);
+}
+
+#[tokio::test]
+async fn test_引数なし起動_bundle外では状態だけを返す() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let resolved = data_dir::DataDir {
+        path: root.path().to_owned(),
+        legacy: None,
+    };
+    // When
+    let output = launch_started(root.path(), &resolved, &root.path().join("releash"), |_| {
+        panic!("bundle外")
+    })
+    .await
+    .unwrap();
+    // Then
+    assert_eq!(output, status(root.path(), false).await.unwrap());
 }

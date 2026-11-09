@@ -2,7 +2,8 @@ syntax = "proto3";
 package releash.client.v1;
 import "client_options.proto";
 
-option (data_dir_name) = "com.releash.app";
+option (data_dir_name) = "releash";
+option (legacy_data_dir_name) = "com.releash.app";
 option (development_data_dir_suffix) = ".dev";
 option (data_dir_env) = "RELEASH_DATA_DIR";
 

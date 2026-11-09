@@ -11,7 +11,7 @@ use std::{path::PathBuf, sync::Arc};
 
 pub struct DaemonServiceGateway {
     executable: PathBuf,
-    data_dir: PathBuf,
+    data_dir: releash::data_dir::DataDir,
     limiter: Arc<RetryLimiter>,
     deadline: crate::common::deadline::Deadline,
     client: tokio::sync::watch::Sender<Option<Arc<DesktopClient>>>,
@@ -19,7 +19,7 @@ pub struct DaemonServiceGateway {
 impl DaemonServiceGateway {
     pub fn new(
         executable: PathBuf,
-        data_dir: PathBuf,
+        data_dir: releash::data_dir::DataDir,
         limiter: Arc<RetryLimiter>,
         deadline: crate::common::deadline::Deadline,
         client: tokio::sync::watch::Sender<Option<Arc<DesktopClient>>>,
@@ -55,7 +55,8 @@ fn daemon_failure(error: daemon::DaemonError) -> DaemonConnectionFailure {
 impl DaemonService for DaemonServiceGateway {
     fn discover(&self) -> DaemonResult<'_, Option<DiscoveredDaemon>> {
         Box::pin(async move {
-            let Some(discovery) = daemon::running(&self.data_dir).map_err(daemon_failure)? else {
+            let data_dir = daemon::locate(&self.data_dir).map_err(daemon_failure)?;
+            let Some(discovery) = daemon::running(&data_dir).map_err(daemon_failure)? else {
                 return Ok(None);
             };
             let info = daemon::server_info(&discovery, &discovery.token)
@@ -75,7 +76,7 @@ impl DaemonService for DaemonServiceGateway {
         Box::pin(async move {
             let cwd = std::env::current_dir()
                 .map_err(|e| DaemonConnectionFailure::TechnicalFailure(e.to_string()))?;
-            daemon::start(&self.executable, &self.data_dir, &cwd)
+            daemon::start_resolved(&self.executable, &self.data_dir, &cwd)
                 .await
                 .map_err(daemon_failure)?;
             Ok(())
@@ -83,8 +84,9 @@ impl DaemonService for DaemonServiceGateway {
     }
     fn stop(&self) -> DaemonResult<'_, ()> {
         Box::pin(async move {
-            if let Some(discovery) = daemon::running(&self.data_dir).map_err(daemon_failure)? {
-                daemon::stop(&self.data_dir, &discovery)
+            let data_dir = daemon::locate(&self.data_dir).map_err(daemon_failure)?;
+            if let Some(discovery) = daemon::running(&data_dir).map_err(daemon_failure)? {
+                daemon::stop(&data_dir, &discovery)
                     .await
                     .map_err(daemon_failure)?;
             }
@@ -94,6 +96,7 @@ impl DaemonService for DaemonServiceGateway {
     }
     fn connect<'a>(&'a self, endpoint: &'a DaemonEndpoint) -> DaemonResult<'a, DaemonSubscription> {
         Box::pin(async move {
+            let data_dir = daemon::locate(&self.data_dir).map_err(daemon_failure)?;
             self.client.send_replace(None);
             let subscription = DaemonSubscription(uuid::Uuid::new_v4().as_u128());
             let client = Arc::new(DesktopClient::start(
@@ -112,6 +115,9 @@ impl DaemonService for DaemonServiceGateway {
                     detail: Some(e.message),
                 })?;
             self.client.send_replace(Some(client));
+            if let Err(error) = releashd::desktop_api::activate_local_log(&data_dir) {
+                eprintln!("{error}");
+            }
             Ok(subscription)
         })
     }

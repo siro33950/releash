@@ -25,6 +25,11 @@ struct FooterView: View {
             .accessibilityLabel("hookの状態を確認できません")
         }
         Spacer(minLength: 0)
+        if let version = model.updater.availableVersion {
+          Text(version)
+          Button("更新") { model.updater.checkForUpdates() }
+            .disabled(!model.updater.canCheckForUpdates)
+        }
         if let info = model.daemonInfo {
           let serverLabel =
             "v\(info.release) · \(model.releaseCompatibility ?? "") · \(String(describing: info.servingStatus)) · \(uptime(info, now: context.date))"

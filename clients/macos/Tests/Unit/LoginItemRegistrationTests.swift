@@ -36,6 +36,9 @@ final class LoginItemRegistrationTests: XCTestCase {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     let item = LoginItemRegistration()
+    let suite = "LoginItemRegistrationTests.\(UUID().uuidString)"
+    item.defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { item.defaults.removePersistentDomain(forName: suite) }
     item.executablePath = "/Applications/Releash Preview.app/Contents/MacOS/Releash Preview"
     for allowed: Releash_Client_V1_LoginRegistrationStatus in [.allowed, .translocated, .readOnly] {
       http.state.withLock { $0.loginRegistration.status = allowed }
@@ -68,12 +71,41 @@ final class LoginItemRegistrationTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_ログイン項目_保存済み実行パスがなくても改名後のアプリを一度だけ登録し直す() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock { $0.loginRegistration.status = .allowed }
+    let model = try await testModel(http)
+    let item = LoginItemRegistration()
+    let suite = "LoginItemRegistrationTests.\(UUID().uuidString)"
+    item.defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { item.defaults.removePersistentDomain(forName: suite) }
+    item.executablePath = "/Applications/Releash.app/Contents/MacOS/Releash"
+    item.status = { .enabled }
+    var operations: [String] = []
+    item.unregister = { operations.append("unregister") }
+    item.register = { operations.append("register") }
+    XCTAssertNil(item.defaults.string(forKey: "loginItemExecutablePath"))
+    // When
+    try await item.synchronize(autoLaunch: true, model: model)
+    // Then
+    XCTAssertEqual(operations, ["unregister", "register"])
+    // When
+    try await item.synchronize(autoLaunch: true, model: model)
+    // Then
+    XCTAssertEqual(operations, ["unregister", "register"])
+    await model.stop()
+  }
+
   @MainActor func test_ログイン項目_登録後の再通知では重複登録せず失われた登録を復元する() async throws {
     // Given
     let http = TestHTTPClient()
     http.state.withLock { $0.loginRegistration.status = .allowed }
     let model = try await testModel(http)
     let item = LoginItemRegistration()
+    let suite = "LoginItemRegistrationTests.\(UUID().uuidString)"
+    item.defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { item.defaults.removePersistentDomain(forName: suite) }
     var status: SMAppService.Status = .notRegistered
     var calls = 0
     item.status = { status }
@@ -100,6 +132,9 @@ final class LoginItemRegistrationTests: XCTestCase {
     http.state.withLock { $0.loginRegistration.status = .allowed }
     let model = try await testModel(http)
     let item = LoginItemRegistration()
+    let suite = "LoginItemRegistrationTests.\(UUID().uuidString)"
+    item.defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { item.defaults.removePersistentDomain(forName: suite) }
     var status: SMAppService.Status = .notRegistered
     item.status = { status }
     item.register = { throw CLIFailure(message: "register failed") }
@@ -133,6 +168,9 @@ final class LoginItemRegistrationTests: XCTestCase {
     http.state.withLock { $0.deferredTerminalMethod = "CheckLoginRegistration" }
     let model = try await testModel(http)
     let item = LoginItemRegistration()
+    let suite = "LoginItemRegistrationTests.\(UUID().uuidString)"
+    item.defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { item.defaults.removePersistentDomain(forName: suite) }
     item.status = { .notRegistered }
     var calls = 0
     item.register = { calls += 1 }

@@ -4,8 +4,8 @@
 //! 子プロセス起動経路（PTY / oneshot / agent bridge）が同じソースから値を引く。
 //!
 //! [01] CLI alias と実行対象の一意な対応:
-//! 本番ビルド (release) → alias 名 `releash` / data dir `com.releash.app`
-//! dev ビルド (debug)   → alias 名 `releash-dev` / data dir `com.releash.app.dev`
+//! 本番ビルド (release) → alias 名 `releash` / data dir `releash`
+//! dev ビルド (debug)   → alias 名 `releash-dev` / data dir `releash.dev`
 
 use std::path::{Path, PathBuf};
 
@@ -69,6 +69,18 @@ impl PathAliases {
     /// `releash` alias の解決結果を返す。
     pub fn releash(&self) -> &PathAlias {
         &self.releash
+    }
+
+    /// 構成ごとの alias と、どの構成からも呼べる `releash` の wrapper を書き直す。
+    pub fn ensure_wrappers(&self) -> Result<(), std::io::Error> {
+        ensure_alias_wrapper(&self.releash)?;
+        if self.releash.name != "releash" {
+            ensure_alias_wrapper(&PathAlias {
+                name: "releash".into(),
+                ..self.releash.clone()
+            })?;
+        }
+        Ok(())
     }
 }
 

@@ -7,6 +7,10 @@ pub(crate) enum StartupFailureKind {
     InitializationStateInvalid,
     StoreValidationFailed,
     SchemaEvolutionFailed,
+    /// 旧保存先から新保存先への移行を行わなかった。理由は `RelocationBlock` が持つ。
+    DataRelocationBlocked(super::data_home::RelocationBlock),
+    /// 旧保存先から新保存先への移行の途中で、観測か移動に失敗した。
+    DataRelocationFailed(crate::domain::failure::TechnicalFailureNature),
 }
 
 impl StartupFailureKind {
@@ -26,6 +30,20 @@ impl StartupFailureKind {
             Self::StoreValidationFailed => "The local data store could not be verified safely.",
             Self::SchemaEvolutionFailed => {
                 "The local data store could not be updated safely during startup."
+            }
+            Self::DataRelocationBlocked(super::data_home::RelocationBlock::LegacyServerRunning) => {
+                "Another Releash server is still running on the previous data folder. Stop it, then start again."
+            }
+            Self::DataRelocationBlocked(
+                super::data_home::RelocationBlock::LegacyServerUnverifiable,
+            ) => {
+                "The previous data folder may still be in use. Make sure no Releash server is running, then start again."
+            }
+            Self::DataRelocationBlocked(super::data_home::RelocationBlock::BothHaveData) => {
+                "Both the previous and the new data folders contain Releash data. Keep one of them, then start again."
+            }
+            Self::DataRelocationFailed(_) => {
+                "Releash data could not be moved to the new data folder safely."
             }
         }
     }

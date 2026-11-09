@@ -74,6 +74,21 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     Ok(Some(discovery))
 }
 
+/// コマンドが操作する data dir を決める。
+/// `path` にサーバが動いていればそれを、動いていなくて旧 data dir にサーバが動いていれば旧 data dir を、
+/// どちらにも動いていなければ `path` を返す。旧 data dir の記録の生存を確かめられなければ失敗にする。
+pub fn locate(data_dir: &crate::data_dir::DataDir) -> Result<PathBuf, DaemonError> {
+    if running(&data_dir.path)?.is_some() {
+        return Ok(data_dir.path.clone());
+    }
+    if let Some(legacy) = &data_dir.legacy {
+        if running(legacy)?.is_some() {
+            return Ok(legacy.clone());
+        }
+    }
+    Ok(data_dir.path.clone())
+}
+
 pub fn current_executable() -> Result<PathBuf, std::io::Error> {
     std::env::current_exe()?.canonicalize()
 }
@@ -87,13 +102,26 @@ pub async fn start(
     data_dir: &Path,
     cwd: &Path,
 ) -> Result<LocalApiDiscovery, DaemonError> {
-    std::fs::create_dir_all(data_dir.join("logs"))?;
-    let log = data_dir.join("logs/daemon-startup.stderr");
-    let stderr = std::fs::File::create(&log)?;
+    start_resolved(
+        executable,
+        &crate::data_dir::DataDir::explicit(data_dir.to_path_buf()),
+        cwd,
+    )
+    .await
+}
+
+pub async fn start_resolved(
+    executable: &Path,
+    data_dir: &crate::data_dir::DataDir,
+    cwd: &Path,
+) -> Result<LocalApiDiscovery, DaemonError> {
+    let log = tempfile::NamedTempFile::new()?;
+    let stderr = log.reopen()?;
     let mut command = tokio::process::Command::new(executable);
+    if data_dir.legacy.is_none() {
+        command.arg("--data-dir").arg(&data_dir.path);
+    }
     command
-        .arg("--data-dir")
-        .arg(data_dir)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -110,7 +138,7 @@ pub async fn start(
     let mut child = command.spawn()?;
     let deadline = tokio::time::Instant::now() + timeout("min_connect_timeout_ms");
     loop {
-        if let Some(discovery) = running(data_dir)? {
+        if let Some(discovery) = running(&data_dir.path)? {
             tokio::spawn(async move {
                 let _ = child.wait().await;
             });
@@ -119,7 +147,7 @@ pub async fn start(
         if let Some(status) = child.try_wait()? {
             return Err(DaemonError::Exited {
                 status,
-                stderr: stderr_tail(&log)?,
+                stderr: stderr_tail(log.path())?,
             });
         }
         if tokio::time::Instant::now() >= deadline {
@@ -127,7 +155,7 @@ pub async fn start(
                 let _ = child.wait().await;
             });
             return Err(DaemonError::StartupTimeout {
-                stderr: stderr_tail(&log)?,
+                stderr: stderr_tail(log.path())?,
             });
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

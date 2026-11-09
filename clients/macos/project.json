@@ -99,7 +99,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/\"Releash Preview.app\""
+          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/\"Releash.app\""
         ],
         "cwd": ".",
         "parallel": false
@@ -129,7 +129,8 @@
         "command": "python3 .github/scripts/macos-e2e.py --build-fixture"
       },
       "outputs": [
-        "{workspaceRoot}/clients/macos/.build/agent-tui-fixture.json"
+        "{workspaceRoot}/clients/macos/.build/agent-tui-fixture.json",
+        "{workspaceRoot}/clients/macos/.build/Helpers/Update/releash"
       ],
       "cache": false
     },

@@ -24,7 +24,7 @@
 
 ### data dir
 
-- data dir は global 引数 `--data-dir <PATH>`、`RELEASH_DATA_DIR`、ビルドの既定値の順で解決します。macOS の既定値は release では `~/Library/Application Support/com.releash.app`、dev では `~/Library/Application Support/com.releash.app.dev` です。
+- data dir は global 引数 `--data-dir <PATH>`、`RELEASH_DATA_DIR`、ビルドの既定値の順で解決します。macOS の既定値は release では `~/Library/Application Support/releash`、dev では `~/Library/Application Support/releash.dev` です。
 - 時刻を表す値は、すべて UNIX epoch からの秒数（小数）です。
 
 ## コマンド一覧

@@ -15,11 +15,12 @@ import SwiftUI
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     super.init()
     let image = NSImage(
-      systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Releash Preview")
+      systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Releash")
     image?.isTemplate = true
     item.button?.image = image
-    item.button?.setAccessibilityLabel("Releash Preview")
+    item.button?.setAccessibilityLabel("Releash")
     let menu = NSMenu()
+    menu.autoenablesItems = false
     menu.delegate = self
     item.menu = menu
     subscription = model.subscribe("execution-overview") { [weak self] payload in
@@ -56,7 +57,7 @@ import SwiftUI
     if !available { overview = nil }
     let status = overview.map { String(describing: $0.status.value) }
     item.button?.contentTintColor = status.map { NSColor(UIStyle.statusColor($0)) }
-    item.button?.toolTip = status.map { "Releash Preview: \($0)" } ?? "Releash Preview"
+    item.button?.toolTip = status.map { "Releash: \($0)" } ?? "Releash"
     item.button?.setAccessibilityValue(status ?? "状態なし")
   }
 
@@ -90,13 +91,15 @@ import SwiftUI
     }
     add("開く", action: #selector(open(_:)), to: menu)
     add("設定…", action: #selector(settings(_:)), to: menu)
+    let update = add("アップデートを確認", action: #selector(checkForUpdates(_:)), to: menu)
+    update.isEnabled = model.updater.canCheckForUpdates
     menu.addItem(.separator())
     let about = menu.addItem(
-      withTitle: "Releash Preview について",
+      withTitle: "Releash について",
       action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
     about.target = NSApp
     let quit = menu.addItem(
-      withTitle: "Releash Preview を終了", action: #selector(NSApplication.terminate(_:)),
+      withTitle: "Releash を終了", action: #selector(NSApplication.terminate(_:)),
       keyEquivalent: "")
     quit.target = NSApp
   }
@@ -108,6 +111,8 @@ import SwiftUI
     row.target = self
     return row
   }
+
+  @objc private func checkForUpdates(_ sender: NSMenuItem) { model.updater.checkForUpdates() }
 
   @objc private func open(_ sender: NSMenuItem) { showWindow() }
 

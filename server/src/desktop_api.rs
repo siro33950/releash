@@ -35,7 +35,10 @@ pub use crate::domain::failure::{TechnicalFailure, TechnicalFailureNature};
 pub use crate::infrastructure::local_api::{
     lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
 };
-pub use crate::infrastructure::local_log::{init as init_local_log, LocalLogProcess};
+pub use crate::infrastructure::local_log::{
+    activate as activate_local_log, init as init_local_log,
+    init_deferred as init_deferred_local_log, LocalLogProcess,
+};
 pub use crate::infrastructure::platform::data_dir::{default_data_dir_for_profile, BuildProfile};
 pub use crate::infrastructure::telemetry::metrics::{
     record_startup_from_origin, set_startup_origin, Startup,

@@ -2,7 +2,7 @@ use crate::adaptor::controller::terminal_surface_runtime as terminal_surface;
 use crate::{adaptor, domain, infrastructure, usecase};
 use adaptor::gateway::app_config::{load_or_create_config, AppConfig};
 use domain::app_config::{AppConfigRepository, ConfigSecretRepository, RepositoryConfigRepository};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn client_priority_level(path: &str) -> Option<&'static str> {
@@ -83,6 +83,8 @@ pub struct Daemon {
     server: Arc<infrastructure::local_api::LocalApiServer>,
     exit: tokio::sync::mpsc::Receiver<i32>,
     daemon: usecase::daemon::DaemonUsecase,
+    _startup_lock: Option<std::fs::File>,
+    _legacy_writer_lock: Option<std::fs::File>,
 }
 
 impl Daemon {
@@ -108,8 +110,34 @@ fn compose_daemon_repository(
     ))
 }
 
+/// 起動を失敗で終える。Daemon を Failed にし、利用者に見せられる説明だけを持つ error を返す。
+async fn fail_startup(
+    daemon: &usecase::daemon::DaemonUsecase,
+    kind: domain::daemon::StartupFailureKind,
+) -> std::io::Error {
+    daemon
+        .fail(domain::daemon::StartupFailure::new(
+            kind,
+            uuid::Uuid::new_v4().to_string(),
+        ))
+        .await;
+    let domain::daemon::ServingStatus::Failed(failure) = daemon.info().await.serving_status else {
+        unreachable!("failed startup")
+    };
+    log::error!(
+        "application startup admission failed: {} ({})",
+        failure.safe_description,
+        failure.correlation_id
+    );
+    std::io::Error::other(format!(
+        "{} ({})",
+        failure.safe_description, failure.correlation_id
+    ))
+}
+
 pub async fn compose(
     data_dir: PathBuf,
+    legacy_data_dir: Option<PathBuf>,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
         std::ffi::OsString,
         infrastructure::process::search_path::LoginShellPathError,
@@ -128,38 +156,65 @@ pub async fn compose(
     )));
     let daemon_repository = compose_daemon_repository(identity, protocol, &installation);
     let daemon = usecase::daemon::DaemonUsecase::new(daemon_repository.clone());
+    let startup_lock = match adaptor::gateway::daemon::acquire_startup_lock(&data_dir) {
+        Ok(lock) => lock,
+        Err(kind) => {
+            if data_dir.join("client-api.json").exists() {
+                init_local_log(&data_dir);
+            }
+            return Err(fail_startup(&daemon, kind).await.into());
+        }
+    };
     let retry_limiter = Arc::new(crate::common::retry::RetryLimiter::new());
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
+    // 旧既定の保存先のデータは、store を開く前に新既定の保存先へ移す
+    let home = domain::daemon::data_home::DataHome {
+        current: data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone()),
+        legacy: legacy_data_dir,
+    };
+    let legacy_startup_lock = match home.legacy.as_deref() {
+        Some(legacy) => match adaptor::gateway::daemon::acquire_startup_lock(legacy) {
+            Ok(lock) => Some(lock),
+            Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
+        },
+        None => None,
+    };
+    let legacy_writer_lock = match home.legacy.as_deref() {
+        Some(legacy) => match adaptor::gateway::daemon::acquire_legacy_writer_lock(legacy) {
+            Ok(lock) => Some(lock),
+            Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
+        },
+        None => None,
+    };
+    let relocation = usecase::data_home::DataHomeRelocationUsecase::new(Arc::new(
+        adaptor::gateway::data_home::LocalDataHomeStore,
+    ));
+    if let Err(error) = relocation.run(&home) {
+        eprintln!("{error:?}");
+        return Err(fail_startup(&daemon, error.into()).await.into());
+    }
+    drop(legacy_startup_lock);
+    // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
+    if let Err(error) =
+        infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())
+            .and_then(|aliases| aliases.ensure_wrappers())
+    {
+        eprintln!("{error}");
+        let kind = domain::daemon::StartupFailureKind::StorageUnavailable(
+            domain::failure::TechnicalFailureNature::Other,
+        );
+        return Err(fail_startup(&daemon, kind).await.into());
+    }
     let app_data = super::app_data_composition::ProductionAppDataComposition::new(
         data_dir.clone(),
         retry_limiter.clone(),
     );
+    init_local_log(&data_dir);
     let local_event_store = match app_data.open_local_event_store() {
         Ok(store) => store,
-        Err(error) => {
-            daemon
-                .fail(domain::daemon::StartupFailure::new(
-                    error.into(),
-                    uuid::Uuid::new_v4().to_string(),
-                ))
-                .await;
-            let domain::daemon::ServingStatus::Failed(failure) = daemon.info().await.serving_status
-            else {
-                unreachable!("failed startup")
-            };
-            log::error!(
-                "application startup admission failed: {} ({})",
-                failure.safe_description,
-                failure.correlation_id
-            );
-            return Err(std::io::Error::other(format!(
-                "{} ({})",
-                failure.safe_description, failure.correlation_id
-            ))
-            .into());
-        }
+        Err(error) => return Err(fail_startup(&daemon, error.into()).await.into()),
     };
     let state_presenter =
         Arc::new(adaptor::presenter::state_subscription::StateSubscriptionPresenter::new());
@@ -727,6 +782,8 @@ pub async fn compose(
     }
 
     Ok(Daemon {
+        _startup_lock: Some(startup_lock),
+        _legacy_writer_lock: legacy_writer_lock,
         server: local_api.clone(),
         shutdown: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
@@ -793,10 +850,21 @@ impl Daemon {
         daemon: usecase::daemon::DaemonUsecase,
     ) -> Self {
         Self {
+            _startup_lock: None,
+            _legacy_writer_lock: None,
             shutdown,
             server,
             exit,
             daemon,
         }
+    }
+}
+
+fn init_local_log(data_dir: &Path) {
+    if let Err(error) = infrastructure::local_log::init(
+        data_dir,
+        infrastructure::local_log::LocalLogProcess::Daemon,
+    ) {
+        eprintln!("{error}");
     }
 }

@@ -9,7 +9,7 @@ fn descriptor() -> prost_reflect::MessageDescriptor {
         .expect("discovery descriptor")
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Option<LocalApiDiscovery> {
+pub(crate) fn decode(bytes: &[u8]) -> Option<LocalApiDiscovery> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let message =
         prost_reflect::DynamicMessage::deserialize(descriptor(), &mut deserializer).ok()?;

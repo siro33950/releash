@@ -4,3 +4,5 @@ pub(crate) mod path_aliases;
 pub(crate) mod installation;
 
 pub(crate) mod data_dir;
+
+pub(crate) mod data_home_lock;

@@ -49,3 +49,44 @@ async fn test_daemon停止完了_停止後の受付ガードが残っても期�
     );
     assert!(!admission.admits(DaemonRequest::Operation));
 }
+
+#[cfg(unix)]
+#[test]
+fn test_起動ロック_親の別名と保存先作成前後で同じ排他になる() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let parent = root.path().join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&parent, &alias).unwrap();
+    let first = super::acquire_startup_lock(&alias.join("data")).unwrap();
+    // When
+    std::fs::create_dir(parent.join("data")).unwrap();
+    let second = super::acquire_startup_lock(&parent.join("data"));
+    // Then
+    assert!(matches!(
+        second,
+        Err(crate::domain::daemon::StartupFailureKind::StoreInUse)
+    ));
+    drop(first);
+    assert!(super::acquire_startup_lock(&parent.join("data")).is_ok());
+}
+
+#[test]
+fn test_起動ロック_相対パスの現在と親を正規化して排他する() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("child")).unwrap();
+    for relative in [".", "child/.."] {
+        let path = root.path().join(relative);
+        let first = super::acquire_startup_lock(&path).unwrap();
+        // When
+        let second = super::acquire_startup_lock(&path.canonicalize().unwrap());
+        // Then
+        assert!(matches!(
+            second,
+            Err(crate::domain::daemon::StartupFailureKind::StoreInUse)
+        ));
+        drop(first);
+    }
+}

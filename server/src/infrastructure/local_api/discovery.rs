@@ -7,6 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 #[path = "discovery_record.rs"]
 mod discovery_record;
+pub(crate) use discovery_record::decode;
 pub use discovery_record::{
     lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
 };

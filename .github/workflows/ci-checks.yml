@@ -18,6 +18,9 @@ on:
       targets:
         required: true
         type: string
+      runner:
+        default: ubuntu-latest
+        type: string
       skip-breaking:
         default: false
         type: boolean
@@ -32,7 +35,7 @@ env:
 jobs:
   check:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -61,7 +64,7 @@ jobs:
         if: ${{ inputs.affected && (contains(fromJSON('["server", "shell", "cli"]'), inputs.group)) }}
         with:
           shared-key: pr-${{ inputs.group }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(matrix.target, 'test-unit') }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && (contains(matrix.target, 'test-unit') || (runner.os == 'macOS' && inputs.group == 'cli' && matrix.target == 'test-integration')) }}
       - name: Install Tauri dependencies
         if: ${{ inputs.affected && (inputs.group == 'shell') }}
         run: |

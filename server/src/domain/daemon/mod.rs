@@ -1,3 +1,4 @@
+pub(crate) mod data_home;
 mod failure;
 pub(crate) mod identity;
 pub(crate) use failure::{StartupFailure, StartupFailureKind};

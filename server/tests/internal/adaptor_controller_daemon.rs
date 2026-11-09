@@ -282,6 +282,7 @@ pub async fn test_開始計測_組み立て失敗前に起点を記録する() {
     // When
     let result = compose(
         invalid_data_dir,
+        None,
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         Ok(std::ffi::OsString::new()),
     )

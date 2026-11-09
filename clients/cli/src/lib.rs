@@ -117,15 +117,23 @@ pub fn run() {
     );
     let result = crate::data_dir::resolve_data_dir(cli.data_dir)
         .map_err(connectrpc::ConnectError::unavailable)
-        .and_then(|dir| {
+        .and_then(|resolved| {
+            let dir = daemon::locate(&resolved).map_err(client::daemon_error)?;
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|error| connectrpc::ConnectError::internal(error.to_string()))?
                 .block_on(async {
                     match cli.command {
+                        Some(TopCommand::Server { command }) => {
+                            server::run_resolved(&dir, &resolved, command)
+                                .await
+                                .map(|output| (output, 0))
+                        }
                         Some(command) => commands::run(&dir, command).await,
-                        None => server::launch(&dir).await.map(|output| (output, 0)),
+                        None => server::launch(&dir, &resolved)
+                            .await
+                            .map(|output| (output, 0)),
                     }
                 })
         });

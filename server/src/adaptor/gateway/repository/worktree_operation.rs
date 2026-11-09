@@ -79,7 +79,7 @@ impl FileWorktreeOperationLocks {
             }
             Ok::<_, GitError>(())
         })();
-        drop(registry);
+        release_registry(registry);
         result?;
         Ok(lease)
     }
@@ -109,7 +109,13 @@ impl FileWorktreeOperationLocks {
         self.remove_idle_registered(key, registry)
     }
 
-    fn remove_idle_registered(&self, key: &str, _registry: File) -> Result<(), GitError> {
+    fn remove_idle_registered(&self, key: &str, registry: File) -> Result<(), GitError> {
+        let result = self.remove_idle_files(key);
+        release_registry(registry);
+        result
+    }
+
+    fn remove_idle_files(&self, key: &str) -> Result<(), GitError> {
         let mut files = Vec::new();
         for suffix in ["admission", "active"] {
             let path = self.directory.join(format!("{key}.{suffix}"));
@@ -128,6 +134,13 @@ impl FileWorktreeOperationLocks {
             std::fs::remove_file(path)?;
         }
         Ok(())
+    }
+}
+
+// fork した子が同じ File を持っていても解放されるよう、drop に任せず unlock する
+fn release_registry(registry: File) {
+    if let Err(error) = fs2::FileExt::unlock(&registry) {
+        log::warn!("worktree operation registry unlock failed: {error}");
     }
 }
 
@@ -206,6 +219,12 @@ fn lock_error(error: crate::infrastructure::file_lock::LockError) -> GitError {
 impl FileWorktreeOperationLocks {
     pub fn test_directory(&self) -> &PathBuf {
         &self.directory
+    }
+    pub fn test_lease_registered(&self, registry: File) -> Result<FileLease, GitError> {
+        self.lease_registered("/repo/worktree", false, registry)
+    }
+    pub fn test_remove_idle_registered(&self, key: &str, registry: File) -> Result<(), GitError> {
+        self.remove_idle_registered(key, registry)
     }
 }
 

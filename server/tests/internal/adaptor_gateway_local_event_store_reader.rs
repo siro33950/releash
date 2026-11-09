@@ -34,7 +34,7 @@ pub async fn test_読み込みキュー_混雑と期限切れとreply喪失を�
         ),
         || {
             (task)(
-                &releashd::test_support::integration::transport::configure_busy_handler(
+                &mut releashd::test_support::integration::transport::configure_busy_handler(
                     Connection::open_in_memory().unwrap(),
                     std::sync::Arc::new(
                         releashd::test_support::integration::platform::RetryLimiter::new(),
@@ -281,14 +281,16 @@ pub async fn test_読み込み資源期限_親が無期限でも長い期限で�
     // Then
     assert!(start.elapsed() >= Duration::from_secs(2));
     assert!(start.elapsed() < Duration::from_secs(4));
-    let connection = releashd::test_support::integration::transport::configure_busy_handler(
+    let mut connection = releashd::test_support::integration::transport::configure_busy_handler(
         Connection::open_in_memory().unwrap(),
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     )
     .unwrap();
     for _ in 0..2 {
         let (context, task) = pool.pop_blocking().unwrap().test_into_parts();
-        releashd::test_support::integration::platform::sync_scope(context, || (task)(&connection));
+        releashd::test_support::integration::platform::sync_scope(context, || {
+            (task)(&mut connection)
+        });
     }
     pool.close();
 }

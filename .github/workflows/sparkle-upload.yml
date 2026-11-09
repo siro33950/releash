@@ -1,0 +1,30 @@
+name: Upload Swift release
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: swift-app
+          path: ${{ runner.temp }}/assets
+      - name: Upload Swift asset and signature metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ASSETS: ${{ runner.temp }}/assets
+        run: node .github/scripts/sparkle-release.cjs upload

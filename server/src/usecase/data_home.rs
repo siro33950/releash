@@ -1,0 +1,45 @@
+use crate::domain::daemon::data_home::{
+    DataHome, DataHomeStore, RelocationError, RelocationPlan, RelocationSurvey,
+};
+use std::sync::Arc;
+
+/// 旧既定の保存先のデータを、サーバを起動する前に新既定の保存先へ移す手順。
+pub(crate) struct DataHomeRelocationUsecase {
+    store: Arc<dyn DataHomeStore>,
+}
+
+impl DataHomeRelocationUsecase {
+    pub(crate) fn new(store: Arc<dyn DataHomeStore>) -> Self {
+        Self { store }
+    }
+
+    /// 旧保存先を観測し、サーバのデータがあるときだけ新保存先を観測して、判断に従って移す。移すものが無ければ何もしない。
+    pub(crate) fn run(&self, home: &DataHome) -> Result<(), RelocationError> {
+        let legacy = self
+            .store
+            .survey_legacy(home)
+            .map_err(RelocationError::Technical)?;
+        if !legacy.has_server_data() {
+            return Ok(());
+        }
+        let current_entries = self
+            .store
+            .current_entries(home)
+            .map_err(RelocationError::Technical)?;
+        let survey = RelocationSurvey {
+            legacy,
+            current_entries,
+        };
+        match survey.decide().map_err(RelocationError::Blocked)? {
+            RelocationPlan::NotNeeded => Ok(()),
+            RelocationPlan::Move { entries } => self
+                .store
+                .relocate(home, &entries)
+                .map_err(RelocationError::Technical),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "data_home_test.rs"]
+mod data_home_tests;

@@ -1,9 +1,56 @@
 import Connect
+import SwiftProtobuf
+import Synchronization
 import XCTest
 
 @testable import Releash
 
 final class ConnectionTests: XCTestCase {
+  func testInitialSubscriptionDeliversUpdatesPublishedDuringSnapshotAndDrainInOrder() throws {
+    let http = TestHTTPClient()
+    let received = Mutex<[String]>([])
+    let stream = ResponseCallbacks(
+      receiveResponseHeaders: { _ in },
+      receiveResponseData: { [weak http] bytes in
+        do {
+          let event = try Releash_Client_V1_StateSubscriptionEvent(
+            serializedBytes: bytes.dropFirst(5))
+          let value = event.snapshot.terminalStartupCommand.value
+          received.withLock { $0.append(value) }
+          let updates = value.isEmpty ? ["first", "second"] : value == "first" ? ["third"] : []
+          for update in updates {
+            var payload = Releash_Client_V1_StatePayload()
+            payload.terminalStartupCommand.value = update
+            try http?.publish(payload, target: "terminal-startup-command")
+          }
+        } catch {
+          XCTFail("\(error)")
+        }
+      },
+      receiveResponseMetrics: { _ in }, receiveClose: { _, _, _ in })
+    http.state.withLock { $0.streams.append(stream) }
+    var subscription = Releash_Client_V1_StartStateSubscriptionRequest()
+    subscription.subscriptionID = "subscription"
+    subscription.target = "terminal-startup-command"
+    let request = HTTPRequest<Data?>(
+      url: URL(string: "http://localhost/StartStateSubscription")!, headers: [:],
+      message: try subscription.serializedData(), method: .post, trailers: nil,
+      idempotencyLevel: .unknown)
+
+    _ = http.unary(
+      request: request, onMetrics: { _ in },
+      onResponse: { response in
+        XCTAssertNil(response.error)
+      })
+    var latest = Releash_Client_V1_StatePayload()
+    latest.terminalStartupCommand.value = "latest"
+    try http.publish(latest, target: "terminal-startup-command")
+
+    XCTAssertEqual(received.withLock { $0 }, ["", "first", "second", "third", "latest"])
+    XCTAssertEqual(http.state.withLock { $0.subscriptions }, [subscription])
+    XCTAssertTrue(http.state.withLock { $0.initialDeliveries.isEmpty })
+  }
+
   @MainActor func testRequestsAuthenticateAndRecoveryResubscribesUpdatedSidebarAndLayout()
     async throws
   {
