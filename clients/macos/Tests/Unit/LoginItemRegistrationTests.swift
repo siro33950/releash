@@ -71,7 +71,7 @@ final class LoginItemRegistrationTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_ログイン項目_改名後に新しいアプリを登録し直す() async throws {
+  @MainActor func test_ログイン項目_保存済み実行パスがなくても改名後のアプリを一度だけ登録し直す() async throws {
     // Given
     let http = TestHTTPClient()
     http.state.withLock { $0.loginRegistration.status = .allowed }
@@ -85,8 +85,12 @@ final class LoginItemRegistrationTests: XCTestCase {
     var operations: [String] = []
     item.unregister = { operations.append("unregister") }
     item.register = { operations.append("register") }
+    XCTAssertNil(item.defaults.string(forKey: "loginItemExecutablePath"))
     // When
     try await item.synchronize(autoLaunch: true, model: model)
+    // Then
+    XCTAssertEqual(operations, ["unregister", "register"])
+    // When
     try await item.synchronize(autoLaunch: true, model: model)
     // Then
     XCTAssertEqual(operations, ["unregister", "register"])
