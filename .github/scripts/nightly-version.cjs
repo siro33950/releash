@@ -28,15 +28,24 @@ async function main(
   if (!sha) {
     const runs = api(`repos/${repo}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${head.sha}`).workflow_runs;
     requireSuccessfulCI(runs, head.sha);
-    const releases = JSON.parse(run('gh', 'api', '--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)).flat();
-    const published = releases.filter(release => !release.draft)
-      .map(release => release.tag_name.match(/^v(\d+\.\d+\.\d+)(?:-nightly\.\d{8}\.\d+)?$/)?.[1]).filter(Boolean)
-      .sort(compareVersions);
-    const latest = published.at(-1);
+    let latest;
+    const drafts = [];
+    for (let page = 1; ; page++) {
+      const releases = JSON.parse(run('gh', 'api', '--jq', 'map({tag_name, draft})', `repos/${repo}/releases?per_page=30&page=${page}`));
+      for (const release of releases) {
+        if (release.draft) {
+          drafts.push(release.tag_name);
+          continue;
+        }
+        const version = release.tag_name.match(/^v(\d+\.\d+\.\d+)(?:-nightly\.\d{8}\.\d+)?$/)?.[1];
+        if (version && (!latest || compareVersions(version, latest) > 0)) latest = version;
+      }
+      if (releases.length < 30) break;
+    }
     const current = mainVersion();
     const version = latest && compareVersions(current, latest) > 0 ? current : nextVersion(latest || current);
-    for (const release of releases.filter(release => release.draft && release.tag_name.match(/^v(\d+\.\d+\.\d+)-nightly\.\d{8}\.[1-9]\d*$/)?.[1] === version)) {
-      run('gh', 'release', 'delete', release.tag_name, '--cleanup-tag', '--yes', '--repo', repo);
+    for (const tag of drafts.filter(tag => tag.match(/^v(\d+\.\d+\.\d+)-nightly\.\d{8}\.[1-9]\d*$/)?.[1] === version)) {
+      run('gh', 'release', 'delete', tag, '--cleanup-tag', '--yes', '--repo', repo);
     }
     run('node', '.github/scripts/bump-version.cjs', version);
     run('git', 'config', 'user.name', 'github-actions[bot]');
