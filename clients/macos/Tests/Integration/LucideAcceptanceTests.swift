@@ -8,6 +8,7 @@ import XCTest
 
 final class LucideAcceptanceTests: XCTestCase {
   @MainActor private var menuImageInspected: XCTestExpectation?
+  @MainActor private var trackingMenu: NSMenu?
 
   @MainActor func test_B001_B005_サイドバーの操作とカードが指定された形と色になる() async throws {
     // Given
@@ -264,31 +265,41 @@ final class LucideAcceptanceTests: XCTestCase {
       NotificationCenter.default.removeObserver(
         self, name: NSMenu.didBeginTrackingNotification, object: nil)
       menuImageInspected = nil
+      trackingMenu = nil
     }
-    try await host.menu("開く", selecting: nil) { titles in
-      XCTAssertTrue(titles.contains("Terminal"))
-    }
-    await fulfillment(of: [inspected], timeout: 1)
+    let dismissed = XCTNSNotificationExpectation(name: NSMenu.didEndTrackingNotification)
+    try await host.press("開く")
+    await fulfillment(of: [inspected, dismissed], timeout: 5)
   }
 
   @MainActor func test_B016_ファイルのDiff操作に指定アイコンが出る() async throws {
     // Given
-    let model = AppModel()
-    try model.panes.restore(.empty())
-    model.panes.openFile("example.txt", base: "head")
-    let view = FileTabPane(
-      model: model, tabID: try XCTUnwrap(model.panes.controller.allTabIds.first),
-      path: "example.txt", worktree: "/icons", value: .init())
-    view.setPresentation(mode: "diff")
-    // When
-    let host = await ViewHarness(view.toolbar, size: NSSize(width: 700, height: 60))
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectWorktree("/icons")
+    try await eventually { model.layoutLoaded }
+    let host = await ViewHarness(WorkspacePaneView(model: model))
     defer { host.close() }
+    model.openFile("example.txt")
+    try await eventually {
+      http.state.withLock { $0.subscriptions.contains { $0.target == "file-tab" } }
+    }
+    var payload = Releash_Client_V1_StatePayload()
+    payload.fileTab.initialMode = "file"
+    payload.fileTab.view.textDiff.original = "old\n"
+    payload.fileTab.view.textDiff.modified = "new\n"
+    try http.publish(payload, target: "file-tab")
+    try await eventuallyView(host) { host.element("file-content") != nil }
+    // When
+    try await host.press("file-mode")
+    try await eventuallyView(host) { host.element("file-base") != nil }
     // Then
     for (label, icon) in [
       ("file-mode", "diff"), ("file-open-editor", "square-arrow-out-up-right"),
       ("file-full", "unfold-vertical"), ("HEAD と比較", "git-commit-horizontal"),
       ("base と比較", "git-branch"), ("上下に並べる", "rows-2"), ("左右に並べる", "columns-2"),
     ] { try await assertIcon(icon, in: host, element: label) }
+    await model.stop()
   }
 
   @MainActor func test_B005_B017_B018_フッターのproviderと警告と版の状態を描く() async throws {
@@ -345,7 +356,7 @@ final class LucideAcceptanceTests: XCTestCase {
       ("Workflows", "waypoints"), ("System", "monitor"),
     ] { try await assertIcon(icon, in: host, element: label, sizes: Array(12...32)) }
     try await assertIcon(
-      "folder", in: host, element: "Repositoryを選択してください", sizes: Array(24...64))
+      "folder", in: host, element: "リポジトリを選択してください", sizes: Array(24...64))
   }
 
 }
@@ -392,16 +403,25 @@ extension LucideAcceptanceTests {
   }
 
   @MainActor @objc private func inspectTerminalMenu(_ notification: Notification) {
-    guard let menu = notification.object as? NSMenu,
-      let item = menu.items.first(where: { $0.title == "Terminal" })
-    else { return }
+    guard let menu = notification.object as? NSMenu else { return }
+    trackingMenu = menu
+    let cancel = Timer(
+      timeInterval: 0.05, target: self, selector: #selector(cancelTerminalMenu),
+      userInfo: nil, repeats: false)
+    RunLoop.main.add(cancel, forMode: .common)
+    RunLoop.main.add(cancel, forMode: .eventTracking)
     do {
+      let item = try XCTUnwrap(menu.items.first { $0.title == "Terminal" })
       let image = try XCTUnwrap(item.image)
       let actual = try IconRaster(image: image, size: 24)
       let expected = try Self.reference("terminal", size: 24)
       XCTAssertNotNil(actual.find(expected, color: nil), "B-015: Terminal menu image")
       menuImageInspected?.fulfill()
     } catch { XCTFail("\(error)") }
+  }
+
+  @MainActor @objc private func cancelTerminalMenu() {
+    trackingMenu?.cancelTracking()
   }
 
   @MainActor private static func reference(_ name: String, size: Int, scale: CGFloat = 2) throws
@@ -452,10 +472,15 @@ extension LucideAcceptanceTests {
     host.window.appearance = NSAppearance(named: .aqua)
     view.layoutSubtreeIfNeeded()
     host.window.displayIfNeeded()
-    let region = try (rect ?? element.map { try frame($0, in: host) } ?? view.bounds)
-      .integral.intersection(view.bounds)
-    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: region))
-    view.cacheDisplay(in: region, to: bitmap)
+    let bounds = try rect ?? element.map { try frame($0, in: host) } ?? view.bounds
+    // Settings のタブはタイトルバーに配置され、contentView の外側にある。
+    let captureView = try view.bounds.contains(bounds) ? view : XCTUnwrap(view.superview)
+    let region = captureView.convert(bounds, from: view).integral.intersection(captureView.bounds)
+    let bitmap = try XCTUnwrap(
+      captureView.bitmapImageRepForCachingDisplay(in: region),
+      "\(element ?? name): bounds=\(bounds), capture=\(captureView.bounds), region=\(region)",
+      file: file, line: line)
+    captureView.cacheDisplay(in: region, to: bitmap)
     let actual = try IconRaster(bitmap: bitmap)
     var match: NSRect?
     for size in sizes {
