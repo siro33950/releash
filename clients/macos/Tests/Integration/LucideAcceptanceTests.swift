@@ -328,11 +328,8 @@ final class LucideAcceptanceTests: XCTestCase {
     let host = await ViewHarness(RootView(model: model))
     defer { host.close() }
     // Then
-    let title = try frame("サーバに接続できません", in: host)
     try await assertIcon(
-      "triangle-alert", in: host,
-      rect: NSRect(x: title.midX - 60, y: title.minY - 100, width: 120, height: 100),
-      sizes: Array(24...64))
+      "triangle-alert", in: host, element: "サーバに接続できません", sizes: Array(24...64))
   }
 
   @MainActor func test_B020_Settingsのタブと未選択のRepositoriesに指定アイコンが出る() async throws {
@@ -347,11 +344,8 @@ final class LucideAcceptanceTests: XCTestCase {
       ("General", "settings"), ("Repositories", "folder"), ("Providers", "terminal"),
       ("Workflows", "waypoints"), ("System", "monitor"),
     ] { try await assertIcon(icon, in: host, element: label, sizes: Array(12...32)) }
-    let title = try frame("Repositoryを選択してください", in: host)
     try await assertIcon(
-      "folder", in: host,
-      rect: NSRect(x: title.midX - 60, y: title.minY - 100, width: 120, height: 100),
-      sizes: Array(24...64))
+      "folder", in: host, element: "Repositoryを選択してください", sizes: Array(24...64))
   }
 
 }
@@ -411,16 +405,31 @@ extension LucideAcceptanceTests {
   }
 
   @MainActor private func frame(_ name: String, in host: ViewHarness) throws -> NSRect {
-    func descendants(_ object: AnyObject) -> [AnyObject] {
-      [object] + (object.accessibilityChildren?() ?? []).flatMap { descendants($0 as AnyObject) }
+    func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+      var value: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else {
+        return nil
+      }
+      return value
     }
-    let element = try XCTUnwrap(
-      descendants(host.window).first {
-        let value: String? = $0.accessibilityValue?()
-        return $0.accessibilityIdentifier?() == name || $0.accessibilityLabel?() == name
-          || value == name
+    func find(_ element: AXUIElement) -> AXUIElement? {
+      let keys = [
+        kAXIdentifierAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
+      ]
+      if keys.contains(where: { attribute(element, $0) as? String == name }) { return element }
+      return (attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []).lazy
+        .compactMap(find).first
+    }
+    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    let window = try XCTUnwrap(
+      (attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []).first {
+        attribute($0, kAXTitleAttribute) as? String == host.window.title
       }, name)
-    let screen = try XCTUnwrap(element.accessibilityFrame?(), name)
+    let value = try XCTUnwrap(attribute(try XCTUnwrap(find(window), name), "AXFrame"), name)
+    var screen = CGRect.zero
+    XCTAssertTrue(AXValueGetValue(value as! AXValue, .cgRect, &screen), name)
+    // AX の座標は主画面の左上が原点である。AppKit の画面座標（左下が原点）に直す
+    screen.origin.y = try XCTUnwrap(NSScreen.screens.first).frame.height - screen.maxY
     let view = try XCTUnwrap(host.window.contentView)
     return view.convert(host.window.convertFromScreen(screen), from: nil)
   }
@@ -490,8 +499,10 @@ private struct IconRaster {
     pixels = try (0..<height).flatMap { y in
       try (0..<width).map { x in
         let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+        let alpha = Double(color.alphaComponent)
         return SIMD3(
           Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent))
+          * alpha + (1 - alpha)
       }
     }
   }
