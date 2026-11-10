@@ -48,14 +48,23 @@ function main(mode, run = (...args) => execFileSync(args[0], args.slice(1), { en
   const repo = process.env.GITHUB_REPOSITORY;
   const tag = process.env.RELEASE_TAG;
   const api = path => JSON.parse(run('gh', 'api', path));
+  // The tag endpoint returns published releases only; a draft appears only in the listing.
+  const find = () => {
+    for (let page = 1; ; page++) {
+      const releases = api(`repos/${repo}/releases?per_page=30&page=${page}`);
+      const release = releases.find(release => release.tag_name === tag);
+      if (release) return release;
+      if (releases.length < 30) throw new Error('Release not found');
+    }
+  };
   if (mode === 'upload') {
-    const release = api(`repos/${repo}/releases/tags/${tag}`);
+    const release = find();
     if (!release.draft) { metadata(release); return; }
     const item = JSON.parse(readFileSync(join(process.env.ASSETS, 'sparkle.json')));
     const file = join(process.env.ASSETS, `Releash_${item.version}_universal.zip`);
     if (statSync(file).size !== item.length) throw new Error('Archive length mismatch');
     run('gh', 'release', 'upload', tag, file, '--clobber', '--repo', repo);
-    const refreshed = api(`repos/${repo}/releases/tags/${tag}`);
+    const refreshed = find();
     const body = `${(release.body || '').replace(marker, '').trim()}\n\n<!-- sparkle:${JSON.stringify(item)} -->`;
     metadata({ ...refreshed, body });
     writeFileSync(join(process.env.ASSETS, 'body.txt'), body);
@@ -70,8 +79,10 @@ function main(mode, run = (...args) => execFileSync(args[0], args.slice(1), { en
     target ??= releases.find(release => release.tag_name === tag);
     if (releases.some(release => !release.draft && !release.prerelease && /^v\d+\.\d+\.\d+$/.test(release.tag_name)
         && release.tag_name.localeCompare(tag, undefined, { numeric: true }) > 0)) latest = false;
+    // A draft's asset URL is temporary, so the feed uses the URL the asset has once published.
     candidates = selectReleases([...candidates, ...releases.map(release =>
-      release.tag_name === tag ? { ...release, draft: false, prerelease: process.env.NIGHTLY === 'true' } : release)]);
+      release.tag_name === tag ? { ...release, draft: false, prerelease: process.env.NIGHTLY === 'true',
+        assets: release.assets.map(asset => ({ ...asset, browser_download_url: `https://github.com/${repo}/releases/download/${tag}/${asset.name}` })) } : release)]);
     if (releases.length < 30) break;
   }
   if (!target) throw new Error('Release not found');

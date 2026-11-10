@@ -21,6 +21,9 @@ final class SettingsTests: XCTestCase {
     app.launch()
     XCTAssertTrue(app.buttons["Worktreeを作成"].waitForExistence(timeout: 30), app.debugDescription)
     app.typeKey(",", modifierFlags: .command)
+    let general = app.toolbars.buttons["General"]
+    XCTAssertTrue(general.waitForExistence(timeout: 10), app.debugDescription)
+    general.click()
     let field = app.textFields["settings-terminal-command"]
     XCTAssertTrue(field.waitForExistence(timeout: 10), app.debugDescription)
     let enabled = XCTNSPredicateExpectation(
