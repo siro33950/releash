@@ -12,7 +12,6 @@ use releashd::test_support::integration::workflow::{
 };
 
 use releashd::test_support::integration::workflow::ArtifactProducedFact;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
 use releashd::test_support::integration::workflow::NodeFact;
@@ -98,7 +97,6 @@ impl Fixture {
                     repository_root: Some("/repo".into()),
                     workspace_identity: ROOT.into(),
                     worktree_path: ROOT.into(),
-                    created_from: ExecutionOrigin::Cli,
                     request: String::new(),
                     workflow_name: definition.name.clone(),
                     definition: Some(definition),
@@ -147,7 +145,6 @@ impl Fixture {
     fn read(&self) -> releashd::test_support::integration::workflow::WorkflowUsecase {
         releashd::test_support::integration::platform::workflow_services(
             self.store.clone(),
-            self.directory.path(),
             Some(self.directory.path().join("workflows")),
         )
     }

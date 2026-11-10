@@ -1,6 +1,6 @@
 use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
 use releashd::test_support::integration::workflow::load_workflow;
-use releashd::test_support::integration::workflow::parse_workflow_source;
+
 use releashd::test_support::integration::workflow::resolve_and_validate_workflow_facets;
 use releashd::test_support::integration::workflow::resolve_workflow_path;
 use releashd::test_support::integration::workflow::workflow_files;
@@ -13,12 +13,10 @@ use releashd::test_support::integration::workflow::{
     diagnose_workflow_file, DUPLICATE_NAME_DESCRIPTION,
 };
 use releashd::test_support::integration::workflow::{
-    WorkflowDefinition, WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-    WorkflowDefinitionRepository, WorkflowDefinitionSourceService, WorkflowError,
-    WorkflowSourceSaveError,
+    WorkflowDefinitionFileQueryService, WorkflowDefinitionQueryService, WorkflowSourceFormat,
 };
 use releashd::test_support::integration::workflow::{
-    WorkflowDefinitionFileQueryService, WorkflowDefinitionQueryService, WorkflowSourceFormat,
+    WorkflowDefinitionFileRepository, WorkflowDefinitionRepository, WorkflowError,
 };
 use std::fs;
 use std::path::Path;
@@ -99,82 +97,6 @@ pub fn test_診断_置き場所を読めないと失敗を返す() {
         releashd::test_support::integration::workflow::diagnose_all(&invalid, directory.path());
     // Then
     assert!(result.is_err());
-}
-
-#[test]
-pub fn save_and_load_workflow() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let instructions = dir.join("instructions");
-    std::fs::create_dir_all(&instructions).unwrap();
-    std::fs::write(
-        instructions.join("review-acceptance.md"),
-        "Review the change.",
-    )
-    .unwrap();
-
-    let wf = sample_workflow("my-workflow", false);
-    WorkflowDefinitionFileRepository::new(dir, dir)
-        .save(
-            WorkflowDefinition::new(dir.to_path_buf(), wf).unwrap(),
-            None,
-        )
-        .unwrap();
-
-    let file_path = dir.join("my-workflow.yml");
-    assert!(file_path.exists());
-
-    let loaded = load_workflow(&file_path, dir).unwrap();
-    assert_eq!(loaded.name, "my-workflow");
-    assert_eq!(loaded.description, "my-workflow workflow");
-    assert_eq!(loaded.nodes.len(), 1);
-}
-
-#[test]
-pub fn save_sourceとloadは未知fieldを拒否する() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let instructions = dir.join("instructions");
-    fs::create_dir_all(&instructions).unwrap();
-    fs::write(instructions.join("review.md"), "Review.").unwrap();
-    let known = r#"
-name: strict-storage
-description: known values
-nodes:
-  main:
-    session:
-      provider: claude
-      facets:
-        instruction: review
-"#;
-    let with_unknown = r#"
-name: strict-storage
-description: known values
-future_field: ignored
-nodes:
-  main:
-    session:
-      provider: claude
-      facets:
-        instruction: review
-"#;
-
-    let gateway = WorkflowDefinitionFileSourceGateway::new(dir, dir);
-    let repository = WorkflowDefinitionFileRepository::new(dir, dir);
-    let definition = gateway.parse(known).unwrap();
-    repository.save_source(&definition, known, None).unwrap();
-    let error = gateway.parse(with_unknown).unwrap_err();
-    assert!(
-        matches!(error, WorkflowSourceSaveError::Diagnostics(ref items) if items.iter().any(|item| item.code == "WFS002")),
-        "unknown field must be rejected: {error:?}"
-    );
-
-    let file_path = dir.join("strict-unknown.yml");
-    fs::write(&file_path, with_unknown).unwrap();
-    let loaded = load_workflow(&file_path, dir);
-    assert!(
-        matches!(loaded, Err(StorageError::Diagnostics(ref items)) if items.iter().any(|item| item.code == "WFS002"))
-    );
 }
 
 #[test]
@@ -408,35 +330,6 @@ pub fn list_workflows_nonexistent_dir_includes_builtins() {
 }
 
 #[test]
-pub fn delete_workflow_success() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-
-    seed_workflow(dir, &sample_workflow("deleteme", false)).unwrap();
-    assert!(dir.join("deleteme.yml").exists());
-
-    let repository = WorkflowDefinitionFileRepository::new(dir, dir);
-    repository
-        .delete(&repository.get("deleteme").unwrap())
-        .unwrap();
-    assert!(!dir.join("deleteme.yml").exists());
-}
-
-#[test]
-pub fn test_定義削除_利用者ファイルのないbuiltin名は拒否する() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-
-    let builtin_name = first_builtin_workflow_name();
-    let repository = WorkflowDefinitionFileRepository::new(dir, dir);
-    let result = repository.delete(&repository.get(&builtin_name).unwrap());
-    assert!(matches!(
-        result.unwrap_err(),
-        WorkflowError::Validation(ref message) if message.contains("ビルトイン")
-    ));
-}
-
-#[test]
 pub fn delete_nonexistent_workflow_fails() {
     let tmp = TempDir::new().unwrap();
     let result = WorkflowDefinitionFileRepository::new(tmp.path(), tmp.path()).get("nope");
@@ -539,86 +432,6 @@ nodes:
     let contents = resolved.for_node("main").unwrap();
     assert_eq!(contents.policy.as_deref(), Some("POLICY_BODY"));
     assert_eq!(contents.instruction.as_deref(), Some("INSTRUCTION_BODY"));
-}
-
-#[test]
-pub fn parse_and_load_validate_resolved_facet_artifact_references() {
-    for (facet_key, facet_body, expected_ref) in [
-        ("missing-ref", "Use {{ missing.field }}", "missing"),
-        ("item-out-of-scope", "Use {{ item.path }}", "item"),
-    ] {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let instructions = dir.join("instructions");
-        std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(instructions.join(format!("{facet_key}.md")), facet_body).unwrap();
-
-        let yaml = format!(
-            r#"
-name: facet-reference-{facet_key}
-description: invalid facet reference
-nodes:
-  main:
-    session:
-      provider: claude
-      facets:
-        instruction: {facet_key}
-"#
-        );
-        let parsed = parse_workflow_source(&yaml, dir);
-        assert!(matches!(
-            parsed.unwrap_err(),
-            StorageError::Validation(releashd::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. })
-                if reference == expected_ref
-        ));
-
-        let file_path = dir.join(format!("facet-reference-{facet_key}.yml"));
-        std::fs::write(&file_path, yaml).unwrap();
-        let loaded = load_workflow(&file_path, dir);
-        assert!(matches!(
-            loaded.unwrap_err(),
-            StorageError::Validation(releashd::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. })
-                if reference == expected_ref
-        ));
-    }
-}
-
-#[test]
-pub fn parse_and_load_validate_every_resolved_knowledge_body() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path();
-    let knowledge = dir.join("knowledge");
-    std::fs::create_dir_all(&knowledge).unwrap();
-    std::fs::write(knowledge.join("first.md"), "FIRST_OK").unwrap();
-    std::fs::write(
-        knowledge.join("second.md"),
-        "SECOND_USES_{{ missing.field }}",
-    )
-    .unwrap();
-
-    let yaml = r#"
-name: knowledge-reference-validation
-description: every knowledge body is validated
-nodes:
-  main:
-    session:
-      provider: claude
-      facets:
-        knowledge: [first, second]
-"#;
-
-    for result in [parse_workflow_source(yaml, dir), {
-        let file_path = dir.join("knowledge-reference-validation.yml");
-        std::fs::write(&file_path, yaml).unwrap();
-        load_workflow(&file_path, dir)
-    }] {
-        assert!(matches!(
-            result.unwrap_err(),
-            StorageError::Validation(
-                releashd::test_support::integration::workflow::ValidationError::InvalidArtifactReference { ref reference, .. }
-            ) if reference == "missing"
-        ));
-    }
 }
 
 /// [02] schema 境界: load 経路で 3 種全 facet (policy/knowledge/instruction)

@@ -4,7 +4,7 @@
 
 use super as wire;
 use super::conversions::cv;
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycle};
+use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::git::Branch;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::{
@@ -31,18 +31,6 @@ impl TryFrom<&WorkspaceList> for wire::WorkspaceListSnapshot {
     }
 }
 
-pub(crate) fn selection(
-    tree: &WorkspaceTree,
-    selection_in_snapshot: bool,
-) -> Result<wire::WorkspaceTreeSelectionSnapshot, String> {
-    Ok(wire::WorkspaceTreeSelectionSnapshot {
-        snapshot: Some(tree_snapshot(tree)?),
-        reconciliation: Some(wire::WorkspaceSelectionReconciliation {
-            selection_in_snapshot: Some(selection_in_snapshot),
-        }),
-    })
-}
-
 pub(crate) fn branch_status(branches: &[(Branch, bool)]) -> wire::ListBranchStatus {
     wire::ListBranchStatus {
         items: branches
@@ -57,7 +45,6 @@ pub(crate) fn branch_status(branches: &[(Branch, bool)]) -> wire::ListBranchStat
 
 fn status<T>(fetched: &Fetched<T>, empty: bool) -> wire::WorkspaceListStatus {
     wire::WorkspaceListStatus {
-        loaded: Some(fetched.loaded()),
         state: Some(
             match fetched.state(empty) {
                 FetchState::Loading => "loading",
@@ -109,11 +96,6 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         dirty_count_error: row.dirty_count.error.as_ref().map(ToString::to_string),
         pull_request_error: row.pull_request_error.as_ref().map(ToString::to_string),
         is_merged: Some(row.merged),
-        has_pr: row
-            .pull_request_loaded
-            .then_some(row.open_pull_request.is_some()),
-        pr_number: row.open_pull_request.as_ref().map(|pr| pr.number),
-        pr_url: row.open_pull_request.as_ref().map(|pr| pr.url.clone()),
     }
 }
 
@@ -168,15 +150,12 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
 fn history_item(
     execution: &WorkspaceExecution,
 ) -> Result<wire::WorkspaceWorkflowHistoryItem, String> {
-    let archive = execution.archive.as_ref();
     Ok(wire::WorkspaceWorkflowHistoryItem {
         execution_id: Some(execution.execution_id.clone()),
         worktree_path: Some(execution.worktree_path.clone()),
         title: Some(execution.workflow_name.clone()),
         status: Some(cv(execution.status.as_str())?),
         updated_at: Some(execution.updated_at),
-        archived_at: archive.map(|archive| archive.archived_at),
-        archive_reason: archive.map(|archive| archive.archive_reason.clone()),
     })
 }
 
@@ -196,7 +175,6 @@ fn tree_snapshot(tree: &WorkspaceTree) -> Result<wire::WorkspaceTreeSnapshot, St
                 })
                 .collect::<Result<_, _>>()?,
         }),
-        preferred_node_id: visible.preferred_node_id(),
     })
 }
 
@@ -254,7 +232,6 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
         execution_id: node.execution_id.clone(),
         node_execution_id: node.node_execution_id.clone(),
         node_name: node.node_name.clone(),
-        attempt: node.attempt,
         has_artifact: Some(node.has_artifact),
         model: node.model.clone(),
         provider: item.provider().map(Into::into),
@@ -275,16 +252,7 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
             can_resume_session: Some(node.can_resume_session),
         }),
         workflow_capabilities: workflow_capabilities(item),
-        session_capabilities: item.session().map(|session| {
-            let operations = session.operations();
-            wire::WorkspaceSessionCapabilities {
-                session_ref: Some(session.id().to_owned()),
-                can_archive: Some(operations.can_archive),
-                can_delete: Some(operations.can_delete),
-            }
-        }),
         children: Some(tree_items(&item.children())?),
-        past_attempts_collapsed: Some(!past_attempts.is_empty()),
         past_attempts: Some(wire::ListWorkspaceNode {
             items: past_attempts,
         }),
@@ -332,28 +300,11 @@ fn session_item(
             tree_id: Some(location.tree_id().to_owned()),
             node_execution_id: Some(location.node_execution_id().to_owned()),
         }),
-        lifecycle: Some(wire::AgentSessionLifecycleDto {
-            value: Some(match session.lifecycle() {
-                AgentSessionLifecycle::Open => {
-                    wire::agent_session_lifecycle_dto::Value::Open as i32
-                }
-                AgentSessionLifecycle::Paused => {
-                    wire::agent_session_lifecycle_dto::Value::Paused as i32
-                }
-                AgentSessionLifecycle::Archived => {
-                    wire::agent_session_lifecycle_dto::Value::Archived as i32
-                }
-            }),
-        }),
         provider_session_id: session.provider_session_id().map(str::to_owned),
-        transcript_ref: session.transcript_ref().map(str::to_owned),
         operations: Some(wire::AgentSessionOperationsDto {
             can_archive: Some(operations.can_archive),
-            can_restore: Some(operations.can_restore),
             can_delete: Some(operations.can_delete),
         }),
-        last_exit_abnormal: Some(session.last_exit_abnormal()),
-        terminal_presence: None,
         availability: None,
     })
 }

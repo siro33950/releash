@@ -8,13 +8,12 @@ mod client_tests {
         // Given / When / Then
         for (command, result) in [
             ("update_external_editor", Ok(Json::Null)),
-            ("get_language_from_path", Ok(json!("日本語"))),
-            ("start_workflow", Ok(json!("/a"))),
+            ("start_workflow", Ok(json!("/日本語"))),
             (
-                "get_language_from_path",
+                "start_workflow",
                 Err(json!({"code":"INVALID_REQUEST","message":"invalid"})),
             ),
-            ("get_language_from_path", Err(json!("failure"))),
+            ("start_workflow", Err(json!("failure"))),
         ] {
             let decoded = match result.clone() {
                 Ok(value) => {
@@ -54,33 +53,8 @@ mod client_tests {
     }
 
     #[test]
-    fn test_クライアント引数_必須フィールドと整数型を検証する() {
-        // Given / When / Then
-        assert!(CommandRequest::from_value("build_diff_file_tree", json!({})).is_err());
-        assert!(CommandRequest::from_value(
-        "write_terminal_surface",
-        json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": 1.5,"data":"x"})
-    )
-    .is_err());
-        let args = json!({"owner":{"kind":"workspace","workspacePath":"/repo"},"attachmentId":"a", "sequence": u64::MAX,"data":"x"});
-        let request = CommandRequest::from_value("write_terminal_surface", args.clone()).unwrap();
-        let decoded = CommandRequest::decode(request.encode_to_vec().as_slice())
-            .unwrap()
-            .into_value()
-            .unwrap();
-        assert_eq!(decoded, ("write_terminal_surface", args));
-        let request = CommandRequest {
-            command: Some(command_request::Command::BuildDiffFileTree(
-                BuildDiffFileTreeRequest::default(),
-            )),
-        };
-        assert!(request.into_value().is_err());
-        assert!(CommandRequest::decode(&b"not-protobuf"[..]).is_err());
-    }
-
-    #[test]
     fn test_型に合わない結果は成功応答にせずerrorを返す() {
-        let error = crate::adaptor::controller::client::value::<_, WorkspaceCenterTab>(
+        let error = crate::adaptor::presenter::client::value::<_, WorkspaceCenterTab>(
             "invalid".to_string(),
         )
         .unwrap_err();
@@ -91,7 +65,6 @@ mod client_tests {
     fn test_terminal_eventは最大sequenceと日本語を保持する() {
         let message = TerminalEvent {
             item: Some(terminal_event::Item::Output(TerminalOutput {
-                session_key: "a".into(),
                 sequence: u64::MAX,
                 data: "日本語".into(),
             })),
@@ -103,84 +76,12 @@ mod client_tests {
     }
 
     #[test]
-    fn test_workflow状態_protoは削除した番号と名前を予約し残る三状態を保持する() {
-        // Given
-        let pool = descriptor::pool();
-        // When / Then
-        for (name, numbers) in [
-            ("ExecutionStatusView", [1, 4]),
-            ("WorkspaceHistoryStatus", [7, 8]),
-        ] {
-            let status = pool
-                .get_enum_by_name(&format!("releash.client.v1.{name}.Value"))
-                .unwrap();
-            assert_eq!(
-                status.reserved_names().collect::<Vec<_>>(),
-                if name == "WorkspaceHistoryStatus" {
-                    vec![
-                        "paused",
-                        "failed",
-                        "waiting_approval",
-                        "interrupted",
-                        "unresolved",
-                    ]
-                } else {
-                    vec!["waiting_approval", "interrupted"]
-                }
-            );
-            for number in numbers {
-                assert!(status
-                    .reserved_ranges()
-                    .any(|range| range.contains(&number)));
-                assert!(status.get_value(number).is_none());
-            }
-            if name != "WorkspaceHistoryStatus" {
-                assert_eq!(
-                    status
-                        .values()
-                        .map(|value| (value.name().to_string(), value.number()))
-                        .collect::<Vec<_>>(),
-                    [
-                        ("running".into(), 0),
-                        ("completed".into(), 2),
-                        ("aborted".into(), 3)
-                    ]
-                );
-            }
-        }
-        for name in ["WorkflowExecutionView"] {
-            let message = pool
-                .get_message_by_name(&format!("releash.client.v1.{name}"))
-                .unwrap();
-            assert_eq!(
-                message.reserved_names().collect::<Vec<_>>(),
-                ["interruption_reason", "resume_from_node"]
-            );
-            for number in [11, 12] {
-                assert!(message
-                    .reserved_ranges()
-                    .any(|range| range.contains(&number)));
-                assert!(message.get_field(number).is_none());
-            }
-        }
-        for value in ["waiting_approval", "interrupted"] {
-            assert!(ExecutionStatusView::try_from(value).is_err());
-            assert!(WorkspaceHistoryStatus::try_from(value).is_err());
-            assert!(serde_json::from_value::<
-                crate::adaptor::presenter::workflow_wire::ExecutionStatusView,
-            >(json!(value))
-            .is_err());
-        }
-        assert!(NodeExecutionStatusView::try_from("waiting_approval").is_ok());
-    }
-
-    #[test]
     fn test_workflow応答_connectの詳細と一覧は三状態の値を保ち削除項目を含まない() {
         // Given / When / Then
         for status in ["running", "completed", "aborted"] {
             let value = json!({
                 "id": "execution-1", "workflowName": "review", "status": status,
-                "currentNode": "review", "worktreePath": "/repo", "createdFrom": "cli",
+                "currentNode": "review", "worktreePath": "/repo",
                 "startedAt": 1.0, "updatedAt": 2.0, "completedAt": null, "errorReason": null,
                 "totalTokenUsage": {"inputTokens": 13, "outputTokens": 8},
                 "nodeExecutions": [], "artifacts": [], "fanouts": [], "approvalTarget": null
@@ -213,48 +114,5 @@ mod client_tests {
                 .unwrap(),
             ("refresh_workspaces", Json::Null)
         );
-    }
-
-    #[test]
-    fn test_起動失敗経路削除_wire番号と名前を予約しrpcと型を残さない() {
-        // Given
-        let pool = descriptor::pool();
-        // When / Then
-        for (message, number, field) in [
-            ("CommandRequest", 103, "quit_after_startup_failure"),
-            ("CommandResult", 103, "quit_after_startup_failure"),
-            ("StatePayload", 58, "startup_outcome"),
-            ("CommandError", 3, "application"),
-        ] {
-            let message = pool
-                .get_message_by_name(&format!("releash.client.v1.{message}"))
-                .unwrap();
-            assert!(message
-                .reserved_ranges()
-                .any(|range| range.contains(&number)));
-            assert!(message.reserved_names().any(|name| name == field));
-            assert!(message.get_field(number).is_none());
-        }
-        for message in [
-            "ApplicationStartupOutcomeDtoV1",
-            "ApplicationStartupOutcomeDtoV1Failed",
-            "StartupFailureKindDtoV1",
-            "StartupFailureActionDtoV1",
-            "ListStartupFailureActionDtoV1",
-            "QuitAfterStartupFailureRequest",
-            "StartupFailureQuitOutcomeDtoV1",
-            "StartupFailureQuitOutcomeDtoV1Accepted",
-            "ApplicationError",
-        ] {
-            assert!(pool
-                .get_message_by_name(&format!("releash.client.v1.{message}"))
-                .is_none());
-        }
-        let service = pool
-            .get_service_by_name("releash.client.v1.ClientService")
-            .unwrap();
-        assert!(!service
-            .methods()
-            .any(|method| method.name() == "QuitAfterStartupFailure"));
     }
 }

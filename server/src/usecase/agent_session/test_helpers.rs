@@ -299,13 +299,6 @@ impl crate::usecase::agent_session::agent_session_launch::AgentSessionExecutionT
         Ok(self.operation_lock.clone().lock_owned().await)
     }
 
-    async fn archive_execution_tree(
-        &self,
-        _: &str,
-    ) -> Result<(), crate::domain::workflow::error::WorkflowError> {
-        unreachable!()
-    }
-
     async fn restore_execution_tree(
         &self,
         _: &str,

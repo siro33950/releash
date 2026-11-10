@@ -10,7 +10,6 @@ use crate::usecase::{
     git_host::GitHostUsecase,
     git_usecase::GitUsecase,
     provider_dto::AgentSessionProviderDto,
-    repo_paths_usecase::RepoPathsUsecase,
     repository_config_usecase::RepositoryConfigUsecase,
     review_usecase::ReviewUsecase,
     workflow::WorkflowUsecase,
@@ -163,7 +162,6 @@ where
 #[derive(Clone)]
 pub struct WorkspaceStateReads {
     pub daemon: crate::usecase::daemon::DaemonUsecase,
-    pub repositories: Arc<RepoPathsUsecase>,
     pub repository: Arc<GitUsecase>,
     pub repository_config: Arc<RepositoryConfigUsecase>,
     pub workflow: Arc<WorkflowUsecase>,
@@ -272,14 +270,6 @@ impl WorkspaceStateReads {
                     node: node.map(Box::new),
                 });
             }
-            T::AgentSession(id) => {
-                return self
-                    .sessions
-                    .get(id)
-                    .await
-                    .map(StateValue::AgentSession)
-                    .map_err(error)
-            }
             T::SessionHistory(path, count) => {
                 return self
                     .history
@@ -331,14 +321,6 @@ impl WorkspaceStateReads {
                     self.workspaces.read().await.map_err(error)?,
                 ))
             }
-            T::Selection(p, id) => {
-                let (tree, selected) = self
-                    .workflow
-                    .workspace_tree_selection(p, id)
-                    .await
-                    .map_err(error)?;
-                return Ok(StateValue::Selection(tree, selected));
-            }
             T::NodeDetail(p, id) => {
                 return Ok(StateValue::NodeDetail(
                     self.workflow
@@ -372,7 +354,6 @@ impl WorkspaceStateReads {
     ) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         Ok(match target {
-            T::RepositoryPaths => StateValue::RepositoryPaths(self.repositories.get()),
             T::Providers => StateValue::Providers(
                 self.providers
                     .available_providers()
@@ -390,38 +371,11 @@ impl WorkspaceStateReads {
                     .map(Into::into)
                     .collect(),
             ),
-            T::BranchBase(p, name) => {
-                StateValue::BranchBase(self.repository_config.get_branch_base(p, name).map_err(error)?)
-            }
-            T::BranchStatus(p) => StateValue::BranchStatus(
-                self.repository
-                    .list_branches_with_worktree(p)
-                    .map_err(error)?,
-            ),
-            T::CurrentBranch(p) => {
-                StateValue::CurrentBranch(self.repository.get_current_branch(p).map_err(error)?)
-            }
-
-            T::Worktrees(p) => {
-                StateValue::Worktrees(self.repository.list_worktrees(p).map_err(error)?)
-            }
-            T::StartupRepository => StateValue::StartupRepository(self.repository.startup_worktree().map_err(error)?),
             T::Directory(path, directory) => StateValue::Directory(self.review.directory_entries(path, directory).map_err(error)?),
             T::FileTab(path, file, base) => StateValue::FileTab(self.review.get_file_tab_view(path, file, base.as_str()).map_err(error)?),
-            T::ReviewSnapshot(path, base) => StateValue::ReviewSnapshot(
-                self.review
-                    .get_review_snapshot(path, base.as_str())
-                    .map_err(error)?,
-            ),
-            T::ReviewFileView(path, file, section, base) => StateValue::ReviewFileView(
-                self.review
-                    .get_review_file_view(path, file, section.as_str(), base.as_str())
-                    .map_err(error)?,
-            ),
             T::FileThreads(path, file) => {
                 let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::Author::human()).map_err(error)?;
-                let count = crate::domain::comment::unresolved_thread_count(&threads);
-                StateValue::FileThreads(threads, count)
+                StateValue::FileThreads(threads)
             }
             T::ReviewThreads(name) => StateValue::ReviewThreads(
                 self.comments
@@ -436,11 +390,7 @@ impl WorkspaceStateReads {
             T::Workflow(name) => {
                 StateValue::Workflow(self.workflow.get_workflow(name).map_err(error)?)
             }
-            T::WorkflowSource(name) => {
-                StateValue::WorkflowSource(self.workflow.get_workflow_source(name).map_err(error)?)
-            }
             T::Facets(kind) => StateValue::Facets(self.workflow.list_facet_summaries(*kind).map_err(error)?),
-            T::Facet(kind, key) => StateValue::Facet(self.workflow.get_facet(*kind, key).map_err(error)?),
             T::Diagnostics => StateValue::Diagnostics(
                 self.workflow
                     .diagnose_all(
@@ -452,7 +402,6 @@ impl WorkspaceStateReads {
                 StateValue::DesktopSettings(self.app_config.desktop_settings().map_err(error)?)
             }
             T::NotionTasks(request) => StateValue::NotionTasks(self.notion.cached_tasks(request).ok_or_else(|| error(super::SubscriptionError::UnknownTarget))?),
-            T::NotionLabelOptions(path) => StateValue::NotionLabelOptions(self.notion.cached_label_options(path).ok_or_else(|| error(super::SubscriptionError::UnknownTarget))?),
             T::NotionConfig(p) => {
                 StateValue::NotionConfig(self.notion.get_config(p).map_err(error)?)
             }
@@ -489,10 +438,8 @@ impl WorkspaceStateReads {
             | T::Terminal(_)
             | T::Workspaces
             | T::Workflows
-            | T::AgentSession(_)
             | T::SessionTab(_)
             | T::SessionHistory(_, _)
-            | T::Selection(_, _)
             | T::NodeDetail(_, _)
             | T::ProviderUsage | T::ProviderHookHealth | T::WorkspaceState(..) | T::RepositoryGroupState(_) => {
                 unreachable!("async reads handled above")
@@ -511,9 +458,6 @@ impl WorkspaceStateReads {
                 self.refresh_issues(path).await?
             }
             SubscriptionTarget::NotionTasks(request) => self.notion.refresh_tasks(request).await,
-            SubscriptionTarget::NotionLabelOptions(path) => {
-                self.notion.refresh_label_options(path).await
-            }
             SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests().await,
             _ => {}
         }
@@ -561,17 +505,13 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         self.refresh_external_blocking(target).await
     }
     fn acquire_external(&self, target: &SubscriptionTarget) {
-        match target {
-            SubscriptionTarget::NotionTasks(request) => self.notion.acquire_tasks(request),
-            SubscriptionTarget::NotionLabelOptions(path) => self.notion.acquire_label_options(path),
-            _ => {}
+        if let SubscriptionTarget::NotionTasks(request) = target {
+            self.notion.acquire_tasks(request);
         }
     }
     fn release_external(&self, target: &SubscriptionTarget) {
-        match target {
-            SubscriptionTarget::NotionTasks(request) => self.notion.release_tasks(request),
-            SubscriptionTarget::NotionLabelOptions(path) => self.notion.release_label_options(path),
-            _ => {}
+        if let SubscriptionTarget::NotionTasks(request) = target {
+            self.notion.release_tasks(request);
         }
     }
     fn repositories(&self) -> Vec<String> {

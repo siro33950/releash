@@ -1,6 +1,5 @@
 pub(crate) mod tests {
     use super::super::*;
-    use std::sync::atomic::Ordering;
 
     fn set_active(active: bool) {
         set_performance_configured(active);
@@ -63,14 +62,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn xterm_count_is_saturating_on_public_setter() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_mounted_xterm_count(3);
-        assert_eq!(MOUNTED_XTERM_COUNT.load(Ordering::Relaxed), 3);
-    }
-
-    #[test]
     fn workflow_node_failure_records_failure_attributes() {
         let _guard = lock_test_telemetry();
         reset_test_metrics();
@@ -109,17 +100,6 @@ pub(crate) mod tests {
                 )
         }));
         reset_test_metrics();
-    }
-
-    #[test]
-    fn record_apis_are_noop_when_inactive() {
-        let _guard = lock_test_telemetry();
-        reset_test_metrics();
-        set_active(false);
-
-        record_usage_event("settings_saved");
-
-        assert!(test_metric_records().is_empty());
     }
 
     #[test]

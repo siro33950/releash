@@ -77,7 +77,6 @@ impl Server {
             daemon_id: "fixture".into(),
             pid,
             process_started_at: started,
-            ..Default::default()
         };
         std::fs::write(
             directory.path().join("client-api.json"),
@@ -174,12 +173,7 @@ impl Server {
                     assert_eq!(request.agent_session_id, "session");
                     (
                         "application/proto",
-                        wire::ReceiveProviderSignalResponse {
-                            result: Some(wire::receive_provider_signal_response::Result::Applied(
-                                wire::Unit {},
-                            )),
-                        }
-                        .encode_to_vec(),
+                        wire::ReceiveProviderSignalResponse { rejected: None }.encode_to_vec(),
                     )
                 } else if header.contains("/OpenStateStream ") {
                     let mut bytes = frame(wire::StateSubscriptionEvent {

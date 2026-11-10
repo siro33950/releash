@@ -37,54 +37,6 @@ fn test_worktree作成_base未指定ではbase設定しない() {
 }
 
 #[test]
-fn test_worktree一覧_pathとbranchとis_mainを写す() {
-    // Given
-    let fake = Arc::new(FakeRepo {
-        worktrees: vec![wt("/wt-feat", "feat", false)],
-        ..<FakeRepo as Default>::default()
-    });
-    // When
-    let entries = usecase(fake).list_worktrees("/r").unwrap();
-    // Then
-    assert_eq!(entries.len(), 1);
-    let e = &entries[0];
-    assert_eq!(e.path, "/wt-feat");
-    assert_eq!(e.branch, "feat");
-    assert!(!e.is_main);
-}
-
-#[test]
-fn test_linked_worktreeのreadには開いたrepo_pathを渡す() {
-    let fake = Arc::new(FakeRepo {
-        worktrees: vec![wt("/linked", "feature", false)],
-        ..<FakeRepo as Default>::default()
-    });
-    let repository = usecase(fake.clone());
-
-    repository.list_worktrees("/linked").unwrap();
-    repository.list_working_worktrees("/linked").unwrap();
-    repository.list_branches_with_worktree("/linked").unwrap();
-
-    assert_eq!(*fake.listed_worktree_paths.lock(), vec!["/linked"; 3]);
-}
-
-#[test]
-fn test_repository_root解決に失敗したreadはqueryを呼ばずに失敗する() {
-    let fake = Arc::new(FakeRepo {
-        worktrees: vec![wt("/linked", "feature", false)],
-        fail_main_repo_path: true,
-        ..<FakeRepo as Default>::default()
-    });
-    let repository = usecase(fake.clone());
-
-    assert!(repository.list_worktrees("/linked").is_err());
-    assert!(repository.list_working_worktrees("/linked").is_err());
-    assert!(repository.list_branches_with_worktree("/linked").is_err());
-
-    assert!(fake.listed_worktree_paths.lock().is_empty());
-}
-
-#[test]
 fn test_作業worktree一覧_隔離worktreeを除きmainを先頭にブランチ名順で返す() {
     // Given
     let fake = Arc::new(FakeRepo {
@@ -159,38 +111,6 @@ fn test_ブランチ状態_worktreeの有無を付け隔離worktreeのブラン�
 }
 
 #[test]
-fn test_worktree一覧_完全な隔離命名の実体を非表示にする() {
-    let fake = Arc::new(FakeRepo {
-        worktrees: vec![
-            wt(
-                "/main-worktrees/.releash-isolated/orphan-a1",
-                "releash/isolated/orphan-a1",
-                false,
-            ),
-            wt("/main-worktrees/feature", "feature", false),
-        ],
-        ..<FakeRepo as Default>::default()
-    });
-
-    let entries = usecase(fake).list_worktrees("/main").unwrap();
-
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].branch, "feature");
-}
-
-#[test]
-fn test_worktree一覧のpathはunc_prefixを保持して正規化する() {
-    let fake = Arc::new(FakeRepo {
-        worktrees: vec![wt(r"\\server\share\wt-feat", "feat", false)],
-        ..<FakeRepo as Default>::default()
-    });
-
-    let entries = usecase(fake).list_worktrees("/r").unwrap();
-
-    assert_eq!(entries[0].path, "//server/share/wt-feat");
-}
-
-#[test]
 fn test_worktree作成はunc_repo_pathから意味保存でpathを導出する() {
     let fake = Arc::new(<FakeRepo as Default>::default());
 
@@ -211,34 +131,6 @@ fn test_worktree作成エラーをusecaseエラーへ変換する() {
         .create_worktree("/r", "feat", true, None)
         .unwrap_err();
     assert_eq!(err.to_string(), "boom");
-}
-
-#[test]
-fn test_起動worktree_一件だけのときpathと表示名を返す() {
-    for count in [0, 1, 2] {
-        let fake = Arc::new(FakeRepo {
-            worktrees: (0..count)
-                .map(|index| Worktree {
-                    name: format!("wt{index}"),
-                    path: format!("/main/wt{index}"),
-                    branch: format!("feature{index}"),
-                    is_main: index == 0,
-                    is_locked: false,
-                    is_merged: false,
-                })
-                .collect(),
-            ..Default::default()
-        });
-        let result = usecase(fake).startup_worktree().unwrap();
-        if count == 1 {
-            let worktree = result.unwrap();
-            assert_eq!(worktree.path, "/main/wt0");
-            assert_eq!(worktree.branch, "feature0");
-            assert_eq!(worktree.repository_name, "main");
-        } else {
-            assert!(result.is_none());
-        }
-    }
 }
 
 #[tokio::test]

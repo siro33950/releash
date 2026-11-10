@@ -111,7 +111,7 @@ fn test_gc報告の合算_片側と共通のカテゴリを足し上限で飽和
     first.errors = u64::MAX;
     let mut second = GcReport::default();
     second.record_deleted(GcCategory::DeletedWorkspace, 30);
-    second.record_deleted(GcCategory::LegacyComments, 40);
+    second.record_deleted(GcCategory::RegenerableCache, 40);
     second.record_error();
     // When
     first.merge(second);
@@ -126,8 +126,7 @@ fn test_gc報告の合算_片側と共通のカテゴリを足し上限で飽和
             reclaimed_bytes: 40
         }
     );
-    assert_eq!(first.categories[&GcCategory::RegenerableCache].deleted, 1);
-    assert_eq!(first.categories[&GcCategory::LegacyComments].deleted, 1);
+    assert_eq!(first.categories[&GcCategory::RegenerableCache].deleted, 2);
     let mut saturated = GcReport {
         total_files: u64::MAX,
         total_bytes: u64::MAX,

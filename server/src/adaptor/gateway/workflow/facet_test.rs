@@ -26,19 +26,3 @@ fn find_undefined_template_variables_returns_only_invalid_reference_syntax() {
     let undefined = prompt_rendering::find_undefined_template_variables(content);
     assert_eq!(undefined, vec!["bad ref".to_string()]);
 }
-
-#[test]
-fn render_template_variables_treats_surrounding_whitespace_inside_refs_as_equivalent() {
-    let mut vars = std::collections::HashMap::new();
-    vars.insert("request".to_string(), "do".to_string());
-    let out = prompt_rendering::render_template_variables("a {{ request }} b", &vars);
-    assert_eq!(out, "a do b");
-}
-
-#[test]
-fn render_template_variables_keeps_unresolved_ref_verbatim_including_whitespace() {
-    // 解決できない参照は元の `{{ ... }}` をそのまま残し、内側のスペースを変更しない。
-    let vars = std::collections::HashMap::new();
-    let out = prompt_rendering::render_template_variables("x {{ unknown }} y", &vars);
-    assert_eq!(out, "x {{ unknown }} y");
-}

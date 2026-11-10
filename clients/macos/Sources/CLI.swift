@@ -56,10 +56,6 @@ struct CLI: Sendable {
   func stopServer() async throws { _ = try await run(executable, ["server", "stop"]) }
   func restartServer() async throws { _ = try await run(executable, ["server", "restart"]) }
 
-  func discover(startIfMissing: Bool) async throws -> Releash_Client_V1_LocalApiDiscovery {
-    try await discoverWithStatus(startIfMissing: startIfMissing).0
-  }
-
   func discoverWithStatus(startIfMissing: Bool) async throws -> (
     Releash_Client_V1_LocalApiDiscovery, CLIStatus
   ) {

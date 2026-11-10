@@ -3,9 +3,7 @@ pub(crate) use client_token::BearerToken;
 pub(crate) mod discovery;
 pub(crate) mod server;
 
-pub use discovery::{
-    lookup_process_start_time, process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
-};
+pub use discovery::{process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile};
 pub(crate) use server::LocalApiServer;
 pub(crate) use server::LocalApiServerBinding;
 
@@ -29,8 +27,5 @@ pub enum LocalApiServerError {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use server::test_binding;
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_helpers;
 
 pub(crate) use server::generate_token;

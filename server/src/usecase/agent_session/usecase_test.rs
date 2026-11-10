@@ -93,7 +93,7 @@ mod memory_tests {
     async fn test_thread送信_openでないsessionは拒否し何も書かない() {
         // Given
         let mut session = session();
-        session.archive().unwrap();
+        crate::domain::agent_session::test_helpers::archive_derived(&mut session);
         let (usecase, input) = send_usecase(
             Arc::new(FailingSaveRepository::new(session)),
             vec![thread("one")],

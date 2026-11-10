@@ -74,7 +74,7 @@ pub async fn test_実行木archive_abortと自然完了の競合だけを終了�
                     },
                 )));
             // When
-            let result = fixture.runtime.archive_execution_tree(&id, "manual").await;
+            let result = fixture.runtime.archive_execution_tree(&id).await;
             // Then
             let succeeds = complete && !matches!(error, WorkflowError::External(_));
             if succeeds {
@@ -189,16 +189,6 @@ pub async fn test_実行木archive_同じworktreeのworkflowと複数sessionを�
             fixture.repository.target(id).await.unwrap().status,
             ExecutionStatus::Aborted
         );
-        assert_eq!(
-            fixture
-                .repository
-                .archive_snapshot_for(&[id.into()])
-                .await
-                .unwrap()
-                .records[0]
-                .archive_reason,
-            "worktree_removed"
-        );
     }
     assert!(fixture.sessions.live_sessions.lock().unwrap().is_empty());
 }
@@ -217,11 +207,7 @@ pub async fn test_実行木restore_所属worktreeが利用不可なら事実を�
     // Given
     let fixture = archive_fixture_with_resolver(Arc::new(UnavailableWorktree));
     let id = archive_workflow(&fixture).await;
-    fixture
-        .runtime
-        .archive_execution_tree(&id, "manual")
-        .await
-        .unwrap();
+    fixture.runtime.archive_execution_tree(&id).await.unwrap();
     let before =
         releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
             .await
@@ -235,136 +221,6 @@ pub async fn test_実行木restore_所属worktreeが利用不可なら事実を�
             .unwrap(),
         before
     );
-}
-
-#[tokio::test]
-pub async fn test_旧sessionarchive移行_128件を越えて時刻と理由と終了状態を維持する() {
-    // Given
-    let fixture = archive_fixture();
-    let mut expected = Vec::new();
-    for index in 0..131 {
-        let id = format!("00000000-0000-4000-8000-{index:012}");
-        let facts = SessionExecutionTreeRootFacts::new(
-            &id,
-            "/workspace",
-            "/gone",
-            releashd::test_support::integration::providers::ProviderKind::Codex,
-            None,
-        )
-        .unwrap();
-        let meta = facts.meta.clone();
-        let mut rows: Vec<_> = facts
-            .into_facts()
-            .iter()
-            .take(2)
-            .map(|(meta, fact)| {
-                releashd::test_support::integration::workflow::pending_single_fact(meta, fact, 1)
-                    .unwrap()
-            })
-            .collect();
-        let completed = index % 2 == 0;
-        if completed {
-            for kind in ["submit_received", "stop_received"] {
-                rows.push(
-                    releashd::test_support::integration::workflow::pending_single_fact(
-                        &meta,
-                        &releashd::test_support::integration::workflow::decode(kind, "{}").unwrap(),
-                        2,
-                    )
-                    .unwrap(),
-                );
-            }
-        }
-        let timestamp = 42_123 + index;
-        let reason = if index % 3 == 0 {
-            "worktree_removed"
-        } else {
-            "manual"
-        };
-        let mut legacy = releashd::test_support::integration::workflow::pending_single_fact(
-            &meta,
-            &NodeFact::AbortRequested(Default::default()),
-            timestamp,
-        )
-        .unwrap();
-        legacy.row.event_type = "archive_requested".into();
-        legacy.row.detail = serde_json::json!({"reason": reason}).to_string();
-        rows.push(legacy);
-        releashd::test_support::integration::workflow::append_pending_rows(&fixture.store, rows)
-            .await
-            .unwrap();
-        expected.push((id, timestamp as f64 / 1000.0, reason, completed));
-    }
-    assert_eq!(
-        fixture
-            .repository
-            .legacy_session_archive_page(None)
-            .await
-            .unwrap()
-            .len(),
-        128
-    );
-    // When
-    fixture
-        .runtime
-        .migrate_execution_archives(fixture.repository.as_ref())
-        .await
-        .unwrap();
-    // Then
-    assert!(fixture
-        .repository
-        .legacy_session_archive_page(None)
-        .await
-        .unwrap()
-        .is_empty());
-    for (id, timestamp, reason, completed) in expected {
-        let record = fixture
-            .repository
-            .archive_snapshot_for(std::slice::from_ref(&id))
-            .await
-            .unwrap()
-            .records
-            .remove(0);
-        assert_eq!(record.archived_at, timestamp);
-        assert_eq!(record.archive_reason, reason);
-        assert_eq!(
-            fixture.repository.target(&id).await.unwrap().status,
-            if completed {
-                ExecutionStatus::Completed
-            } else {
-                ExecutionStatus::Aborted
-            }
-        );
-        let facts =
-            releashd::test_support::integration::workflow::read_tree_records(&fixture.store, &id)
-                .await
-                .unwrap();
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|record| matches!(record.fact, NodeFact::ArchiveRequested(_)))
-                .count(),
-            2
-        );
-        assert_eq!(
-            facts
-                .iter()
-                .filter(|record| matches!(record.fact, NodeFact::AbortRequested(_)))
-                .count(),
-            usize::from(!completed)
-        );
-    }
-    fixture
-        .runtime
-        .migrate_execution_archives(fixture.repository.as_ref())
-        .await
-        .unwrap();
-    assert!(fixture
-        .repository
-        .legacy_session_archive_page(None)
-        .await
-        .unwrap()
-        .is_empty());
 }
 
 #[tokio::test]
@@ -387,11 +243,7 @@ pub async fn test_終了済み実行木_archiveとrestore成功後だけ所属wo
     let mut changes = releashd::test_support::integration::subscriptions::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
-    fixture
-        .runtime
-        .archive_execution_tree(&id, "manual")
-        .await
-        .unwrap();
+    fixture.runtime.archive_execution_tree(&id).await.unwrap();
     assert_eq!(
         changes.try_recv().unwrap(),
         StateChangeSource::Worktree("/missing/worktree".into())
@@ -403,7 +255,7 @@ pub async fn test_終了済み実行木_archiveとrestore成功後だけ所属wo
     );
     assert!(fixture
         .runtime
-        .archive_execution_tree("missing", "manual")
+        .archive_execution_tree("missing")
         .await
         .is_err());
     assert!(fixture
@@ -449,11 +301,7 @@ pub async fn test_実行木archiveとrestore_workspace識別子と異なるworkt
     let mut changes = releashd::test_support::integration::subscriptions::changes(&publisher);
     fixture.runtime = fixture.runtime.with_state_publisher(publisher);
     // When / Then
-    fixture
-        .runtime
-        .archive_execution_tree(id, "manual")
-        .await
-        .unwrap();
+    fixture.runtime.archive_execution_tree(id).await.unwrap();
     assert_eq!(
         changes.try_recv().unwrap(),
         StateChangeSource::Worktree(target.worktree_path.clone())
@@ -522,7 +370,7 @@ async fn test_実行木archiveとrestore_sessionタブを増減して選択を�
     // When
     fixture
         .runtime
-        .archive_execution_tree(&execution_id, "manual")
+        .archive_execution_tree(&execution_id)
         .await
         .unwrap();
     // Then
@@ -597,10 +445,7 @@ async fn test_実行木archiveとrestore_sessionタブ保存に失敗しても�
     };
     // When
     *fixture.workspace_states.next_save_error.lock() = Some(tab_failure());
-    let archived = fixture
-        .runtime
-        .archive_execution_tree(&execution_id, "manual")
-        .await;
+    let archived = fixture.runtime.archive_execution_tree(&execution_id).await;
     // Then
     assert!(matches!(archived, Err(WorkflowError::Technical(_))));
     assert_eq!(

@@ -69,14 +69,6 @@ pub fn test_ターミナル画面_再起動復元_復元点破損時は新規画
         workspace_owner("/repo"),
         None,
     );
-    if let Ok(outcome) = &result {
-        releashd::test_support::integration::terminal::kill_runtime_generation(
-            &gateway,
-            outcome.surface.runtime_generation.value(),
-        )
-        .unwrap();
-    }
-
     assert!(result.is_err());
     assert_eq!(
         std::fs::read(checkpoint_path).unwrap(),

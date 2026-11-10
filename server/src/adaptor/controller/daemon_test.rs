@@ -93,11 +93,7 @@ async fn test_起動失敗_failedに遷移して安全な説明と相関idだけ
     );
     let daemon = crate::usecase::daemon::DaemonUsecase::new(repository);
     // When
-    let error = fail_startup(
-        &daemon,
-        K::DataRelocationBlocked(domain::daemon::data_home::RelocationBlock::BothHaveData),
-    )
-    .await;
+    let error = fail_startup(&daemon, K::StoreInUse).await;
     // Then
     let ServingStatus::Failed(failure) = daemon.info().await.serving_status else {
         panic!("起動失敗が記録されていない")
@@ -108,7 +104,8 @@ async fn test_起動失敗_failedに遷移して安全な説明と相関idだけ
         error.to_string(),
         format!("{} ({})", failure.safe_description, failure.correlation_id)
     );
-    assert!(failure
-        .safe_description
-        .contains("Both the previous and the new data folders"));
+    assert_eq!(
+        failure.safe_description,
+        "Local data is currently in use by another Releash process."
+    );
 }

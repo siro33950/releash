@@ -1,16 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ExecutionOrigin, ExecutionParentRef, NodeExecutionFailureKind, NodeKindName, TokenUsage,
+    ExecutionParentRef, NodeExecutionFailureKind, NodeKindName, TokenUsage,
     WorkflowDefinitionContent,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ContractViolationRecord {
-    pub path: String,
-    pub reason: String,
-}
 
 /// Canonical facts emitted by a workflow execution.
 ///
@@ -27,8 +20,6 @@ pub enum WorkflowEvent {
         execution_id: String,
         workflow_name: String,
         worktree_path: String,
-        #[serde(with = "execution_origin_serde")]
-        created_from: ExecutionOrigin,
         request: String,
         definition: WorkflowDefinitionContent,
         timestamp: f64,
@@ -131,34 +122,6 @@ pub enum WorkflowEvent {
         comment: Option<String>,
         timestamp: f64,
     },
-    ContractViolated {
-        execution_id: String,
-        node_execution_id: String,
-        node_name: String,
-        violations: Vec<ContractViolationRecord>,
-        repair_attempt: u32,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        request_id: Option<String>,
-        timestamp: f64,
-    },
-    StallObserved {
-        execution_id: String,
-        node_execution_id: String,
-        node_name: String,
-        attempt: u32,
-        session_id: String,
-        turn_phase: String,
-        idle_secs: u64,
-        signal_count: u32,
-        cap_reached: bool,
-        timestamp: f64,
-    },
-    StallCleared {
-        execution_id: String,
-        node_execution_id: String,
-        session_id: String,
-        timestamp: f64,
-    },
     ExecutionCompleted {
         execution_id: String,
         total_token_usage: TokenUsage,
@@ -170,25 +133,4 @@ pub enum WorkflowEvent {
         aborted_node: Option<String>,
         timestamp: f64,
     },
-}
-
-mod execution_origin_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::ExecutionOrigin;
-
-    pub(super) fn serialize<S>(value: &ExecutionOrigin, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(value.as_public_value())
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<ExecutionOrigin, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        ExecutionOrigin::from_public_value(&value).map_err(serde::de::Error::custom)
-    }
 }

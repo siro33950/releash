@@ -83,7 +83,6 @@ fn item(id: &str) -> AgentSessionItemDto {
             can_restore: false,
             can_delete: false,
         },
-        last_exit_abnormal: false,
         terminal_presence: None,
     }
 }
@@ -105,55 +104,6 @@ async fn test_agent_session_read単体取得時にgc済みsessionを返さない
     );
 
     assert!(usecase.get("orphan").await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn test_agent_session_read_lifecycleと異常終了状態をquery結果のまま返す() {
-    let mut open_item = item("open-running");
-    open_item.lifecycle = AgentSessionLifecycleDto::Open;
-    let mut paused_item = item("paused-idle");
-    paused_item.lifecycle = AgentSessionLifecycleDto::Paused;
-    paused_item.last_exit_abnormal = true;
-    let items = Arc::new(Mutex::new(vec![open_item, paused_item]));
-    let query = Arc::new(MutableSessionQuery {
-        items: items.clone(),
-    });
-    let collector = Arc::new(RemovingGarbageCollector {
-        items,
-        calls: Mutex::new(Vec::new()),
-    });
-    let usecase = AgentSessionReadUsecase::new(
-        std::sync::Arc::new(crate::usecase::test_helpers::TestIdentity),
-        query,
-        collector,
-    );
-
-    let (open, _) = usecase.get("open-running").await.unwrap().unwrap();
-    let (paused, _) = usecase.get("paused-idle").await.unwrap().unwrap();
-    assert_eq!(
-        [
-            (open.id.as_str(), open.lifecycle, open.last_exit_abnormal),
-            (
-                paused.id.as_str(),
-                paused.lifecycle,
-                paused.last_exit_abnormal,
-            ),
-        ],
-        [
-            ("open-running", AgentSessionLifecycleDto::Open, false),
-            ("paused-idle", AgentSessionLifecycleDto::Paused, true),
-        ]
-    );
-}
-
-#[test]
-fn test_agent_session_read_一覧itemのjsonからactivityを除きlastexitabnormalを維持する() {
-    let mut serialized_item = item("json-shape");
-    serialized_item.last_exit_abnormal = true;
-    let json = serde_json::to_value(&serialized_item).unwrap();
-
-    assert!(json.get("activity").is_none());
-    assert_eq!(json["lastExitAbnormal"], true);
 }
 
 #[tokio::test]

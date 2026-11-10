@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
 use releashd::test_support::agent_session_tui_acceptance::{
-    AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
+    AcceptanceAgentSessionAvailability, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
 };
 use releashd::test_support::terminal_surface::{
     TerminalSurfaceOwnerV1, TerminalSurfaceStreamItemV1,
@@ -196,7 +196,7 @@ async fn wait_for_execution_status(
 async fn wait_for_agent_session_lifecycle(
     host: &WorkflowControlPlaneAcceptanceHost,
     agent_session_id: &str,
-    lifecycle: AcceptanceAgentSessionLifecycle,
+    lifecycle: AcceptanceAgentSessionAvailability,
 ) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -585,7 +585,7 @@ async fn test_atui_040_autoは両signal順序と重複に依存せず後続を�
         wait_for_agent_session_lifecycle(
             &host,
             &first_session_id,
-            AcceptanceAgentSessionLifecycle::Paused,
+            AcceptanceAgentSessionAvailability::Paused,
         )
         .await;
 
@@ -674,7 +674,7 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
         assert!(waiting.node_executions[0].can_approve);
         assert_eq!(
             host.agent_session_lifecycle(&session_id).await.unwrap(),
-            Some(AcceptanceAgentSessionLifecycle::Open)
+            Some(AcceptanceAgentSessionAvailability::Open)
         );
         host.terminal()
             .write(
@@ -687,13 +687,7 @@ async fn test_atui_041_approvalは両signal成立後だけ対象nodeを承認で
             &format!("waiting-approval-follow-up-{index}"),
         )
         .await;
-        assert!(host
-            .approve(&execution_id, "other-node", &node.id)
-            .await
-            .is_err());
-        host.approve(&execution_id, &node.node_name, &node.id)
-            .await
-            .unwrap();
+        host.approve(&execution_id, &node.id).await.unwrap();
         wait_for_execution_status(
             &host,
             &execution_id,
@@ -781,9 +775,7 @@ async fn test_atui_041_fanout兄弟は独立し全子成功時だけ一度完了
             .status,
         AcceptanceNodeExecutionStatus::Running,
     );
-    host.approve(&execution_id, &first.node_name, &first.id)
-        .await
-        .unwrap();
+    host.approve(&execution_id, &first.id).await.unwrap();
     let one_succeeded = host.execution(&execution_id).await.unwrap().unwrap();
     assert_eq!(
         one_succeeded
@@ -807,9 +799,7 @@ async fn test_atui_041_fanout兄弟は独立し全子成功時だけ一度完了
         "provider-fanout-second",
     )
     .await;
-    host.approve(&execution_id, &second.node_name, &second.id)
-        .await
-        .unwrap();
+    host.approve(&execution_id, &second.id).await.unwrap();
     wait_for_execution_status(
         &host,
         &execution_id,
@@ -958,7 +948,7 @@ async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretry
     assert!(!before_retry.node_executions[0].submit_received);
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
+        Some(AcceptanceAgentSessionAvailability::Open)
     );
 
     let local_api_error = host.retry(&session_id, &session_id).await.unwrap_err();
@@ -972,7 +962,7 @@ async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretry
     );
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
+        Some(AcceptanceAgentSessionAvailability::Open)
     );
 
     let tauri_error = host
@@ -989,7 +979,7 @@ async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretry
     );
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
+        Some(AcceptanceAgentSessionAvailability::Open)
     );
 
     // When
@@ -1008,7 +998,7 @@ async fn test_issue_1958_session起動木は完了済みnodeへのsubmitとretry
     assert!(!after_stop.node_executions[0].stop_received);
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
+        Some(AcceptanceAgentSessionAvailability::Open)
     );
     assert!(host.terminal().get(terminal_owner).is_ok());
     assert!(host
@@ -1064,7 +1054,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     // Then
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Archived)
+        Some(AcceptanceAgentSessionAvailability::Archived)
     );
     assert!(host.execution_direct(&session_id).await.unwrap().is_none());
     assert_eq!(host.active_provider_process_count(), 0);
@@ -1084,7 +1074,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     // Then
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Paused)
+        Some(AcceptanceAgentSessionAvailability::Paused)
     );
     assert_eq!(host.active_provider_process_count(), 0);
     assert!(host.terminal().get(terminal_owner.clone()).is_err());
@@ -1104,7 +1094,7 @@ async fn test_issue_1826_session木のarchiveはabortしrestoreでは手動resum
     // Then
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
+        Some(AcceptanceAgentSessionAvailability::Open)
     );
     assert_eq!(host.active_provider_process_count(), 1);
     let mut resumed_terminal = host
@@ -1510,9 +1500,7 @@ async fn test_issue_1626_active_attemptへの再submitはartifactを差し替え
         Some(&serde_json::json!({"result": "waiting replacement"}))
     );
 
-    host.approve(&execution_id, &node.node_name, &node.id)
-        .await
-        .unwrap();
+    host.approve(&execution_id, &node.id).await.unwrap();
     wait_for_execution_status(
         &host,
         &execution_id,
@@ -1619,19 +1607,23 @@ async fn test_issue_1654_workflow完了時にproviderを停止しcheckpointか�
         AcceptanceWorkflowExecutionStatus::Completed,
     )
     .await;
-    wait_for_agent_session_lifecycle(&host, &session_id, AcceptanceAgentSessionLifecycle::Paused)
-        .await;
+    wait_for_agent_session_lifecycle(
+        &host,
+        &session_id,
+        AcceptanceAgentSessionAvailability::Paused,
+    )
+    .await;
 
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Paused),
+        Some(AcceptanceAgentSessionAvailability::Paused),
     );
     assert!(host.terminal().get(terminal_owner.clone()).is_err());
 
     host.resume_session_node(&node.id).await.unwrap();
     assert_eq!(
         host.agent_session_lifecycle(&session_id).await.unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open),
+        Some(AcceptanceAgentSessionAvailability::Open),
     );
     let mut resumed_terminal = host
         .terminal()
@@ -1707,7 +1699,7 @@ async fn test_issue_1654_cap超過回数の終端後もworkflowと手動session�
         wait_for_agent_session_lifecycle(
             &host,
             &session_id,
-            AcceptanceAgentSessionLifecycle::Paused,
+            AcceptanceAgentSessionAvailability::Paused,
         )
         .await;
         assert_eq!(
@@ -1742,7 +1734,7 @@ async fn test_issue_1654_cap超過回数の終端後もworkflowと手動session�
         host.agent_session_lifecycle(&manual_session_id)
             .await
             .unwrap(),
-        Some(AcceptanceAgentSessionLifecycle::Open)
+        Some(AcceptanceAgentSessionAvailability::Open)
     );
 
     host.abort(&next_execution_id).await.unwrap();

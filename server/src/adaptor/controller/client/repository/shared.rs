@@ -36,28 +36,6 @@ pub(crate) fn register_shared(
     {
         let state = deps.app_state.clone();
         router.register_domain(
-            &["find_repository_root"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::FindRepositoryRoot(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let state =
-                        state.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    let path = required(args.path, "path")?;
-                    let result =
-                        run_blocking(move || state.git_usecase.find_main_repo_path(&path)).await;
-                    Ok(wire::command_result::Command::FindRepositoryRoot(outcome(
-                        result,
-                    )?))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
             &["add_repo_path"],
             Box::new(move |command| {
                 let state = state.clone();
@@ -78,36 +56,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::AddRepoPath(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["create_worktree"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::CreateWorktree(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            worktree::create_worktree_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                                convert(required(args.branch, "branch")?)?,
-                                convert(required(args.create_branch, "createBranch")?)?,
-                                optional(args.base_branch)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::CreateWorktree(result))
                 })
             }),
         );
@@ -197,35 +145,6 @@ pub(crate) fn register_shared(
                     }
                     .await?;
                     Ok(wire::command_result::Command::RemoveWorktree(result))
-                })
-            }),
-        );
-    }
-    {
-        let state = deps.app_state.clone();
-        router.register_domain(
-            &["set_branch_base"],
-            Box::new(move |command| {
-                let state = state.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::SetBranchBase(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let state = state
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        outcome(
-                            git_config::set_branch_base_shared(
-                                &state,
-                                convert(required(args.repo_path, "repoPath")?)?,
-                                convert(required(args.branch_name, "branchName")?)?,
-                                optional(args.base)?,
-                            )
-                            .await,
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::SetBranchBase(result))
                 })
             }),
         );

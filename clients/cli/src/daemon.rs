@@ -74,21 +74,6 @@ pub fn running(data_dir: &Path) -> Result<Option<LocalApiDiscovery>, DaemonError
     Ok(Some(discovery))
 }
 
-/// コマンドが操作する data dir を決める。
-/// `path` にサーバが動いていればそれを、動いていなくて旧 data dir にサーバが動いていれば旧 data dir を、
-/// どちらにも動いていなければ `path` を返す。旧 data dir の記録の生存を確かめられなければ失敗にする。
-pub fn locate(data_dir: &crate::data_dir::DataDir) -> Result<PathBuf, DaemonError> {
-    if running(&data_dir.path)?.is_some() {
-        return Ok(data_dir.path.clone());
-    }
-    if let Some(legacy) = &data_dir.legacy {
-        if running(legacy)?.is_some() {
-            return Ok(legacy.clone());
-        }
-    }
-    Ok(data_dir.path.clone())
-}
-
 pub fn current_executable() -> Result<PathBuf, std::io::Error> {
     std::env::current_exe()?.canonicalize()
 }
@@ -118,7 +103,7 @@ pub async fn start_resolved(
     let log = tempfile::NamedTempFile::new()?;
     let stderr = log.reopen()?;
     let mut command = tokio::process::Command::new(executable);
-    if data_dir.legacy.is_none() {
+    if !data_dir.default {
         command.arg("--data-dir").arg(&data_dir.path);
     }
     command

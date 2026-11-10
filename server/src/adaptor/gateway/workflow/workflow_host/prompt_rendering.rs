@@ -11,8 +11,6 @@ use serde_json::Value;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::prompt_composition;
 use crate::domain::workflow::services::reference;
-#[cfg(test)]
-use crate::domain::workflow::services::template_preview;
 use crate::domain::workflow::FacetContents;
 use crate::domain::workflow::{NodeDefinition, SchemaDef};
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
@@ -26,11 +24,6 @@ pub(crate) fn find_undefined_template_variables(content: &str) -> Vec<String> {
         .into_iter()
         .filter(|value| reference::split_reference(value).is_none())
         .collect()
-}
-
-#[cfg(test)]
-pub(crate) fn render_template_variables(content: &str, values: &HashMap<String, String>) -> String {
-    template_preview::render_template_variables(content, values)
 }
 
 /// `{{ <パラメータ>(.field...) }}` を束縛済みパラメータ値で置換する。

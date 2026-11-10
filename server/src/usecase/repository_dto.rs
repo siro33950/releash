@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::git::{Branch, FileDiffStat, FileStatus};
+use crate::domain::git::{Branch, FileStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BranchDto {
@@ -40,27 +40,6 @@ impl From<FileStatus> for FileStatusDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FileDiffStatDto {
-    pub path: String,
-    pub index_additions: u32,
-    pub index_deletions: u32,
-    pub wt_additions: u32,
-    pub wt_deletions: u32,
-}
-
-impl From<FileDiffStat> for FileDiffStatDto {
-    fn from(stat: FileDiffStat) -> Self {
-        Self {
-            path: stat.path,
-            index_additions: stat.index_additions,
-            index_deletions: stat.index_deletions,
-            wt_additions: stat.wt_additions,
-            wt_deletions: stat.wt_deletions,
-        }
-    }
-}
-
 /// ワークツリー一覧の 1 エントリ（旧 `WorktreeEntry`）の read model。
 ///
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,11 +49,4 @@ pub struct WorktreeEntryDto {
     pub branch: String,
     pub is_main: bool,
     pub is_locked: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StartupWorktree {
-    pub path: String,
-    pub branch: String,
-    pub repository_name: String,
 }

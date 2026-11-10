@@ -25,7 +25,7 @@ use std::sync::Arc;
 use futures_util::Stream;
 
 use crate::infrastructure::state_subscription::{
-    Delivery, StateSubscriptionRuntime, Subscriptions, Version,
+    Delivery, StateSubscriptionRuntime, Subscriptions,
 };
 pub type StateSubscriptionEvent =
     crate::infrastructure::state_subscription::StateSubscriptionEvent<PublishedState>;
@@ -56,7 +56,6 @@ pub struct SubscriptionDelivery {
     client: String,
     id: String,
     identity: Arc<()>,
-    cursor: Option<Version>,
     pending: std::sync::atomic::AtomicBool,
 }
 
@@ -66,7 +65,7 @@ impl crate::usecase::state_subscription::StateSubscriptionDelivery for Subscript
             if !state.matches_identity(&self.id, &self.identity) {
                 return (Err(crate::infrastructure::state_subscription::SubscriptionError::StreamEnded), false);
             }
-            let result = state.activate(&self.id, self.cursor.as_ref()).map(|()| {
+            let result = state.activate(&self.id).map(|()| {
                 (!state.awaiting_snapshot(&self.client, &self.id))
                     .then(|| state.pending_amount(&self.client, &self.id))
             });
@@ -131,7 +130,6 @@ impl StateSubscriptionPresenter {
         client: &str,
         id: &str,
         target: &str,
-        cursor: Option<(&str, u64)>,
     ) -> Result<SubscriptionDelivery, SubscriptionError> {
         let identity = self
             .runtime
@@ -154,7 +152,6 @@ impl StateSubscriptionPresenter {
             client: client.into(),
             id: id.into(),
             identity,
-            cursor: cursor_version(cursor),
             pending: std::sync::atomic::AtomicBool::new(true),
         })
     }
@@ -167,7 +164,6 @@ impl StateSubscriptionPresenter {
                     client: client.clone(),
                     id: id.into(),
                     identity: state.identity(id).unwrap(),
-                    cursor: None,
                     pending: std::sync::atomic::AtomicBool::new(false),
                 };
                 (client, target, delivery)
@@ -227,20 +223,7 @@ pub(crate) fn test_output() -> crate::usecase::state_subscription::StateSubscrip
 fn protected_targets(
     active: &std::collections::HashSet<SubscriptionTarget>,
 ) -> std::collections::HashSet<String> {
-    active
-        .iter()
-        .map(ToString::to_string)
-        .chain(std::iter::once(
-            SubscriptionTarget::RepositoryPaths.to_string(),
-        ))
-        .collect()
-}
-
-fn cursor_version(cursor: Option<(&str, u64)>) -> Option<Version> {
-    cursor.map(|(epoch, sequence)| Version {
-        epoch: epoch.into(),
-        sequence,
-    })
+    active.iter().map(ToString::to_string).collect()
 }
 
 impl StateSubscriptionOutput for StateSubscriptionPresenter {

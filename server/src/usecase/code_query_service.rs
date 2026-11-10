@@ -8,42 +8,19 @@
 
 use std::sync::Arc;
 
-use crate::domain::code::services;
 use crate::domain::code::{
-    BranchBaseResolver, ChangeGroup, CodeError, DiffComputer, DiffFileEntry, DiffRange,
-    DiffRangeKind, DiffSide, DiffTreeNode, FileContentRepository, HiddenRange, Hunk, InlineChunk,
-    InlineChunkKind, ReviewSideBytes, ReviewSideMetadata, SplitRow, SplitRowKind, VisibleBlock,
+    BranchBaseResolver, CodeError, DiffComputer, FileContentRepository, Hunk, ReviewSideBytes,
+    ReviewSideMetadata,
 };
 
-use super::code_dto::{
-    BranchDiffSummaryDto, ChangeGroupDto, DiffHunksResultDto, DiffRangeDto, DiffRangeKindDto,
-    DiffTreeNodeDto, FileNavigationResultDto, HiddenRangeDto, HunkDto, InlineChunkDto,
-    InlineChunkKindDto, SplitRowDto, SplitRowKindDto, VisibleBlockDto,
-};
+use super::code_dto::{DiffHunksResultDto, HunkDto};
 use super::code_error::CodeUsecaseError;
-
-/// branch diff サマリの読み取りポート（Query 側）。
-///
-/// gateway 実装がデータソース（git2）から read model（`BranchDiffSummaryDto`）を
-/// 直接組み立てる。
-pub trait BranchDiffQuery: Send + Sync {
-    /// `base_name` は表示用の base 名タグ（`None` は detached / 未設定で "HEAD" 表示）。
-    /// `base_commit_oid` は usecase が解決済みの base コミット OID(hex)（`None` は HEAD
-    /// フォールバック）。ref 解決は repository ドメインが所有するため本 port は受け取らない。
-    fn summary(
-        &self,
-        repo_path: &str,
-        base_name: Option<&str>,
-        base_commit_oid: Option<&str>,
-    ) -> Result<BranchDiffSummaryDto, crate::domain::code::CodeError>;
-}
 
 /// read model 構築・純粋算出を担う読み取りクエリサービス。
 #[derive(Clone)]
 pub struct CodeQueryService {
     file_content: Arc<dyn FileContentRepository>,
     diff_computer: Arc<dyn DiffComputer>,
-    branch_diff: Arc<dyn BranchDiffQuery>,
     branch_base: Arc<dyn BranchBaseResolver>,
 }
 
@@ -51,13 +28,11 @@ impl CodeQueryService {
     pub fn new(
         file_content: Arc<dyn FileContentRepository>,
         diff_computer: Arc<dyn DiffComputer>,
-        branch_diff: Arc<dyn BranchDiffQuery>,
         branch_base: Arc<dyn BranchBaseResolver>,
     ) -> Self {
         Self {
             file_content,
             diff_computer,
-            branch_diff,
             branch_base,
         }
     }
@@ -101,26 +76,6 @@ impl CodeQueryService {
             .review_file_bytes_at_ref(file_path, git_ref)?)
     }
 
-    pub fn review_file_metadata_at_branch_base(
-        &self,
-        file_path: &str,
-    ) -> Result<ReviewSideMetadata, CodeUsecaseError> {
-        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
-        Ok(self
-            .file_content
-            .review_file_metadata_at_branch_base(file_path, base_oid.as_deref())?)
-    }
-
-    pub fn review_file_bytes_at_branch_base(
-        &self,
-        file_path: &str,
-    ) -> Result<ReviewSideBytes, CodeUsecaseError> {
-        let base_oid = self.resolve_base_commit_oid_for(file_path)?;
-        Ok(self
-            .file_content
-            .review_file_bytes_at_branch_base(file_path, base_oid.as_deref())?)
-    }
-
     pub fn review_file_metadata_at_branch_base_tip(
         &self,
         file_path: &str,
@@ -139,20 +94,6 @@ impl CodeQueryService {
         Ok(self
             .file_content
             .review_file_bytes_at_ref(file_path, base_oid.as_deref().unwrap_or("HEAD"))?)
-    }
-
-    pub fn review_staged_metadata(
-        &self,
-        file_path: &str,
-    ) -> Result<ReviewSideMetadata, CodeUsecaseError> {
-        Ok(self.file_content.review_staged_metadata(file_path)?)
-    }
-
-    pub fn review_staged_bytes(
-        &self,
-        file_path: &str,
-    ) -> Result<ReviewSideBytes, CodeUsecaseError> {
-        Ok(self.file_content.review_staged_bytes(file_path)?)
     }
 
     pub fn review_working_tree_metadata(
@@ -198,57 +139,7 @@ impl CodeQueryService {
 
     // ── branch diff ──
 
-    pub fn get_branch_diff_summary(
-        &self,
-        repo_path: &str,
-        base_branch: Option<&str>,
-    ) -> Result<BranchDiffSummaryDto, CodeUsecaseError> {
-        // Thread 6 / 移行前等価: 明示 base 名が無い通常経路（`useBranchDiffFiles` 等）でも、
-        // 旧 `find_base_commit` が内部で行っていた現在ブランチの base 解決
-        // （per-branch override → global → default）を usecase で補完してから渡す。
-        // 補完できない（detached / 未設定）場合のみ `None` のまま HEAD フォールバックする。
-        let base_name = match base_branch {
-            Some(name) => Some(name.to_string()),
-            None => self.branch_base.resolve_base_branch_name(repo_path)?,
-        };
-        // ref → base コミット OID の解決は repository ドメインへ委譲。base 名はあるが ref が
-        // 実在しない場合は移行前と等価に "base branch not found" を返す。
-        let base_oid = match &base_name {
-            Some(name) => match self.branch_base.resolve_base_commit_oid(repo_path, name)? {
-                Some(oid) => Some(oid),
-                None => {
-                    return Err(CodeError::Rule(format!("base branch '{name}' not found")).into())
-                }
-            },
-            None => None,
-        };
-        Ok(self
-            .branch_diff
-            .summary(repo_path, base_name.as_deref(), base_oid.as_deref())?)
-    }
-
     // ── diff tree（純粋） ──
-
-    pub fn build_diff_file_tree(&self, entries: Vec<DiffFileEntry>) -> Vec<DiffTreeNodeDto> {
-        services::diff_tree::build_tree(entries)
-            .iter()
-            .map(diff_tree_node_to_dto)
-            .collect()
-    }
-
-    pub fn get_file_navigation(
-        &self,
-        tree: &[DiffTreeNode],
-        current_file: &str,
-    ) -> FileNavigationResultDto {
-        let nav = services::diff_tree::get_file_navigation(tree, current_file);
-        FileNavigationResultDto {
-            current_index: nav.current_index,
-            total: nav.total,
-            prev_file: nav.prev_file,
-            next_file: nav.next_file,
-        }
-    }
 
     // ── hunk / patch / range ──
 
@@ -261,212 +152,23 @@ impl CodeQueryService {
         let hunks = self
             .diff_computer
             .diff_buffers(original, modified, file_path)?;
-        let hunks = services::hunk::assign_hunk_ids(&hunks);
-        let change_groups = services::hunk::compute_change_groups(&hunks);
         Ok(DiffHunksResultDto {
             hunks: hunks.iter().map(hunk_to_dto).collect(),
-            change_groups: change_groups.iter().map(change_group_to_dto).collect(),
         })
     }
 
-    pub fn generate_group_patch(
-        &self,
-        file_path: &str,
-        hunk: &Hunk,
-        group: &ChangeGroup,
-    ) -> String {
-        services::hunk::generate_group_patch(file_path, hunk, group)
-    }
-
-    pub fn compute_hidden_ranges(
-        &self,
-        hunks: &[Hunk],
-        total_lines: u32,
-        context_lines: u32,
-    ) -> Vec<HiddenRangeDto> {
-        services::hunk::compute_hidden_ranges(hunks, total_lines, context_lines)
-            .iter()
-            .map(hidden_range_to_dto)
-            .collect()
-    }
-
-    pub fn compute_hidden_ranges_from_content(
-        &self,
-        original: &str,
-        modified: &str,
-        context_lines: u32,
-    ) -> Result<Vec<HiddenRangeDto>, CodeUsecaseError> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
-        let total_lines = modified.lines().count() as u32;
-        Ok(
-            services::hunk::compute_hidden_ranges(&hunks, total_lines, context_lines)
-                .iter()
-                .map(hidden_range_to_dto)
-                .collect(),
-        )
-    }
-
-    pub fn compute_visible_markdown_blocks(
-        &self,
-        original: &str,
-        modified: &str,
-        context_lines: u32,
-    ) -> Result<Vec<VisibleBlockDto>, CodeUsecaseError> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
-        Ok(services::hunk::compute_visible_markdown_blocks(
-            &hunks,
-            original,
-            modified,
-            context_lines,
-        )
-        .iter()
-        .map(visible_block_to_dto)
-        .collect())
-    }
-
-    pub fn compute_markdown_diff_ranges(
-        &self,
-        original: &str,
-        modified: &str,
-        side: DiffSide,
-    ) -> Result<Vec<DiffRangeDto>, CodeUsecaseError> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
-        let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
-        Ok(
-            services::markdown_diff::markdown_diff_ranges_from_blocks(&blocks, side)
-                .iter()
-                .map(diff_range_to_dto)
-                .collect(),
-        )
-    }
-
-    pub fn compute_markdown_split_rows(
-        &self,
-        original: &str,
-        modified: &str,
-    ) -> Result<Vec<SplitRowDto>, CodeUsecaseError> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
-        let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
-        Ok(
-            services::markdown_diff::markdown_split_rows_from_blocks(&blocks)
-                .iter()
-                .map(split_row_to_dto)
-                .collect(),
-        )
-    }
-
-    pub fn compute_markdown_inline_chunks(
-        &self,
-        original: &str,
-        modified: &str,
-    ) -> Result<Vec<InlineChunkDto>, CodeUsecaseError> {
-        let hunks = self.diff_computer.diff_buffers(original, modified, None)?;
-        let blocks = services::markdown_diff::compute_diff_blocks(&hunks, original, modified);
-        Ok(
-            services::markdown_diff::markdown_inline_chunks_from_blocks(&blocks)
-                .iter()
-                .map(inline_chunk_to_dto)
-                .collect(),
-        )
-    }
-
     // ── language（純粋） ──
-
-    pub fn get_language_from_path(&self, file_path: &str) -> String {
-        services::language::get_language_from_path(file_path)
-    }
 }
 
 // ── 既存 domain VO → DTO 変換（hunk/range などの共通 read model） ──
 
 fn hunk_to_dto(h: &Hunk) -> HunkDto {
     HunkDto {
-        index: h.index,
-        hunk_id: h.hunk_id.clone(),
         old_start: h.old_start,
         old_lines: h.old_lines,
         new_start: h.new_start,
         new_lines: h.new_lines,
         lines: h.lines.clone(),
-    }
-}
-
-fn change_group_to_dto(g: &ChangeGroup) -> ChangeGroupDto {
-    ChangeGroupDto {
-        group_index: g.group_index,
-        group_id: g.group_id.clone(),
-        hunk_index: g.hunk_index,
-        new_start: g.new_start,
-        new_end: g.new_end,
-        line_offset_start: g.line_offset_start,
-        line_offset_end: g.line_offset_end,
-        is_staged: g.is_staged,
-    }
-}
-
-fn hidden_range_to_dto(r: &HiddenRange) -> HiddenRangeDto {
-    HiddenRangeDto {
-        start_line: r.start_line,
-        end_line: r.end_line,
-        hidden_count: r.hidden_count,
-    }
-}
-
-fn visible_block_to_dto(b: &VisibleBlock) -> VisibleBlockDto {
-    VisibleBlockDto {
-        start_line: b.start_line,
-        end_line: b.end_line,
-        content: b.content.clone(),
-        deleted_content: b.deleted_content.clone(),
-    }
-}
-
-fn diff_range_to_dto(r: &DiffRange) -> DiffRangeDto {
-    DiffRangeDto {
-        start_line: r.start_line,
-        end_line: r.end_line,
-        kind: match r.kind {
-            DiffRangeKind::Added => DiffRangeKindDto::Added,
-            DiffRangeKind::Modified => DiffRangeKindDto::Modified,
-            DiffRangeKind::Deleted => DiffRangeKindDto::Deleted,
-        },
-    }
-}
-
-fn split_row_to_dto(r: &SplitRow) -> SplitRowDto {
-    SplitRowDto {
-        left: r.left.clone(),
-        right: r.right.clone(),
-        kind: match r.kind {
-            SplitRowKind::Unchanged => SplitRowKindDto::Unchanged,
-            SplitRowKind::Added => SplitRowKindDto::Added,
-            SplitRowKind::Removed => SplitRowKindDto::Removed,
-            SplitRowKind::Modified => SplitRowKindDto::Modified,
-        },
-    }
-}
-
-fn inline_chunk_to_dto(c: &InlineChunk) -> InlineChunkDto {
-    InlineChunkDto {
-        content: c.content.clone(),
-        kind: match c.kind {
-            InlineChunkKind::Unchanged => InlineChunkKindDto::Unchanged,
-            InlineChunkKind::Added => InlineChunkKindDto::Added,
-            InlineChunkKind::Removed => InlineChunkKindDto::Removed,
-        },
-    }
-}
-
-fn diff_tree_node_to_dto(n: &DiffTreeNode) -> DiffTreeNodeDto {
-    DiffTreeNodeDto {
-        id: n.id.clone(),
-        name: n.name.clone(),
-        path: n.path.clone(),
-        node_type: n.node_type.clone(),
-        status: n.status.clone(),
-        additions: n.additions,
-        deletions: n.deletions,
-        children: n.children.iter().map(diff_tree_node_to_dto).collect(),
     }
 }
 

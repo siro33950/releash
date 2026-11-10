@@ -176,7 +176,7 @@ fn test_terminal読取失敗_失敗後の出力でsequenceを進める() {
         sequence: 5,
     };
     let value = crate::adaptor::presenter::state_subscription_wire::payload(
-        &StateValue::RepositoryPaths(vec![]),
+        &StateValue::TerminalStartupCommand(String::new()),
     )
     .unwrap();
     presenter

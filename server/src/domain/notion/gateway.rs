@@ -1,8 +1,6 @@
 use crate::domain::app_config::value_objects::NotionRepoConfig;
 
-use super::{
-    NotionError, NotionLabelOption, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
-};
+use super::{NotionError, NotionTaskPage, NotionTaskQuery, NotionValidationResult};
 
 #[async_trait::async_trait]
 
@@ -12,11 +10,6 @@ pub trait NotionApiGateway: Send + Sync {
         config: &NotionRepoConfig,
         query: &NotionTaskQuery,
     ) -> Result<NotionTaskPage, NotionError>;
-
-    async fn fetch_label_options(
-        &self,
-        config: &NotionRepoConfig,
-    ) -> Result<Vec<NotionLabelOption>, NotionError>;
 
     async fn validate(
         &self,

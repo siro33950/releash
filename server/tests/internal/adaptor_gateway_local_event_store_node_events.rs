@@ -65,17 +65,6 @@ pub fn test_tree先頭事実取得_種別ごとの索引で最初の終端だけ
         fact.event_type = event_type.into();
         append_node_event(&connection, &fact, 2).unwrap();
     }
-    connection
-        .execute_batch("DROP INDEX idx_node_events_tree_event_type")
-        .unwrap();
-    assert!(
-        !releashd::test_support::integration::persistence::evolve_schema(
-            &connection,
-            &FaultInjector::new(),
-        )
-        .unwrap()
-    );
-
     let plan: String = connection
         .query_row(
             "EXPLAIN QUERY PLAN SELECT seq FROM node_events

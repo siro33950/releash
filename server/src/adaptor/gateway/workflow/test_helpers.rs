@@ -1,8 +1,8 @@
 use crate::adaptor::gateway::workflow::node_session_boundary::WorkflowAgentSessionPort;
 use crate::adaptor::gateway::workflow::node_session_boundary::WorkflowSessionLaunchConfig;
 use crate::domain::workflow::{
-    ChildEntry, ExecutionOrigin, ExecutionParentRef, NodeDefinition, NodeKind, NodeKindName,
-    SequenceSpec, WorkflowDefinitionContent, WorkflowEvent,
+    ChildEntry, ExecutionParentRef, NodeDefinition, NodeKind, NodeKindName, SequenceSpec,
+    WorkflowDefinitionContent, WorkflowEvent,
 };
 use crate::usecase::workflow::runtime_error::WorkflowRuntimeError;
 use std::sync::Arc;
@@ -52,7 +52,6 @@ pub fn started_event() -> WorkflowEvent {
         execution_id: TREE.to_string(),
         workflow_name: "wf".to_string(),
         worktree_path: "/repo".to_string(),
-        created_from: ExecutionOrigin::Cli,
         request: "please".to_string(),
         definition: definition(),
         timestamp: 1.0,

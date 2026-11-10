@@ -8,7 +8,6 @@ pub(crate) mod tests {
             status: ExecutionStatusView::Running,
             current_node: Some("review".to_string()),
             worktree_path: "/repo".to_string(),
-            created_from: ExecutionOriginView::Cli,
             started_at: 1.0,
             updated_at: 2.0,
             completed_at: None,
@@ -31,7 +30,6 @@ pub(crate) mod tests {
         let value = serde_json::to_value(execution()).unwrap();
         assert_eq!(value["id"], "execution-1");
         assert_eq!(value["status"], "running");
-        assert_eq!(value["createdFrom"], "cli");
         assert_eq!(value["artifacts"][0]["nodeName"], "request");
         let keys = value
             .as_object()
@@ -45,7 +43,6 @@ pub(crate) mod tests {
                 "approvalTarget",
                 "artifacts",
                 "completedAt",
-                "createdFrom",
                 "currentNode",
                 "errorReason",
                 "fanouts",

@@ -30,7 +30,6 @@ fn node() -> WorkspaceTreeNode {
         node_execution_id: None,
         node_name: None,
         attempt: Some(1),
-        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,
@@ -203,9 +202,6 @@ fn standalone_session_is_a_public_node_root_with_backend_lifecycle_capabilities(
     assert_eq!(json[0]["id"], execution_id);
     assert_eq!(json[0]["contentKind"], "session");
     assert_eq!(json[0]["sessionId"], "session-ref");
-    assert_eq!(json[0]["sessionCapabilities"]["sessionRef"], "session-ref");
-    assert_eq!(json[0]["sessionCapabilities"]["canArchive"], true);
-    assert_eq!(json[0]["sessionCapabilities"]["canDelete"], false);
     assert_eq!(json[0]["workflowCapabilities"]["canArchive"], true);
     assert_eq!(json[0]["workflowCapabilities"]["canAbort"], true);
 }
@@ -666,10 +662,8 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
         deleting: false,
         dirty_count: Fetched::ready(0),
         merged: false,
-        open_pull_request: None,
         state_pull_request: None,
         pull_request_error: None,
-        pull_request_loaded: true,
         tree,
     }
 }
@@ -693,13 +687,12 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             error: Some(failure("nodes failed")),
         },
     );
-    main.open_pull_request = Some(PrInfo {
+    main.state_pull_request = Some(PrInfo {
         number: 7,
         url: "https://example.com/pr/7".into(),
         state: crate::domain::git_host::PrState::Open,
         draft: false,
     });
-    main.state_pull_request = main.open_pull_request.clone();
     let mut feature = worktree_row(
         "/repo-worktrees/feature",
         "feature",
@@ -742,11 +735,11 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
     assert_eq!(
         json,
         json!({
-            "status": {"state": "ready", "loaded": true, "error": null},
+            "status": {"state": "ready", "error": null},
             "repositories": [
                 {
                     "path": "/repo",
-                    "status": {"state": "refreshFailed", "loaded": true, "error": "scan failed"},
+                    "status": {"state": "refreshFailed", "error": "scan failed"},
                     "branches": [
                         {
                             "name": "main",
@@ -755,12 +748,9 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "worktree_path": "/repo",
                             "dirty_count": 0, "dirty_count_error": null, "pull_request_error": null,
                             "is_merged": false,
-                            "has_pr": true,
-                            "pr_number": 7,
                             "prState": "open",
                             "prStateNumber": 7,
                             "removalRequiresForce": false,
-                            "pr_url": "https://example.com/pr/7"
                         },
                         {
                             "name": "feature",
@@ -769,10 +759,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "worktree_path": "/repo-worktrees/feature",
                             "dirty_count": 3, "dirty_count_error": null, "pull_request_error": null,
                             "is_merged": true,
-                            "has_pr": false,
-                            "pr_number": null,
                             "removalRequiresForce": true,
-                            "pr_url": null
                         }
                     ],
                     "worktrees": [
@@ -780,7 +767,6 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "path": "/repo",
                             "status": {
                                 "state": "initialFailed",
-                                "loaded": false,
                                 "error": "nodes failed"
                             },
                             "snapshot": null,
@@ -789,7 +775,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                         },
                         {
                             "path": "/repo-worktrees/feature",
-                            "status": {"state": "empty", "loaded": true, "error": null},
+                            "status": {"state": "empty", "error": null},
                             "snapshot": {"nodes": [], "archivedSessions": []},
                             "workflowHistory": [],
                             "executions": []
@@ -798,7 +784,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 },
                 {
                     "path": "/loading",
-                    "status": {"state": "loading", "loaded": false, "error": null},
+                    "status": {"state": "loading", "error": null},
                     "branches": [],
                     "worktrees": []
                 },
@@ -806,7 +792,6 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                     "path": "/failed",
                     "status": {
                         "state": "initialFailed",
-                        "loaded": false,
                         "error": "not a repository"
                     },
                     "branches": [],
@@ -814,7 +799,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 },
                 {
                     "path": "/empty",
-                    "status": {"state": "empty", "loaded": true, "error": null},
+                    "status": {"state": "empty", "error": null},
                     "branches": [],
                     "worktrees": []
                 }
@@ -868,10 +853,9 @@ fn test_workspaces一覧_読めなくなった実行木は前回の木と失敗�
     let worktree = &json["repositories"][0]["worktrees"][0];
     assert_eq!(
         worktree["status"],
-        json!({"state": "refreshFailed", "loaded": true, "error": "store busy"})
+        json!({"state": "refreshFailed", "error": "store busy"})
     );
     assert_eq!(worktree["snapshot"]["nodes"][0]["id"], execution_id);
-    assert_eq!(worktree["snapshot"]["preferredNodeId"], execution_id);
 }
 
 #[test]
@@ -884,18 +868,16 @@ fn test_実行木の変換_archive済みの実行を木から外し履歴とsess
     archived_workflow.archive = Some(ExecutionTreeArchiveRecord {
         execution_id: "archived-workflow".into(),
         archived_at: 12.5,
-        archive_reason: "manual".into(),
     });
     let mut archived_session = session_execution("archived-session", "archived-session");
     let session = archived_session.session.as_mut().unwrap();
     session
         .associate_provider_session("provider-session".to_string(), None)
         .unwrap();
-    session.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(session);
     archived_session.archive = Some(ExecutionTreeArchiveRecord {
         execution_id: "archived-session".into(),
         archived_at: 20.0,
-        archive_reason: "manual".into(),
     });
     let mut tree = WorkspaceTree::restore(
         "/repo",
@@ -946,9 +928,7 @@ fn test_実行木の変換_archive済みの実行を木から外し履歴とsess
             "worktreePath": "/repo",
             "title": "01_author-spec",
             "status": "aborted",
-            "updatedAt": 5.0,
-            "archivedAt": 12.5,
-            "archiveReason": "manual"
+            "updatedAt": 5.0
         }])
     );
     assert_eq!(
@@ -963,51 +943,10 @@ fn test_実行木の変換_archive済みの実行を木から外し履歴とsess
                 "treeId": "archived-session",
                 "nodeExecutionId": "archived-session"
             },
-            "lifecycle": "archived",
             "providerSessionId": "provider-session",
-            "transcriptRef": null,
-            "operations": {"canArchive": false, "canRestore": true, "canDelete": true},
-            "lastExitAbnormal": false
+            "operations": {"canArchive": false, "canDelete": true}
         }])
     );
-}
-
-#[test]
-fn test_実行木の選択_選択先が木にあるかを木に添える() {
-    // Given
-    let execution_id = "workflow-execution";
-    let tree = WorkspaceTree::restore(
-        "/repo",
-        vec![
-            tree_owner(execution_id),
-            child_node(
-                "command",
-                execution_id,
-                execution_id,
-                WorkspaceNodeKind::WorkflowCommand,
-                "lint",
-            ),
-        ],
-    )
-    .unwrap();
-
-    for selected in [true, false] {
-        // When
-        let json = from_message(
-            "releash.client.v1.WorkspaceTreeSelectionSnapshot",
-            &selection(&tree, selected).unwrap(),
-        )
-        .unwrap();
-
-        // Then
-        assert_eq!(
-            json["reconciliation"],
-            json!({"selectionInSnapshot": selected})
-        );
-        assert_eq!(json["snapshot"], snapshot_json(&tree));
-        assert_eq!(json["snapshot"]["nodes"][0]["id"], execution_id);
-        assert!(!json.to_string().contains("\"activity\""));
-    }
 }
 
 #[test]
@@ -1048,10 +987,9 @@ fn failure(message: &str) -> crate::domain::failure::WorkFailure {
 fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
     // Given
     let mut initial = worktree_row("/repo", "main", Fetched::default());
-    initial.pull_request_loaded = false;
     initial.pull_request_error = Some(failure("PR denied"));
     let mut retained = worktree_row("/repo-worktrees/feature", "feature", Fetched::default());
-    retained.open_pull_request = Some(PrInfo {
+    retained.state_pull_request = Some(PrInfo {
         number: 42,
         url: "https://example.test/pull/42".into(),
         state: crate::domain::git_host::PrState::Open,
@@ -1062,16 +1000,7 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
     let initial = branch(&initial);
     let retained = branch(&retained);
     // Then
-    assert_eq!(initial.has_pr, None);
-    assert_eq!(initial.pr_number, None);
-    assert_eq!(initial.pr_url, None);
     assert_eq!(initial.pull_request_error.as_deref(), Some("PR denied"));
-    assert_eq!(retained.has_pr, Some(true));
-    assert_eq!(retained.pr_number, Some(42));
-    assert_eq!(
-        retained.pr_url.as_deref(),
-        Some("https://example.test/pull/42")
-    );
     assert_eq!(retained.pull_request_error.as_deref(), Some("PR denied"));
 }
 
@@ -1136,9 +1065,6 @@ fn test_pr状態の転送_完了済みprは既存のopen用フィールドに含
         // When
         let branch = branch(&row);
         // Then
-        assert_eq!(branch.has_pr, Some(false));
-        assert_eq!(branch.pr_number, None);
-        assert_eq!(branch.pr_url, None);
         assert_eq!(branch.pr_state.as_deref(), Some(expected));
         assert_eq!(branch.pr_state_number, Some(42));
     }
@@ -1227,7 +1153,6 @@ fn test_実行木の転送_nodeの実行識別とartifactとmodelと合成node�
     assert_eq!(node["executionId"], "execution");
     assert_eq!(node["nodeExecutionId"], "visit");
     assert_eq!(node["nodeName"], "review");
-    assert_eq!(node["attempt"], 2);
     assert_eq!(node["hasArtifact"], true);
     assert_eq!(node["model"], "test-model");
 }

@@ -415,7 +415,23 @@ fn test_terminal経路_現在と同じ番号の旧世代終了を届け最新削
         .update(|state| {
             state.open("client".into())?;
             state.reserve("client", &target, &target)?;
-            state.activate(&target, Some(&version))?;
+            state.set_delta_snapshot(
+                &target,
+                version.clone(),
+                crate::adaptor::presenter::state_subscription::PublishedState::from(
+                    crate::usecase::state_subscription::StateReadError::from_error(
+                        crate::usecase::state_subscription::SubscriptionError::SnapshotRequired,
+                    ),
+                ),
+            )?;
+            state.activate(&target)?;
+            assert!(matches!(
+                state.next("client"),
+                Some((
+                    _,
+                    crate::infrastructure::state_subscription::Event::Snapshot(..)
+                ))
+            ));
             assert!(matches!(
                 state.next("client"),
                 Some((

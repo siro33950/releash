@@ -8,17 +8,15 @@ use releashd::test_support::integration::workflow::WorkflowExecutionProjectionLo
 use std::sync::Arc;
 
 use releashd::test_support::integration::persistence::LocalEventStoreConfig;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::NodeKindName;
 
 use releashd::test_support::integration::workflow::WorkflowDefinitionContent;
 use releashd::test_support::integration::workflow::WorkflowDefinitionFileRepository;
-use releashd::test_support::integration::workflow::WorkflowDefinitionFileSourceGateway;
+
 use releashd::test_support::integration::workflow::WorkflowEvent;
 use releashd::test_support::integration::workflow::WorkflowEventLogRepository;
 use releashd::test_support::integration::workflow::WorkflowEventRepository;
-use releashd::test_support::integration::workflow::WorkflowFacetFileRepository;
 use releashd::test_support::integration::workflow::WorkflowGetOutputResult;
 use releashd::test_support::integration::workflow::WorkflowOutputUsecase;
 use releashd::test_support::integration::workflow::WorkflowQueryService;
@@ -35,170 +33,6 @@ impl WorkflowEventRepository for CountingEvents {
     async fn read(&self, id: &ExecutionTreeId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.repository.read(id).await
-    }
-}
-
-#[tokio::test]
-pub async fn test_終端の隔離node出力_旧定義でも状態と同じ保存成果を一度の読取で返す() {
-    use releashd::test_support::integration::persistence::NewNodeEventRow;
-    use releashd::test_support::integration::workflow::ExecutionStatus;
-
-    for kind in ["sequence", "fanout"] {
-        for (terminal, status) in [
-            ("execution_completed", ExecutionStatus::Completed),
-            ("abort_requested", ExecutionStatus::Aborted),
-        ] {
-            for legacy_worktree in [false, true] {
-                // Given
-                let directory = tempfile::TempDir::new().unwrap();
-                let store = LocalEventStore::open(LocalEventStoreConfig::production(
-                    directory.path().into(),
-                    std::sync::Arc::new(
-                        releashd::test_support::integration::platform::RetryLimiter::new(),
-                    ),
-                ))
-                .unwrap();
-                let id = "00000000-0000-4000-8000-000000001836";
-                let mut root = serde_json::json!({
-                    "worktree": {"branch": "saved-main", "path": "/saved/main"},
-                    "root": {
-                        "workspaceIdentity": "/repo", "worktreePath": "/repo",
-                        "createdFrom": "cli", "request": "", "launchedAs": "workflow",
-                        "definition": {"name": "old", "description": "", "entry": "main", "nodes": {
-                            "main": {"worktree": "isolated", kind: {"children": ["work"]}},
-                            "work": {"command": "true", "completion": "approval"}
-                        }}
-                    }
-                });
-                if kind == "sequence" {
-                    root["root"]["definition"]["nodes"]["main"]["sequence"]["output"] =
-                        serde_json::json!("work");
-                }
-                if legacy_worktree {
-                    root.as_object_mut().unwrap().remove("worktree");
-                }
-                assert!(
-                    releashd::test_support::integration::workflow::decode_started(
-                        &root.to_string()
-                    )
-                    .is_err()
-                );
-                let parent = if kind == "sequence" {
-                    ExecutionParentRef::sequence_child("main-id")
-                } else {
-                    ExecutionParentRef::fanout_child("main-id", None, 0)
-                };
-                let mut facts = vec![("main-id", "main", kind, "started", root)];
-                if legacy_worktree {
-                    facts.push(("main-id", "main", kind, "isolated_worktree_created", serde_json::json!({
-                        "repositoryRoot": "/repo", "worktreePath": "/saved/main", "branch": "saved-main"
-                    })));
-                }
-                facts.extend([
-                    (
-                        "work-id",
-                        "work",
-                        "command",
-                        "started",
-                        serde_json::json!({"parent": parent}),
-                    ),
-                    (
-                        "work-id",
-                        "work",
-                        "command",
-                        "artifact_produced",
-                        serde_json::json!({"value": {"answer": "kept"}}),
-                    ),
-                    (
-                        "work-id",
-                        "work",
-                        "command",
-                        "process_exited",
-                        serde_json::json!({"exitCode": 0}),
-                    ),
-                    ("main-id", "main", kind, terminal, serde_json::json!({})),
-                ]);
-                for (index, (node, name, kind, event_type, detail)) in facts.into_iter().enumerate()
-                {
-                    store
-                        .append_node_event(
-                            NewNodeEventRow {
-                                tree_id: id.into(),
-                                node_execution_id: node.into(),
-                                parent_id: (node == "work-id").then(|| "main-id".into()),
-                                node_name: name.into(),
-                                kind: kind.into(),
-                                attempt: 1,
-                                event_type: event_type.into(),
-                                session_id: None,
-                                detail: detail.to_string(),
-                            },
-                            Some((index as i64 + 1) * 1000),
-                        )
-                        .await
-                        .unwrap();
-                }
-                let projection =
-                    Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone()));
-                let events = Arc::new(CountingEvents {
-                    repository: WorkflowEventLogRepository::with_store(store.clone()),
-                    reads: AtomicUsize::new(0),
-                });
-                let usecase = WorkflowOutputUsecase::new(WorkflowQueryService::new(
-                    Arc::new(WorkflowDefinitionFileRepository::new(
-                        directory.path(),
-                        directory.path(),
-                    )),
-                    Arc::new(WorkflowDefinitionFileSourceGateway::new(
-                        directory.path(),
-                        directory.path(),
-                    )),
-                    Arc::new(WorkflowFacetFileRepository::new(directory.path())),
-                    events.clone(),
-                    projection.clone(),
-                ));
-                let state = projection
-                    .get_execution(&ExecutionTreeId::new(id).unwrap())
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(state.status, status);
-                let artifact = state
-                    .node_executions
-                    .iter()
-                    .find(|node| node.node_name == "main")
-                    .unwrap()
-                    .artifact
-                    .as_ref();
-                let expected = if status == ExecutionStatus::Completed {
-                    let artifact = artifact.unwrap();
-                    assert_eq!(
-                        artifact.value,
-                        serde_json::json!({
-                            "worktree": {"branch": "saved-main", "path": "/saved/main"},
-                            "work": {"answer": "kept"}
-                        })
-                    );
-                    WorkflowGetOutputResult::Submitted {
-                        contract: None,
-                        submitted_at: None,
-                        request_id: None,
-                        timestamp: artifact.produced_at,
-                        structured_output: artifact.value.clone(),
-                    }
-                } else {
-                    assert!(artifact.is_none());
-                    WorkflowGetOutputResult::NotSubmitted
-                };
-                // When
-                let output = without_tree_fold(usecase.get_output(id, "main"))
-                    .await
-                    .unwrap();
-                // Then
-                assert_eq!(output, expected);
-                assert_eq!(events.reads.load(Ordering::SeqCst), 1);
-            }
-        }
     }
 }
 
@@ -230,7 +64,6 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
                     workflow_name: "test".into(),
                     repository_root: Some("/repo".into()),
                     worktree_path: "/repo".into(),
-                    created_from: ExecutionOrigin::Cli,
                     request: String::new(),
                     definition,
                     timestamp: 1.0,
@@ -268,11 +101,6 @@ pub async fn test_隔離合成子の出力取得_保存されない成果を一�
                 directory.path(),
                 directory.path(),
             )),
-            Arc::new(WorkflowDefinitionFileSourceGateway::new(
-                directory.path(),
-                directory.path(),
-            )),
-            Arc::new(WorkflowFacetFileRepository::new(directory.path())),
             events.clone(),
             Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone())),
         ));
@@ -363,7 +191,6 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
                 workflow_name: "test".into(),
                 repository_root: Some("/repo".into()),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::Cli,
                 request: String::new(),
                 definition,
                 timestamp: 1.0,
@@ -391,11 +218,6 @@ pub async fn test_空の隔離fanout出力_保存事実を一度だけ読みstat
             directory.path(),
             directory.path(),
         )),
-        Arc::new(WorkflowDefinitionFileSourceGateway::new(
-            directory.path(),
-            directory.path(),
-        )),
-        Arc::new(WorkflowFacetFileRepository::new(directory.path())),
         events.clone(),
         Arc::new(WorkflowExecutionProjectionLogRepository::new(store.clone())),
     ));

@@ -240,7 +240,6 @@ async fn multiple_worktrees_are_independent_entries() {
 
 mod rescan_tests {
     use crate::domain::git::entities::worktree::Worktree;
-    use crate::usecase::repository_dto::FileDiffStatDto;
     use crate::usecase::repository_dto::FileStatusDto;
     use crate::usecase::repository_state::error::RepositoryStateError;
     use crate::usecase::repository_state::scanner::RepositoryScanner;
@@ -296,17 +295,7 @@ mod rescan_tests {
                     index_status: "none".into(),
                     worktree_status: "modified".into(),
                 }],
-                diff_stats: vec![FileDiffStatDto {
-                    path: format!("scan-{call}"),
-                    index_additions: 0,
-                    index_deletions: 0,
-                    wt_additions: call as u32,
-                    wt_deletions: 0,
-                }],
                 dirty_count: call,
-                diff_file_tree: vec![],
-                staged_diff_file_tree: vec![],
-                changes_diff_file_tree: vec![],
             })
         }
 
@@ -699,22 +688,14 @@ mod fixture_memory_tests {
         first.commit_snapshot(
             RepositorySnapshotParts {
                 status: Vec::new(),
-                diff_stats: Vec::new(),
                 dirty_count: 0,
-                diff_file_tree: Vec::new(),
-                staged_diff_file_tree: Vec::new(),
-                changes_diff_file_tree: Vec::new(),
             },
             0,
         );
         second.commit_snapshot(
             RepositorySnapshotParts {
                 status: Vec::new(),
-                diff_stats: Vec::new(),
                 dirty_count: 0,
-                diff_file_tree: Vec::new(),
-                staged_diff_file_tree: Vec::new(),
-                changes_diff_file_tree: Vec::new(),
             },
             0,
         );

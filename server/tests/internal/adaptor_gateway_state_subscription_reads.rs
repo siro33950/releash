@@ -11,7 +11,7 @@ use releashd::test_support::integration::transport::ConnectFailure;
 pub async fn test_購読読取の境界_同期queryへ期限を引き継ぐ() {
     let fixture = crate::state_subscription_reads::Fixture::new();
     let reads = StateSubscriptionReads(fixture.reads.clone());
-    let target = SubscriptionTarget::CurrentBranch(fixture.path.clone());
+    let target = SubscriptionTarget::ReleashBase(fixture.path.clone());
     assert!(reads.read(&target).await.is_ok());
     let context =
         OperationContext::default().with_deadline(Deadline::new(std::time::Instant::now()));
@@ -75,32 +75,6 @@ pub async fn test_notion購読読取_タスクの外部更新の後に未設定�
     let released = reads.read(&target).await;
     // Then
     let releashd::test_support::integration::subscriptions::StateValue::NotionTasks(result) = value
-    else {
-        panic!("Notion state expected")
-    };
-    assert_eq!(
-        result.error,
-        Some(releashd::test_support::integration::platform::NotionUsecaseError::ConfigNotFound)
-    );
-    assert!(result.value.is_none());
-    assert!(released.is_err());
-}
-
-#[tokio::test]
-pub async fn test_notion購読読取_ラベルの外部更新の後に未設定の失敗を読む() {
-    // Given
-    let fixture = crate::state_subscription_reads::Fixture::new();
-    let reads = StateSubscriptionReads(fixture.reads.clone());
-    let target = SubscriptionTarget::NotionLabelOptions(fixture.path.clone());
-    // When
-    reads.acquire_external(&target);
-    reads.refresh_external(&target).await.unwrap();
-    let value = reads.read(&target).await.unwrap();
-    reads.release_external(&target);
-    let released = reads.read(&target).await;
-    // Then
-    let releashd::test_support::integration::subscriptions::StateValue::NotionLabelOptions(result) =
-        value
     else {
         panic!("Notion state expected")
     };

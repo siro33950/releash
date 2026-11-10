@@ -318,12 +318,6 @@ impl RuntimeProtection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkspaceStateGcRecord {
-    pub(crate) path: PathBuf,
-    pub(crate) key: WorkspaceStateKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReviewCommentGcRecord {
     pub(crate) path: PathBuf,
     pub(crate) key: String,
@@ -339,14 +333,12 @@ pub struct CacheGcRecord {
 pub struct StartupGcRequest {
     pub(crate) app_data_dir: PathBuf,
     pub live_worktrees: Option<LiveWorktreeResolution>,
-    pub(crate) workspace_state_records: Vec<WorkspaceStateGcRecord>,
     pub(crate) review_comment_records: Vec<ReviewCommentGcRecord>,
     /// Checkpoints remain retained until their worktree mapping can be proven.
     /// Keeping the observed paths in the request makes that conservative
     /// decision explicit and testable.
     pub(crate) checkpoint_paths: Vec<PathBuf>,
     pub cache_records: Vec<CacheGcRecord>,
-    pub(crate) legacy_comment_paths: Vec<PathBuf>,
     pub(crate) runtime_protection: RuntimeProtection,
     pub now_secs: f64,
     pub retention: RetentionPolicy,
@@ -355,7 +347,6 @@ pub struct StartupGcRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CandidateRevalidation {
     None,
-    WorkspaceState { key: WorkspaceStateKey },
     ReviewComment { key: String },
 }
 
@@ -470,13 +461,6 @@ pub(crate) fn plan_startup_gc(request: StartupGcRequest) -> StartupGcPlan {
             );
         }
     }
-    for path in &request.legacy_comment_paths {
-        plan.add(
-            path.clone(),
-            GcCategory::LegacyComments,
-            CandidateRevalidation::None,
-        );
-    }
     for path in &request.checkpoint_paths {
         report
             .notices
@@ -565,17 +549,6 @@ fn collect_workspace_keyed_deletions(
         return;
     }
 
-    for record in &request.workspace_state_records {
-        if can_remove_workspace_state(request, runtime, &record.key) {
-            plan.add(
-                record.path.clone(),
-                GcCategory::DeletedWorkspace,
-                CandidateRevalidation::WorkspaceState {
-                    key: record.key.clone(),
-                },
-            );
-        }
-    }
     for record in &request.review_comment_records {
         if !live_worktrees.contains_review_comment_key(&record.key)
             && !runtime
@@ -645,9 +618,6 @@ fn candidate_still_valid(
 ) -> bool {
     match &candidate.revalidation {
         CandidateRevalidation::None => true,
-        CandidateRevalidation::WorkspaceState { key } => {
-            can_remove_workspace_state(request, revalidated_runtime_protection, key)
-        }
         CandidateRevalidation::ReviewComment { key } => {
             request.live_worktrees.as_ref().is_some_and(|live| {
                 revalidated_runtime_protection.workspace_keyed_protection_complete

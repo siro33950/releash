@@ -82,7 +82,7 @@ async fn test_購読外部読取_再取得失敗で古いキャッシュを配�
     usecase.open_client("client".into()).unwrap();
     presenter.open("client".into()).unwrap();
     let delivery = presenter
-        .reserve_delivery("client", "subscription", &target.to_string(), None)
+        .reserve_delivery("client", "subscription", &target.to_string())
         .unwrap();
     usecase
         .start_subscription("client", &target, &delivery)
@@ -133,59 +133,7 @@ async fn test_notion購読_タスクの一覧を共通timerで取り直す() {
     subscriptions.open_client("client".into()).unwrap();
     presenter.open("client".into()).unwrap();
     let delivery = presenter
-        .reserve_delivery("client", "subscription", &target.to_string(), None)
-        .unwrap();
-    subscriptions
-        .start_subscription("client", &target, &delivery)
-        .await
-        .unwrap();
-    // When
-    tick.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(2), reads.blocked.notified())
-        .await
-        .unwrap();
-    reads.release.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
-        .await
-        .unwrap();
-    subscriptions.close_client("client");
-    presenter.close("client", &subscriptions.active_targets());
-    // Then
-    assert_eq!(reads.external(), 2);
-    assert_eq!(*output.updates.lock(), vec![target]);
-}
-
-#[tokio::test]
-async fn test_notion購読_ラベルの選択肢を共通timerで取り直す() {
-    // Given
-    let output = Arc::new(RecordingOutput::default());
-    let presenter = Arc::new(StateSubscriptionPresenter::new());
-    let reads = Arc::new(GatedReads::default());
-    let tick = Arc::new(tokio::sync::Notify::new());
-    let subscriptions = StateSubscriptionUsecase::new_with_output(
-        Arc::new(RecordingPresenter {
-            recording: output.clone(),
-            presenter: presenter.clone(),
-        }),
-        crate::adaptor::controller::state_subscription::drive(Arc::new({
-            let tick = tick.clone();
-            move || {
-                Box::pin(futures_util::stream::unfold(
-                    tick.clone(),
-                    |tick| async move {
-                        tick.notified().await;
-                        Some(((), tick))
-                    },
-                ))
-            }
-        })),
-    )
-    .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::NotionLabelOptions("/repo".into());
-    subscriptions.open_client("client".into()).unwrap();
-    presenter.open("client".into()).unwrap();
-    let delivery = presenter
-        .reserve_delivery("client", "subscription", &target.to_string(), None)
+        .reserve_delivery("client", "subscription", &target.to_string())
         .unwrap();
     subscriptions
         .start_subscription("client", &target, &delivery)
@@ -229,11 +177,11 @@ async fn test_購読駆動_時刻streamが終わっても変更通知で読み�
         vec![],
         String::new(),
     );
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     usecase.open_client("client".into()).unwrap();
     presenter.open("client".into()).unwrap();
     let delivery = presenter
-        .reserve_delivery("client", "subscription", &target.to_string(), None)
+        .reserve_delivery("client", "subscription", &target.to_string())
         .unwrap();
     usecase
         .start_subscription("client", &target, &delivery)
@@ -241,7 +189,7 @@ async fn test_購読駆動_時刻streamが終わっても変更通知で読み�
         .unwrap();
     tokio::task::yield_now().await;
     // When
-    usecase.notify(StateChangeSource::Repositories);
+    usecase.notify(StateChangeSource::AppConfig);
     output.updated.notified().await;
     // Then
     assert_eq!(*output.updates.lock(), vec![target]);
@@ -280,7 +228,7 @@ async fn assert_stopped(close: bool) {
     subscriptions.open_client("client".into()).unwrap();
     presenter.open("client".into()).unwrap();
     let delivery = presenter
-        .reserve_delivery("client", "subscription", &target.to_string(), None)
+        .reserve_delivery("client", "subscription", &target.to_string())
         .unwrap();
     subscriptions
         .start_subscription("client", &target, &delivery)
@@ -359,21 +307,20 @@ mod driver_tests {
             start_read(
                 &usecase,
                 "client",
-                &SubscriptionTarget::RepositoryPaths.to_string(),
-                None,
+                &SubscriptionTarget::TerminalStartupCommand.to_string(),
             )
             .await
             .unwrap();
             // Then
             assert!(
-                matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::RepositoryPaths(vec!["/repo".into()])))
+                matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::TerminalStartupCommand("/repo".into())))
             );
             assert!(matches!(
                 stream.next().await,
                 Some(StateSubscriptionEvent::Item(_, Event::Bookmark(_)))
             ));
             usecase.test_set_repository_paths(vec!["/next".into()]);
-            usecase.notify(StateChangeSource::Repositories);
+            usecase.notify(StateChangeSource::AppConfig);
             assert!(matches!(
                 stream.next().await,
                 Some(StateSubscriptionEvent::Item(
@@ -391,7 +338,7 @@ mod driver_tests {
             ));
             drop(stream);
             assert!(
-                matches!(start_read(&usecase, "client", &SubscriptionTarget::RepositoryPaths.to_string(), None).await,
+                matches!(start_read(&usecase, "client", &SubscriptionTarget::TerminalStartupCommand.to_string()).await,
         Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::StreamEnded)
             );
             assert!(usecase.open("client".into()).is_ok());
@@ -418,14 +365,12 @@ mod driver_tests {
             assert!(stream.as_mut().poll_next(&mut cx).is_pending());
             flag.0.store(false, Ordering::SeqCst);
 
-            assert!(
-                matches!(start_read(&usecase, "waiting", "missing", None).await,
-        Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::UnknownTarget)
-            );
+            assert!(matches!(start_read(&usecase, "waiting", "missing").await,
+        Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::UnknownTarget));
             assert_eq!(
                 usecase.publisher().publish(
-                    &SubscriptionTarget::BranchBase("/missing".into(), "branch".into()),
-                    StateValue::RepositoryPaths(vec![]),
+                    &SubscriptionTarget::ReleashBase("/missing".into()),
+                    StateValue::TerminalStartupCommand(String::new()),
                     None
                 ),
                 Err(SubscriptionError::UnknownTarget)
@@ -436,8 +381,7 @@ mod driver_tests {
             start_read(
                 &usecase,
                 "waiting",
-                &SubscriptionTarget::RepositoryPaths.to_string(),
-                None,
+                &SubscriptionTarget::TerminalStartupCommand.to_string(),
             )
             .await
             .unwrap();
@@ -462,13 +406,13 @@ mod driver_tests {
 
             // When
             usecase.test_set_repository_paths(vec!["/next".into()]);
-            usecase.notify(StateChangeSource::Repositories);
+            usecase.notify(StateChangeSource::AppConfig);
             tokio::task::yield_now().await;
 
             // Then
             assert!(flag.0.load(Ordering::SeqCst));
             assert!(
-                matches!(stream.as_mut().poll_next(&mut cx), Poll::Ready(Some(StateSubscriptionEvent::Item(_, Event::Change(Version { sequence: 1, .. }, Delivery::Full, value)))) if same(&value, StateValue::RepositoryPaths(vec!["/next".into()])))
+                matches!(stream.as_mut().poll_next(&mut cx), Poll::Ready(Some(StateSubscriptionEvent::Item(_, Event::Change(Version { sequence: 1, .. }, Delivery::Full, value)))) if same(&value, StateValue::TerminalStartupCommand("/next".into())))
             );
 
             assert!(stream.as_mut().poll_next(&mut cx).is_pending());
@@ -477,7 +421,7 @@ mod driver_tests {
                 stop_read(
                     &usecase,
                     "missing",
-                    &SubscriptionTarget::RepositoryPaths.to_string()
+                    &SubscriptionTarget::TerminalStartupCommand.to_string()
                 )
                 .await,
                 Ok(())
@@ -488,7 +432,7 @@ mod driver_tests {
             stop_read(
                 &usecase,
                 "waiting",
-                &SubscriptionTarget::RepositoryPaths.to_string(),
+                &SubscriptionTarget::TerminalStartupCommand.to_string(),
             )
             .await
             .unwrap();
@@ -496,7 +440,7 @@ mod driver_tests {
             // Then
             assert!(flag.0.swap(false, Ordering::SeqCst));
             assert!(stream.as_mut().poll_next(&mut cx).is_pending());
-            usecase.notify(StateChangeSource::Repositories);
+            usecase.notify(StateChangeSource::AppConfig);
             assert!(stream.as_mut().poll_next(&mut cx).is_pending());
             tokio::time::advance(BOOKMARK_INTERVAL).await;
             assert!(matches!(
@@ -521,8 +465,8 @@ mod driver_tests {
                     crate::usecase::state_subscription::SubscriptionTarget::ReleashBase(_) => {
                         StateValue::ReleashBase(Some(self.value.lock().clone()))
                     }
-                    crate::usecase::state_subscription::SubscriptionTarget::WorkflowSource(_) => {
-                        StateValue::WorkflowSource(Some(self.value.lock().clone()))
+                    crate::usecase::state_subscription::SubscriptionTarget::Workflow(_) => {
+                        StateValue::TerminalStartupCommand(self.value.lock().clone())
                     }
                     crate::usecase::state_subscription::SubscriptionTarget::SessionHistory(
                         _,
@@ -566,7 +510,7 @@ mod driver_tests {
             stream.next().await;
             let target = SubscriptionTarget::ReleashBase("/repo".into()).to_string();
             // When
-            start_read(&usecase, "client", &target, None).await.unwrap();
+            start_read(&usecase, "client", &target).await.unwrap();
             // Then
             assert!(
                 matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ReleashBase(Some("node-1".into()))))
@@ -602,7 +546,7 @@ mod driver_tests {
             .with_reads(reads.clone(), None, vec![], String::new());
             let stream = usecase.open("client".into()).unwrap();
             let target = SubscriptionTarget::Issues("/repo".into()).to_string();
-            start_read(&usecase, "client", &target, None).await.unwrap();
+            start_read(&usecase, "client", &target).await.unwrap();
             tokio::task::yield_now().await;
             let initial = reads.calls.load(Ordering::SeqCst);
             // When
@@ -644,15 +588,13 @@ mod driver_tests {
             let first = usecase.open("first".into()).unwrap();
             let second = usecase.open("second".into()).unwrap();
             let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
-            start_read(&usecase, "first", &target, None).await.unwrap();
-            start_read(&usecase, "second", &target, None).await.unwrap();
+            start_read(&usecase, "first", &target).await.unwrap();
+            start_read(&usecase, "second", &target).await.unwrap();
             assert_eq!(files.active.lock().unwrap().len(), 2);
             assert_eq!(usecase.test_worker_count(), 1);
             stop_read(&usecase, "first", &target).await.unwrap();
             let expanded = SubscriptionTarget::SessionHistory("/repo".into(), 40).to_string();
-            start_read(&usecase, "first", &expanded, None)
-                .await
-                .unwrap();
+            start_read(&usecase, "first", &expanded).await.unwrap();
             assert_eq!(files.active.lock().unwrap().len(), 2);
             drop(second);
             assert_eq!(files.active.lock().unwrap().len(), 2);
@@ -686,12 +628,8 @@ mod driver_tests {
             let first = usecase.open("first".into()).unwrap();
             let second = usecase.open("second".into()).unwrap();
             // When
-            start_read(&usecase, "first", "workflows", None)
-                .await
-                .unwrap();
-            start_read(&usecase, "second", "diagnostics", None)
-                .await
-                .unwrap();
+            start_read(&usecase, "first", "workflows").await.unwrap();
+            start_read(&usecase, "second", "diagnostics").await.unwrap();
             // Then
             let requirement = WatchRequirement::Files(
                 "/workflows".into(),
@@ -754,11 +692,10 @@ mod driver_tests {
             );
             let mut stream = Box::pin(usecase.open("client".into()).unwrap());
             stream.next().await;
-            let target = crate::usecase::state_subscription::SubscriptionTarget::WorkflowSource(
-                "dev".into(),
-            )
-            .to_string();
-            start_read(&usecase, "client", &target, None).await.unwrap();
+            let target =
+                crate::usecase::state_subscription::SubscriptionTarget::Workflow("dev".into())
+                    .to_string();
+            start_read(&usecase, "client", &target).await.unwrap();
             assert!(matches!(
                 stream.next().await,
                 Some(StateSubscriptionEvent::Item(_, Event::Snapshot(..)))
@@ -782,7 +719,7 @@ mod driver_tests {
             .unwrap();
             assert!(same(
                 &value,
-                &StateValue::WorkflowSource(Some("second".into()))
+                &StateValue::TerminalStartupCommand("second".into())
             ));
         }
 
@@ -810,7 +747,7 @@ mod driver_tests {
             let mut stream = Box::pin(usecase.open("client".into()).unwrap());
             stream.next().await;
             let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
-            start_read(&usecase, "client", &target, None).await.unwrap();
+            start_read(&usecase, "client", &target).await.unwrap();
             assert!(matches!(stream.next().await,
         Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value)))
             if matches!(value.as_ref(), crate::adaptor::presenter::state_subscription::PublishedState::Failure(error)
@@ -833,7 +770,7 @@ mod driver_tests {
                 vec!["/history".into()],
                 String::new(),
             );
-            start_read(&usecase, "client", &target, None).await.unwrap();
+            start_read(&usecase, "client", &target).await.unwrap();
             assert_eq!(files.active.lock().unwrap().len(), 1);
         }
 
@@ -887,7 +824,7 @@ mod driver_tests {
             let started = tokio::spawn({
                 let usecase = usecase.clone();
                 let target = target.clone();
-                async move { start_read(&usecase, "client", &target, None).await }
+                async move { start_read(&usecase, "client", &target).await }
             });
             reads.entered.notified().await;
             let stopped = tokio::spawn({
@@ -916,8 +853,8 @@ mod driver_tests {
                 target: &crate::usecase::state_subscription::SubscriptionTarget,
             ) -> Result<StateValue, StateReadError> {
                 Ok(match target {
-                    crate::usecase::state_subscription::SubscriptionTarget::AgentSession(_) => {
-                        StateValue::AgentSession(None)
+                    crate::usecase::state_subscription::SubscriptionTarget::ReleashBase(_) => {
+                        StateValue::ReleashBase(None)
                     }
                     crate::usecase::state_subscription::SubscriptionTarget::NodeDetail(_, _) => {
                         StateValue::NodeDetail(None)
@@ -942,15 +879,15 @@ mod driver_tests {
             stream.next().await;
             for (target, expected) in [
                 (
-                    SubscriptionTarget::AgentSession("missing".into()),
-                    StateValue::AgentSession(None),
+                    SubscriptionTarget::ReleashBase("missing".into()),
+                    StateValue::ReleashBase(None),
                 ),
                 (
                     SubscriptionTarget::NodeDetail("/repo".into(), "missing".into()),
                     StateValue::NodeDetail(None),
                 ),
             ] {
-                start_read(&usecase, "client", &target.to_string(), None)
+                start_read(&usecase, "client", &target.to_string())
                     .await
                     .unwrap();
                 assert!(
@@ -971,12 +908,12 @@ mod driver_tests {
                 crate::test_support::state_subscription::read_driver(),
             )
             .with_reads(Arc::new(NullableReads), None, vec![], String::new());
-            let target = SubscriptionTarget::AgentSession("missing".into()).to_string();
+            let target = SubscriptionTarget::ReleashBase("missing".into()).to_string();
             for index in 0..100 {
                 let old_id = format!("old-{index}");
                 let next_id = format!("next-{index}");
                 let old = usecase.open(old_id.clone()).unwrap();
-                start_read(&usecase, &old_id, &target, None).await.unwrap();
+                start_read(&usecase, &old_id, &target).await.unwrap();
                 let mut next = Box::pin(usecase.open(next_id.clone()).unwrap());
                 next.next().await;
                 let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -988,83 +925,14 @@ mod driver_tests {
                     }
                 });
                 barrier.wait().await;
-                start_read(&usecase, &next_id, &target, None).await.unwrap();
+                start_read(&usecase, &next_id, &target).await.unwrap();
                 closed.await.unwrap();
                 assert!(
-                    matches!(next.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::AgentSession(None)))
+                    matches!(next.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ReleashBase(None)))
                 );
                 drop(next);
                 assert_eq!(usecase.test_worker_count(), 0);
             }
-        }
-
-        #[tokio::test(start_paused = true)]
-        async fn test_初回読取_保持中の版から再開して変更だけ届ける() {
-            let usecase = StateSubscriptionUsecase::new(
-                vec![],
-                crate::test_support::state_subscription::read_driver(),
-            )
-            .with_reads(
-                Arc::new(FakeReads {
-                    value: Mutex::new("after".into()),
-                    calls: Default::default(),
-                }),
-                None,
-                vec![],
-                String::new(),
-            );
-            let target = SubscriptionTarget::ReleashBase("/repo".into()).to_string();
-            let presenter = usecase.test_presenter().unwrap();
-            let before = crate::test_support::state_subscription::payload(
-                &StateValue::ReleashBase(Some("before".into())),
-            )
-            .unwrap();
-            let after = crate::test_support::state_subscription::payload(&StateValue::ReleashBase(
-                Some("after".into()),
-            ))
-            .unwrap();
-            let version = presenter.test_runtime().mutate(|state| {
-                state
-                    .register(target.clone(), before, Delivery::Full)
-                    .unwrap();
-                let version = state.current_version(&target).unwrap();
-                state.publish(&target, after, None).unwrap();
-                (version, true)
-            });
-            let mut stream = Box::pin(usecase.open("client".into()).unwrap());
-            assert!(matches!(
-                stream.next().await,
-                Some(StateSubscriptionEvent::Ready)
-            ));
-
-            tokio::time::advance(BOOKMARK_INTERVAL - std::time::Duration::from_millis(1)).await;
-
-            start_read(
-                &usecase,
-                "client",
-                &target,
-                Some((&version.epoch, version.sequence)),
-            )
-            .await
-            .unwrap();
-
-            assert!(matches!(
-                stream.next().await,
-                Some(StateSubscriptionEvent::Item(_, Event::Change(next, Delivery::Full, value)))
-                    if next.sequence == version.sequence + 1
-                        && same(&value, StateValue::ReleashBase(Some("after".into())))
-            ));
-            assert!(matches!(
-                stream.next().await,
-                Some(StateSubscriptionEvent::Item(_, Event::Bookmark(next)))
-                    if next.sequence == version.sequence + 1
-            ));
-            tokio::time::advance(std::time::Duration::from_millis(1)).await;
-            assert!(matches!(
-                stream.next().await,
-                Some(StateSubscriptionEvent::Item(_, Event::Bookmark(next)))
-                    if next.sequence == version.sequence + 1
-            ));
         }
 
         #[derive(Default)]
@@ -1122,10 +990,8 @@ mod driver_tests {
                             deleting: false,
                             dirty_count: Fetched::ready(0),
                             pull_request_error: None,
-                            pull_request_loaded: true,
                             merged: false,
-                            state_pull_request: None,
-                            open_pull_request: Some(crate::domain::git_host::PrInfo {
+                            state_pull_request: Some(crate::domain::git_host::PrInfo {
                                 number: self.prs.load(Ordering::SeqCst),
                                 url: String::new(),
                                 state: crate::domain::git_host::PrState::Open,
@@ -1181,7 +1047,7 @@ mod driver_tests {
                 .with_reads(reads.clone(), None, vec![], String::new());
                 let mut stream = Box::pin(usecase.open("client".into()).unwrap());
                 stream.next().await;
-                start_read(&usecase, "client", &target.to_string(), None)
+                start_read(&usecase, "client", &target.to_string())
                     .await
                     .unwrap();
                 let count = if matches!(target, SubscriptionTarget::Issues(_)) {
@@ -1240,7 +1106,7 @@ mod driver_tests {
             let started = tokio::spawn({
                 let usecase = usecase.clone();
                 let raw = target.to_string();
-                async move { start_read(&usecase, "client", &raw, None).await }
+                async move { start_read(&usecase, "client", &raw).await }
             });
             reads.entered.notified().await;
             // When
@@ -1257,9 +1123,12 @@ mod driver_tests {
                 .unwrap()
                 .test_runtime()
                 .inspect(|state| state.registered(&target.to_string())));
-            assert!(!usecase.test_presenter().unwrap().test_runtime().inspect(
-                |state| state.registered(&SubscriptionTarget::RepositoryPaths.to_string())
-            ));
+            assert!(!usecase
+                .test_presenter()
+                .unwrap()
+                .test_runtime()
+                .inspect(|state| state
+                    .registered(&SubscriptionTarget::TerminalStartupCommand.to_string())));
             assert_eq!(usecase.test_worker_count(), 0);
         }
 
@@ -1305,7 +1174,7 @@ mod driver_tests {
             let _stream = usecase.open("client".into()).unwrap();
             let target = SubscriptionTarget::SessionHistory("/repo".into(), 20);
             // When
-            let error = start_read(&usecase, "client", &target.to_string(), None)
+            let error = start_read(&usecase, "client", &target.to_string())
                 .await
                 .unwrap_err();
             // Then
@@ -1315,9 +1184,12 @@ mod driver_tests {
                 .unwrap()
                 .test_runtime()
                 .inspect(|state| state.registered(&target.to_string())));
-            assert!(!usecase.test_presenter().unwrap().test_runtime().inspect(
-                |state| state.registered(&SubscriptionTarget::RepositoryPaths.to_string())
-            ));
+            assert!(!usecase
+                .test_presenter()
+                .unwrap()
+                .test_runtime()
+                .inspect(|state| state
+                    .registered(&SubscriptionTarget::TerminalStartupCommand.to_string())));
             assert_eq!(usecase.test_worker_count(), 0);
         }
     }
@@ -1422,7 +1294,6 @@ mod driver_tests {
                     "client",
                     &crate::usecase::state_subscription::SubscriptionTarget::parse(&raw).unwrap(),
                     "input",
-                    None,
                 )
                 .await
                 .unwrap();
@@ -1432,11 +1303,10 @@ mod driver_tests {
                 .start_subscription(
                     "client",
                     &crate::usecase::state_subscription::SubscriptionTarget::parse(
-                        "repository-paths",
+                        "terminal-startup-command",
                     )
                     .unwrap(),
-                    &format!("{}:{}", "client", "repository-paths"),
-                    None,
+                    &format!("{}:{}", "client", "terminal-startup-command"),
                 )
                 .await
                 .unwrap();
@@ -1460,7 +1330,7 @@ mod driver_tests {
                         );
                     }
                     Some(StateSubscriptionEvent::Item(target, Event::Snapshot(_, _)))
-                        if target == "client:repository-paths" =>
+                        if target == "client:terminal-startup-command" =>
                     {
                         paths_snapshot = true
                     }
@@ -1470,7 +1340,7 @@ mod driver_tests {
                         terminal_bookmark = true
                     }
                     Some(StateSubscriptionEvent::Item(target, Event::Bookmark(_)))
-                        if target == "client:repository-paths" =>
+                        if target == "client:terminal-startup-command" =>
                     {
                         paths_bookmark = true
                     }
@@ -1507,180 +1377,6 @@ mod driver_tests {
         }
 
         #[tokio::test]
-        async fn test_terminal再開_履歴内ならsnapshotを作らず再起動後は作る() {
-            let (subscriptions, gateway, hub, mut surface) = fixture();
-            let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
-            let stream = subscriptions.open("client".into()).unwrap();
-            tokio::pin!(stream);
-            stream.next().await;
-            subscriptions
-                .deps()
-                .start_subscription(
-                    "client",
-                    &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
-                        .unwrap(),
-                    "input",
-                    None,
-                )
-                .await
-                .unwrap();
-            let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, _))) =
-                stream.next().await
-            else {
-                panic!("snapshot");
-            };
-            stream.next().await;
-            let before = gateway.snapshot_materialization_count();
-            stop_terminal(
-                &subscriptions,
-                "client",
-                &crate::usecase::state_subscription::SubscriptionTarget::parse(&target).unwrap(),
-            )
-            .unwrap();
-            surface
-                .record_output(surface.runtime_generation, std::time::Instant::now())
-                .unwrap();
-            gateway.insert_surface(surface.clone());
-            hub.initialize(crate::test_support::state_subscription::registration(
-                &surface.session_key,
-                "/repo",
-                None,
-                1,
-                1,
-            ))
-            .unwrap();
-            hub.publish(TerminalSurfaceOutputEvent::Output {
-                session_key: surface.session_key.clone(),
-                data: "next".into(),
-                sequence: 1,
-            });
-            subscriptions
-                .deps()
-                .start_subscription(
-                    "client",
-                    &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
-                        .unwrap(),
-                    "input-2",
-                    Some((&version.epoch, version.sequence)),
-                )
-                .await
-                .unwrap();
-            assert_eq!(gateway.snapshot_materialization_count(), before);
-            assert!(
-                matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(v, Delivery::Delta, _))) if v.sequence == 1)
-            );
-            stream.next().await;
-            stop_terminal(
-                &subscriptions,
-                "client",
-                &crate::usecase::state_subscription::SubscriptionTarget::parse(&target).unwrap(),
-            )
-            .unwrap();
-            let recreated = TerminalSurface::new(2, surface.owner.clone(), None);
-            gateway.remove_surface(surface.runtime_generation.value());
-            gateway.insert_surface(recreated.clone());
-            hub.initialize(crate::test_support::state_subscription::registration(
-                &recreated.session_key,
-                "/repo",
-                None,
-                2,
-                0,
-            ))
-            .unwrap();
-            subscriptions
-                .test_presenter()
-                .unwrap()
-                .initialize(&crate::test_support::state_subscription::registration(
-                    &recreated.session_key,
-                    "/repo",
-                    None,
-                    recreated.runtime_generation.value(),
-                    recreated.latest_sequence(),
-                ))
-                .unwrap();
-            subscriptions
-                .deps()
-                .start_subscription(
-                    "client",
-                    &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
-                        .unwrap(),
-                    "input-3",
-                    Some((&version.epoch, version.sequence)),
-                )
-                .await
-                .unwrap();
-            assert!(
-                matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(v, _))) if v.epoch != version.epoch)
-            );
-            assert_eq!(gateway.snapshot_materialization_count(), before + 1);
-        }
-
-        #[tokio::test]
-        async fn test_terminal再開不能_配信開始直後の出力を現在snapshotで回復する() {
-            // Given
-            let (subscriptions, gateway, hub, mut surface) = fixture();
-            let target = SubscriptionTarget::Terminal(surface.owner.clone());
-            let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
-            stream.next().await;
-            let cursor = Some(("old-epoch", 0));
-            subscriptions
-                .deps()
-                .start_subscription("client", &target, "input", cursor)
-                .await
-                .unwrap();
-            assert!(!hub.test_subscribed(&surface.session_key, "client"));
-            assert_eq!(
-                hub.test_pending_amount(&surface.session_key, "client"),
-                None
-            );
-
-            // When
-            surface
-                .record_output(surface.runtime_generation, std::time::Instant::now())
-                .unwrap();
-            gateway.insert_surface(surface.clone());
-            hub.initialize(crate::test_support::state_subscription::registration(
-                &surface.session_key,
-                "/repo",
-                None,
-                1,
-                1,
-            ))
-            .unwrap();
-            hub.publish(TerminalSurfaceOutputEvent::Output {
-                session_key: surface.session_key.clone(),
-                data: "next".into(),
-                sequence: 1,
-            });
-            assert_eq!(
-                hub.test_pending_amount(&surface.session_key, "client"),
-                None
-            );
-            // Then
-            assert!(matches!(
-                tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-                    .await
-                    .unwrap(),
-                Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, _)))
-                    if version.sequence == 1
-            ));
-            assert!(hub.test_subscribed(&surface.session_key, "client"));
-            assert_eq!(
-                hub.test_pending_amount(&surface.session_key, "client"),
-                Some(0)
-            );
-            hub.publish(TerminalSurfaceOutputEvent::Output {
-                session_key: surface.session_key.clone(),
-                data: "x".repeat(100_001).into(),
-                sequence: 2,
-            });
-            assert_eq!(
-                hub.test_pending_amount(&surface.session_key, "client"),
-                Some(100_001)
-            );
-        }
-
-        #[tokio::test]
         async fn test_terminal購読_件数上限がなく停止と切断で流量を解放する() {
             let (subscriptions, gateway, hub, surface) = fixture();
             let stream = subscriptions.open("client".into()).unwrap();
@@ -1708,7 +1404,6 @@ mod driver_tests {
                         )
                         .unwrap(),
                         &format!("input-{index}"),
-                        None,
                     )
                     .await
                     .unwrap();
@@ -1752,7 +1447,6 @@ mod driver_tests {
                         &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                             .unwrap(),
                         client,
-                        None,
                     )
                     .await
                     .unwrap();
@@ -1862,7 +1556,6 @@ mod driver_tests {
                     )
                     .unwrap(),
                     "first-input",
-                    None,
                 )
                 .await
                 .unwrap();
@@ -1884,7 +1577,6 @@ mod driver_tests {
                     )
                     .unwrap(),
                     "second-input",
-                    None,
                 ),
             )
             .await;
@@ -1982,7 +1674,7 @@ mod driver_tests {
             // When
             subscriptions
                 .deps()
-                .start_subscription("first", &target, "first-input", None)
+                .start_subscription("first", &target, "first-input")
                 .await
                 .unwrap();
             let first_event = tokio::spawn(async move { first.next().await });
@@ -1995,7 +1687,7 @@ mod driver_tests {
             .unwrap();
             subscriptions
                 .deps()
-                .start_subscription("second", &target, "second-input", None)
+                .start_subscription("second", &target, "second-input")
                 .await
                 .unwrap();
             subscriptions.schedule_terminal_refresh(vec!["second".into()], target.clone());
@@ -2061,12 +1753,12 @@ mod driver_tests {
                 let _active = subscriptions.open("active".into()).unwrap();
                 subscriptions
                     .deps()
-                    .start_subscription("stopping", &target, "stopping-input", None)
+                    .start_subscription("stopping", &target, "stopping-input")
                     .await
                     .unwrap();
                 subscriptions
                     .deps()
-                    .start_subscription("active", &target, "active-input", None)
+                    .start_subscription("active", &target, "active-input")
                     .await
                     .unwrap();
                 hub.subscribe_output(
@@ -2155,7 +1847,6 @@ mod driver_tests {
                     &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                         .unwrap(),
                     "input",
-                    None,
                 )
                 .await
                 .unwrap();
@@ -2242,7 +1933,7 @@ mod driver_tests {
         }
 
         #[tokio::test]
-        async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届け再開する() {
+        async fn test_terminal購読_出力前の寸法変更と終了を版ゼロで届ける() {
             // Given
             let (subscriptions, _, hub, surface) = fixture();
             let target = SubscriptionTarget::Terminal(surface.owner.clone()).to_string();
@@ -2256,7 +1947,6 @@ mod driver_tests {
                     &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                         .unwrap(),
                     "input",
-                    None,
                 )
                 .await
                 .unwrap();
@@ -2285,65 +1975,43 @@ mod driver_tests {
                 sequence: 0,
             });
             // Then
-            for reconnect in [false, true] {
-                if reconnect {
-                    stop_terminal(
-                        &subscriptions,
-                        "client",
-                        &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
-                            .unwrap(),
-                    )
-                    .unwrap();
-                    subscriptions
-                        .deps()
-                        .start_subscription(
-                            "client",
-                            &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
-                                .unwrap(),
-                            "input",
-                            Some((&version.epoch, version.sequence)),
-                        )
-                        .await
-                        .unwrap();
-                }
-                let Some(StateSubscriptionEvent::Item(
-                    _,
-                    Event::Change(resize_version, Delivery::Delta, resize),
-                )) = stream.next().await
-                else {
-                    panic!("resize");
-                };
-                assert_eq!(resize_version, version);
-                assert!(matches!(
-                    terminal_item(&resize),
-                    crate::adaptor::presenter::client::terminal_event::Item::Resize(
-                        crate::adaptor::presenter::client::TerminalResize {
-                            cols: 120,
-                            rows: 30,
-                            sequence: 0,
-                            ..
-                        }
-                    )
-                ));
-                let Some(StateSubscriptionEvent::Item(
-                    _,
-                    Event::Change(exit_version, Delivery::Delta, exit),
-                )) = stream.next().await
-                else {
-                    panic!("exit");
-                };
-                assert_eq!(exit_version, version);
-                assert!(matches!(
-                    terminal_item(&exit),
-                    crate::adaptor::presenter::client::terminal_event::Item::Exit(
-                        crate::adaptor::presenter::client::TerminalExit {
-                            exit_code: Some(7),
-                            sequence: 0,
-                            ..
-                        }
-                    )
-                ));
-            }
+            let Some(StateSubscriptionEvent::Item(
+                _,
+                Event::Change(resize_version, Delivery::Delta, resize),
+            )) = stream.next().await
+            else {
+                panic!("resize");
+            };
+            assert_eq!(resize_version, version);
+            assert!(matches!(
+                terminal_item(&resize),
+                crate::adaptor::presenter::client::terminal_event::Item::Resize(
+                    crate::adaptor::presenter::client::TerminalResize {
+                        cols: 120,
+                        rows: 30,
+                        sequence: 0,
+                        ..
+                    }
+                )
+            ));
+            let Some(StateSubscriptionEvent::Item(
+                _,
+                Event::Change(exit_version, Delivery::Delta, exit),
+            )) = stream.next().await
+            else {
+                panic!("exit");
+            };
+            assert_eq!(exit_version, version);
+            assert!(matches!(
+                terminal_item(&exit),
+                crate::adaptor::presenter::client::terminal_event::Item::Exit(
+                    crate::adaptor::presenter::client::TerminalExit {
+                        exit_code: Some(7),
+                        sequence: 0,
+                        ..
+                    }
+                )
+            ));
         }
 
         #[tokio::test]
@@ -2361,7 +2029,6 @@ mod driver_tests {
                     &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                         .unwrap(),
                     "input",
-                    None,
                 )
                 .await
                 .unwrap();
@@ -2432,7 +2099,6 @@ mod driver_tests {
                         &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                             .unwrap(),
                         "input",
-                        None,
                     )
                     .await
                     .unwrap();
@@ -2550,7 +2216,6 @@ mod driver_tests {
                     &crate::usecase::state_subscription::SubscriptionTarget::parse(&target)
                         .unwrap(),
                     "new-input",
-                    Some((&old_version.epoch, old_version.sequence)),
                 )
                 .await
                 .unwrap();
@@ -2570,9 +2235,10 @@ mod driver_tests {
                     .inspect(|state| state.current_version(&target))
                     .unwrap()
             );
-            assert!(
-                matches!(terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == recreated.session_key)
-            );
+            assert!(matches!(
+                terminal_item(&value),
+                crate::adaptor::presenter::client::terminal_event::Item::Snapshot(_)
+            ));
             subscriptions.test_presenter().unwrap().remove(
                 &crate::test_support::state_subscription::registration(
                     &surface.session_key,
@@ -2617,7 +2283,7 @@ mod driver_tests {
             // When
             let result = subscriptions
                 .deps()
-                .start_subscription("client", &target, "input", None)
+                .start_subscription("client", &target, "input")
                 .await;
 
             // Then
@@ -2656,7 +2322,7 @@ mod driver_tests {
             // When
             let result = subscriptions
                 .deps()
-                .start_subscription("client", &target, "input", None)
+                .start_subscription("client", &target, "input")
                 .await;
             // Then
             assert!(
@@ -2718,7 +2384,6 @@ mod driver_tests {
                     )
                     .unwrap(),
                     "input",
-                    None,
                 )
                 .await
                 .unwrap();
@@ -2746,7 +2411,7 @@ mod driver_tests {
             first.next().await.unwrap();
             subscriptions
                 .deps()
-                .start_subscription("first", &target, "first-input", None)
+                .start_subscription("first", &target, "first-input")
                 .await
                 .unwrap();
             let snapshot = tokio::time::timeout(std::time::Duration::from_secs(2), first.next())
@@ -2781,7 +2446,7 @@ mod driver_tests {
             // When
             subscriptions
                 .deps()
-                .start_subscription("second", &target, "second-input", None)
+                .start_subscription("second", &target, "second-input")
                 .await
                 .unwrap();
             assert_eq!(
@@ -2796,7 +2461,7 @@ mod driver_tests {
             assert!(
                 matches!(event, StateSubscriptionEvent::Item(delivered, Event::Snapshot(_, value))
         if delivered == "second-input" && matches!(terminal_item(&value),
-            crate::adaptor::presenter::client::terminal_event::Item::Snapshot(snapshot) if snapshot.session_key == surface.session_key))
+            crate::adaptor::presenter::client::terminal_event::Item::Snapshot(_)))
             );
         }
 
@@ -3481,7 +3146,7 @@ mod terminal_composition {
                 StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface.clone().into())),
             )
             .unwrap();
-        deps.start_subscription("client", &target, "x", None)
+        deps.start_subscription("client", &target, "x")
             .await
             .unwrap();
         let (_, _, old) = subscriptions
@@ -3500,7 +3165,7 @@ mod terminal_composition {
                 StateValue::Terminal(TerminalSurfaceStreamItem::Snapshot(surface.clone().into())),
             )
             .unwrap();
-        deps.start_subscription("client", &target, "x", None)
+        deps.start_subscription("client", &target, "x")
             .await
             .unwrap();
         // When
@@ -3671,14 +3336,13 @@ mod terminal_composition {
         let deps = subscriptions.deps();
         let _stream = deps.stream("client".into()).unwrap();
         let target = SubscriptionTarget::Terminal(surface.owner);
-        deps.start_subscription("client", &target, "terminal", None)
+        deps.start_subscription("client", &target, "terminal")
             .await
             .unwrap();
         deps.start_subscription(
             "client",
-            &SubscriptionTarget::RepositoryPaths,
+            &SubscriptionTarget::TerminalStartupCommand,
             "state",
-            None,
         )
         .await
         .unwrap();

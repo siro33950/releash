@@ -1,4 +1,4 @@
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage};
+use crate::domain::workflow::{ExecutionStatus, TokenUsage as WorkflowTokenUsage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSessionProviderRecord {
@@ -53,7 +53,6 @@ pub struct WorkflowExecutionMetadataRecord {
     pub status: ExecutionStatus,
     pub worktree_path: String,
     pub current_node: Option<String>,
-    pub created_from: ExecutionOrigin,
     pub started_at_bits: u64,
     pub updated_at_bits: u64,
     pub completed_at_bits: Option<u64>,

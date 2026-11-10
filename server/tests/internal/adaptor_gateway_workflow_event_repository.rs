@@ -8,7 +8,6 @@ pub(crate) mod tests {
     use tempfile::TempDir;
 
     use releashd::test_support::integration::persistence::LocalEventStoreConfig;
-    use releashd::test_support::integration::workflow::ExecutionOrigin;
     use releashd::test_support::integration::workflow::NodeCompletion;
     use releashd::test_support::integration::workflow::NodeDefinition;
     use releashd::test_support::integration::workflow::NodeKind;
@@ -41,7 +40,6 @@ pub(crate) mod tests {
                 execution_id: execution_id.to_string(),
                 workflow_name: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
-                created_from: ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
                 definition: definition(),
                 timestamp: 1.0,

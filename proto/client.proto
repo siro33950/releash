@@ -3,7 +3,6 @@ package releash.client.v1;
 import "client_options.proto";
 
 option (data_dir_name) = "releash";
-option (legacy_data_dir_name) = "com.releash.app";
 option (development_data_dir_suffix) = ".dev";
 option (data_dir_env) = "RELEASH_DATA_DIR";
 
@@ -13,83 +12,9 @@ message LocalApiDiscovery {
   string daemon_id = 3;
   uint32 pid = 4;
   uint64 process_started_at = 5;
-  string instance_id = 6 [deprecated = true];
 }
 
 message CommandRequest {
-  reserved 113;
-  reserved "request_application_quit";
-  reserved 180, 181;
-  reserved "workflow_validate_output", "workflow_get_output";
-  reserved 104, 132, 133, 138, 139;
-  reserved "record_terminal_launch_renderer_phase", "start_terminal_input_performance_collection", "start_terminal_launch_performance_collection", "take_terminal_input_performance_samples", "take_terminal_launch_performance_samples";
-  reserved 103;
-  reserved "quit_after_startup_failure";
-  reserved 41, 102;
-  reserved "fetch_notion_label_options", "query_notion_tasks";
-  reserved 11, 35, 69;
-  reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
-  reserved 36, 43, 46, 53, 58, 60, 61, 62, 63, 68, 71, 90;
-  reserved "detect_editors", "get_app_settings", "get_application_startup_outcome", "get_external_editor", "get_notion_config", "get_performance_real_app_mode", "get_performance_telemetry_enabled", "get_provider_availability", "get_releash_base", "get_terminal_performance_switches", "get_workflow_config", "list_provider_hook_health_warnings";
-  reserved 163;
-  reserved "fetch_pr_status";
-  reserved 116;
-  reserved "resolve_active_execution_by_worktree";
-  reserved 72;
-  reserved "get_workflow_execution_state";
-  reserved 93;
-  reserved "list_workspace_workflow_history";
-  reserved 94;
-  reserved "list_workspace_worktree_nodes";
-  reserved 30;
-  reserved "delete_branch";
-  reserved 50;
-  reserved "get_cached_pr_status";
-  reserved 96;
-  reserved "load_workspace_state";
-  reserved 37, 47, 54, 70, 73, 88, 92;
-  reserved "diagnose_all_cmd", "get_automation_config_dir", "get_facet", "get_workflow", "get_workflow_source", "list_facet_summaries", "list_workflows";
-  reserved 52;
-  reserved "get_cwd";
-  reserved 57;
-  reserved "get_main_repo_path";
-  reserved 95;
-  reserved "list_worktrees";
-  reserved 49;
-  reserved "get_cached_issues";
-  reserved 51;
-  reserved "get_current_branch";
-  reserved 87;
-  reserved "list_branches_with_status_snapshot";
-  reserved 48;
-  reserved "get_branch_base";
-  reserved 85;
-  reserved "list_branches";
-  reserved 84;
-  reserved "list_available_agent_session_providers";
-  reserved 83;
-  reserved "list_agent_session_history";
-  reserved 75;
-  reserved "get_workspace_session_node_id";
-  reserved 42;
-  reserved "get_agent_session";
-  reserved 74;
-  reserved "get_workspace_node_detail";
-  reserved 76;
-  reserved "get_workspace_tree_selection_reconciliation";
-  reserved 187;
-  reserved "get_workspaces";
-  reserved 64, 149, 150, 151, 152, 153, 154, 155, 156, 158, 160, 161, 162, 164, 165, 166, 167, 168, 169, 170, 171, 173, 174, 175, 176, 177, 178;
-  reserved "get_repo_paths", "get_crash_reporting_enabled", "get_file_at_ref", "get_staged_content", "get_binary_staged_content", "get_file_at_branch_base", "get_binary_file_at_branch_base", "get_binary_file_at_ref", "get_branch_diff_summary", "get_head_diff_file_tree_snapshot", "get_relative_path", "get_review_thread", "get_review_thread_history", "get_default_branch", "get_git_status", "get_git_status_snapshot", "get_status_diff_stats", "get_status_diff_stats_snapshot", "get_git_log", "get_worktree_dirty_count", "get_repo_git_dir", "list_workflow_executions", "get_workflow_execution", "get_workflow_execution_log", "get_workflow_node_detail", "resolve_worktree_by_execution", "list_facets";
-  reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
-  reserved "list_branches_with_status";
-  reserved 121, 123, 131, 134, 137;
-  reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
-  reserved "start_git_dir_watching", "start_watching";
-  reserved 136;
-  reserved "stop_watching";
-  reserved 65, 66, 91, 183;
-  reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
     ResolveSessionReviewThreadRequest resolve_session_review_thread = 191;
     AppendSessionReviewCommentRequest append_session_review_comment = 190;
@@ -99,42 +24,23 @@ message CommandRequest {
     AddRepoPathRequest add_repo_path = 13;
     AppendReviewCommentRequest append_review_comment = 14;
     ApproveWorkspaceNodeRequest approve_workspace_node = 15;
-    ArchiveAgentSessionRequest archive_agent_session = 16;
     SendThreadsToSessionRequest send_threads_to_session = 206;
     ArchiveWorkspaceWorkflowExecutionRequest archive_workspace_workflow_execution = 17;
-    BuildReviewThreadHandoffRequest build_review_thread_handoff = 19;
-    ComputeHiddenRangesFromContentRequest compute_hidden_ranges_from_content = 20;
-    ComputeMarkdownDiffRangesRequest compute_markdown_diff_ranges = 21;
-    ComputeMarkdownInlineChunksRequest compute_markdown_inline_chunks = 22;
-    ComputeMarkdownSplitRowsRequest compute_markdown_split_rows = 23;
-    ComputeVisibleMarkdownBlocksRequest compute_visible_markdown_blocks = 24;
     CreateAgentSessionRequest create_agent_session = 26;
     CreateReviewThreadRequest create_review_thread = 27;
-    CreateWorktreeRequest create_worktree = 28;
     CreateWorktreesRequest create_worktrees = 204;
     SaveRepositoryGroupStateRequest save_repository_group_state = 205;
     DeleteAgentSessionRequest delete_agent_session = 29;
-    DeleteFacetRequest delete_facet = 31;
     DeleteNotionConfigRequest delete_notion_config = 32;
-    DeleteReviewThreadRequest delete_review_thread = 33;
-    DeleteWorkflowRequest delete_workflow = 34;
-    DuplicateFacetRequest duplicate_facet = 38;
-    DuplicateWorkflowRequest duplicate_workflow = 39;
-    FetchIssuesRequest fetch_issues = 40;
-    GetFileNavigationRequest get_file_navigation = 55;
-    GetLanguageFromPathRequest get_language_from_path = 56;
     GetOrSpawnTerminalSurfaceRequest get_or_spawn_terminal_surface = 59;
 
     GitCreateBranchRequest git_create_branch = 77;
     GitStageRequest git_stage = 78;
-    GitStageReviewGroupRequest git_stage_review_group = 79;
     GitUnstageRequest git_unstage = 80;
-    GitUnstageReviewGroupRequest git_unstage_review_group = 81;
     KillTerminalSurfaceRequest kill_terminal_surface = 82;
 
     OpenAgentSessionRequest open_agent_session = 97;
     OpenFacetInEditorRequest open_facet_in_editor = 98;
-    OpenFolderInEditorRequest open_folder_in_editor = 99;
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
     OpenWorkflowDirectoryInEditorRequest open_workflow_directory_in_editor = 207;
@@ -142,10 +48,6 @@ message CommandRequest {
     RemoveRepoPathRequest remove_repo_path = 106;
     RemoveWorktreeRequest remove_worktree = 107;
     RenameWorkspaceSessionNodeRequest rename_workspace_session_node = 108;
-    RenderFacetPreviewRequest render_facet_preview = 109;
-    ReportFrontendErrorRequest report_frontend_error = 110;
-    ReportMountedXtermCountRequest report_mounted_xterm_count = 111;
-    ReportUsageEventRequest report_usage_event = 112;
     StopDaemonRequest stop_daemon = 193;
     InstallCliRequest install_cli = 194;
     CheckLoginRegistrationRequest check_login_registration = 195;
@@ -157,11 +59,8 @@ message CommandRequest {
     ResumeAgentSessionHistoryCandidateRequest resume_agent_session_history_candidate = 122;
     RetryWorkspaceNodeRequest retry_workspace_node = 124;
     ResumeWorkspaceSessionNodeRequest resume_workspace_session_node = 185;
-    SaveFacetRequest save_facet = 125;
     SaveNotionConfigRequest save_notion_config = 126;
-    SaveWorkflowSourceRequest save_workflow_source = 127;
     SaveWorkspaceStateRequest save_workspace_state = 128;
-    SetBranchBaseRequest set_branch_base = 129;
     SetReleashBaseRequest set_releash_base = 130;
 
     StartWorkflowRequest start_workflow = 135;
@@ -177,89 +76,12 @@ message CommandRequest {
     ValidateNotionConfigRequest validate_notion_config = 146;
     WritePathsToTerminalSurfaceRequest write_paths_to_terminal_surface = 147;
     WriteTerminalSurfaceRequest write_terminal_surface = 148;
-    BuildDiffFileTreeRequest build_diff_file_tree = 157;
-    ComputeHiddenRangesRequest compute_hidden_ranges = 159;
-    ApproveWorkflowNodeRequest approve_workflow_node = 172;
     WorkflowSubmitOutputRequest workflow_submit_output = 179;
     RefreshWorkspacesRequest refresh_workspaces = 186;
-    FindRepositoryRootRequest find_repository_root = 188;
   }
 }
 
 message CommandResult {
-  reserved 113;
-  reserved "request_application_quit";
-  reserved 180, 181;
-  reserved "workflow_validate_output", "workflow_get_output";
-  reserved 104, 132, 133, 138, 139;
-  reserved "record_terminal_launch_renderer_phase", "start_terminal_input_performance_collection", "start_terminal_launch_performance_collection", "take_terminal_input_performance_samples", "take_terminal_launch_performance_samples";
-  reserved 103;
-  reserved "quit_after_startup_failure";
-  reserved 41, 102;
-  reserved "fetch_notion_label_options", "query_notion_tasks";
-  reserved 11, 35, 69;
-  reserved "ack_terminal_surface_output", "detach_terminal_surface", "get_terminal_surface";
-  reserved 36, 43, 46, 53, 58, 60, 61, 62, 63, 68, 71, 90;
-  reserved "detect_editors", "get_app_settings", "get_application_startup_outcome", "get_external_editor", "get_notion_config", "get_performance_real_app_mode", "get_performance_telemetry_enabled", "get_provider_availability", "get_releash_base", "get_terminal_performance_switches", "get_workflow_config", "list_provider_hook_health_warnings";
-  reserved 163;
-  reserved "fetch_pr_status";
-  reserved 116;
-  reserved "resolve_active_execution_by_worktree";
-  reserved 72;
-  reserved "get_workflow_execution_state";
-  reserved 93;
-  reserved "list_workspace_workflow_history";
-  reserved 94;
-  reserved "list_workspace_worktree_nodes";
-  reserved 30;
-  reserved "delete_branch";
-  reserved 50;
-  reserved "get_cached_pr_status";
-  reserved 96;
-  reserved "load_workspace_state";
-  reserved 37, 47, 54, 70, 73, 88, 92;
-  reserved "diagnose_all_cmd", "get_automation_config_dir", "get_facet", "get_workflow", "get_workflow_source", "list_facet_summaries", "list_workflows";
-  reserved 52;
-  reserved "get_cwd";
-  reserved 57;
-  reserved "get_main_repo_path";
-  reserved 95;
-  reserved "list_worktrees";
-  reserved 49;
-  reserved "get_cached_issues";
-  reserved 51;
-  reserved "get_current_branch";
-  reserved 87;
-  reserved "list_branches_with_status_snapshot";
-  reserved 48;
-  reserved "get_branch_base";
-  reserved 85;
-  reserved "list_branches";
-  reserved 84;
-  reserved "list_available_agent_session_providers";
-  reserved 83;
-  reserved "list_agent_session_history";
-  reserved 75;
-  reserved "get_workspace_session_node_id";
-  reserved 42;
-  reserved "get_agent_session";
-  reserved 74;
-  reserved "get_workspace_node_detail";
-  reserved 76;
-  reserved "get_workspace_tree_selection_reconciliation";
-  reserved 187;
-  reserved "get_workspaces";
-  reserved 64, 149, 150, 151, 152, 153, 154, 155, 156, 158, 160, 161, 162, 164, 165, 166, 167, 168, 169, 170, 171, 173, 174, 175, 176, 177, 178;
-  reserved "get_repo_paths", "get_crash_reporting_enabled", "get_file_at_ref", "get_staged_content", "get_binary_staged_content", "get_file_at_branch_base", "get_binary_file_at_branch_base", "get_binary_file_at_ref", "get_branch_diff_summary", "get_head_diff_file_tree_snapshot", "get_relative_path", "get_review_thread", "get_review_thread_history", "get_default_branch", "get_git_status", "get_git_status_snapshot", "get_status_diff_stats", "get_status_diff_stats_snapshot", "get_git_log", "get_worktree_dirty_count", "get_repo_git_dir", "list_workflow_executions", "get_workflow_execution", "get_workflow_execution_log", "get_workflow_node_detail", "resolve_worktree_by_execution", "list_facets";
-  reserved 12, 25, 44, 45, 67, 86, 89, 118, 182;
-  reserved "list_branches_with_status";
-  reserved 121, 123, 131, 134, 137;
-  reserved "resume_agent_session", "stop_workflow", "resume_workflow", "confirm_agent_session_archive_delete";
-  reserved "start_git_dir_watching", "start_watching";
-  reserved 136;
-  reserved "stop_watching";
-  reserved 65, 66, 91, 183;
-  reserved "get_review_file_view", "get_review_snapshot", "list_review_threads", "get_review_blob";
   oneof command {
     ResolveSessionReviewThreadResponse resolve_session_review_thread = 191;
     AppendSessionReviewCommentResponse append_session_review_comment = 190;
@@ -269,42 +91,23 @@ message CommandResult {
     ResultBool add_repo_path = 13;
     ReviewThreadDto append_review_comment = 14;
     Unit approve_workspace_node = 15;
-    AgentSessionArchiveResponse archive_agent_session = 16;
     Unit send_threads_to_session = 206;
     Unit archive_workspace_workflow_execution = 17;
-    ResultString build_review_thread_handoff = 19;
-    ListHiddenRangeDto compute_hidden_ranges_from_content = 20;
-    ListDiffRangeDto compute_markdown_diff_ranges = 21;
-    ListInlineChunkDto compute_markdown_inline_chunks = 22;
-    ListSplitRowDto compute_markdown_split_rows = 23;
-    ListVisibleBlockDto compute_visible_markdown_blocks = 24;
     SessionSelection create_agent_session = 26;
     ReviewThreadDto create_review_thread = 27;
-    ResultString create_worktree = 28;
     Liststring create_worktrees = 204;
     Unit save_repository_group_state = 205;
     Unit delete_agent_session = 29;
-    Unit delete_facet = 31;
     Unit delete_notion_config = 32;
-    Unit delete_review_thread = 33;
-    Unit delete_workflow = 34;
-    Unit duplicate_facet = 38;
-    Unit duplicate_workflow = 39;
-    Unit fetch_issues = 40;
-    FileNavigationResultDto get_file_navigation = 55;
-    ResultString get_language_from_path = 56;
     GetOrSpawnTerminalV1 get_or_spawn_terminal_surface = 59;
 
     Unit git_create_branch = 77;
     Unit git_stage = 78;
-    Unit git_stage_review_group = 79;
     Unit git_unstage = 80;
-    Unit git_unstage_review_group = 81;
     Unit kill_terminal_surface = 82;
 
     Unit open_agent_session = 97;
     Unit open_facet_in_editor = 98;
-    Unit open_folder_in_editor = 99;
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
     Unit open_workflow_directory_in_editor = 207;
@@ -312,10 +115,6 @@ message CommandResult {
     ResultBool remove_repo_path = 106;
     Unit remove_worktree = 107;
     Unit rename_workspace_session_node = 108;
-    ResultString render_facet_preview = 109;
-    Unit report_frontend_error = 110;
-    Unit report_mounted_xterm_count = 111;
-    Unit report_usage_event = 112;
     StopDaemonResponse stop_daemon = 193;
     InstallCliResponse install_cli = 194;
     LoginRegistrationResult check_login_registration = 195;
@@ -327,11 +126,8 @@ message CommandResult {
     SessionSelection resume_agent_session_history_candidate = 122;
     Unit retry_workspace_node = 124;
     Unit resume_workspace_session_node = 185;
-    Unit save_facet = 125;
     Unit save_notion_config = 126;
-    SaveWorkflowSourceResultDto save_workflow_source = 127;
     WorkspaceStateDto save_workspace_state = 128;
-    Unit set_branch_base = 129;
     Unit set_releash_base = 130;
 
     ResultString start_workflow = 135;
@@ -347,12 +143,8 @@ message CommandResult {
     NotionValidationResultView validate_notion_config = 146;
     Unit write_paths_to_terminal_surface = 147;
     Unit write_terminal_surface = 148;
-    ListDiffTreeNodeDto build_diff_file_tree = 157;
-    ListHiddenRangeDto compute_hidden_ranges = 159;
-    Unit approve_workflow_node = 172;
     Unit workflow_submit_output = 179;
     Unit refresh_workspaces = 186;
-    Nullablestring find_repository_root = 188;
   }
 }
 
@@ -460,22 +252,6 @@ message ApproveWorkspaceNodeRequest {
   optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
 }
 
-message ArchiveAgentSessionRequest {
-  optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
-  optional string caller_request_id = 2 [json_name = "callerRequestId", (json_required) = true];
-}
-
-message AgentSessionArchiveResponse {
-  option (json_wrapper) = "value";
-  enum Value {
-    reserved 2;
-    reserved "delete_confirmation_required";
-    archived = 0 [(json_enum_name) = "archived"];
-    already_archived = 1 [(json_enum_name) = "already_archived"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
 message ArchiveWorkspaceWorkflowExecutionRequest {
   optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
   optional string execution_id = 2 [json_name = "executionId", (json_required) = true];
@@ -504,137 +280,9 @@ message TerminalSurfaceOwnerV1Session {
   optional string session_id = 2 [json_name = "sessionId", (json_required) = true];
 }
 
-message BuildReviewThreadHandoffRequest {
-  optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-}
-
 message ResultString {
   option (json_wrapper) = "value";
   optional string value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ComputeHiddenRangesFromContentRequest {
-  optional string original = 1 [json_name = "original", (json_required) = true];
-  optional string modified = 2 [json_name = "modified", (json_required) = true];
-  optional uint32 context_lines = 3 [json_name = "contextLines", (json_required) = true];
-}
-
-message HiddenRangeDto {
-  optional uint32 start_line = 1 [json_name = "startLine", (json_required) = true];
-  optional uint32 end_line = 2 [json_name = "endLine", (json_required) = true];
-  optional uint32 hidden_count = 3 [json_name = "hiddenCount", (json_required) = true];
-}
-
-message ListHiddenRangeDto {
-  option (json_wrapper) = "items";
-  repeated HiddenRangeDto items = 1;
-}
-
-message MarkdownDiffSideInput {
-  option (json_wrapper) = "value";
-  enum Value {
-    modified = 0 [(json_enum_name) = "modified"];
-    original = 1 [(json_enum_name) = "original"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ComputeMarkdownDiffRangesRequest {
-  optional string original = 1 [json_name = "original", (json_required) = true];
-  optional string modified = 2 [json_name = "modified", (json_required) = true];
-  optional MarkdownDiffSideInput side = 3 [json_name = "side", (json_required) = true];
-}
-
-message DiffRangeDto {
-  optional uint32 start_line = 1 [json_name = "startLine", (json_required) = true];
-  optional uint32 end_line = 2 [json_name = "endLine", (json_required) = true];
-  optional DiffRangeKindDto kind = 3 [json_name = "type", (json_required) = true];
-}
-
-message DiffRangeKindDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    added = 0 [(json_enum_name) = "added"];
-    modified = 1 [(json_enum_name) = "modified"];
-    deleted = 2 [(json_enum_name) = "deleted"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ListDiffRangeDto {
-  option (json_wrapper) = "items";
-  repeated DiffRangeDto items = 1;
-}
-
-message ComputeMarkdownInlineChunksRequest {
-  optional string original = 1 [json_name = "original", (json_required) = true];
-  optional string modified = 2 [json_name = "modified", (json_required) = true];
-}
-
-message InlineChunkDto {
-  optional string content = 1 [json_name = "content", (json_required) = true];
-  optional InlineChunkKindDto kind = 2 [json_name = "type", (json_required) = true];
-}
-
-message InlineChunkKindDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    unchanged = 0 [(json_enum_name) = "unchanged"];
-    added = 1 [(json_enum_name) = "added"];
-    removed = 2 [(json_enum_name) = "removed"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ListInlineChunkDto {
-  option (json_wrapper) = "items";
-  repeated InlineChunkDto items = 1;
-}
-
-message ComputeMarkdownSplitRowsRequest {
-  optional string original = 1 [json_name = "original", (json_required) = true];
-  optional string modified = 2 [json_name = "modified", (json_required) = true];
-}
-
-message SplitRowDto {
-  optional string left = 1 [json_name = "left", (json_nullable) = true];
-  optional string right = 2 [json_name = "right", (json_nullable) = true];
-  optional SplitRowKindDto kind = 3 [json_name = "type", (json_required) = true];
-}
-
-message SplitRowKindDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    unchanged = 0 [(json_enum_name) = "unchanged"];
-    added = 1 [(json_enum_name) = "added"];
-    removed = 2 [(json_enum_name) = "removed"];
-    modified = 3 [(json_enum_name) = "modified"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ListSplitRowDto {
-  option (json_wrapper) = "items";
-  repeated SplitRowDto items = 1;
-}
-
-message ComputeVisibleMarkdownBlocksRequest {
-  optional string original = 1 [json_name = "original", (json_required) = true];
-  optional string modified = 2 [json_name = "modified", (json_required) = true];
-  optional uint32 context_lines = 3 [json_name = "contextLines", (json_required) = true];
-}
-
-message VisibleBlockDto {
-  optional uint32 start_line = 1 [json_name = "startLine", (json_required) = true];
-  optional uint32 end_line = 2 [json_name = "endLine", (json_required) = true];
-  optional string content = 3 [json_name = "content", (json_required) = true];
-  optional string deleted_content = 4 [json_name = "deletedContent", (json_nullable) = true, (json_omit_none) = true];
-}
-
-message ListVisibleBlockDto {
-  option (json_wrapper) = "items";
-  repeated VisibleBlockDto items = 1;
 }
 
 message CreateAgentSessionRequest {
@@ -682,47 +330,15 @@ message WorktreeWorkflowLaunch {
   string name = 1;
   optional string request = 2;
 }
-message CreateWorktreeRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional string branch = 2 [json_name = "branch", (json_required) = true];
-  optional bool create_branch = 3 [json_name = "createBranch", (json_required) = true];
-  optional string base_branch = 4 [json_name = "baseBranch", (json_nullable) = true];
-}
-
-message WorktreeEntryDto {
-  optional string name = 1 [json_name = "name", (json_required) = true];
-  optional string path = 2 [json_name = "path", (json_required) = true];
-  optional string branch = 3 [json_name = "branch", (json_required) = true];
-  optional bool is_main = 4 [json_name = "is_main", (json_required) = true];
-  optional bool is_locked = 5 [json_name = "is_locked", (json_required) = true];
-  reserved 6, 7;
-  reserved "dirty_count", "base_branch";
-}
 
 message DeleteAgentSessionRequest {
   optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
   optional string caller_request_id = 2 [json_name = "callerRequestId", (json_required) = true];
 }
 
-message DeleteFacetRequest {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-  optional string key = 2 [json_name = "key", (json_required) = true];
-}
-
 message DeleteNotionConfigRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
 }
-
-message DeleteReviewThreadRequest {
-  optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
-  optional string thread_id = 2 [json_name = "threadId", (json_required) = true];
-}
-
-message DeleteWorkflowRequest {
-  optional string name = 1 [json_name = "name", (json_required) = true];
-}
-
-
 
 message EditorInfoDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
@@ -745,13 +361,13 @@ message DiagnosticItem {
   optional string code = 1 [json_name = "code", (json_required) = true];
   optional Severity severity = 2 [json_name = "severity", (json_required) = true];
   optional DiagnosticStage stage = 3 [json_name = "stage", (json_required) = true];
-  optional DiagnosticSpan span = 4 [json_name = "span", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional DiagnosticSpan span = 4 [json_name = "span", (json_nullable) = true, (json_omit_none) = true];
   optional string message = 5 [json_name = "message", (json_required) = true];
-  optional string workflow_name = 6 [json_name = "workflow_name", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string node_name = 7 [json_name = "node_name", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string facet_key = 8 [json_name = "facet_key", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string facet_kind = 9 [json_name = "facet_kind", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string field = 10 [json_name = "field", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string workflow_name = 6 [json_name = "workflow_name", (json_nullable) = true, (json_omit_none) = true];
+  optional string node_name = 7 [json_name = "node_name", (json_nullable) = true, (json_omit_none) = true];
+  optional string facet_key = 8 [json_name = "facet_key", (json_nullable) = true, (json_omit_none) = true];
+  optional string facet_kind = 9 [json_name = "facet_kind", (json_nullable) = true, (json_omit_none) = true];
+  optional string field = 10 [json_name = "field", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message Severity {
@@ -775,7 +391,7 @@ message DiagnosticStage {
 }
 
 message DiagnosticSpan {
-  optional string source = 1 [json_name = "source", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string source = 1 [json_name = "source", (json_nullable) = true, (json_omit_none) = true];
   optional uint64 start_line = 2 [json_name = "start_line", (json_required) = true];
   optional uint64 start_col = 3 [json_name = "start_col", (json_required) = true];
   optional uint64 end_line = 4 [json_name = "end_line", (json_required) = true];
@@ -813,21 +429,6 @@ message MapListFacetUsageEntry {
   map<string, ListFacetUsageEntry> entries = 1;
 }
 
-message DuplicateFacetRequest {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-  optional string source_key = 2 [json_name = "sourceKey", (json_required) = true];
-  optional string new_key = 3 [json_name = "newKey", (json_required) = true];
-}
-
-message DuplicateWorkflowRequest {
-  optional string source_name = 1 [json_name = "sourceName", (json_required) = true];
-  optional string new_name = 2 [json_name = "newName", (json_required) = true];
-}
-
-message FetchIssuesRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-}
-
 message IssueInfoDto {
   optional uint64 number = 1 [json_name = "number", (json_required) = true];
   optional string default_branch_name = 2 [json_name = "default_branch_name", (json_required) = true];
@@ -838,9 +439,7 @@ message IssueInfoDto {
   optional string created_at = 7 [json_name = "created_at", (json_required) = true];
   optional string updated_at = 8 [json_name = "updated_at", (json_required) = true];
   optional ListIssueLabelDto labels = 9 [json_name = "labels", (json_required) = true];
-  optional ListPrAuthorDto assignees = 10 [json_name = "assignees", (json_required) = true];
   optional string body = 11 [json_name = "body", (json_required) = true];
-  optional MilestoneDto milestone = 12 [json_name = "milestone", (json_nullable) = true];
 }
 
 message PrAuthorDto {
@@ -849,7 +448,6 @@ message PrAuthorDto {
 
 message IssueLabelDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
-  optional string color = 2 [json_name = "color", (json_required) = true];
 }
 
 message ListIssueLabelDto {
@@ -857,35 +455,14 @@ message ListIssueLabelDto {
   repeated IssueLabelDto items = 1;
 }
 
-message ListPrAuthorDto {
-  option (json_wrapper) = "items";
-  repeated PrAuthorDto items = 1;
-}
-
-message MilestoneDto {
-  optional string title = 1 [json_name = "title", (json_required) = true];
-}
-
 message ListIssueInfoDto {
   option (json_wrapper) = "items";
   repeated IssueInfoDto items = 1;
 }
 
-message NotionLabelOptionView {
-  optional string property_name = 1 [json_name = "property_name", (json_required) = true];
-  optional string property_type = 2 [json_name = "property_type", (json_required) = true];
-  optional Liststring options = 3 [json_name = "options", (json_required) = true];
-  optional Liststring option_ids = 4 [json_name = "option_ids", (json_default) = true];
-}
-
 message Liststring {
   option (json_wrapper) = "items";
   repeated string items = 1;
-}
-
-message ListNotionLabelOptionView {
-  option (json_wrapper) = "items";
-  repeated NotionLabelOptionView items = 1;
 }
 
 message AgentSessionItemDto {
@@ -895,12 +472,8 @@ message AgentSessionItemDto {
   optional string workspace_worktree_path = 4 [json_name = "workspaceWorktreePath", (json_required) = true];
   optional AgentSessionProviderDto provider = 5 [json_name = "provider", (json_required) = true];
   optional AgentSessionTreeLocationDto tree_location = 6 [json_name = "treeLocation", (json_required) = true];
-  optional AgentSessionLifecycleDto lifecycle = 7 [json_name = "lifecycle", (json_required) = true];
   optional string provider_session_id = 8 [json_name = "providerSessionId", (json_nullable) = true];
-  optional string transcript_ref = 9 [json_name = "transcriptRef", (json_nullable) = true];
   optional AgentSessionOperationsDto operations = 10 [json_name = "operations", (json_required) = true];
-  optional bool last_exit_abnormal = 11 [json_name = "lastExitAbnormal", (json_required) = true];
-  optional string terminal_presence = 12 [json_name = "terminalPresence"];
   optional AgentSessionAvailability availability = 13 [json_name = "availability"];
 }
 
@@ -926,84 +499,27 @@ message AgentSessionTreeLocationDto {
   optional string node_execution_id = 2 [json_name = "nodeExecutionId", (json_required) = true];
 }
 
-message AgentSessionLifecycleDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    open = 0 [(json_enum_name) = "open"];
-    paused = 1 [(json_enum_name) = "paused"];
-    archived = 2 [(json_enum_name) = "archived"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
 message AgentSessionOperationsDto {
   optional bool can_archive = 1 [json_name = "canArchive", (json_required) = true];
-  optional bool can_restore = 2 [json_name = "canRestore", (json_required) = true];
-  reserved 4;
-  reserved "can_resume";
   optional bool can_delete = 3 [json_name = "canDelete", (json_required) = true];
 }
-
-message NullableAgentSessionItemDto {
-  option (json_wrapper) = "value";
-  optional AgentSessionItemDto value = 1 [json_name = "value", (json_nullable) = true];
-}
-
-
-
-
-
-
 
 message Nullablestring {
   option (json_wrapper) = "value";
   optional string value = 1 [json_name = "value", (json_nullable) = true];
 }
 
-message DiffTreeNodeInput {
-  optional string id = 1 [json_name = "id", (json_required) = true];
-  optional string name = 2 [json_name = "name", (json_required) = true];
-  optional string path = 3 [json_name = "path", (json_required) = true];
-  optional DiffTreeNodeType node_type = 4 [json_name = "node_type", (json_required) = true];
-  optional string status = 5 [json_name = "status", (json_nullable) = true];
-  optional uint32 additions = 6 [json_name = "additions", (json_nullable) = true];
-  optional uint32 deletions = 7 [json_name = "deletions", (json_nullable) = true];
-  optional ListDiffTreeNodeInput children = 8 [json_name = "children", (json_required) = true];
-}
-
-message ListDiffTreeNodeInput {
-  option (json_wrapper) = "items";
-  repeated DiffTreeNodeInput items = 1;
-}
-
-message GetFileNavigationRequest {
-  optional ListDiffTreeNodeInput tree = 1 [json_name = "tree", (json_required) = true];
-  optional string current_file = 2 [json_name = "currentFile", (json_required) = true];
-}
-
-message FileNavigationResultDto {
-  optional uint64 current_index = 1 [json_name = "current_index", (json_required) = true];
-  optional uint64 total = 2 [json_name = "total", (json_required) = true];
-  optional string prev_file = 3 [json_name = "prev_file", (json_nullable) = true];
-  optional string next_file = 4 [json_name = "next_file", (json_nullable) = true];
-}
-
-message GetLanguageFromPathRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
-}
-
-
 message NotionRepoConfigView {
   optional string api_token = 1 [json_name = "api_token", (json_required) = true];
   optional string database_id = 2 [json_name = "database_id", (json_required) = true];
-  optional PropertyMappingView property_mapping = 3 [json_name = "property_mapping", (json_default) = true];
+  optional PropertyMappingView property_mapping = 3 [json_name = "property_mapping"];
 }
 
 message PropertyMappingView {
-  optional string title = 1 [json_name = "title", (json_default) = true];
-  optional ListLabelPropertyView labels = 2 [json_name = "labels", (json_default) = true];
-  optional string branch_name = 3 [json_name = "branch_name", (json_default) = true];
-  optional string branch_prefix = 4 [json_name = "branch_prefix", (json_default) = true];
+  optional string title = 1 [json_name = "title"];
+  optional ListLabelPropertyView labels = 2 [json_name = "labels"];
+  optional string branch_name = 3 [json_name = "branch_name"];
+  optional string branch_prefix = 4 [json_name = "branch_prefix"];
 }
 
 message LabelPropertyView {
@@ -1027,13 +543,9 @@ message GetOrSpawnTerminalSurfaceRequest {
   optional string cwd = 3 [json_name = "cwd", (json_nullable) = true];
   optional TerminalSurfaceOwnerV1 owner = 4 [json_name = "owner", (json_required) = true];
   optional string label = 5 [json_name = "label", (json_nullable) = true];
-  reserved 6;
-  reserved "startup_command";
 }
 
 message GetOrSpawnTerminalV1 {
-  optional string session_key = 1 [json_name = "session_key", (json_required) = true];
-  reserved 2, 3, 4, 5;
 }
 
 message ProviderAvailabilitySnapshotResponse {
@@ -1049,7 +561,6 @@ message ProviderAvailabilityItemResponse {
   optional bool available = 6 [json_name = "available", (json_required) = true];
   optional string resolved_executable = 7 [json_name = "resolvedExecutable", (json_nullable) = true];
   optional string unavailable_reason = 8 [json_name = "unavailableReason", (json_nullable) = true];
-  optional uint32 configuration_revision = 9 [json_name = "configurationRevision", (json_required) = true];
 }
 
 message ListProviderAvailabilityItemResponse {
@@ -1063,24 +574,14 @@ message ReviewFileViewDto {
     ReviewTextDiffDto text_diff = 1 [json_name = "textDiff"];
     ReviewImageDto image = 2 [json_name = "image"];
     ReviewBinaryDto binary = 3 [json_name = "binary"];
-    ReviewFallbackDto fallback = 4 [json_name = "fallback"];
   }
 }
 
 message ReviewTextDiffDto {
-  reserved 11;
-  reserved "viewport";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional string file_id = 3 [json_name = "fileId", (json_required) = true];
   optional string path = 4 [json_name = "path", (json_required) = true];
   optional string original = 5 [json_name = "original", (json_required) = true];
   optional string modified = 6 [json_name = "modified", (json_required) = true];
   optional ReviewTextSource source = 7 [json_name = "source", (json_required) = true];
-  optional ListHunkDto hunks = 8 [json_name = "hunks", (json_required) = true];
-  optional ListChangeGroupDto change_groups = 9 [json_name = "changeGroups", (json_required) = true];
-  optional bool limited = 10 [json_name = "limited", (json_required) = true];
-  optional uint32 total_lines = 12 [json_name = "totalLines", (json_required) = true];
 }
 
 message ReviewTextSource {
@@ -1093,159 +594,23 @@ message ReviewTextSource {
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
 
-message HunkDto {
-  optional uint32 index = 1 [json_name = "index", (json_required) = true];
-  optional string hunk_id = 2 [json_name = "hunkId", (json_required) = true];
-  optional uint32 old_start = 3 [json_name = "oldStart", (json_required) = true];
-  optional uint32 old_lines = 4 [json_name = "oldLines", (json_required) = true];
-  optional uint32 new_start = 5 [json_name = "newStart", (json_required) = true];
-  optional uint32 new_lines = 6 [json_name = "newLines", (json_required) = true];
-  optional Liststring lines = 7 [json_name = "lines", (json_required) = true];
-}
-
-message ListHunkDto {
-  option (json_wrapper) = "items";
-  repeated HunkDto items = 1;
-}
-
-message ChangeGroupDto {
-  optional uint32 group_index = 1 [json_name = "groupIndex", (json_required) = true];
-  optional string group_id = 2 [json_name = "groupId", (json_required) = true];
-  optional uint32 hunk_index = 3 [json_name = "hunkIndex", (json_required) = true];
-  optional uint32 new_start = 4 [json_name = "newStart", (json_required) = true];
-  optional uint32 new_end = 5 [json_name = "newEnd", (json_required) = true];
-  optional uint32 line_offset_start = 6 [json_name = "lineOffsetStart", (json_required) = true];
-  optional uint32 line_offset_end = 7 [json_name = "lineOffsetEnd", (json_required) = true];
-  optional bool is_staged = 8 [json_name = "isStaged", (json_nullable) = true, (json_omit_none) = true];
-}
-
-message ListChangeGroupDto {
-  option (json_wrapper) = "items";
-  repeated ChangeGroupDto items = 1;
-}
-
 message ReviewImageDto {
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional string file_id = 3 [json_name = "fileId", (json_required) = true];
   optional string path = 4 [json_name = "path", (json_required) = true];
   optional string original_url = 5 [json_name = "originalUrl", (json_nullable) = true];
   optional string modified_url = 6 [json_name = "modifiedUrl", (json_nullable) = true];
-  optional string mime = 7 [json_name = "mime", (json_required) = true];
 }
 
 message ReviewBinaryDto {
-  reserved 5, 6;
-  reserved "original_url", "modified_url";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional string file_id = 3 [json_name = "fileId", (json_required) = true];
   optional string path = 4 [json_name = "path", (json_required) = true];
   optional uint64 original_size = 7 [json_name = "originalSize", (json_nullable) = true];
   optional uint64 modified_size = 8 [json_name = "modifiedSize", (json_nullable) = true];
 }
 
-message ReviewFallbackDto {
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional string file_id = 3 [json_name = "fileId", (json_required) = true];
-  optional string path = 4 [json_name = "path", (json_required) = true];
-  optional ReviewLimitReasonDto reason = 5 [json_name = "reason", (json_required) = true];
-  optional uint32 total_lines = 6 [json_name = "totalLines", (json_nullable) = true];
-  optional uint64 size_bytes = 7 [json_name = "sizeBytes", (json_nullable) = true];
-  optional uint32 hunk_count = 8 [json_name = "hunkCount", (json_nullable) = true];
-  optional bool limited = 9 [json_name = "limited", (json_required) = true, (json_literal) = "true"];
-}
-
-message ReviewLimitReasonDto {
-  option (json_wrapper) = "value";
-  enum Value {
-    file_size = 0 [(json_enum_name) = "fileSize"];
-    line_count = 1 [(json_enum_name) = "lineCount"];
-    hunk_count = 2 [(json_enum_name) = "hunkCount"];
-    tokenization = 3 [(json_enum_name) = "tokenization"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ReviewSnapshotDto {
-  reserved 4;
-  reserved "limited";
-  optional uint64 version = 1 [json_name = "version", (json_required) = true];
-  optional bool stale = 2 [json_name = "stale", (json_required) = true];
-  optional bool loading = 3 [json_name = "loading", (json_required) = true];
-  optional DiffBase base = 5 [json_name = "base", (json_required) = true];
-  optional ListReviewFileEntryDto files = 6 [json_name = "files", (json_required) = true];
-  optional ListFileStatusDto staged_files = 7 [json_name = "stagedFiles", (json_required) = true];
-  optional ListFileStatusDto changed_files = 8 [json_name = "changedFiles", (json_required) = true];
-  optional ListFileDiffStatDto diff_stats = 9 [json_name = "diffStats", (json_required) = true];
-  optional ListDiffTreeNodeDto tree = 10 [json_name = "tree", (json_required) = true];
-  optional ListDiffTreeNodeDto staged_tree = 11 [json_name = "stagedTree", (json_required) = true];
-  optional ListDiffTreeNodeDto changes_tree = 12 [json_name = "changesTree", (json_required) = true];
-  optional uint64 staged_file_count = 13 [json_name = "stagedFileCount", (json_required) = true];
-  optional uint64 changes_file_count = 14 [json_name = "changesFileCount", (json_required) = true];
-}
-
-message ReviewFileEntryDto {
-  optional string file_id = 1 [json_name = "fileId", (json_required) = true];
-  optional string path = 2 [json_name = "path", (json_required) = true];
-  optional string index_status = 3 [json_name = "indexStatus", (json_required) = true];
-  optional string worktree_status = 4 [json_name = "worktreeStatus", (json_required) = true];
-  optional uint32 additions = 5 [json_name = "additions", (json_required) = true];
-  optional uint32 deletions = 6 [json_name = "deletions", (json_required) = true];
-}
-
-message ListReviewFileEntryDto {
-  option (json_wrapper) = "items";
-  repeated ReviewFileEntryDto items = 1;
-}
-
-message FileStatusDto {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-  optional GitIndexStatus index_status = 2 [json_name = "index_status", (json_required) = true];
-  optional GitWorktreeStatus worktree_status = 3 [json_name = "worktree_status", (json_required) = true];
-}
-
-message ListFileStatusDto {
-  option (json_wrapper) = "items";
-  repeated FileStatusDto items = 1;
-}
-
-message FileDiffStatDto {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-  optional uint32 index_additions = 2 [json_name = "index_additions", (json_required) = true];
-  optional uint32 index_deletions = 3 [json_name = "index_deletions", (json_required) = true];
-  optional uint32 wt_additions = 4 [json_name = "wt_additions", (json_required) = true];
-  optional uint32 wt_deletions = 5 [json_name = "wt_deletions", (json_required) = true];
-}
-
-message ListFileDiffStatDto {
-  option (json_wrapper) = "items";
-  repeated FileDiffStatDto items = 1;
-}
-
-message DiffTreeNodeDto {
-  optional string id = 1 [json_name = "id", (json_required) = true];
-  optional string name = 2 [json_name = "name", (json_required) = true];
-  optional string path = 3 [json_name = "path", (json_required) = true];
-  optional DiffTreeNodeType node_type = 4 [json_name = "node_type", (json_required) = true];
-  optional string status = 5 [json_name = "status", (json_nullable) = true];
-  optional uint32 additions = 6 [json_name = "additions", (json_nullable) = true];
-  optional uint32 deletions = 7 [json_name = "deletions", (json_nullable) = true];
-  optional ListDiffTreeNodeDto children = 8 [json_name = "children", (json_required) = true];
-}
-
-message ListDiffTreeNodeDto {
-  option (json_wrapper) = "items";
-  repeated DiffTreeNodeDto items = 1;
-}
-
 message WorkflowDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional string description = 2 [json_name = "description", (json_required) = true];
-  optional bool builtin = 3 [json_name = "builtin", (json_default) = true];
+  optional bool builtin = 3 [json_name = "builtin"];
   optional WorkflowSourceFormat source_format = 4 [json_name = "sourceFormat", (json_required) = true];
-  optional WorkflowValueObject schemas = 5 [json_name = "schemas", (json_default) = true, (json_omit_empty) = true];
   optional ListNodeDefinitionDto nodes = 6 [json_name = "nodes", (json_required) = true];
 }
 
@@ -1266,14 +631,14 @@ message WorkflowValueObject {
 message NodeDefinitionDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional NodeKindDto kind = 2 [json_name = "kind", (json_required) = true];
-  optional string command = 3 [json_name = "command", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional SessionSpecDto session = 4 [json_name = "session", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional FanoutSpecDto fanout = 5 [json_name = "fanout", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional SequenceSpecDto sequence = 6 [json_name = "sequence", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string artifact = 7 [json_name = "artifact", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ListInputParamDto input = 8 [json_name = "input", (json_default) = true, (json_omit_empty) = true];
-  optional NodeCompletionDto completion = 9 [json_name = "completion", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional WorktreeMode worktree = 10 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string command = 3 [json_name = "command", (json_nullable) = true, (json_omit_none) = true];
+  optional SessionSpecDto session = 4 [json_name = "session", (json_nullable) = true, (json_omit_none) = true];
+  optional FanoutSpecDto fanout = 5 [json_name = "fanout", (json_nullable) = true, (json_omit_none) = true];
+  optional SequenceSpecDto sequence = 6 [json_name = "sequence", (json_nullable) = true, (json_omit_none) = true];
+  optional string artifact = 7 [json_name = "artifact", (json_nullable) = true, (json_omit_none) = true];
+  optional ListInputParamDto input = 8 [json_name = "input", (json_omit_empty) = true];
+  optional NodeCompletionDto completion = 9 [json_name = "completion", (json_nullable) = true, (json_omit_none) = true];
+  optional WorktreeMode worktree = 10 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message NodeKindDto {
@@ -1289,8 +654,8 @@ message NodeKindDto {
 
 message SessionSpecDto {
   optional SessionProviderDto provider = 1 [json_name = "provider", (json_required) = true];
-  optional string model = 2 [json_name = "model", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string permission = 3 [json_name = "permission", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string model = 2 [json_name = "model", (json_nullable) = true, (json_omit_none) = true];
+  optional string permission = 3 [json_name = "permission", (json_nullable) = true, (json_omit_none) = true];
   optional FacetRefsDto facets = 4 [json_name = "facets", (json_required) = true];
 }
 
@@ -1304,20 +669,18 @@ message SessionProviderDto {
 }
 
 message FacetRefsDto {
-  optional string policy = 1 [json_name = "policy", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional Liststring knowledge = 2 [json_name = "knowledge", (json_default) = true, (json_omit_empty) = true];
-  optional string instruction = 3 [json_name = "instruction", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string policy = 1 [json_name = "policy", (json_nullable) = true, (json_omit_none) = true];
+  optional Liststring knowledge = 2 [json_name = "knowledge", (json_omit_empty) = true];
+  optional string instruction = 3 [json_name = "instruction", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message FanoutSpecDto {
   optional ListChildEntryDto children = 1 [json_name = "children", (json_required) = true];
-  optional ItemsSourceDto items = 2 [json_name = "items", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional ItemsSourceDto items = 2 [json_name = "items", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message ChildEntryDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
-  optional ListChildInputDto inputs = 2 [json_name = "inputs", (json_default) = true, (json_omit_empty) = true];
-  optional ListRuleDto rules = 3 [json_name = "rules", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
 }
 
 message ChildInputDto {
@@ -1328,22 +691,6 @@ message ChildInputDto {
 message ListChildInputDto {
   option (json_wrapper) = "items";
   repeated ChildInputDto items = 1;
-}
-
-message RuleDto {
-  option (json_tag) = "type";
-  oneof variant {
-    RuleDtoWhen when = 1 [json_name = "when"];
-    RuleDtoSwitch switch = 2 [json_name = "switch"];
-    RuleDtoLoopGuard loop_guard = 3 [json_name = "loop_guard"];
-    RuleDtoNext next = 4 [json_name = "next"];
-  }
-}
-
-message RuleDtoWhen {
-  optional PredicateDto on = 1 [json_name = "on", (json_required) = true];
-  optional string then = 2 [json_name = "then", (json_required) = true];
-  optional string next = 3 [json_name = "next", (json_required) = true];
 }
 
 message PredicateDto {
@@ -1368,31 +715,6 @@ message PredicateDtoOr {
   optional ListPredicateDto or = 1 [json_name = "or", (json_required) = true];
 }
 
-message RuleDtoSwitch {
-  optional string on = 1 [json_name = "on", (json_required) = true];
-  optional Mapstring cases = 2 [json_name = "cases", (json_required) = true];
-  optional string next = 3 [json_name = "next", (json_default) = true];
-}
-
-message Mapstring {
-  option (json_wrapper) = "entries";
-  map<string, string> entries = 1;
-}
-
-message RuleDtoLoopGuard {
-  optional uint32 max_iterations = 1 [json_name = "max_iterations", (json_required) = true];
-  optional string on_exhausted = 2 [json_name = "on_exhausted", (json_required) = true];
-}
-
-message RuleDtoNext {
-  optional string next = 1 [json_name = "next", (json_required) = true];
-}
-
-message ListRuleDto {
-  option (json_wrapper) = "items";
-  repeated RuleDto items = 1;
-}
-
 message ListChildEntryDto {
   option (json_wrapper) = "items";
   repeated ChildEntryDto items = 1;
@@ -1412,13 +734,13 @@ message WorkflowValueList {
 }
 
 message SequenceSpecDto {
-  optional string entry = 1 [json_name = "entry", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string entry = 1 [json_name = "entry", (json_nullable) = true, (json_omit_none) = true];
   optional ListChildEntryDto children = 2 [json_name = "children", (json_required) = true];
 }
 
 message InputParamDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
-  optional string contract = 2 [json_name = "contract", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string contract = 2 [json_name = "contract", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message ListInputParamDto {
@@ -1427,8 +749,8 @@ message ListInputParamDto {
 }
 
 message NodeCompletionDto {
-  optional CompletionRequirementDto require = 1 [json_name = "require", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional SessionDelegateDto delegate = 2 [json_name = "delegate", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional CompletionRequirementDto require = 1 [json_name = "require", (json_nullable) = true, (json_omit_none) = true];
+  optional SessionDelegateDto delegate = 2 [json_name = "delegate", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message CompletionRequirementDto {
@@ -1452,18 +774,15 @@ message ListNodeDefinitionDto {
 }
 
 message WorkflowSection {
-  optional bool approval_auto_approve = 1 [json_name = "approval_auto_approve", (json_default) = true];
+  optional bool approval_auto_approve = 1 [json_name = "approval_auto_approve"];
 }
 
 message WorkflowExecutionView {
-  reserved 11, 12;
-  reserved "interruption_reason", "resume_from_node";
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string workflow_name = 2 [json_name = "workflowName", (json_required) = true];
   optional ExecutionStatusView status = 3 [json_name = "status", (json_required) = true];
   optional string current_node = 4 [json_name = "currentNode", (json_nullable) = true];
   optional string worktree_path = 5 [json_name = "worktreePath", (json_required) = true];
-  optional ExecutionOriginView created_from = 6 [json_name = "createdFrom", (json_required) = true];
   optional double started_at = 7 [json_name = "startedAt", (json_required) = true];
   optional double updated_at = 8 [json_name = "updatedAt", (json_required) = true];
   optional double completed_at = 9 [json_name = "completedAt", (json_nullable) = true];
@@ -1478,22 +797,9 @@ message WorkflowExecutionView {
 message ExecutionStatusView {
   option (json_wrapper) = "value";
   enum Value {
-    reserved 1, 4;
-    reserved "waiting_approval", "interrupted";
     running = 0 [(json_enum_name) = "running"];
     completed = 2 [(json_enum_name) = "completed"];
     aborted = 3 [(json_enum_name) = "aborted"];
-  }
-  optional Value value = 1 [json_name = "value", (json_required) = true];
-}
-
-message ExecutionOriginView {
-  option (json_wrapper) = "value";
-  enum Value {
-    desktop_ui = 0 [(json_enum_name) = "desktop_ui"];
-    cli = 1 [(json_enum_name) = "cli"];
-    agent = 2 [(json_enum_name) = "agent"];
-    api = 3 [(json_enum_name) = "api"];
   }
   optional Value value = 1 [json_name = "value", (json_required) = true];
 }
@@ -1506,11 +812,7 @@ message TokenUsageView {
 message NodeExecutionView {
   optional bool can_resume_session = 25 [json_name = "canResumeSession", (json_required) = true];
   optional NodeProcessPresence process_presence = 24 [json_name = "processPresence", (json_required) = true];
-  reserved 20;
-  reserved "failure";
-  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  reserved 2;
-  reserved "recovery_reason";
+  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
   optional string id = 3 [json_name = "id", (json_required) = true];
   optional string execution_id = 4 [json_name = "executionId", (json_required) = true];
   optional string node_name = 5 [json_name = "nodeName", (json_required) = true];
@@ -1519,18 +821,18 @@ message NodeExecutionView {
   optional NodeExecutionStatusView status = 8 [json_name = "status", (json_required) = true];
   optional bool submit_received = 9 [json_name = "submitReceived", (json_required) = true];
   optional bool stop_received = 10 [json_name = "stopReceived", (json_required) = true];
-  optional NodeCompletionSignalView waiting_for = 11 [json_name = "waitingFor", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional NodeCompletionSignalView waiting_for = 11 [json_name = "waitingFor", (json_nullable) = true, (json_omit_none) = true];
   optional bool can_approve = 12 [json_name = "canApprove", (json_required) = true];
   optional bool can_retry = 13 [json_name = "canRetry", (json_required) = true];
   optional bool has_artifact = 14 [json_name = "hasArtifact", (json_required) = true];
-  optional string session_id = 15 [json_name = "sessionId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string display_command = 16 [json_name = "displayCommand", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional string result_summary = 17 [json_name = "resultSummary", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ArtifactView artifact = 18 [json_name = "artifact", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional TokenUsageView token_usage = 19 [json_name = "tokenUsage", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ExecutionParentRefView parent = 21 [json_name = "parent", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string session_id = 15 [json_name = "sessionId", (json_nullable) = true, (json_omit_none) = true];
+  optional string display_command = 16 [json_name = "displayCommand", (json_nullable) = true, (json_omit_none) = true];
+  optional string result_summary = 17 [json_name = "resultSummary", (json_nullable) = true, (json_omit_none) = true];
+  optional ArtifactView artifact = 18 [json_name = "artifact", (json_nullable) = true, (json_omit_none) = true];
+  optional TokenUsageView token_usage = 19 [json_name = "tokenUsage", (json_nullable) = true, (json_omit_none) = true];
+  optional ExecutionParentRefView parent = 21 [json_name = "parent", (json_nullable) = true, (json_omit_none) = true];
   optional double started_at = 22 [json_name = "startedAt", (json_required) = true];
-  optional double completed_at = 23 [json_name = "completedAt", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional double completed_at = 23 [json_name = "completedAt", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message NodeWorktreeDto {
@@ -1562,9 +864,6 @@ message NodeProcessPresence {
 message NodeExecutionStatusView {
   option (json_wrapper) = "value";
   enum Value {
-    reserved 2, 5;
-    reserved "paused", "failed";
-    reserved "unresolved";
     unspecified = 0;
     running = 1 [(json_enum_name) = "running"];
     waiting_approval = 3 [(json_enum_name) = "waiting_approval"];
@@ -1585,15 +884,15 @@ message NodeCompletionSignalView {
 
 message ArtifactView {
   optional string node_name = 1 [json_name = "nodeName", (json_required) = true];
-  optional string contract = 2 [json_name = "contract", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string contract = 2 [json_name = "contract", (json_nullable) = true, (json_omit_none) = true];
   optional WorkflowValue value = 3 [json_name = "value", (json_required) = true];
   optional double produced_at = 4 [json_name = "producedAt", (json_required) = true];
 }
 
 message ExecutionParentRefView {
   optional string parent_id = 1 [json_name = "parentId", (json_required) = true];
-  optional uint64 item_index = 2 [json_name = "itemIndex", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional uint64 child_index = 3 [json_name = "childIndex", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional uint64 item_index = 2 [json_name = "itemIndex", (json_nullable) = true, (json_omit_none) = true];
+  optional uint64 child_index = 3 [json_name = "childIndex", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message ListNodeExecutionView {
@@ -1609,7 +908,7 @@ message ListArtifactView {
 message FanoutView {
   optional NodeExecutionView parent = 1 [json_name = "parent", (json_required) = true];
   optional ListNodeExecutionView children = 2 [json_name = "children", (json_required) = true];
-  optional ArtifactView artifact = 3 [json_name = "artifact", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional ArtifactView artifact = 3 [json_name = "artifact", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message ListFanoutView {
@@ -1620,27 +919,19 @@ message ListFanoutView {
 message ApprovalTargetView {
   optional string node_execution_id = 1 [json_name = "nodeExecutionId", (json_required) = true];
   optional string node_name = 2 [json_name = "nodeName", (json_required) = true];
-  optional string session_id = 3 [json_name = "sessionId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string session_id = 3 [json_name = "sessionId", (json_nullable) = true, (json_omit_none) = true];
 }
-
 
 message WorkspaceNodeDetailDto {
   optional string execution_id = 16 [json_name = "executionId"];
   optional bool can_abort = 17 [json_name = "canAbort"];
   optional NodeProcessPresence process_presence = 15 [json_name = "processPresence", (json_required) = true];
-  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceNodeStatus status = 4 [json_name = "status", (json_required) = true];
-  reserved 5;
-  reserved "status_classification";
-  optional bool submit_received = 6 [json_name = "submitReceived", (json_required) = true];
-  optional bool stop_received = 7 [json_name = "stopReceived", (json_required) = true];
-  optional WorkspaceWaitingFor waiting_for = 8 [json_name = "waitingFor", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
   optional bool has_artifact = 9 [json_name = "hasArtifact", (json_required) = true];
-  optional string error_reason = 10 [json_name = "errorReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  reserved 11;
-  reserved "recovery_reason";
+  optional string error_reason = 10 [json_name = "errorReason", (json_nullable) = true, (json_omit_none) = true];
   optional WorkspaceNodeCapabilitiesDto capabilities = 12 [json_name = "capabilities", (json_required) = true];
   optional double updated_at = 13 [json_name = "updatedAt", (json_required) = true];
   optional WorkspaceNodeContentDto content = 14 [json_name = "content", (json_required) = true];
@@ -1664,8 +955,6 @@ message WorkspaceNodeCapabilitiesDto {
   optional bool can_rename = 1 [json_name = "canRename", (json_required) = true];
   optional bool can_approve = 2 [json_name = "canApprove", (json_required) = true];
   optional bool can_retry = 3 [json_name = "canRetry", (json_required) = true];
-  reserved 4;
-  reserved "can_close";
 }
 
 message WorkspaceNodeContentDto {
@@ -1677,14 +966,14 @@ message WorkspaceNodeContentDto {
 }
 
 message WorkspaceSessionNodeContentDto {
-  optional string session_id = 1 [json_name = "sessionId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string session_id = 1 [json_name = "sessionId", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message WorkspaceCommandNodeContentDto {
   optional string shell = 3 [json_name = "shell"];
   optional string cwd = 4 [json_name = "cwd"];
-  optional string display_command = 1 [json_name = "displayCommand", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional WorkspaceCommandResultDto result = 2 [json_name = "result", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string display_command = 1 [json_name = "displayCommand", (json_nullable) = true, (json_omit_none) = true];
+  optional WorkspaceCommandResultDto result = 2 [json_name = "result", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message WorkspaceCommandResultDto {
@@ -1717,15 +1006,9 @@ message ExecutionOverviewEntryDto {
   WorkspaceStatusClassification status = 4;
 }
 
-message WorkspaceTreeSelectionSnapshot {
-  optional WorkspaceTreeSnapshot snapshot = 1 [json_name = "snapshot", (json_required) = true];
-  optional WorkspaceSelectionReconciliation reconciliation = 2 [json_name = "reconciliation", (json_required) = true];
-}
-
 message WorkspaceTreeSnapshot {
   optional ListWorkspaceTreeItem nodes = 1 [json_name = "nodes", (json_required) = true];
   optional ListAgentSessionItemDto archived_sessions = 2 [json_name = "archivedSessions", (json_required) = true];
-  optional string preferred_node_id = 3 [json_name = "preferredNodeId", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
 }
 
 message WorkspaceTreeItem {
@@ -1744,35 +1027,24 @@ message WorkspaceNode {
   optional string id = 1 [json_name = "id", (json_required) = true];
   optional string title = 2 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 3 [json_name = "status", (json_required) = true];
-  optional string error_reason = 4 [json_name = "errorReason", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional string error_reason = 4 [json_name = "errorReason", (json_nullable) = true, (json_omit_none) = true];
   optional WorkspaceContentKind content_kind = 5 [json_name = "contentKind", (json_required) = true];
   optional WorkspaceNodeCapabilitiesDto capabilities = 6 [json_name = "capabilities", (json_required) = true];
-  optional WorkspaceWorkflowCapabilities workflow_capabilities = 7 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional WorkspaceSessionCapabilities session_capabilities = 8 [json_name = "sessionCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
-  optional ListWorkspaceTreeItem children = 9 [json_name = "children", (json_default) = true, (json_omit_empty) = true];
+  optional WorkspaceWorkflowCapabilities workflow_capabilities = 7 [json_name = "workflowCapabilities", (json_nullable) = true, (json_omit_none) = true];
+  optional ListWorkspaceTreeItem children = 9 [json_name = "children", (json_omit_empty) = true];
   optional ListWorkspaceNode past_attempts = 10 [json_name = "pastAttempts", (json_required) = true];
-  optional bool past_attempts_collapsed = 11 [json_name = "pastAttemptsCollapsed", (json_required) = true];
   optional double updated_at = 12 [json_name = "updatedAt", (json_required) = true];
   optional string execution_id = 15 [json_name = "executionId"];
   optional string node_execution_id = 16 [json_name = "nodeExecutionId"];
   optional string node_name = 17 [json_name = "nodeName"];
-  optional uint32 attempt = 18 [json_name = "attempt"];
   optional bool has_artifact = 19 [json_name = "hasArtifact", (json_required) = true];
   optional string model = 20 [json_name = "model"];
 
 }
 
 message WorkspaceWorkflowCapabilities {
-  reserved 1, 2;
-  reserved "can_stop", "can_resume";
   optional bool can_abort = 3 [json_name = "canAbort", (json_required) = true];
   optional bool can_archive = 4 [json_name = "canArchive", (json_required) = true];
-}
-
-message WorkspaceSessionCapabilities {
-  optional string session_ref = 1 [json_name = "sessionRef", (json_required) = true];
-  optional bool can_archive = 2 [json_name = "canArchive", (json_required) = true];
-  optional bool can_delete = 3 [json_name = "canDelete", (json_required) = true];
 }
 
 message ListWorkspaceTreeItem {
@@ -1793,22 +1065,22 @@ message WorkspacePastAttempt {
 }
 
 message WorkspaceSequence {
-  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 4 [json_name = "status", (json_required) = true];
-  optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_nullable) = true, (json_omit_none) = true];
   optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
   optional bool can_approve = 8 [json_name = "canApprove", (json_required) = true];
 }
 
 message WorkspaceFanout {
-  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 4 [json_name = "status", (json_required) = true];
-  optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_default) = true, (json_nullable) = true, (json_omit_none) = true];
+  optional WorkspaceWorkflowCapabilities workflow_capabilities = 5 [json_name = "workflowCapabilities", (json_nullable) = true, (json_omit_none) = true];
   optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
   optional bool can_approve = 8 [json_name = "canApprove", (json_required) = true];
@@ -1817,10 +1089,6 @@ message WorkspaceFanout {
 message ListAgentSessionItemDto {
   option (json_wrapper) = "items";
   repeated AgentSessionItemDto items = 1;
-}
-
-message WorkspaceSelectionReconciliation {
-  optional bool selection_in_snapshot = 1 [json_name = "selectionInSnapshot", (json_required) = true];
 }
 
 message GitCreateBranchRequest {
@@ -1833,25 +1101,9 @@ message GitStageRequest {
   optional Liststring paths = 2 [json_name = "paths", (json_required) = true];
 }
 
-message ReviewGroupActionInput {
-  optional string worktree_path = 1 [json_name = "worktreePath", (json_required) = true];
-  optional string path = 2 [json_name = "path", (json_required) = true];
-  optional string section = 3 [json_name = "section", (json_required) = true];
-  optional string base = 4 [json_name = "base", (json_required) = true];
-  optional string group_id = 5 [json_name = "groupId", (json_required) = true];
-}
-
-message GitStageReviewGroupRequest {
-  optional ReviewGroupActionInput input = 1 [json_name = "input", (json_required) = true];
-}
-
 message GitUnstageRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
   optional Liststring paths = 2 [json_name = "paths", (json_required) = true];
-}
-
-message GitUnstageReviewGroupRequest {
-  optional ReviewGroupActionInput input = 1 [json_name = "input", (json_required) = true];
 }
 
 message KillTerminalSurfaceRequest {
@@ -1860,8 +1112,6 @@ message KillTerminalSurfaceRequest {
 
 message AgentSessionHistoryPageDto {
   optional ListAgentSessionHistoryCandidateDto items = 1 [json_name = "items", (json_required) = true];
-  reserved 2;
-  reserved "next_after";
   optional bool has_more = 3 [json_name = "hasMore", (json_required) = true];
 }
 
@@ -1869,7 +1119,6 @@ message AgentSessionHistoryCandidateDto {
   optional AgentSessionProviderDto provider = 1 [json_name = "provider", (json_required) = true];
   optional string provider_session_id = 2 [json_name = "providerSessionId", (json_required) = true];
   optional string label = 3 [json_name = "label", (json_required) = true];
-  optional int64 updated_at_ms = 4 [json_name = "updatedAtMs", (json_required) = true];
 }
 
 message ListAgentSessionHistoryCandidateDto {
@@ -1884,7 +1133,6 @@ message ListAgentSessionProviderDto {
 
 message BranchDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
-  optional bool is_remote = 2 [json_name = "is_remote", (json_required) = true];
 }
 
 message ListBranchDto {
@@ -1916,7 +1164,6 @@ message ListFacetSummaryDto {
 
 message ProviderHookHealthWarningResponse {
   optional ProviderHookHealthProviderResponse provider = 1 [json_name = "provider", (json_required) = true];
-  optional string launch_id = 2 [json_name = "launchId", (json_required) = true];
   optional string reason = 3 [json_name = "reason", (json_required) = true];
 }
 
@@ -1948,7 +1195,7 @@ message WorkflowSummaryDto {
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional string description = 2 [json_name = "description", (json_required) = true];
   optional bool builtin = 3 [json_name = "builtin", (json_required) = true];
-  optional bool is_running = 4 [json_name = "is_running", (json_default) = true];
+  optional bool is_running = 4 [json_name = "is_running"];
   optional WorkflowSourceFormat source_format = 5 [json_name = "sourceFormat", (json_required) = true];
 }
 
@@ -1963,18 +1210,11 @@ message WorkspaceWorkflowHistoryItem {
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceHistoryStatus status = 4 [json_name = "status", (json_required) = true];
   optional double updated_at = 5 [json_name = "updatedAt", (json_required) = true];
-  optional double archived_at = 6 [json_name = "archivedAt", (json_required) = true];
-  optional string archive_reason = 7 [json_name = "archiveReason", (json_required) = true];
 }
 
 message ListWorkspaceWorkflowHistoryItem {
   option (json_wrapper) = "items";
   repeated WorkspaceWorkflowHistoryItem items = 1;
-}
-
-message ListWorktreeEntryDto {
-  option (json_wrapper) = "items";
-  repeated WorktreeEntryDto items = 1;
 }
 
 message PaneLayout {
@@ -2007,8 +1247,6 @@ message PaneTab {
 enum PaneTabKind {
   PANE_TAB_KIND_UNSPECIFIED = 0;
   PANE_TAB_KIND_TERMINAL = 1 [(json_enum_name) = "terminal"];
-  reserved 2;
-  reserved "PANE_TAB_KIND_WORKFLOW";
   PANE_TAB_KIND_FILE = 3 [(json_enum_name) = "file"];
   PANE_TAB_KIND_SESSION = 4 [(json_enum_name) = "session"];
   PANE_TAB_KIND_COMMAND = 5 [(json_enum_name) = "command"];
@@ -2035,7 +1273,6 @@ message WorkspaceStateDto {
 
 message WorkspaceTabsStateDto {
   optional ListWorkspaceTabEntryDto editors = 1 [json_name = "editors", (json_required) = true];
-  optional string active_editor_path = 2 [json_name = "activeEditorPath", (json_nullable) = true];
 }
 
 message WorkspaceTabEntryDto {
@@ -2054,10 +1291,6 @@ message WorkspaceLayoutStateDto {
   optional bool left_nav_collapsed = 3 [json_name = "leftNavCollapsed", (json_required) = true];
   optional bool right_collapsed = 4 [json_name = "rightCollapsed", (json_required) = true];
   optional bool right_bottom_collapsed = 5 [json_name = "rightBottomCollapsed", (json_required) = true];
-  optional string right_bottom_active_tab = 6 [json_name = "rightBottomActiveTab", (json_nullable) = true, (json_omit_none) = true];
-  optional string selected_diff_file = 7 [json_name = "selectedDiffFile", (json_nullable) = true, (json_omit_none) = true];
-  optional bool review_collapsed = 8 [json_name = "reviewCollapsed"];
-  optional bool diff_only_mode = 9 [json_name = "diffOnlyMode"];
 }
 
 message NullableWorkspaceStateDto {
@@ -2077,10 +1310,6 @@ message OpenFacetInEditorRequest {
   optional string key = 2 [json_name = "key", (json_required) = true];
 }
 
-message OpenFolderInEditorRequest {
-  optional string folder_path = 1 [json_name = "folderPath", (json_required) = true];
-}
-
 message OpenInEditorRequest {
   optional string file_path = 1 [json_name = "filePath", (json_required) = true];
 }
@@ -2097,8 +1326,6 @@ message MapListstring {
 message NotionTaskPageView {
   optional ListNotionTaskView tasks = 1 [json_name = "tasks", (json_required) = true];
   optional bool has_more = 2 [json_name = "has_more", (json_required) = true];
-  reserved 3;
-  reserved "next_cursor";
 }
 
 message NotionTaskView {
@@ -2108,7 +1335,6 @@ message NotionTaskView {
   optional MapListstring labels = 4 [json_name = "labels", (json_required) = true];
   optional string branch_name = 5 [json_name = "branch_name", (json_required) = true];
   optional string created_at = 6 [json_name = "created_at", (json_required) = true];
-  optional string last_edited_at = 7 [json_name = "last_edited_at", (json_required) = true];
 }
 
 message ListNotionTaskView {
@@ -2137,35 +1363,6 @@ message RenameWorkspaceSessionNodeRequest {
   optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
   optional string name = 3 [json_name = "name", (json_required) = true];
 }
-
-message RenderFacetPreviewRequest {
-  optional string content = 1 [json_name = "content", (json_required) = true];
-  optional Mapstring sample_values = 2 [json_name = "sampleValues", (json_required) = true];
-}
-
-message FrontendErrorPayload {
-  optional string error_type = 1 [json_name = "errorType", (json_required) = true];
-  optional string message = 2 [json_name = "message", (json_required) = true];
-  optional string stack = 3 [json_name = "stack", (json_nullable) = true];
-}
-
-message ReportFrontendErrorRequest {
-  optional FrontendErrorPayload payload = 1 [json_name = "payload", (json_required) = true];
-}
-
-message ReportMountedXtermCountRequest {
-  optional uint64 count = 1 [json_name = "count", (json_required) = true];
-}
-
-message ReportUsageEventRequest {
-  optional string name = 1 [json_name = "name", (json_required) = true];
-}
-
-
-
-
-
-
 
 message ResetProviderExecutableRequest {
   optional string provider = 1 [json_name = "provider", (json_required) = true];
@@ -2216,13 +1413,6 @@ message ResumeWorkspaceSessionNodeRequest {
   optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
 }
 
-message SaveFacetRequest {
-  optional string kind = 1 [json_name = "kind", (json_required) = true];
-  optional string key = 2 [json_name = "key", (json_required) = true];
-  optional string content = 3 [json_name = "content", (json_required) = true];
-  optional bool is_new = 4 [json_name = "isNew", (json_nullable) = true];
-}
-
 message SaveNotionConfigRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
   optional string api_token = 2 [json_name = "apiToken", (json_required) = true];
@@ -2230,38 +1420,9 @@ message SaveNotionConfigRequest {
   optional PropertyMappingView property_mapping = 4 [json_name = "propertyMapping", (json_required) = true];
 }
 
-message SaveWorkflowSourceRequest {
-  optional string source = 1 [json_name = "source", (json_required) = true];
-  optional string original_name = 2 [json_name = "originalName", (json_nullable) = true];
-}
-
-message SaveWorkflowSourceResultDto {
-  option (json_untagged) = true;
-  oneof variant {
-    SaveWorkflowSuccess success = 1;
-    SaveWorkflowDiagnostics diagnostics = 2;
-  }
-}
-message SaveWorkflowSuccess {
-  optional bool ok = 1 [(json_required) = true, (json_literal) = "true"];
-  reserved 2;
-  optional string name = 3 [(json_required) = true];
-}
-message SaveWorkflowDiagnostics {
-  optional bool ok = 1 [(json_required) = true, (json_literal) = "false"];
-  optional string error = 2 [(json_required) = true];
-  optional ListDiagnosticItem diagnostics = 3 [(json_required) = true];
-}
-
 message SaveWorkspaceStateRequest {
   optional string worktree_name = 1 [json_name = "worktreeName", (json_required) = true];
   optional WorkspaceStateDto state = 2 [json_name = "state", (json_required) = true];
-}
-
-message SetBranchBaseRequest {
-  optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
-  optional string branch_name = 2 [json_name = "branchName", (json_required) = true];
-  optional string base = 3 [json_name = "base", (json_nullable) = true];
 }
 
 message SetReleashBaseRequest {
@@ -2278,7 +1439,6 @@ message StartWorkflowRequest {
   optional string workflow_name = 1 [json_name = "workflowName", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
   optional string request = 3 [json_name = "request", (json_nullable) = true];
-  optional string created_from = 4 [json_name = "createdFrom", (json_nullable) = true];
 }
 
 message UpdateAppSettingsRequest {
@@ -2286,7 +1446,6 @@ message UpdateAppSettingsRequest {
 }
 
 message WindowSettings {
-  reserved 1;
   optional bool start_minimized = 3 [json_name = "start_minimized", (json_required) = true];
 }
 
@@ -2344,7 +1503,7 @@ message NotionConfigStatusView {
 message NotionPropertyInfoView {
   optional string name = 1 [json_name = "name", (json_required) = true];
   optional string property_type = 2 [json_name = "property_type", (json_required) = true];
-  optional Liststring options = 3 [json_name = "options", (json_default) = true];
+  optional Liststring options = 3 [json_name = "options"];
 }
 
 message ListNotionPropertyInfoView {
@@ -2366,57 +1525,7 @@ message WriteTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
   optional string attachment_id = 2 [json_name = "attachmentId", (json_required) = true];
   optional uint64 sequence = 3 [json_name = "sequence", (json_required) = true];
-  reserved 4;
-  reserved "client_started_at_unix_ms";
   optional string data = 5 [json_name = "data", (json_required) = true];
-}
-
-message DiffFileEntryInput {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-  optional string status = 2 [json_name = "status", (json_required) = true];
-  optional uint32 additions = 3 [json_name = "additions", (json_required) = true];
-  optional uint32 deletions = 4 [json_name = "deletions", (json_required) = true];
-}
-
-message ListDiffFileEntryInput {
-  option (json_wrapper) = "items";
-  repeated DiffFileEntryInput items = 1;
-}
-
-message BuildDiffFileTreeRequest {
-  optional ListDiffFileEntryInput entries = 1 [json_name = "entries", (json_required) = true];
-}
-
-message HunkInput {
-  optional uint32 index = 1 [json_name = "index", (json_required) = true];
-  optional string hunk_id = 2 [json_name = "hunkId", (json_default) = true];
-  optional uint32 old_start = 3 [json_name = "oldStart", (json_required) = true];
-  optional uint32 old_lines = 4 [json_name = "oldLines", (json_required) = true];
-  optional uint32 new_start = 5 [json_name = "newStart", (json_required) = true];
-  optional uint32 new_lines = 6 [json_name = "newLines", (json_required) = true];
-  optional Liststring lines = 7 [json_name = "lines", (json_required) = true];
-}
-
-message ListHunkInput {
-  option (json_wrapper) = "items";
-  repeated HunkInput items = 1;
-}
-
-message ComputeHiddenRangesRequest {
-  optional ListHunkInput hunks = 1 [json_name = "hunks", (json_required) = true];
-  optional uint32 total_lines = 2 [json_name = "totalLines", (json_required) = true];
-  optional uint32 context_lines = 3 [json_name = "contextLines", (json_required) = true];
-}
-
-message ApproveWorkflowNodeArgs {
-  optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
-  optional string node_name = 2 [json_name = "nodeName", (json_required) = true];
-  optional string node_execution_id = 3 [json_name = "nodeExecutionId", (json_nullable) = true, (json_default) = true];
-  optional string comment = 4 [json_name = "comment", (json_nullable) = true, (json_default) = true];
-}
-
-message ApproveWorkflowNodeRequest {
-  optional ApproveWorkflowNodeArgs args = 1 [json_name = "args", (json_required) = true];
 }
 
 message WorkflowSubmitArtifactInput {
@@ -2425,8 +1534,6 @@ message WorkflowSubmitArtifactInput {
 }
 
 message WorkflowSubmitOutputRequest {
-  reserved 1;
-  reserved "worktree_path";
   optional string node_execution_id = 2 [json_name = "nodeExecutionId", (json_required) = true];
   optional WorkflowSubmitArtifactInput artifact = 3 [json_name = "artifact", (json_nullable) = true];
 }
@@ -2448,8 +1555,6 @@ message WorkflowOutputViewSubmitted {
 }
 
 message CommandError {
-  reserved 3;
-  reserved "application";
   option (json_untagged) = true;
   oneof variant {
     ResultString message = 1;
@@ -2461,8 +1566,6 @@ message CodedError {
   optional string message = 2;
 }
 message TerminalEvent {
-  reserved 5;
-  reserved "input_unavailable";
   oneof item {
     TerminalSnapshot snapshot = 1;
     TerminalOutput output = 2;
@@ -2472,7 +1575,6 @@ message TerminalEvent {
   }
 }
 message TerminalSnapshot {
-  string session_key = 1;
   string replay = 2;
   uint64 sequence = 3;
   uint32 cols = 4;
@@ -2483,25 +1585,21 @@ message TerminalSnapshot {
   optional TerminalStatus status = 9;
 }
 message TerminalStatus {
-  string session_key = 1;
   optional string cwd = 2;
   bool has_foreground_process = 3;
   uint64 sequence = 4;
 }
 
 message TerminalOutput {
-  string session_key = 1;
   string data = 2;
   uint64 sequence = 3;
 }
 message TerminalResize {
-  string session_key = 1;
   uint32 cols = 2;
   uint32 rows = 3;
   uint64 sequence = 4;
 }
 message TerminalExit {
-  string session_key = 1;
   optional int32 exit_code = 2;
   uint64 sequence = 3;
   optional TerminalStatus status = 4;
@@ -2510,9 +1608,6 @@ message TerminalExit {
 message WorkspaceNodeStatus {
   option (json_wrapper) = "value";
   enum Value {
-    reserved 2, 3;
-    reserved "paused", "failed";
-    reserved "unresolved";
     unspecified = 0;
     running = 1 [(json_enum_name) = "running"];
     waiting = 4 [(json_enum_name) = "waiting"];
@@ -2527,11 +1622,7 @@ message WorkspaceStatusClassification {
   enum Value {
     active = 0 [(json_enum_name) = "active"];
     attention = 1 [(json_enum_name) = "attention"];
-    reserved 2;
-    reserved "failure";
     idle = 3 [(json_enum_name) = "idle"];
-    reserved 4;
-    reserved "unbound";
   }
   optional Value value = 1 [(json_required) = true];
 }
@@ -2539,11 +1630,6 @@ message WorkspaceStatusClassification {
 message WorkspaceHistoryStatus {
   option (json_wrapper) = "value";
   enum Value {
-    reserved 2, 3;
-    reserved "paused", "failed";
-    reserved 7, 8;
-    reserved "waiting_approval", "interrupted";
-    reserved "unresolved";
     unspecified = 0;
     running = 1 [(json_enum_name) = "running"];
     waiting = 4 [(json_enum_name) = "waiting"];
@@ -2562,15 +1648,6 @@ message WorkspaceContentKind {
   optional Value value = 1 [(json_required) = true];
 }
 
-message WorkspaceWaitingFor {
-  option (json_wrapper) = "value";
-  enum Value {
-    submit = 0 [(json_enum_name) = "submit"];
-    stop = 1 [(json_enum_name) = "stop"];
-  }
-  optional Value value = 1 [(json_required) = true];
-}
-
 message WorktreeMode {
   option (json_wrapper) = "value";
   enum Value {
@@ -2580,53 +1657,11 @@ message WorktreeMode {
   optional Value value = 1 [(json_required) = true];
 }
 
-message DiffBase {
-  option (json_wrapper) = "value";
-  enum Value {
-    branch_base = 0 [(json_enum_name) = "branch-base"];
-    head = 1 [(json_enum_name) = "head"];
-  }
-  optional Value value = 1 [(json_required) = true];
-}
-
-message GitIndexStatus {
-  option (json_wrapper) = "value";
-  enum Value {
-    new = 0 [(json_enum_name) = "new"];
-    modified = 1 [(json_enum_name) = "modified"];
-    deleted = 2 [(json_enum_name) = "deleted"];
-    none = 3 [(json_enum_name) = "none"];
-    renamed = 4 [(json_enum_name) = "renamed"];
-  }
-  optional Value value = 1 [(json_required) = true];
-}
-
-message GitWorktreeStatus {
-  option (json_wrapper) = "value";
-  enum Value {
-    new = 0 [(json_enum_name) = "new"];
-    modified = 1 [(json_enum_name) = "modified"];
-    deleted = 2 [(json_enum_name) = "deleted"];
-    ignored = 3 [(json_enum_name) = "ignored"];
-    none = 4 [(json_enum_name) = "none"];
-  }
-  optional Value value = 1 [(json_required) = true];
-}
-
 message WorkspaceCenterTab {
   option (json_wrapper) = "value";
   enum Value {
     agent = 0 [(json_enum_name) = "agent"];
     editor = 1 [(json_enum_name) = "editor"];
-  }
-  optional Value value = 1 [(json_required) = true];
-}
-
-message DiffTreeNodeType {
-  option (json_wrapper) = "value";
-  enum Value {
-    file = 0 [(json_enum_name) = "file"];
-    folder = 1 [(json_enum_name) = "folder"];
   }
   optional Value value = 1 [(json_required) = true];
 }
@@ -2654,7 +1689,6 @@ message WorkflowNumber {
 }
 
 message DesktopSettings {
-  reserved 1;
   optional bool start_minimized = 2 [json_name = "startMinimized", (json_required) = true];
   optional bool crash_reporting = 3 [json_name = "crashReporting", (json_required) = true];
   optional bool performance_telemetry = 4 [json_name = "performanceTelemetry", (json_required) = true];
@@ -2674,9 +1708,6 @@ service ClientService {
     max_backoff_ms: 120000
     reset_after_ms: 120000
   };
-  option (reconnect_status_code) = RECONNECT_STATUS_CODE_UNAVAILABLE;
-  option (reconnect_status_code) = RECONNECT_STATUS_CODE_ABORTED;
-  option (reconnect_status_code) = RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED;
   option (state_stream_silence_ms) = 20000;
   option (default_timeout_ms) = 120000;
   option (shutdown_timeout_ms) = 15000;
@@ -2684,47 +1715,27 @@ service ClientService {
   rpc OpenStateStream(OpenStateStreamRequest) returns (stream StateSubscriptionEvent) { option (scope) = SCOPE_OPERATOR; }
   rpc StartStateSubscription(StartStateSubscriptionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc StopStateSubscription(StopStateSubscriptionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc FindRepositoryRoot(FindRepositoryRootRequest) returns (Nullablestring) { option (scope) = SCOPE_OPERATOR; }
   rpc RefreshWorkspaces(RefreshWorkspacesRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc AbortWorkflow(AbortWorkflowRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ReportTerminalProcessed(ReportTerminalProcessedRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc AddRepoPath(AddRepoPathRequest) returns (ResultBool) { option (scope) = SCOPE_OPERATOR; }
   rpc AppendReviewComment(AppendReviewCommentRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
   rpc ApproveWorkspaceNode(ApproveWorkspaceNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc ArchiveAgentSession(ArchiveAgentSessionRequest) returns (AgentSessionArchiveResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc SendThreadsToSession(SendThreadsToSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ArchiveWorkspaceWorkflowExecution(ArchiveWorkspaceWorkflowExecutionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc BuildReviewThreadHandoff(BuildReviewThreadHandoffRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
-  rpc ComputeHiddenRangesFromContent(ComputeHiddenRangesFromContentRequest) returns (ListHiddenRangeDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc ComputeMarkdownDiffRanges(ComputeMarkdownDiffRangesRequest) returns (ListDiffRangeDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc ComputeMarkdownInlineChunks(ComputeMarkdownInlineChunksRequest) returns (ListInlineChunkDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc ComputeMarkdownSplitRows(ComputeMarkdownSplitRowsRequest) returns (ListSplitRowDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc ComputeVisibleMarkdownBlocks(ComputeVisibleMarkdownBlocksRequest) returns (ListVisibleBlockDto) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateAgentSession(CreateAgentSessionRequest) returns (SessionSelection) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateReviewThread(CreateReviewThreadRequest) returns (ReviewThreadDto) { option (scope) = SCOPE_OPERATOR; }
   rpc SaveRepositoryGroupState(SaveRepositoryGroupStateRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateWorktrees(CreateWorktreesRequest) returns (Liststring) { option (scope) = SCOPE_OPERATOR; }
-  rpc CreateWorktree(CreateWorktreeRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
   rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc DeleteFacet(DeleteFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc DeleteReviewThread(DeleteReviewThreadRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc DeleteWorkflow(DeleteWorkflowRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc DuplicateFacet(DuplicateFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc DuplicateWorkflow(DuplicateWorkflowRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc FetchIssues(FetchIssuesRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc GetFileNavigation(GetFileNavigationRequest) returns (FileNavigationResultDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc GetLanguageFromPath(GetLanguageFromPathRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
   rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1) { option (scope) = SCOPE_OPERATOR; }
   rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc GitStage(GitStageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc GitStageReviewGroup(GitStageReviewGroupRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc GitUnstage(GitUnstageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc GitUnstageReviewGroup(GitUnstageReviewGroupRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenAgentSession(OpenAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc OpenFolderInEditor(OpenFolderInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenInEditor(OpenInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenWorkflowDirectoryInEditor(OpenWorkflowDirectoryInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenWorkflowInEditor(OpenWorkflowInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
@@ -2732,10 +1743,6 @@ service ClientService {
   rpc RemoveRepoPath(RemoveRepoPathRequest) returns (ResultBool) { option (scope) = SCOPE_OPERATOR; }
   rpc RemoveWorktree(RemoveWorktreeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc RenameWorkspaceSessionNode(RenameWorkspaceSessionNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc RenderFacetPreview(RenderFacetPreviewRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
-  rpc ReportFrontendError(ReportFrontendErrorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc ReportMountedXtermCount(ReportMountedXtermCountRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc ReportUsageEvent(ReportUsageEventRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc StopDaemon(StopDaemonRequest) returns (StopDaemonResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc ResetProviderExecutable(ResetProviderExecutableRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ResizeTerminalSurface(ResizeTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
@@ -2745,11 +1752,8 @@ service ClientService {
   rpc ResumeAgentSessionHistoryCandidate(ResumeAgentSessionHistoryCandidateRequest) returns (SessionSelection) { option (scope) = SCOPE_OPERATOR; }
   rpc RetryWorkspaceNode(RetryWorkspaceNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc ResumeWorkspaceSessionNode(ResumeWorkspaceSessionNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc SaveFacet(SaveFacetRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc SaveNotionConfig(SaveNotionConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc SaveWorkflowSource(SaveWorkflowSourceRequest) returns (SaveWorkflowSourceResultDto) { option (scope) = SCOPE_OPERATOR; }
   rpc SaveWorkspaceState(SaveWorkspaceStateRequest) returns (WorkspaceStateDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc SetBranchBase(SetBranchBaseRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc SetReleashBase(SetReleashBaseRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc StartWorkflow(StartWorkflowRequest) returns (ResultString) { option (scope) = SCOPE_OPERATOR; }
   rpc UpdateAppSettings(UpdateAppSettingsRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
@@ -2763,9 +1767,6 @@ service ClientService {
   rpc ValidateNotionConfig(ValidateNotionConfigRequest) returns (NotionValidationResultView) { option (scope) = SCOPE_OPERATOR; }
   rpc WritePathsToTerminalSurface(WritePathsToTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc WriteTerminalSurface(WriteTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc BuildDiffFileTree(BuildDiffFileTreeRequest) returns (ListDiffTreeNodeDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc ComputeHiddenRanges(ComputeHiddenRangesRequest) returns (ListHiddenRangeDto) { option (scope) = SCOPE_OPERATOR; }
-  rpc ApproveWorkflowNode(ApproveWorkflowNodeRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc WorkflowSubmitOutput(WorkflowSubmitOutputRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc DiagnoseWorkflowDirectory(DiagnoseWorkflowDirectoryRequest) returns (DiagnoseWorkflowDirectoryResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc CreateSessionReviewThread(CreateSessionReviewThreadRequest) returns (CreateSessionReviewThreadResponse) { option (scope) = SCOPE_OPERATOR; }
@@ -2779,13 +1780,7 @@ service ClientService {
 }
 
 message ServerInfo {
-  reserved 1;
-  reserved "instance_id";
-  reserved 2;
-  reserved "launch_id";
   string release = 3;
-  reserved 4;
-  reserved "desktop_settings";
   string daemon_id = 5;
   uint32 pid = 6;
   uint64 process_started_at = 7;
@@ -2797,31 +1792,23 @@ message ServerInfo {
 }
 
 message RefreshWorkspacesRequest {
-  reserved 1, 2;
-  reserved "worktree_path", "repo_path";
 }
 message WorkspaceListStatus {
   optional string state = 3 [json_name = "state", (json_required) = true];
-  optional bool loaded = 1 [json_name = "loaded", (json_required) = true];
   optional string error = 2 [json_name = "error", (json_nullable) = true];
 }
 message WorkspaceBranch {
   optional bool removal_requires_force = 13;
   optional string pr_state = 14;
   optional uint64 pr_state_number = 19;
-  reserved 1;
-  reserved "branch";
   optional string name = 5 [json_name = "name", (json_required) = true];
   optional bool is_main_worktree = 6 [json_name = "is_main_worktree", (json_required) = true];
   optional bool is_deleting = 7 [json_name = "is_deleting", (json_required) = true];
   optional string worktree_path = 8 [json_name = "worktree_path", (json_required) = true];
   optional uint64 dirty_count = 9 [json_name = "dirty_count", (json_nullable) = true];
   optional bool is_merged = 10 [json_name = "is_merged", (json_required) = true];
-  optional bool has_pr = 2 [json_name = "has_pr", (json_nullable) = true];
   optional string dirty_count_error = 11 [json_name = "dirty_count_error", (json_nullable) = true];
   optional string pull_request_error = 12 [json_name = "pull_request_error", (json_nullable) = true];
-  optional uint64 pr_number = 3 [json_name = "pr_number", (json_nullable) = true];
-  optional string pr_url = 4 [json_name = "pr_url", (json_nullable) = true];
 }
 message WorktreeExecutionSummary {
   string id = 1;
@@ -2846,8 +1833,6 @@ message WorkspaceRepositoryList {
   optional ListWorkspaceWorktreeList worktrees = 4 [json_name = "worktrees", (json_required) = true];
 }
 message WorkspaceListSnapshot {
-  reserved 1;
-  reserved "generation";
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
   optional ListWorkspaceRepositoryList repositories = 3 [json_name = "repositories", (json_required) = true];
 }
@@ -2877,77 +1862,44 @@ message IssuesSnapshot {
 message NotionReadFailure {
   int32 code = 1;
   string message = 2;
-  optional bool config_missing = 3;
 }
 message NotionTasksSnapshot {
   optional NotionTaskPageView page = 1;
   optional NotionReadFailure read_error = 2;
 }
-message NotionLabelOptionsSnapshot {
-  optional ListNotionLabelOptionView options = 1;
-  optional NotionReadFailure read_error = 2;
-}
 
 message OpenStateStreamRequest { string client_id = 1; }
-message StateVersion { string epoch = 1; uint64 sequence = 2; }
 message StartStateSubscriptionRequest {
   string client_id = 1;
   string target = 2;
-  StateVersion version = 3;
   repeated string args = 4;
-  reserved 5;
-  reserved "terminal_input_id";
   string subscription_id = 6;
 }
 message StopStateSubscriptionRequest {
-  reserved 1, 2, 3;
-  reserved "client_id", "target", "args";
   string subscription_id = 4;
 }
 message StateReadFailure { int32 code = 1; string message = 2; }
 message StatePayload {
-  reserved 56;
-  reserved "performance_switches";
-  reserved 58;
-  reserved "startup_outcome";
-  reserved 6, 15;
-  reserved "session_node", "repository_root";
-  reserved 59;
-  reserved "read_failure";
-  reserved 18;
-  reserved "failures";
   oneof value {
 
     TerminalEvent terminal = 19;
-    Liststring repository_paths = 1;
     RepositoryGroupState repository_group_state = 68;
     WorkspaceListSnapshot workspaces = 2;
-    WorkspaceTreeSelectionSnapshot selection = 3;
     NullableWorkspaceNodeDetailDto node_detail = 4;
-    NullableAgentSessionItemDto agent_session = 5;
     SessionTabSnapshot session_tab = 75;
 
     AgentSessionHistoryPageDto session_history = 7;
     ListAgentSessionProviderDto providers = 8;
     ListBranchDto branches = 9;
-    Nullablestring branch_base = 10;
     ListBranchStatus branch_status = 11;
-    ResultString current_branch = 12;
     IssuesSnapshot issues = 13;
     NotionTasksSnapshot notion_tasks = 60;
-    NotionLabelOptionsSnapshot notion_label_options = 61;
-    ListWorktreeEntryDto worktrees = 14;
 
-    NullableStartupWorktree startup_repository = 16;
     NullableWorkspaceStateDto workspace_state = 17;
-    ReviewSnapshotDto review_snapshot = 30;
-    ReviewFileViewDto review_file_view = 31;
     ListReviewThreadDto review_threads = 32;
     ListWorkflowSummaryDto workflows = 40;
     NullableWorkflowDto workflow = 41;
-    Nullablestring workflow_source = 42;
     ListFacetSummaryDto facets = 43;
-    ResultString facet = 44;
     DiagnosticReport diagnostics = 45;
     DesktopSettings desktop_settings = 50;
     NullableNotionRepoConfigView notion_config = 51;
@@ -2973,7 +1925,6 @@ message StatePayload {
 }
 message FileThreadsSnapshot {
   ListReviewThreadDto threads = 1;
-  uint32 unresolved_count = 2;
 }
 message DirectoryEntry {
   string path = 1;
@@ -2991,15 +1942,11 @@ message DirectorySnapshot {
 message FileTabView {
   ReviewFileViewDto view = 1;
   string initial_mode = 2;
-  reserved 3, 4, 5;
   string patch = 6;
 }
-message StateChange { bool delta = 1; StatePayload payload = 2; }
+message StateChange { StatePayload payload = 2; }
 message StateSubscriptionEvent {
-  reserved 1, 7;
-  reserved "target", "args";
   string subscription_id = 9;
-  StateVersion version = 2;
   oneof event {
     Unit ready = 3;
     StatePayload snapshot = 4;
@@ -3010,27 +1957,13 @@ message StateSubscriptionEvent {
 }
 
 message ReportTerminalProcessedRequest {
-  reserved 1, 2;
-  reserved "client_id", "args";
   string subscription_id = 4;
   uint32 units = 3;
 }
 
-message FindRepositoryRootRequest {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-}
 message SessionSelection {
   optional string agent_session_id = 1 [json_name = "agentSessionId", (json_required) = true];
   optional string node_id = 2 [json_name = "nodeId", (json_required) = true];
-}
-message StartupWorktree {
-  optional string path = 1 [json_name = "path", (json_required) = true];
-  optional string branch = 2 [json_name = "branch", (json_required) = true];
-  optional string repository_name = 3 [json_name = "repositoryName", (json_required) = true];
-}
-message NullableStartupWorktree {
-  option (json_wrapper) = "value";
-  optional StartupWorktree value = 1 [json_name = "value", (json_nullable) = true];
 }
 
 enum ServingStatus {
@@ -3041,7 +1974,6 @@ enum ServingStatus {
   SERVING_STATUS_STOPPED = 4 [(json_enum_name) = "SERVING_STATUS_STOPPED"];
   SERVING_STATUS_FAILED = 5 [(json_enum_name) = "SERVING_STATUS_FAILED"];
 }
-
 
 message NullableWorkflowExecutionView { optional WorkflowExecutionView value = 1; }
 message NullableWorkflowOutputView { optional WorkflowOutputView value = 1; }
@@ -3054,7 +1986,6 @@ message ReviewHistoryEntryDto {
     ReviewHistoryThreadCreatedDto thread_created = 1;
     ReviewHistoryCommentAppendedDto comment_appended = 2;
     ReviewHistoryThreadResolvedDto thread_resolved = 3;
-    ReviewHistoryThreadDeletedDto thread_deleted = 4;
   }
 }
 message ReviewHistoryThreadCreatedDto {
@@ -3069,9 +2000,6 @@ message ReviewHistoryCommentAppendedDto {
 message ReviewHistoryThreadResolvedDto {
   string id = 1; string thread_id = 2; ReviewActorWireDto actor = 3;
   string outcome = 4; string summary = 5; double at = 6;
-}
-message ReviewHistoryThreadDeletedDto {
-  string id = 1; string thread_id = 2; ReviewActorWireDto actor = 3; double at = 4;
 }
 message DiagnoseWorkflowDirectoryRequest { optional string dir = 1 [(json_required) = true]; }
 message DiagnoseWorkflowDirectoryResponse { DiagnosticReport report = 1; }
@@ -3101,10 +2029,7 @@ message ReceiveProviderSignalRequest {
   string agent_session_id = 5; bytes payload = 6;
 }
 message ReceiveProviderSignalResponse {
-  oneof result {
-    Unit applied = 1; Unit duplicate = 2;
-    ReceiveProviderSignalRejected rejected = 3; Unit ignored = 4;
-  }
+  optional ReceiveProviderSignalRejected rejected = 3;
 }
 message ReceiveProviderSignalRejected { string reason = 1; }
 

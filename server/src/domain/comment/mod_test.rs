@@ -203,13 +203,6 @@ pub(crate) mod tests {
                 content: "update".to_string(),
                 at: 3.0,
             },
-            created("deleted", viewer.clone(), None, 4.0),
-            ReviewEvent::ThreadDeleted {
-                event_id: "event-delete".to_string(),
-                thread_id: "deleted".to_string(),
-                actor: viewer,
-                at: 5.0,
-            },
         ];
 
         let threads = project_threads("wt", &events);
@@ -221,33 +214,6 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             vec!["old", "new"]
         );
-    }
-
-    #[test]
-    fn test_未解決件数_解決済みを除き解決後もthreadを保持する() {
-        // Given
-        let mut events = vec![
-            created("one", Author::human(), Some("file"), 1.0),
-            created("two", Author::human(), Some("file"), 2.0),
-            created("done", Author::human(), Some("file"), 3.0),
-        ];
-        let resolve = |id: &str| ReviewEvent::ThreadResolved {
-            event_id: format!("resolve-{id}"),
-            thread_id: id.into(),
-            actor: Author::human(),
-            outcome: "resolved".into(),
-            summary: "done".into(),
-            at: 4.0,
-        };
-        events.push(resolve("done"));
-        let before = project_threads("wt", &events);
-        // When
-        events.push(resolve("one"));
-        let after = project_threads("wt", &events);
-        // Then
-        assert_eq!(unresolved_thread_count(&before), 2);
-        assert_eq!(unresolved_thread_count(&after), 1);
-        assert_eq!(before.len(), after.len());
     }
 
     #[test]
@@ -486,12 +452,6 @@ pub(crate) mod tests {
                 summary: "完了".into(),
                 at: 3.0,
             },
-            ReviewEvent::ThreadDeleted {
-                event_id: "delete".into(),
-                thread_id: "one".into(),
-                actor,
-                at: 4.0,
-            },
         ];
         // When
         let history = events
@@ -526,12 +486,6 @@ pub(crate) mod tests {
                     outcome: "accepted".into(),
                     summary: "完了".into(),
                     at: 3.0,
-                },
-                ReviewHistoryEntry::ThreadDeleted {
-                    id: "delete".into(),
-                    thread_id: "one".into(),
-                    actor: public_actor,
-                    at: 4.0,
                 },
             ]
         );

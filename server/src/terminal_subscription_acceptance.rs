@@ -118,7 +118,7 @@ impl TerminalSubscriptionHarness {
             self.presenter.clone(),
             self.terminal_subscriptions.clone(),
         )
-        .start_subscription(&client, &target, &input_id, None)
+        .start_subscription(&client, &target, &input_id)
         .await
         .map_err(|e| e.to_string())?;
         Ok(TerminalSubscription {

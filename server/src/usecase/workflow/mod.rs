@@ -4,7 +4,6 @@
 //! Controllers, CLI adapters, and watchers should converge
 //! here as the legacy `workflow` module is removed.
 
-use crate::domain::workflow::WorkflowDefinitionSourceService;
 pub(crate) mod command;
 pub(crate) mod control_plane;
 mod definition;
@@ -37,13 +36,11 @@ pub use summary_query::{
 
 use crate::domain::external_editor::{EditorLauncherGateway, EditorSettingsGateway};
 use crate::domain::workflow::{
-    ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, Facet, FacetKind,
+    ExecutionStatusFilter, ExecutionTree, ExecutionTreeArchiveRepository, FacetKind,
     FacetRepository, ManagedWorktreeGateway, WorkflowDefinition, WorkflowDefinitionRepository,
     WorkflowDirectoryService, WorkflowError,
 };
-use crate::usecase::workflow::ports::{
-    WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget, WorkflowSourceSaveError,
-};
+use crate::usecase::workflow::ports::{WorkflowDiagnosticsGateway, WorkflowDiagnosticsTarget};
 
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
@@ -95,7 +92,6 @@ impl WorkflowUsecase {
         definition_query: std::sync::Arc<dyn WorkflowDefinitionQueryService>,
         facet_query: std::sync::Arc<dyn FacetQueryService>,
         definitions: std::sync::Arc<dyn WorkflowDefinitionRepository>,
-        definition_sources: std::sync::Arc<dyn WorkflowDefinitionSourceService>,
         facets: std::sync::Arc<dyn FacetRepository>,
         worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
         editor_settings: std::sync::Arc<dyn EditorSettingsGateway>,
@@ -108,7 +104,6 @@ impl WorkflowUsecase {
     ) -> Self {
         let definition_commands = WorkflowDefinitionUsecase::new(
             definitions.clone(),
-            definition_sources,
             editor_settings.clone(),
             editor_launcher.clone(),
             directory_service,
@@ -153,10 +148,6 @@ impl WorkflowUsecase {
         self.worktrees.resolve(worktree_path)
     }
 
-    pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
-        self.query.get_workflow_source(file_stem)
-    }
-
     /// 定義を取得し、存在しない場合は空を返す。
     pub fn get_workflow(
         &self,
@@ -165,72 +156,12 @@ impl WorkflowUsecase {
         self.query.get_workflow(file_stem)
     }
 
-    pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError> {
-        self.query.get_facet(kind, key)
-    }
-
     /// 指定した種類の Facet 一覧を取得する。
     pub fn list_facet_summaries(
         &self,
         kind: FacetKind,
     ) -> Result<Vec<FacetSummaryDto>, WorkflowError> {
         self.facet_query.list_facet_summaries(kind)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn save_workflow_source(
-        &self,
-        source: &str,
-        original_name: Option<&str>,
-    ) -> Result<WorkflowDefinition, WorkflowError> {
-        self.definition_commands
-            .save_workflow_source(source, original_name)
-    }
-
-    pub fn save_workflow_source_with_diagnostics(
-        &self,
-        source: &str,
-        original_name: Option<&str>,
-    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
-        self.definition_commands
-            .save_workflow_source_with_diagnostics(source, original_name)
-    }
-
-    pub fn delete_workflow(&self, name: &str) -> Result<(), WorkflowError> {
-        self.definition_commands.delete_workflow(name)
-    }
-
-    pub fn duplicate_workflow(
-        &self,
-        source_name: &str,
-        new_name: &str,
-    ) -> Result<(), WorkflowError> {
-        self.definition_commands
-            .duplicate_workflow(source_name, new_name)
-    }
-
-    pub fn save_facet(
-        &self,
-        kind: FacetKind,
-        key: &str,
-        content: &str,
-        is_new: bool,
-    ) -> Result<(), WorkflowError> {
-        self.facet_commands.save_facet(kind, key, content, is_new)
-    }
-
-    pub fn delete_facet(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        self.facet_commands.delete_facet(kind, key)
-    }
-
-    pub fn duplicate_facet(
-        &self,
-        kind: FacetKind,
-        source_key: &str,
-        new_key: &str,
-    ) -> Result<(), WorkflowError> {
-        self.facet_commands
-            .duplicate_facet(kind, source_key, new_key)
     }
 
     pub fn open_workflow_in_editor(&self, name: &str) -> Result<(), WorkflowError> {
@@ -252,15 +183,6 @@ impl WorkflowUsecase {
         target: WorkflowDiagnosticsTarget,
     ) -> Result<diagnostic_dto::DiagnosticReport, WorkflowError> {
         self.diagnostics.diagnose_all(target)
-    }
-
-    pub fn render_facet_preview(
-        &self,
-        content: &str,
-        sample_values: &std::collections::HashMap<String, String>,
-    ) -> String {
-        self.facet_commands
-            .render_facet_preview(content, sample_values)
     }
 
     pub async fn get_output(

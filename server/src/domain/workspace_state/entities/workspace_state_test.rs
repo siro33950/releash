@@ -7,18 +7,13 @@ fn test_配置の保存_省略だけ前の配置を保持し明示した空の�
     let original = WorkspaceState {
         panes: Some(PaneLayout::pane("original".into(), vec![], None).unwrap()),
         version: 1,
-        tabs: Some(WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        }),
+        tabs: Some(WorkspaceTabsState { editors: vec![] }),
         layout: Some(WorkspaceLayoutState {
             center_tab: "editor".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
             right_collapsed: false,
             right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
         }),
     };
     assert_eq!(original.clone().initialize_panes(), original);
@@ -334,7 +329,6 @@ fn execution_tree() -> crate::domain::workspace_tree::WorkspaceTree {
         node_execution_id: None,
         node_name: None,
         attempt: None,
-        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: vec![],
         is_retry_history: false,

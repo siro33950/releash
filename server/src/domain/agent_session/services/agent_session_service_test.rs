@@ -144,7 +144,7 @@ fn test_thread送信_open以外のsessionには入力しない() {
     ] {
         let mut session = session();
         if archived {
-            session.archive().unwrap();
+            crate::domain::agent_session::test_helpers::archive_derived(&mut session);
         }
         let terminal = Arc::new(terminal(presence));
         let service = AgentSessionService::new(terminal.clone(), terminal.clone());

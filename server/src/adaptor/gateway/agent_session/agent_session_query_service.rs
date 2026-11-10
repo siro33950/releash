@@ -109,7 +109,6 @@ fn agent_session_item_from_facts(
             can_restore: operations.can_restore,
             can_delete: operations.can_delete,
         },
-        last_exit_abnormal: view.last_exit_abnormal,
         terminal_presence: None,
     })
 }

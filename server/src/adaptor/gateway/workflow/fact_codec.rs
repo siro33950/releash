@@ -1,4 +1,3 @@
-use crate::domain::workflow::value_objects::ContractViolationRecord;
 use crate::domain::workflow::*;
 use serde::{Deserialize, Serialize};
 
@@ -13,8 +12,6 @@ pub enum NodeFactDecodeError {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredArchiveFact {
-    #[serde(default = "manual_archive_reason")]
-    reason: String,
     archived_at: f64,
 }
 
@@ -22,10 +19,6 @@ struct StoredArchiveFact {
 #[serde(rename_all = "camelCase")]
 struct StoredRepositoryRootFact {
     repository_root: String,
-}
-
-fn manual_archive_reason() -> String {
-    "manual".to_string()
 }
 
 pub(crate) fn terminal_event_types() -> &'static [&'static str] {
@@ -57,7 +50,6 @@ pub fn event_type(fact: &NodeFact) -> &'static str {
         NodeFact::SessionNodeRenamed(_) => "session_node_renamed",
         NodeFact::ProviderSessionTitleObserved(_) => "provider_session_title_observed",
         NodeFact::SubmitReceived(_) => "submit_received",
-        NodeFact::SubmitRejected(_) => "submit_rejected",
         NodeFact::StopReceived(_) => STOP_RECEIVED_EVENT_TYPE,
         NodeFact::DelegateResultInjected(_) => "delegate_result_injected",
         NodeFact::SessionContinuationAdmitted(_) => "session_continuation_admitted",
@@ -90,7 +82,6 @@ pub fn encode_detail(fact: &NodeFact) -> Result<String, serde_json::Error> {
         NodeFact::SessionNodeRenamed(fact) => serde_json::to_string(fact),
         NodeFact::ProviderSessionTitleObserved(fact) => serde_json::to_string(fact),
         NodeFact::SubmitReceived(fact) => serde_json::to_string(fact),
-        NodeFact::SubmitRejected(fact) => serde_json::to_string(fact),
         NodeFact::StopReceived(fact) => serde_json::to_string(fact),
         NodeFact::DelegateResultInjected(child) => {
             serde_json::to_string(&serde_json::json!({"childExecutionId": child}))
@@ -100,7 +91,6 @@ pub fn encode_detail(fact: &NodeFact) -> Result<String, serde_json::Error> {
         NodeFact::ApprovalGranted(fact) => serde_json::to_string(fact),
         NodeFact::AbortRequested(fact) => serde_json::to_string(fact),
         NodeFact::ArchiveRequested(fact) => serde_json::to_string(&StoredArchiveFact {
-            reason: fact.reason.clone(),
             archived_at: fact.archived_at,
         }),
         NodeFact::ExecutionCompleted
@@ -155,7 +145,6 @@ pub fn decode(event_type: &str, detail: &str) -> Result<NodeFact, NodeFactDecode
             parse(event_type, detail).map(NodeFact::ProviderSessionTitleObserved)
         }
         "submit_received" => parse(event_type, detail).map(NodeFact::SubmitReceived),
-        "submit_rejected" => parse(event_type, detail).map(NodeFact::SubmitRejected),
         STOP_RECEIVED_EVENT_TYPE => parse(event_type, detail).map(NodeFact::StopReceived),
         "delegate_result_injected" => {
             #[derive(Deserialize)]
@@ -190,7 +179,6 @@ pub fn decode(event_type: &str, detail: &str) -> Result<NodeFact, NodeFactDecode
             empty(event_type, detail)?;
             parse::<StoredArchiveFact>(event_type, detail).map(|fact| {
                 NodeFact::ArchiveRequested(ArchiveRequestedFact {
-                    reason: fact.reason,
                     archived_at: fact.archived_at,
                 })
             })
@@ -233,8 +221,6 @@ struct TreeRootFactDetail {
     pub workspace_identity: String,
     /// 実行木が所属する worktree の正規化済みパス。
     pub worktree_path: String,
-    #[serde(with = "execution_origin_serde")]
-    pub created_from: ExecutionOrigin,
     pub request: String,
     #[serde(with = "workflow_definition_snapshot_serde")]
     pub definition: Option<WorkflowDefinitionContent>,
@@ -340,16 +326,6 @@ struct SubmitReceivedFactDetail {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(remote = "SubmitRejectedFact")]
-#[serde(rename_all = "camelCase")]
-struct SubmitRejectedFactDetail {
-    pub violations: Vec<ContractViolationRecord>,
-    pub repair_attempt: u32,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub request_id: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
 #[serde(remote = "StopReceivedFact")]
 #[serde(rename_all = "camelCase")]
 struct StopReceivedFactDetail {
@@ -435,32 +411,10 @@ payload_serde!(
     ProviderSessionTitleObservedFactDetail
 );
 payload_serde!(SubmitReceivedFact, SubmitReceivedFactDetail);
-payload_serde!(SubmitRejectedFact, SubmitRejectedFactDetail);
 payload_serde!(StopReceivedFact, StopReceivedFactDetail);
 payload_serde!(ArtifactProducedFact, ArtifactProducedFactDetail);
 payload_serde!(ApprovalGrantedFact, ApprovalGrantedFactDetail);
 payload_serde!(AbortRequestedFact, AbortRequestedFactDetail);
-mod execution_origin_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::ExecutionOrigin;
-
-    pub(super) fn serialize<S>(value: &ExecutionOrigin, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(value.as_public_value())
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<ExecutionOrigin, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        ExecutionOrigin::from_public_value(&value).map_err(serde::de::Error::custom)
-    }
-}
-
 mod workflow_definition_snapshot_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

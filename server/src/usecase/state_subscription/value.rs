@@ -1,9 +1,8 @@
 use crate::domain::agent_session::aggregates::AgentSessionAvailability;
 use crate::usecase::{
     agent_session::{AgentSessionHistoryPageDto, AgentSessionItemDto},
-    code_dto::{ReviewFileViewDto, ReviewSnapshotDto},
     provider_dto::AgentSessionProviderDto,
-    repository_dto::{BranchDto, WorktreeEntryDto},
+    repository_dto::BranchDto,
     workflow::{diagnostic_dto::DiagnosticReport, WorkspaceNodeDetailDto},
     workspace_tree::WorkspaceList,
 };
@@ -12,7 +11,6 @@ use crate::usecase::{
 pub enum StateValue {
     DaemonInfo(crate::domain::daemon::DaemonInfo),
     Terminal(crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem),
-    RepositoryPaths(Vec<String>),
     RepositoryGroupState(bool),
     Workspaces(WorkspaceList),
     /// 全 worktree の実行木の一覧と集約状態。
@@ -22,10 +20,7 @@ pub enum StateValue {
             Vec<(String, crate::domain::workflow::WorkflowError)>,
         ),
     ),
-    /// 実行木と、選択している Node が画面に出す木にあるか。
-    Selection(crate::domain::workspace_tree::WorkspaceTree, bool),
     NodeDetail(Option<WorkspaceNodeDetailDto>),
-    AgentSession(Option<(AgentSessionItemDto, AgentSessionAvailability)>),
     SessionTab {
         session: Option<(AgentSessionItemDto, AgentSessionAvailability)>,
         node: Option<Box<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>>,
@@ -33,10 +28,8 @@ pub enum StateValue {
     SessionHistory(AgentSessionHistoryPageDto),
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),
-    BranchBase(Option<String>),
     /// ブランチと、その worktree があるか。
     BranchStatus(Vec<(crate::domain::git::Branch, bool)>),
-    CurrentBranch(String),
     Issues(
         crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,
     ),
@@ -46,14 +39,6 @@ pub enum StateValue {
             crate::usecase::notion::error::NotionUsecaseError,
         >,
     ),
-    NotionLabelOptions(
-        crate::usecase::fetched::Fetched<
-            Vec<crate::domain::notion::NotionLabelOption>,
-            crate::usecase::notion::error::NotionUsecaseError,
-        >,
-    ),
-    Worktrees(Vec<WorktreeEntryDto>),
-    StartupRepository(Option<crate::usecase::repository_dto::StartupWorktree>),
     WorkspaceState(
         crate::domain::local_event::StreamVersion,
         Option<crate::domain::workspace_state::WorkspaceState>,
@@ -62,9 +47,7 @@ pub enum StateValue {
     ),
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
-    ReviewSnapshot(ReviewSnapshotDto),
-    ReviewFileView(ReviewFileViewDto),
-    FileThreads(Vec<crate::domain::comment::Thread>, u32),
+    FileThreads(Vec<crate::domain::comment::Thread>),
     ReviewThreads(Vec<crate::domain::comment::Thread>),
     WorkflowExecution(Option<crate::domain::workflow::ExecutionTree>),
     WorkflowOutput(Option<crate::usecase::workflow::WorkflowGetOutputResult>),
@@ -73,9 +56,7 @@ pub enum StateValue {
     ReviewSessionThreadHistory(Option<Vec<crate::domain::comment::ReviewHistoryEntry>>),
     Workflows(Vec<crate::usecase::workflow::WorkflowSummaryDto>),
     Workflow(Option<crate::domain::workflow::WorkflowDefinition>),
-    WorkflowSource(Option<String>),
     Facets(Vec<crate::usecase::workflow::FacetSummaryDto>),
-    Facet(crate::domain::workflow::Facet),
     Diagnostics(DiagnosticReport),
     DesktopSettings(crate::domain::app_config::AppConfig),
     NotionConfig(Option<crate::usecase::notion::usecase::NotionRepoConfigDto>),

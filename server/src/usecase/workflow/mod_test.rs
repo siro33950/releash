@@ -1,12 +1,11 @@
 use crate::domain::workflow::error::WorkflowError;
 use crate::domain::workflow::gateway::ManagedWorktreeGateway;
 use crate::domain::workflow::value_objects::definition::WorkflowDefinitionContent;
-use crate::domain::workflow::value_objects::execution::ExecutionOrigin;
 use crate::domain::workflow::value_objects::execution::ExecutionStatus;
 use crate::domain::workflow::value_objects::execution::ExecutionTree;
 use crate::domain::workflow::value_objects::execution_metadata::WorkflowExecutionSummary;
 use crate::domain::workflow::value_objects::facet::FacetKind;
-use crate::domain::workflow::WorkflowDefinitionSourceService;
+
 use crate::usecase::workflow::ports::WorkflowDiagnosticsGateway;
 use crate::usecase::workflow::ports::WorkflowDiagnosticsTarget;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
@@ -19,65 +18,8 @@ use crate::domain::workflow::value_objects::ids::ExecutionTreeId;
 
 use crate::usecase::workflow::ports::WorkflowEventDraft;
 use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-
-#[derive(Default)]
-struct FakeDefinitionSourceGateway {
-    sources: Mutex<HashMap<String, String>>,
-    save_definition: Mutex<Option<WorkflowDefinitionContent>>,
-    save_error: Mutex<Option<String>>,
-}
-
-impl FakeDefinitionSourceGateway {
-    fn insert_source(&self, file_stem: &str, source: &str) {
-        self.sources
-            .lock()
-            .unwrap()
-            .insert(file_stem.to_string(), source.to_string());
-    }
-
-    fn set_save_definition(&self, definition: WorkflowDefinitionContent) {
-        *self.save_definition.lock().unwrap() = Some(definition);
-    }
-
-    fn fail_saves(&self, message: &str) {
-        *self.save_error.lock().unwrap() = Some(message.to_string());
-    }
-}
-
-impl WorkflowDefinitionSourceService for FakeDefinitionSourceGateway {
-    fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
-        Ok(self.sources.lock().unwrap().get(file_stem).cloned())
-    }
-
-    fn parse(
-        &self,
-        _: &str,
-    ) -> Result<
-        crate::domain::workflow::WorkflowDefinition,
-        crate::domain::workflow::WorkflowSourceSaveError,
-    > {
-        if let Some(message) = self.save_error.lock().unwrap().as_ref() {
-            return Err(crate::domain::workflow::WorkflowSourceSaveError::Workflow(
-                WorkflowError::external(message),
-            ));
-        }
-        Ok(crate::usecase::workflow::test_helpers::definition(
-            self.save_definition
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| {
-                    workflow_definition("saved-workflow")
-                        .content()
-                        .unwrap()
-                        .clone()
-                }),
-        ))
-    }
-}
 
 #[derive(Default)]
 struct FakeEditorLauncher {
@@ -184,7 +126,6 @@ struct Fixture {
     editors: Arc<FakeEditorLauncher>,
     facets: Arc<FakeFacetRepository>,
     definitions: Arc<FakeDefinitionRepository>,
-    definition_sources: Arc<FakeDefinitionSourceGateway>,
     diagnostics: Arc<FakeDiagnosticsGateway>,
     summaries: Arc<FakeSummaryQuery>,
 }
@@ -195,20 +136,6 @@ impl Fixture {
     }
 
     fn with_executions(executions: Vec<WorkflowExecutionSummary>) -> Self {
-        Self::with_executions_and_definition_sources(
-            executions,
-            Arc::new(FakeDefinitionSourceGateway::default()),
-        )
-    }
-
-    fn with_definition_sources(definition_sources: Arc<FakeDefinitionSourceGateway>) -> Self {
-        Self::with_executions_and_definition_sources(Vec::new(), definition_sources)
-    }
-
-    fn with_executions_and_definition_sources(
-        executions: Vec<WorkflowExecutionSummary>,
-        definition_sources: Arc<FakeDefinitionSourceGateway>,
-    ) -> Self {
         let definitions = Arc::new(FakeDefinitionRepository::default());
         let facets = Arc::new(FakeFacetRepository::default());
         let events = Arc::new(FakeEventRepository::default());
@@ -222,8 +149,6 @@ impl Fixture {
             );
         let query = WorkflowQueryService::new(
             definitions.clone(),
-            definition_sources.clone(),
-            facets.clone(),
             events.clone(),
             Arc::new(NoopExecutionProjectionRepository),
         );
@@ -233,7 +158,6 @@ impl Fixture {
             summaries.clone(),
             summaries.clone(),
             definitions.clone(),
-            definition_sources.clone(),
             facets.clone(),
             Arc::new(FakeManagedWorktreeGateway),
             Arc::new(SelectedEditor),
@@ -249,7 +173,6 @@ impl Fixture {
             editors,
             facets,
             definitions,
-            definition_sources,
             diagnostics,
             summaries,
         }
@@ -284,7 +207,6 @@ pub async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_proj
         status: ExecutionStatus::Running,
         worktree_path: "/repo".into(),
         current_node: None,
-        created_from: ExecutionOrigin::Cli,
         started_at: 1.0,
         updated_at: 1.0,
         completed_at: None,
@@ -317,22 +239,6 @@ pub async fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_proj
 }
 
 #[test]
-pub fn get_workflow_source_returns_some_and_none_from_gateway() {
-    let definition_sources = Arc::new(FakeDefinitionSourceGateway::default());
-    definition_sources.insert_source("wf", "name: wf\n");
-    let fixture = Fixture::with_definition_sources(definition_sources);
-
-    assert_eq!(
-        fixture.usecase.get_workflow_source("wf").unwrap(),
-        Some("name: wf\n".to_string())
-    );
-    assert_eq!(
-        fixture.usecase.get_workflow_source("missing").unwrap(),
-        None
-    );
-}
-
-#[test]
 pub fn test_workflow読取_定義不在を返す() {
     // Given
     let fixture = Fixture::new();
@@ -359,17 +265,17 @@ pub fn test_workflow読取_定義読取失敗を不在と区別する() {
 pub fn test_workflow読取_解釈失敗を既定内容に置き換えない() {
     // Given
     let fixture = Fixture::new();
-    fixture
-        .definitions
-        .insert(crate::domain::workflow::WorkflowDefinition::restore(
-            "present".into(),
+    fixture.definitions.insert(
+        "present",
+        crate::domain::workflow::WorkflowDefinition::restore(
             "/workflows".into(),
             crate::domain::workflow::WorkflowSource::File {
                 path: "/workflows/present.lua".into(),
             },
             crate::domain::workflow::WorkflowSourceFormat::Lua,
             Err(WorkflowError::external("parse failed")),
-        ));
+        ),
+    );
     // When
     let definition = fixture.usecase.get_workflow("present").unwrap().unwrap();
     // Then
@@ -383,50 +289,16 @@ pub fn test_workflow読取_解釈失敗を既定内容に置き換えない() {
 }
 
 #[test]
-pub fn save_workflow_source_returns_saved_definition_and_surfaces_gateway_errors() {
-    let fixture = Fixture::new();
-    fixture
-        .definition_sources
-        .set_save_definition(workflow_definition("saved-wf").content().unwrap().clone());
-
-    let saved = fixture
-        .usecase
-        .save_workflow_source("name: saved-wf\n", Some("old-wf"))
-        .unwrap();
-
-    assert_eq!(saved.file_stem(), "saved-wf");
-    assert_eq!(fixture.definitions.get_saved("saved-wf"), Some(saved));
-
-    assert_eq!(
-        *fixture.definitions.saved_sources.lock().unwrap(),
-        [("name: saved-wf\n".into(), Some("old-wf".into()))]
-    );
-
-    fixture.definition_sources.fail_saves("save failed");
-
-    assert!(fixture
-        .usecase
-        .save_workflow_source("name: failed-wf\n", None)
-        .is_err());
-}
-
-#[test]
 pub fn editor_commands_delegate_to_external_editor_gateway() {
     // Given
     let fixture = Fixture::new();
     fixture
         .definitions
-        .insert(workflow_definition("custom-workflow"));
-    crate::domain::workflow::FacetRepository::save(
-        &*fixture.facets,
-        crate::usecase::workflow::test_helpers::facet(
-            FacetKind::Instruction,
-            "implement",
-            "instruction".into(),
-        ),
-        true,
-    )
-    .unwrap();
+        .insert("custom-workflow", workflow_definition("custom-workflow"));
+    fixture.facets.facets.lock().unwrap().insert(
+        (FacetKind::Instruction, "implement".into()),
+        "instruction".into(),
+    );
     // When
     fixture
         .usecase
@@ -511,16 +383,18 @@ fn test_外部編集_builtinの定義とfacetを拒否しlauncherを呼ばない
     // Given
     use crate::domain::workflow::{WorkflowDefinition, WorkflowSource, WorkflowSourceFormat};
     let fixture = Fixture::new();
-    fixture.definitions.insert(WorkflowDefinition::restore(
-        "builtin".into(),
-        "/workflows".into(),
-        WorkflowSource::Builtin,
-        WorkflowSourceFormat::Yaml,
-        Ok(WorkflowDefinitionContent {
-            name: "builtin".into(),
-            ..Default::default()
-        }),
-    ));
+    fixture.definitions.insert(
+        "builtin",
+        WorkflowDefinition::restore(
+            "/workflows".into(),
+            WorkflowSource::Builtin,
+            WorkflowSourceFormat::Yaml,
+            Ok(WorkflowDefinitionContent {
+                name: "builtin".into(),
+                ..Default::default()
+            }),
+        ),
+    );
     fixture
         .facets
         .facets

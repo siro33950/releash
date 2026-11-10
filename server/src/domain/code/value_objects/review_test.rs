@@ -2,58 +2,6 @@ pub(crate) mod tests {
     use super::super::*;
 
     #[test]
-    fn thresholds_are_inclusive_at_boundary_and_limit_above_it() {
-        let thresholds = ReviewThresholds::default();
-
-        assert_eq!(
-            thresholds.file_size_limit(thresholds.max_file_size_bytes),
-            None
-        );
-        assert_eq!(
-            thresholds.file_size_limit(thresholds.max_file_size_bytes + 1),
-            Some(ReviewLimitReason::FileSize)
-        );
-        assert_eq!(thresholds.line_count_limit(thresholds.max_line_count), None);
-        assert_eq!(
-            thresholds.line_count_limit(thresholds.max_line_count + 1),
-            Some(ReviewLimitReason::LineCount)
-        );
-        assert_eq!(thresholds.hunk_count_limit(thresholds.max_hunk_count), None);
-        assert_eq!(
-            thresholds.hunk_count_limit(thresholds.max_hunk_count + 1),
-            Some(ReviewLimitReason::HunkCount)
-        );
-        assert_eq!(
-            thresholds.tokenization_limit(thresholds.max_tokenization_chars, 1),
-            None
-        );
-        assert_eq!(
-            thresholds.tokenization_limit(thresholds.max_tokenization_chars + 1, 1),
-            Some(ReviewLimitReason::Tokenization)
-        );
-    }
-
-    #[test]
-    fn review_base_and_section_reject_unknown_values() {
-        assert_eq!(ReviewBase::parse("head").unwrap(), ReviewBase::Head);
-        assert_eq!(
-            ReviewBase::parse("branch-base").unwrap(),
-            ReviewBase::BranchBase
-        );
-        assert!(ReviewBase::parse("main").is_err());
-
-        assert_eq!(
-            ReviewSection::parse("changes").unwrap(),
-            ReviewSection::Changes
-        );
-        assert_eq!(
-            ReviewSection::parse("staged").unwrap(),
-            ReviewSection::Staged
-        );
-        assert!(ReviewSection::parse("unstaged").is_err());
-    }
-
-    #[test]
     fn review_blob_content_type_classifies_images_without_mime() {
         let png = ReviewBlobContentType::from_path("assets/LOGO.PNG");
         assert!(png.is_image());
@@ -64,31 +12,6 @@ pub(crate) mod tests {
         let binary = ReviewBlobContentType::from_path("archive.bin");
         assert!(!binary.is_image());
         assert_eq!(ReviewBlobContentType::image_from_path("archive.bin"), None);
-    }
-}
-
-#[test]
-fn test_比較元選択_既存の比較を保持する() {
-    use super::{ReviewBase as Base, ReviewContentSource as Source, ReviewSection as Section};
-    use crate::domain::code::ReviewBlobSide as Side;
-    // Given / When / Then
-    for (base, section, old, new) in [
-        (
-            Base::Head,
-            Section::Changes,
-            Source::Staged,
-            Source::WorkingTree,
-        ),
-        (Base::Head, Section::Staged, Source::Head, Source::Staged),
-        (
-            Base::BranchBase,
-            Section::Changes,
-            Source::BranchBase,
-            Source::WorkingTree,
-        ),
-    ] {
-        assert_eq!(Source::select(Side::Original, section, base), old);
-        assert_eq!(Source::select(Side::Modified, section, base), new);
     }
 }
 
@@ -104,40 +27,6 @@ fn test_表示分類_欠損と非utf8とnulを区別する() {
     ] {
         assert_eq!(super::review_bytes_are_binary(&bytes), binary);
     }
-}
-
-#[test]
-fn test_差分対象_比較とsectionごとの所属を判定する() {
-    use super::{ReviewBase as Base, ReviewSection as Section};
-    // Given / When / Then
-    assert!(super::review_target_is_available(
-        Section::Changes,
-        Base::BranchBase,
-        true,
-        false,
-        false
-    ));
-    assert!(!super::review_target_is_available(
-        Section::Staged,
-        Base::BranchBase,
-        true,
-        true,
-        true
-    ));
-    assert!(super::review_target_is_available(
-        Section::Staged,
-        Base::Head,
-        false,
-        true,
-        false
-    ));
-    assert!(!super::review_target_is_available(
-        Section::Changes,
-        Base::Head,
-        true,
-        true,
-        false
-    ));
 }
 
 #[test]

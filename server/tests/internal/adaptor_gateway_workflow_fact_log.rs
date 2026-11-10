@@ -10,7 +10,6 @@ use releashd::test_support::integration::workflow::append_single_fact;
 use releashd::test_support::integration::workflow::fold_tree_from;
 use releashd::test_support::integration::workflow::pending_single_fact;
 use releashd::test_support::integration::workflow::read_tree_records;
-use releashd::test_support::integration::workflow::read_tree_records_from;
 use releashd::test_support::integration::workflow::reconcile_tree_pass;
 use releashd::test_support::integration::workflow::resolve_unknown_append;
 use releashd::test_support::integration::workflow::ArtifactProducedFact;
@@ -32,7 +31,6 @@ use std::sync::Arc;
 
 use releashd::test_support::integration::persistence::LocalEventStoreConfig;
 use releashd::test_support::integration::workflow::fold_execution_tree;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::NodeDefinition;
 use releashd::test_support::integration::workflow::RuntimeExecutionState;
@@ -619,7 +617,6 @@ pub(crate) mod reconciliation_tests {
             repository_root: None,
             workspace_identity: "/repo".into(),
             worktree_path: "/repo".into(),
-            created_from: ExecutionOrigin::Cli,
             request: "please".into(),
             workflow_name: definition.name.clone(),
             definition: Some(definition),
@@ -1252,154 +1249,6 @@ pub(crate) mod round_trip_tests {
     }
 }
 
-#[tokio::test]
-pub async fn test_旧隔離事実の読取_状態導出と再起動復元からだけ除外する() {
-    use releashd::test_support::integration::platform::CanonicalRuntimeOwnerView;
-    use releashd::test_support::integration::platform::LocalEventQuery;
-    use releashd::test_support::integration::platform::LocalEventQueryResult;
-    use releashd::test_support::integration::repository::LocalEventTransactionRepository;
-    use releashd::test_support::integration::workflow::WorkflowExecutionProjectionRepository;
-    // Given
-    let directory = tempfile::TempDir::new().unwrap();
-    let config = LocalEventStoreConfig::production(
-        directory.path().to_path_buf(),
-        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    );
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(
-        directory.path().to_path_buf(),
-        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    ))
-    .unwrap();
-    append_facts_for_events(
-        &store,
-        &[
-            started_event(),
-            node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
-            node_started(
-                "a-exec",
-                "a",
-                NodeKindName::Session,
-                Some(ExecutionParentRef::sequence_child("main-exec")),
-                2.0,
-            ),
-        ],
-    )
-    .await
-    .unwrap();
-    append_single_fact(
-        &store,
-        &NodeFactMeta {
-            tree_id: TREE.into(),
-            node_execution_id: "a-exec".into(),
-            parent_id: Some("main-exec".into()),
-            node_name: "a".into(),
-            kind: NodeKindName::Session,
-            attempt: 1,
-        },
-        &NodeFact::SessionAttached(SessionAttachedFact {
-            session_id: "legacy-session".into(),
-            provider_session_id: None,
-            transcript_ref: None,
-            initial_instruction_admitted: true,
-        }),
-        2000,
-    )
-    .await
-    .unwrap();
-    let original = read_tree_records(&store, TREE).await.unwrap();
-    let rows = [
-        (
-            "isolated_worktree_created",
-            serde_json::json!({
-                "repositoryRoot": "/repo", "worktreePath": "/old-isolated", "branch": "old-branch"
-            }),
-        ),
-        ("isolated_worktree_released", serde_json::json!({})),
-        ("isolated_worktree_lost", serde_json::json!({})),
-    ]
-    .into_iter()
-    .map(|(event_type, detail)| PendingFactRow {
-        row: NewNodeEventRow {
-            tree_id: TREE.into(),
-            node_execution_id: "a-exec".into(),
-            parent_id: Some("main-exec".into()),
-            node_name: "a".into(),
-            kind: "session".into(),
-            attempt: 1,
-            event_type: event_type.into(),
-            session_id: None,
-            detail: detail.to_string(),
-        },
-        timestamp_ms: 3000,
-    })
-    .collect();
-    append_pending_rows(&store, rows).await.unwrap();
-    drop(store);
-
-    // When
-    let store = LocalEventStore::open(config).unwrap();
-    let readonly = releashd::test_support::integration::persistence::LocalEventReadStore::open(
-        directory.path(),
-        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    )
-    .unwrap();
-    for backend in [
-        FactLogReadBackend::Live(store.clone()),
-        FactLogReadBackend::ReadOnly(readonly),
-    ] {
-        let records = read_tree_records_from(&backend, TREE).await.unwrap();
-        // Then
-        assert_eq!(records, original);
-        let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
-        let node = tree.aggregate.node_execution("a-exec").unwrap();
-        assert!(node.worktree.is_none());
-        assert_eq!(tree.aggregate.state(), &RuntimeExecutionState::Running);
-    }
-    use releashd::test_support::integration::sessions::AgentSessionRepository;
-    let session = releashd::test_support::integration::sessions::LocalAgentSessionRepository::new(
-        store.clone(),
-    )
-    .find("legacy-session")
-    .await
-    .unwrap();
-    assert!(session.is_some());
-    let status = releashd::test_support::integration::workflow::WorkflowExecutionProjectionLogRepository::new(store.clone())
-        .get_execution(&releashd::test_support::integration::workflow::ExecutionTreeId::new(TREE).unwrap()).await.unwrap().unwrap();
-    assert_eq!(
-        status.status,
-        releashd::test_support::integration::workflow::ExecutionStatus::Running
-    );
-    let owners = store
-        .query(LocalEventQuery::CanonicalRuntimeOwnerSnapshot { limit: 10 })
-        .await
-        .unwrap();
-    assert!(
-        matches!(owners, LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(owners)
-        if owners == vec![CanonicalRuntimeOwnerView::ActiveWorkflow { worktree_path: "/repo".into() }])
-    );
-    let restored = reconcile_tree_pass(&store, TREE, 5.0, &mut || "next-exec".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        restored.folded.aggregate.state(),
-        &RuntimeExecutionState::Running
-    );
-    let rows = FactLogReadBackend::Live(store)
-        .run_indexed(|connection| {
-            releashd::test_support::integration::persistence::read_tree(connection, TREE)
-                .map_err(|_| LocalEventQueryError::InvalidRequest)
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        rows.iter()
-            .filter(|row| row.event_type.starts_with("isolated_worktree_"))
-            .count(),
-        3
-    );
-}
-
 pub(crate) mod terminal_fact_tests {
 
     use super::append_contract_tests::read_raw_rows;
@@ -1516,7 +1365,6 @@ pub(crate) mod terminal_fact_tests {
             status: ExecutionStatus::Completed,
             worktree_path: "/repo".into(),
             current_node: None,
-            created_from: ExecutionOrigin::Cli,
             started_at: 1.0,
             updated_at: 2.0,
             completed_at: Some(2.0),
@@ -1654,7 +1502,7 @@ pub(crate) mod terminal_fact_tests {
                     event_type: "started".into(),
                     session_id: None,
                     detail: serde_json::json!({"root": {
-                        "workspaceIdentity": "/repo", "worktreePath": "/repo", "createdFrom": "cli",
+                        "workspaceIdentity": "/repo", "worktreePath": "/repo",
                         "request": "", "launchedAs": "workflow",
                         "definition": {"name": "old", "description": "", "entry": "main", "nodes": {
                             "main": {"command": "true", "completion": "auto"}
@@ -1738,111 +1586,6 @@ pub(crate) mod terminal_fact_tests {
                 assert_eq!(read_raw_rows(&store, TREE).await, before);
             }
         }
-    }
-
-    #[tokio::test]
-    pub async fn test_終端復元_旧隔離worktreeをabort済みnodeと提出artifactに保持する() {
-        // Given
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalEventStore::open(LocalEventStoreConfig::production(
-            dir.path().into(),
-            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-        ))
-        .unwrap();
-        let meta = legacy_tree(&store, false).await;
-        for (event_type, detail) in [
-            (
-                "isolated_worktree_created",
-                serde_json::json!({
-                    "repositoryRoot": "/repo", "worktreePath": "/old-isolated", "branch": "old-branch"
-                }),
-            ),
-            ("isolated_worktree_released", serde_json::json!({})),
-            ("isolated_worktree_lost", serde_json::json!({})),
-        ] {
-            store
-                .append_node_event(
-                    NewNodeEventRow {
-                        tree_id: TREE.into(),
-                        node_execution_id: TREE.into(),
-                        parent_id: None,
-                        node_name: "main".into(),
-                        kind: "command".into(),
-                        attempt: 1,
-                        event_type: event_type.into(),
-                        session_id: None,
-                        detail: detail.to_string(),
-                    },
-                    Some(2_000),
-                )
-                .await
-                .unwrap();
-        }
-        append_single_fact(
-            &store,
-            &meta,
-            &NodeFact::ArtifactProduced(ArtifactProducedFact {
-                contract: Some("result".into()),
-                value: serde_json::json!({"ok": true}),
-                request_id: None,
-            }),
-            3_000,
-        )
-        .await
-        .unwrap();
-        append_single_fact(
-            &store,
-            &meta,
-            &NodeFact::AbortRequested(Default::default()),
-            4_000,
-        )
-        .await
-        .unwrap();
-        let before = read_raw_rows(&store, TREE).await;
-        drop(store);
-
-        // When
-        let store = LocalEventStore::open(LocalEventStoreConfig::production(
-            dir.path().into(),
-            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-        ))
-        .unwrap();
-        let readonly = releashd::test_support::integration::persistence::LocalEventReadStore::open(
-            dir.path(),
-            std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-        )
-        .unwrap();
-        for backend in [
-            FactLogReadBackend::Live(store.clone()),
-            FactLogReadBackend::ReadOnly(readonly),
-        ] {
-            let tree = fold_tree_from(&backend, TREE).await.unwrap().unwrap();
-            let model = releashd::test_support::integration::workflow::derive_read_model(&tree);
-
-            // Then
-            assert_eq!(model.status, ExecutionStatus::Aborted);
-            let node = &model.node_executions[0];
-            assert_eq!(
-                node.status,
-                releashd::test_support::integration::workflow::NodeExecutionStatus::Aborted
-            );
-            assert_eq!(
-                node.worktree,
-                Some(
-                    releashd::test_support::integration::workflow::IsolatedWorktree {
-                        path: "/old-isolated".into(),
-                        branch: "old-branch".into(),
-                    }
-                )
-            );
-            assert_eq!(
-                node.artifact.as_ref().unwrap().value,
-                serde_json::json!({
-                    "ok": true, "worktree": {"path": "/old-isolated", "branch": "old-branch"}
-                })
-            );
-        }
-        assert_eq!(read_raw_rows(&store, TREE).await, before);
     }
 
     #[tokio::test]
@@ -2006,66 +1749,6 @@ pub async fn test_起動時前進_head競合を失敗と区別し最新記録か
             .unwrap();
         assert_eq!(recovered.starts.len(), usize::from(!abort));
         assert_eq!(recovered.folded.aggregate.is_active(), !abort);
-    }
-}
-
-#[tokio::test]
-pub async fn test_起動時前進_旧形式の末尾行を含むheadで追記と応答喪失の読戻しを行う() {
-    for event_type in [
-        "isolated_worktree_created",
-        "isolated_worktree_released",
-        "isolated_worktree_lost",
-    ] {
-        for drop_reply in [false, true] {
-            // Given
-            let directory = tempfile::tempdir().unwrap();
-            let store = LocalEventStore::open(LocalEventStoreConfig::production(
-                directory.path().into(),
-                std::sync::Arc::new(
-                    releashd::test_support::integration::platform::RetryLimiter::new(),
-                ),
-            ))
-            .unwrap();
-            append_facts_for_events(
-                &store,
-                &[
-                    started_event(),
-                    node_started("main-exec", "main", NodeKindName::Sequence, None, 1.0),
-                ],
-            )
-            .await
-            .unwrap();
-            append_pending_rows(&store, vec![PendingFactRow {
-                row: NewNodeEventRow {
-                    tree_id: TREE.into(), node_execution_id: "main-exec".into(),
-                    parent_id: None, node_name: "main".into(), kind: "sequence".into(), attempt: 1,
-                    event_type: event_type.into(), session_id: None,
-                    detail: serde_json::json!({"repositoryRoot": "/repo", "worktreePath": "/old", "branch": "old"}).to_string(),
-                }, timestamp_ms: 1500,
-            }]).await.unwrap();
-            if drop_reply {
-                store.fault_injector().arm_drop_reply();
-            }
-            // When
-            let result = reconcile_tree_pass(&store, TREE, 2.0, &mut || "next-child".into())
-                .await
-                .unwrap()
-                .unwrap();
-            // Then
-            assert_eq!(result.starts.len(), 1);
-            assert_eq!(result.starts[0].node_execution_id(), "next-child");
-            let records = read_tree_records(&store, TREE).await.unwrap();
-            assert_eq!(
-                records
-                    .iter()
-                    .filter(|row| row.meta.node_execution_id == "next-child")
-                    .count(),
-                1
-            );
-            assert!(!records
-                .iter()
-                .any(|row| matches!(row.fact, NodeFact::AbortRequested(_))));
-        }
     }
 }
 

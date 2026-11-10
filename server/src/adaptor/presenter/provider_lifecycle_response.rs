@@ -23,20 +23,16 @@ impl From<ProviderLifecycleIngressResult>
     for crate::adaptor::presenter::client::ReceiveProviderSignalResponse
 {
     fn from(result: ProviderLifecycleIngressResult) -> Self {
-        use crate::adaptor::presenter::client::{
-            receive_provider_signal_response::Result as Wire, ReceiveProviderSignalRejected,
-        };
+        use crate::adaptor::presenter::client::ReceiveProviderSignalRejected;
         Self {
-            result: Some(match result {
-                ProviderLifecycleIngressResult::Applied => Wire::Applied(Default::default()),
-                ProviderLifecycleIngressResult::Duplicate => Wire::Duplicate(Default::default()),
-                ProviderLifecycleIngressResult::Ignored => Wire::Ignored(Default::default()),
+            rejected: match result {
                 ProviderLifecycleIngressResult::Rejected(reason) => {
-                    Wire::Rejected(ReceiveProviderSignalRejected {
+                    Some(ReceiveProviderSignalRejected {
                         reason: rejection_reason(reason).into(),
                     })
                 }
-            }),
+                _ => None,
+            },
         }
     }
 }

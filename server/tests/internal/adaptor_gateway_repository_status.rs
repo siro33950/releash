@@ -20,7 +20,6 @@ pub(crate) mod status_gateway_tests {
     use crate::test_support_git::*;
     use releashd::test_support::integration::repository::get_git_status;
     use releashd::test_support::integration::repository::get_repository_status_scan;
-    use releashd::test_support::integration::repository::get_status_diff_stats;
     use releashd::test_support::integration::repository::reset_status_walk_count_for_tests;
     use releashd::test_support::integration::repository::status_walk_count_for_tests;
     use std::fs;
@@ -148,7 +147,7 @@ pub(crate) mod status_gateway_tests {
     }
 
     #[test]
-    pub fn repository_status_scan_matches_legacy_status_and_diff_stats_with_one_status_walk() {
+    pub fn repository_status_scan_matches_status_with_one_status_walk() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         add_and_commit(&repo, "staged.txt", "before\n", "add staged");
@@ -165,93 +164,12 @@ pub(crate) mod status_gateway_tests {
 
         let repo_path = dir.path().to_str().unwrap();
         let expected_status = get_git_status(repo_path).unwrap();
-        let expected_diff_stats = get_status_diff_stats(repo_path).unwrap();
 
         reset_status_walk_count_for_tests();
         let scan = get_repository_status_scan(repo_path).unwrap();
 
         assert_eq!(scan.status, expected_status);
-        assert_eq!(scan.diff_stats, expected_diff_stats);
         assert_eq!(scan.dirty_count, expected_status.len());
         assert_eq!(status_walk_count_for_tests(), 1);
-    }
-
-    #[test]
-    pub fn test_差分統計_ステージ済み新規ファイル() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-
-        fs::write(dir.path().join("new.txt"), "line1\nline2\nline3\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("new.txt")).unwrap();
-        index.write().unwrap();
-
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
-        let file = stats.iter().find(|s| s.path == "new.txt").unwrap();
-        assert_eq!(file.index_additions, 3);
-        assert_eq!(file.index_deletions, 0);
-        assert_eq!(file.wt_additions, 0);
-        assert_eq!(file.wt_deletions, 0);
-    }
-
-    #[test]
-    pub fn test_差分統計_作業ツリー変更() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        add_and_commit(&repo, "file.txt", "original\n", "add file");
-
-        fs::write(dir.path().join("file.txt"), "original\nmodified\n").unwrap();
-
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
-        let file = stats.iter().find(|s| s.path == "file.txt").unwrap();
-        assert_eq!(file.index_additions, 0);
-        assert_eq!(file.index_deletions, 0);
-        assert_eq!(file.wt_additions, 1);
-        assert_eq!(file.wt_deletions, 0);
-    }
-
-    #[test]
-    pub fn test_差分統計_ステージと作業ツリー両方() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        add_and_commit(&repo, "file.txt", "line1\nline2\n", "add file");
-
-        fs::write(dir.path().join("file.txt"), "line1\nline2\nline3\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("file.txt")).unwrap();
-        index.write().unwrap();
-
-        fs::write(dir.path().join("file.txt"), "line1\nline2\nline3\nline4\n").unwrap();
-
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
-        let file = stats.iter().find(|s| s.path == "file.txt").unwrap();
-        assert_eq!(file.index_additions, 1); // line3 staged
-        assert_eq!(file.index_deletions, 0);
-        assert_eq!(file.wt_additions, 1); // line4 unstaged
-        assert_eq!(file.wt_deletions, 0);
-    }
-
-    #[test]
-    pub fn test_差分統計_未追跡新規ファイル() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-
-        fs::write(dir.path().join("new.txt"), "line1\nline2\n").unwrap();
-
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
-        let file = stats.iter().find(|s| s.path == "new.txt").unwrap();
-        assert_eq!(file.index_additions, 0);
-        assert_eq!(file.index_deletions, 0);
-        assert_eq!(file.wt_additions, 2);
-        assert_eq!(file.wt_deletions, 0);
-    }
-
-    #[test]
-    pub fn test_差分統計_空() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-
-        let stats = get_status_diff_stats(dir.path().to_str().unwrap()).unwrap();
-        assert!(stats.is_empty());
     }
 }

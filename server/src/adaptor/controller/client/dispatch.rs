@@ -52,9 +52,7 @@ impl ClientCommandDispatch {
         super::workspace_state::register_shared(self, deps);
         super::app_config::register_shared(self, deps);
         super::notion::register_shared(self, deps);
-        super::git_host::register_shared(self, deps);
         super::external_editor::register_shared(self, deps);
-        super::telemetry::register_shared(self, deps);
         super::application_lifecycle::register_shared(self, deps);
         super::installation::register_shared(self, deps);
     }

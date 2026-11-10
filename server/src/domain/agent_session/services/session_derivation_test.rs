@@ -100,7 +100,6 @@ fn test_agent_session事実導出_session起動木の属性と3種lifecycleを�
         &mut records,
         meta,
         NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-            reason: "manual".into(),
             archived_at: 0.0,
         }),
     );
@@ -159,7 +158,6 @@ fn test_agent_session事実導出_workflow定義を渡さずsession自身の事�
         &mut records,
         meta,
         NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-            reason: "manual".into(),
             archived_at: 0.0,
         }),
     );

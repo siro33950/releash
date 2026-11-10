@@ -67,14 +67,17 @@ pub async fn test_connect_生成clientのunaryで結果と構造化エラーを�
         }),
     );
     dispatch.register_domain(
-        &["build_diff_file_tree"],
+        &["start_workflow"],
         Box::new(|command| {
             Box::pin(async move {
-                let wire::command_request::Command::BuildDiffFileTree(args) = command else {
+                let wire::command_request::Command::StartWorkflow(args) = command else {
                     unreachable!()
                 };
-                releashd::test_support::integration::transport::required(args.entries, "entries")?;
-                Ok(wire::command_result::Command::BuildDiffFileTree(
+                releashd::test_support::integration::transport::required(
+                    args.workflow_name,
+                    "workflowName",
+                )?;
+                Ok(wire::command_result::Command::StartWorkflow(
                     Default::default(),
                 ))
             })
@@ -92,7 +95,7 @@ pub async fn test_connect_生成clientのunaryで結果と構造化エラーを�
         Some(true)
     );
     let error = client
-        .build_diff_file_tree(rpc::BuildDiffFileTreeRequest::default())
+        .start_workflow(rpc::StartWorkflowRequest::default())
         .await
         .unwrap_err();
     assert_eq!(error.code, connectrpc::ErrorCode::InvalidArgument);
@@ -348,7 +351,7 @@ pub async fn test_状態購読_購読idを入口で128バイトまで受け付�
 }
 
 #[tokio::test]
-pub async fn test_状態購読_connectで初期状態と変更と再開を配信する() {
+pub async fn test_状態購読_connectで初期状態と変更と再購読を配信する() {
     use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase;
     use releashd::test_support::integration::subscriptions::SubscriptionTarget;
     use wire::state_subscription_event::Event;
@@ -398,9 +401,8 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
     // When
     let request = wire::StartStateSubscriptionRequest {
         client_id: "state-test".into(),
-        target: SubscriptionTarget::RepositoryPaths.to_string(),
+        target: SubscriptionTarget::TerminalStartupCommand.to_string(),
         args: vec![],
-        version: None,
         subscription_id: "state-subscription".into(),
     };
     client
@@ -439,9 +441,8 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
     .unwrap();
     assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
     subscriptions.test_set_repository_paths(vec!["/next".into()]);
-    subscriptions.notify(
-        releashd::test_support::integration::subscriptions::StateChangeSource::Repositories,
-    );
+    subscriptions
+        .notify(releashd::test_support::integration::subscriptions::StateChangeSource::AppConfig);
     let changed: wire::StateSubscriptionEvent = to_wire(
         &stream
             .message::<rpc::StateSubscriptionEvent>()
@@ -452,8 +453,6 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
     )
     .unwrap();
     assert!(matches!(changed.event, Some(Event::Change(_))));
-    let changed_version = changed.version.unwrap();
-    assert_eq!(changed_version.sequence, 1);
     client
         .stop_state_subscription(rpc::StopStateSubscriptionRequest {
             subscription_id: "state-subscription".into(),
@@ -474,7 +473,6 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
     client
         .start_state_subscription(
             to_rpc::<rpc::StartStateSubscriptionRequest>(&wire::StartStateSubscriptionRequest {
-                version: initial.version,
                 ..request
             })
             .unwrap(),
@@ -490,15 +488,14 @@ pub async fn test_状態購読_connectで初期状態と変更と再開を配信
             .to_owned_message(),
     )
     .unwrap();
-    assert_eq!(resumed.version, Some(changed_version));
-    let Some(Event::Change(payload)) = resumed.event else {
-        panic!("repository paths change after resubscription");
+    let Some(Event::Snapshot(payload)) = resumed.event else {
+        panic!("snapshot after resubscription");
     };
     assert_eq!(
-        payload.payload.and_then(|payload| payload.value),
-        Some(wire::state_payload::Value::RepositoryPaths(
-            wire::Liststring {
-                items: vec!["/next".into()],
+        payload.value,
+        Some(wire::state_payload::Value::TerminalStartupCommand(
+            wire::ResultString {
+                value: Some("/next".into())
             }
         ))
     );
@@ -551,7 +548,7 @@ pub async fn test_単発rpc_client切断で処理が終了する() {
 }
 
 #[tokio::test]
-pub async fn test_terminal購読_connectの後段配線と差分再開と流量停止中の応答を保証する() {
+pub async fn test_terminal購読_connectの後段配線と流量停止中の応答を保証する() {
     use releashd::test_support::integration::platform::TerminalSurfaceEventHub;
     use releashd::test_support::integration::terminal::TerminalSurface;
     use releashd::test_support::integration::terminal::TerminalSurfaceEventSink;
@@ -696,7 +693,6 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
     assert!(matches!(next_event!().event, Some(Event::Ready(_))));
 
     // When / Then: terminal is wired after subscriptions, as in build_router.
-    let mut initial_version = None;
     for path in ["/first", "/second", "/third"] {
         client
             .start_state_subscription(rpc::StartStateSubscriptionRequest {
@@ -710,7 +706,6 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
             .unwrap();
         let initial = next_event!();
         assert_eq!(initial.subscription_id, format!("input-{path}"));
-        assert_eq!(initial.version.as_ref().unwrap().sequence, 0);
         let Some(Event::Snapshot(payload)) = initial.event else {
             panic!("terminal snapshot");
         };
@@ -722,15 +717,12 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         };
         assert_eq!(snapshot.processed_report_units, 5000);
         assert_eq!(snapshot.sequence, 0);
-        if path == "/first" {
-            initial_version = initial.version;
-        }
         assert!(matches!(next_event!().event, Some(Event::Bookmark(_))));
     }
     client
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: "terminal-client".into(),
-            target: "repository-paths".into(),
+            target: "terminal-startup-command".into(),
             subscription_id: "repositories".into(),
             ..Default::default()
         })
@@ -749,11 +741,9 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         sequence: 1,
     });
     let output = next_event!();
-    assert_eq!(output.version.as_ref().unwrap().sequence, 1);
     let Some(Event::Change(change)) = output.event else {
         panic!("output delta");
     };
-    assert!(change.delta);
     let Some(Value::Terminal(event)) = change.payload.unwrap().value else {
         panic!("terminal payload");
     };
@@ -828,40 +818,6 @@ pub async fn test_terminal購読_connectの後段配線と差分再開と流量�
         .await
         .expect("source resume deadline")
         .unwrap();
-
-    // When / Then: resume the terminal's output number through the same wire contract.
-    client
-        .stop_state_subscription(rpc::StopStateSubscriptionRequest {
-            subscription_id: "input-/first".into(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let resume = wire::StartStateSubscriptionRequest {
-        client_id: "terminal-client".into(),
-        target: "terminal".into(),
-        args: vec!["/first".into()],
-        version: initial_version,
-        subscription_id: "resumed-input".into(),
-    };
-    client
-        .start_state_subscription(to_rpc::<rpc::StartStateSubscriptionRequest>(&resume).unwrap())
-        .await
-        .unwrap();
-    let resumed = next_event!();
-    assert_eq!(resumed.version.unwrap().sequence, 1);
-    assert!(matches!(resumed.event, Some(Event::Change(change)) if change.delta));
-    let mut bookmark = None;
-    for _ in 0..3 {
-        let event = next_event!();
-        if event.subscription_id == "resumed-input" {
-            bookmark = Some(event);
-            break;
-        }
-    }
-    let bookmark = bookmark.expect("resumed terminal bookmark");
-    assert_eq!(bookmark.version.unwrap().sequence, 1);
-    assert!(matches!(bookmark.event, Some(Event::Bookmark(_))));
 
     // When / Then: resize resynchronizes the subscriber with a snapshot.
     let request = wire::command_request_from_value("resize_terminal_surface", serde_json::json!({"owner": {"kind": "workspace", "workspacePath": "/third"}, "rows": 30, "cols": 120})).unwrap();
@@ -1065,7 +1021,7 @@ pub async fn test_notion購読_正規化した対象を共有し識別子ごと�
                 panic!("Notion failure expected")
             };
             assert!(snapshot.page.is_some());
-            assert_eq!(snapshot.read_error.unwrap().config_missing, Some(true));
+            assert!(snapshot.read_error.is_some());
             failures.insert(event.subscription_id);
         }
     }
@@ -1151,7 +1107,7 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: "existing".into(),
             subscription_id: "existing-paths".into(),
-            target: "repository-paths".into(),
+            target: "terminal-startup-command".into(),
             ..Default::default()
         })
         .await
@@ -1195,9 +1151,8 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
         .into_owned();
     assert_eq!(info.serving_status, rpc::ServingStatus::Stopping);
     subscriptions.test_set_repository_paths(vec!["/after-stop".into()]);
-    subscriptions.notify(
-        releashd::test_support::integration::subscriptions::StateChangeSource::Repositories,
-    );
+    subscriptions
+        .notify(releashd::test_support::integration::subscriptions::StateChangeSource::AppConfig);
     let event = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         stream.message::<rpc::StateSubscriptionEvent>(),
@@ -1214,9 +1169,9 @@ pub async fn test_connect受付_停止後の新規streamを拒否し既存stream
     };
     assert_eq!(
         change.payload.unwrap().value,
-        Some(wire::state_payload::Value::RepositoryPaths(
-            wire::Liststring {
-                items: vec!["/after-stop".into()]
+        Some(wire::state_payload::Value::TerminalStartupCommand(
+            wire::ResultString {
+                value: Some("/after-stop".into())
             }
         ))
     );

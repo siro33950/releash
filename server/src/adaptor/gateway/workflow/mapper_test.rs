@@ -194,7 +194,6 @@ pub(crate) mod tests {
             payload: serde_json::json!({
                 "workflow_name": "wf",
                 "worktree_path": "/repo",
-                "created_from": "cli",
                 "request": "ship feature",
                 "definition": {
                     "name": "wf",

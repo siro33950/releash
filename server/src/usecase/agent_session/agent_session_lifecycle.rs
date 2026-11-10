@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::domain::agent_session::aggregates::{
-    AgentSessionArchiveOutcome, AgentSessionAvailability, AgentSessionLifecycle,
-    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionProcessExitOutcome,
-    AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSessionAvailability, AgentSessionLifecycle, AgentSessionMutationOutcome,
+    AgentSessionOpenAction, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
+    ManagedPtyPresence,
 };
 use crate::domain::agent_session::{
     ProviderAgentLaunchGateway, ProviderAgentTerminalGateway, ProviderAvailabilityReader,
@@ -400,24 +400,6 @@ impl AgentSessionLifecycleUsecase {
             })?
             .ok_or(AgentSessionLifecycleUsecaseError::Corrupt)?;
         Ok((id.to_string(), node))
-    }
-
-    pub async fn archive(
-        &self,
-        agent_session_id: &str,
-        _caller_request_id: &str,
-    ) -> Result<AgentSessionArchiveOutcome, AgentSessionLifecycleUsecaseError> {
-        let session = self.required(agent_session_id).await?;
-        let outcome = session
-            .session()
-            .authorize_archive()
-            .map_err(|_| AgentSessionLifecycleUsecaseError::InvalidOperation)?;
-        self.execution_trees
-            .archive_execution_tree(session.session().tree_location().tree_id())
-            .await
-            .map_err(map_workflow_error)?;
-        self.notify_worktree(session.session().workspace().as_str());
-        Ok(outcome)
     }
 
     pub async fn stop_for_terminal_execution_tree_node_preserving_checkpoint(

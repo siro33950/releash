@@ -1,7 +1,7 @@
 use crate::usecase::repository_state::worktree::RepositoryStateWatcher;
 
 use crate::domain::git::Worktree;
-use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
+use crate::usecase::repository_dto::FileStatusDto;
 use crate::usecase::repository_state::error::RepositoryStateError;
 use crate::usecase::repository_state::scanner::RepositoryScanner;
 use crate::usecase::repository_state::service::RepositoryStateRepository;
@@ -57,7 +57,6 @@ pub struct CountingScanner {
     pub scans: AtomicUsize,
     pub prunes: parking_lot::Mutex<Vec<String>>,
     pub status: parking_lot::Mutex<Vec<FileStatusDto>>,
-    pub diff_stats: parking_lot::Mutex<Vec<FileDiffStatDto>>,
     pub worktrees: parking_lot::Mutex<Vec<Worktree>>,
 }
 
@@ -97,10 +96,6 @@ impl RepositoryScanner for CountingScanner {
         Ok(RepositorySnapshotParts {
             dirty_count: status.len(),
             status,
-            diff_stats: self.diff_stats.lock().clone(),
-            diff_file_tree: Vec::new(),
-            staged_diff_file_tree: Vec::new(),
-            changes_diff_file_tree: Vec::new(),
         })
     }
 
@@ -144,11 +139,7 @@ impl RepositoryScanner for EmptyScanner {
     fn scan(&self, _repo_path: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
         Ok(RepositorySnapshotParts {
             status: Vec::new(),
-            diff_stats: Vec::new(),
             dirty_count: 0,
-            diff_file_tree: Vec::new(),
-            staged_diff_file_tree: Vec::new(),
-            changes_diff_file_tree: Vec::new(),
         })
     }
 

@@ -1,9 +1,5 @@
 pub(crate) mod tests {
 
-    use releashd::test_support::integration::platform::changes_diff_tree_entries;
-    use releashd::test_support::integration::platform::diff_tree_entries;
-    use releashd::test_support::integration::platform::staged_diff_tree_entries;
-    use releashd::test_support::integration::platform::FileDiffStatDto;
     use releashd::test_support::integration::platform::FileStatusDto;
     use releashd::test_support::integration::platform::RepositoryScanner;
     use releashd::test_support::integration::repository::DefaultRepositoryScanner;
@@ -29,10 +25,8 @@ pub(crate) mod tests {
 
         let repository =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
-        let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let scanner = DefaultRepositoryScanner::new(
             repository.clone(),
-            code.clone(),
             Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
         );
         let repo_path = dir.path().to_str().unwrap();
@@ -50,44 +44,11 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(Into::into)
                 .collect();
-        let expected_diff_stats: Vec<FileDiffStatDto> =
-            releashd::test_support::integration::repository::get_status_diff_stats(repo_path)
-                .unwrap()
-                .into_iter()
-                .map(Into::into)
-                .collect();
         assert_eq!(snapshot.status, expected_status);
-        assert_eq!(snapshot.diff_stats, expected_diff_stats);
         assert_eq!(snapshot.dirty_count, 3);
         assert_eq!(
             scanner.scan_worktrees(repo_path).unwrap(),
             repository.list_working_worktrees(repo_path).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&snapshot.diff_file_tree).unwrap(),
-            serde_json::to_value(
-                code.build_diff_file_tree(diff_tree_entries(
-                    &expected_status,
-                    &expected_diff_stats,
-                ))
-            )
-            .unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&snapshot.staged_diff_file_tree).unwrap(),
-            serde_json::to_value(code.build_diff_file_tree(staged_diff_tree_entries(
-                &expected_status,
-                &expected_diff_stats,
-            )))
-            .unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&snapshot.changes_diff_file_tree).unwrap(),
-            serde_json::to_value(code.build_diff_file_tree(changes_diff_tree_entries(
-                &expected_status,
-                &expected_diff_stats,
-            )))
-            .unwrap()
         );
     }
 
@@ -108,7 +69,6 @@ pub(crate) mod tests {
 
         let repository =
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase());
-        let code = Arc::new(releashd::test_support::integration::platform::build_code_usecase());
         let config = Arc::new(
             releashd::test_support::integration::settings::AppConfig::new(
                 Default::default(),
@@ -122,7 +82,7 @@ pub(crate) mod tests {
                 Default::default(),
             ),
         );
-        let scanner = Arc::new(DefaultRepositoryScanner::new(repository, code, settings));
+        let scanner = Arc::new(DefaultRepositoryScanner::new(repository, settings));
         let state = releashd::test_support::integration::platform::WorktreeState::new(
             dir.path().to_str().unwrap().to_string(),
             true,
@@ -140,7 +100,7 @@ pub(crate) mod tests {
         let mut ready = false;
         for _ in 0..100 {
             let snapshot = state.snapshot_for_read();
-            if snapshot.version >= 1 && !snapshot.flags.loading {
+            if snapshot.version >= 1 {
                 ready = true;
                 break;
             }

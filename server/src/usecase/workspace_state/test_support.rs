@@ -55,10 +55,6 @@ impl WorkspaceStateRepository for MemoryWorkspaceStateRepository {
         Ok(state)
     }
 
-    async fn migrate_legacy(&self, _: &[String], _: &[String]) -> Result<(), WorkspaceStateError> {
-        panic!("unexpected migration")
-    }
-
     async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
         panic!("unexpected repository group read")
     }

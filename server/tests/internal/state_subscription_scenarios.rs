@@ -32,12 +32,8 @@ pub async fn test_workspaces購読_最後の停止と切断で実際のgit監視
         );
         let first = usecase.open("first".into()).unwrap();
         let second = usecase.open("second".into()).unwrap();
-        start_read(&usecase, "first", "workspaces", None)
-            .await
-            .unwrap();
-        start_read(&usecase, "second", "workspaces", None)
-            .await
-            .unwrap();
+        start_read(&usecase, "first", "workspaces").await.unwrap();
+        start_read(&usecase, "second", "workspaces").await.unwrap();
         let requirement = WatchRequirement::Git(fixture.path.clone());
         let id = usecase.test_watches()[&requirement];
         let snapshot = repository.get_snapshot(&fixture.path).unwrap();
@@ -82,7 +78,7 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
     stream.next().await;
     let target = SubscriptionTarget::ReviewThreads("repository".into()).to_string();
     // When
-    start_read(&usecase, "client", &target, None).await.unwrap();
+    start_read(&usecase, "client", &target).await.unwrap();
     // Then
     assert!(
         matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ReviewThreads(vec![])))
@@ -139,9 +135,9 @@ pub async fn test_ファイルthread購読_作成した行の側を変更配信�
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::FileThreads("repository".into(), "file.rs".into()).to_string();
-    start_read(&usecase, "client", &target, None).await.unwrap();
+    start_read(&usecase, "client", &target).await.unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::FileThreads(vec![], 0)))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::FileThreads(vec![])))
     );
     stream.next().await;
     // When
@@ -164,14 +160,14 @@ pub async fn test_ファイルthread購読_作成した行の側を変更配信�
         .unwrap();
     // Then
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::FileThreads(vec![thread.clone().into()], 1)))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::FileThreads(vec![thread.clone().into()])))
     );
     stop_read(&usecase, "client", &target).await.unwrap();
     // When
-    start_read(&usecase, "client", &target, None).await.unwrap();
+    start_read(&usecase, "client", &target).await.unwrap();
     // Then
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::FileThreads(vec![thread.into()], 1)))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::FileThreads(vec![thread.into()])))
     );
     stop_read(&usecase, "client", &target).await.unwrap();
 }

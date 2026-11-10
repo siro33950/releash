@@ -131,21 +131,6 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn parse_workflow_source(
-    content: &str,
-    facets_base_dir: &Path,
-) -> Result<WorkflowDefinitionYaml, StorageError> {
-    let diagnosis = diagnostics::diagnose_workflow_source(content, None);
-    let workflow = diagnosed_workflow(diagnosis)?;
-    let _ = resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
-    Ok(workflow)
-}
-
-pub fn load_workflow_source(dir: &Path, name: &str) -> Result<String, StorageError> {
-    let path = resolve_workflow_path(dir, name)?;
-    Ok(fs::read_to_string(path)?)
-}
-
 trait WorkflowDefinitionLoader {
     fn diagnose(
         &self,
@@ -355,18 +340,6 @@ pub(super) fn diagnosed_workflow(
             "workflow source could not be parsed",
         )])
     })
-}
-
-pub(crate) fn write_atomically(path: &Path, content: &str) -> Result<(), StorageError> {
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent)?;
-    }
-    let tmp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let result = fs::write(&tmp_path, content).and_then(|()| fs::rename(&tmp_path, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp_path);
-    }
-    result.map_err(StorageError::from)
 }
 
 #[cfg(test)]

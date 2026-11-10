@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use releashd::test_support::integration::providers::ProviderKind;
 use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
-use releashd::test_support::integration::sessions::AgentSessionArchiveOutcome;
+
 use releashd::test_support::integration::sessions::AgentSessionHistoryMetadata;
 use releashd::test_support::integration::sessions::AgentSessionHistoryResumeOutcome;
 use releashd::test_support::integration::sessions::AgentSessionHistoryResumeRequest;
@@ -416,7 +416,7 @@ fn durable_usecase(
 #[tokio::test]
 pub async fn test_agent_session_usecase_process_exit_resume_archive_deleteを永続化する() {
     let directory = tempfile::tempdir().unwrap();
-    let (_store, usecase) = durable_usecase(&directory);
+    let (store, usecase) = durable_usecase(&directory);
     usecase
         .create(
             "agent-session-1",
@@ -476,45 +476,24 @@ pub async fn test_agent_session_usecase_process_exit_resume_archive_deleteを永
         )
         .await
         .unwrap();
-    assert_eq!(
-        usecase
-            .archive("agent-session-1", "archive-1")
+    let records =
+        releashd::test_support::integration::workflow::read_tree_records(&store, "agent-session-1")
             .await
-            .unwrap(),
-        AgentSessionArchiveOutcome::Archived
-    );
+            .unwrap();
+    releashd::test_support::integration::workflow::append_single_fact(
+        &store,
+        &records[0].meta,
+        &releashd::test_support::integration::workflow::NodeFact::ArchiveRequested(
+            releashd::test_support::integration::workflow::ArchiveRequestedFact {
+                archived_at: 1.0,
+            },
+        ),
+        1_000,
+    )
+    .await
+    .unwrap();
     usecase.delete("agent-session-1", "delete-1").await.unwrap();
     assert!(usecase.find("agent-session-1").await.unwrap().is_none());
-}
-
-#[tokio::test]
-pub async fn test_agent_session_usecase_id不明archiveも確認なしで記録する() {
-    let directory = tempfile::tempdir().unwrap();
-    let (_store, usecase) = durable_usecase(&directory);
-    usecase
-        .create(
-            "agent-session-unknown",
-            WorkspaceIdentity::new("/repo"),
-            "/repo/worktree",
-            ProviderKind::Codex,
-            session_location("agent-session-unknown"),
-            "create-unknown",
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        usecase
-            .archive("agent-session-unknown", "archive-unknown")
-            .await
-            .unwrap(),
-        AgentSessionArchiveOutcome::Archived
-    );
-    assert!(usecase
-        .find("agent-session-unknown")
-        .await
-        .unwrap()
-        .is_some());
 }
 
 #[tokio::test]

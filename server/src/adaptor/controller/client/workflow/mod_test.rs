@@ -57,19 +57,6 @@ fn validate_execution_id_table_accepts_uuid_and_rejects_invalid_inputs() {
 }
 
 #[test]
-fn parse_execution_origin_rejects_unknown_values() {
-    assert!(matches!(
-        parse_execution_origin(None).unwrap(),
-        crate::domain::workflow::ExecutionOrigin::DesktopUi
-    ));
-    for invalid in ["remote", "unknown"] {
-        let err = parse_execution_origin(Some(invalid.to_string()))
-            .expect_err("unknown execution origins must be rejected");
-        assert!(err.contains("unknown created_from"));
-    }
-}
-
-#[test]
 fn parse_facet_kind_unknown_returns_error() {
     assert!(parse_facet_kind("unknown").is_err());
     assert!(parse_facet_kind("").is_err());

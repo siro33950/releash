@@ -1,4 +1,4 @@
-use super::{ExecutionOrigin, ExecutionStatus, TokenUsage};
+use super::{ExecutionStatus, TokenUsage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStatusFilter {
@@ -12,7 +12,6 @@ pub struct WorkflowExecutionSummary {
     pub status: ExecutionStatus,
     pub worktree_path: String,
     pub current_node: Option<String>,
-    pub created_from: ExecutionOrigin,
     pub started_at: f64,
     pub updated_at: f64,
     pub completed_at: Option<f64>,

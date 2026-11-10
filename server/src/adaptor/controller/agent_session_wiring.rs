@@ -181,28 +181,6 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle
         target.lock_execution_tree(tree_id).await
     }
 
-    async fn archive_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), crate::domain::workflow::WorkflowError> {
-        let target = self
-            .target
-            .read()
-            .map_err(|_| {
-                crate::domain::workflow::WorkflowError::external(
-                    "execution tree registrar poisoned",
-                )
-            })?
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-            .ok_or_else(|| {
-                crate::domain::workflow::WorkflowError::external(
-                    "execution tree runtime unavailable",
-                )
-            })?;
-        target.archive_execution_tree(tree_id, "manual").await
-    }
-
     async fn restore_execution_tree(
         &self,
         tree_id: &str,

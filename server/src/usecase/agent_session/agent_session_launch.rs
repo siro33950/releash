@@ -169,10 +169,6 @@ pub trait AgentSessionExecutionTreeLifecycle:
         tree_id: &str,
     ) -> Result<tokio::sync::OwnedMutexGuard<()>, crate::domain::workflow::WorkflowError>;
 
-    async fn archive_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), crate::domain::workflow::WorkflowError>;
     async fn restore_execution_tree(
         &self,
         tree_id: &str,

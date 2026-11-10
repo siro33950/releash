@@ -6,7 +6,6 @@ fn discovery() -> LocalApiDiscovery {
         daemon_id: "daemon".into(),
         pid: 42,
         process_started_at: 100,
-        ..Default::default()
     }
 }
 #[test]
@@ -114,22 +113,14 @@ fn test_発見ファイル_不正なmetadataと取得不能なprocess情報を�
 }
 
 #[test]
-fn test_発見ファイル_新しい識別子だけを書き古い識別子も読める() {
+fn test_発見ファイル_proto名で書き読み戻せる() {
     // Given
     let file = discovery();
     // When
     let mut json = serde_json::to_value(&file).unwrap();
     // Then
     assert_eq!(json["daemon_id"], "daemon");
-    assert!(json.get("instance_id").is_none());
     assert!(json.get("daemonId").is_none());
-    assert_eq!(
-        serde_json::from_value::<LocalApiDiscovery>(json.clone()).unwrap(),
-        file
-    );
-    json.as_object_mut().unwrap().remove("daemon_id");
-    json["instance_id"] = serde_json::json!("daemon");
-    json["process_started_at"] = serde_json::json!(100);
     assert_eq!(
         serde_json::from_value::<LocalApiDiscovery>(json.clone()).unwrap(),
         file

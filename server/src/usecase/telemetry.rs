@@ -8,9 +8,6 @@ pub enum TerminalLaunch {
 }
 
 pub trait TelemetryPort {
-    fn report_frontend_error(&self, error_type: &str, message: &str, stack: Option<&str>);
-    fn set_mounted_xterm_count(&self, count: u64);
-    fn record_usage_event(&self, name: &str);
     fn set_performance_enabled(&self, enabled: bool);
     fn set_crash_reporting_enabled(&self, enabled: bool);
 }
@@ -21,15 +18,6 @@ pub struct TelemetryUsecase<'a> {
 impl<'a> TelemetryUsecase<'a> {
     pub fn new(port: &'a dyn TelemetryPort) -> Self {
         Self { port }
-    }
-    pub fn report_frontend_error(&self, error_type: &str, message: &str, stack: Option<&str>) {
-        self.port.report_frontend_error(error_type, message, stack);
-    }
-    pub fn set_mounted_xterm_count(&self, count: u64) {
-        self.port.set_mounted_xterm_count(count);
-    }
-    pub fn record_usage_event(&self, name: &str) {
-        self.port.record_usage_event(name);
     }
     pub fn update_performance_telemetry(
         &self,

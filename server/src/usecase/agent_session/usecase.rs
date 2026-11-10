@@ -1,5 +1,3 @@
-#[cfg(any(test, feature = "test-support"))]
-use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -295,21 +293,6 @@ impl AgentSessionUsecase {
         let outcome = session
             .session_mut()
             .complete_resume(result)
-            .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
-        self.save_if_changed(session, caller_request_id).await?;
-        Ok(outcome)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn archive(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<AgentSessionArchiveOutcome, AgentSessionUsecaseError> {
-        let mut session = self.required(agent_session_id).await?;
-        let outcome = session
-            .session_mut()
-            .archive()
             .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
         self.save_if_changed(session, caller_request_id).await?;
         Ok(outcome)

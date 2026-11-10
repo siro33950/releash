@@ -104,10 +104,6 @@ pub struct FaultInjector {
     fail_before_commit: AtomicUsize,
     crash_after_commit_before_readback: AtomicUsize,
     drop_reply: AtomicUsize,
-    schema_fail_before_begin: AtomicUsize,
-    schema_fail_before_commit: AtomicUsize,
-    schema_commit_reply_loss: AtomicUsize,
-    schema_fail_before_readback: AtomicUsize,
     initial_create_fault_point: AtomicUsize,
     maintenance_fault_point: AtomicUsize,
     #[cfg(any(test, feature = "test-support"))]
@@ -223,28 +219,6 @@ impl FaultInjector {
 
     #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn wait_before_node_event_append_if_armed(&self) {}
-
-    pub fn take_schema_fail_before_begin(&self) -> bool {
-        Self::take(&self.schema_fail_before_begin)
-    }
-
-    pub fn take_schema_fail_before_commit(&self) -> bool {
-        Self::take(&self.schema_fail_before_commit)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn arm_schema_fail_before_commit(&self) {
-        self.schema_fail_before_commit
-            .fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn take_schema_commit_reply_loss(&self) -> bool {
-        Self::take(&self.schema_commit_reply_loss)
-    }
-
-    pub fn take_schema_fail_before_readback(&self) -> bool {
-        Self::take(&self.schema_fail_before_readback)
-    }
 
     pub fn take_initial_create_fault(&self, point: InitialCreateFaultPoint) -> bool {
         self.initial_create_fault_point

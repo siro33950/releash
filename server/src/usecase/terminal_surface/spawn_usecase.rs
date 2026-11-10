@@ -13,9 +13,7 @@ use crate::usecase::terminal_surface::output::{
     TerminalRegistration, TerminalSurfaceOutputControl,
 };
 
-pub struct GetOrSpawnTerminalOutcome {
-    pub surface: TerminalSurfaceSummary,
-}
+pub struct GetOrSpawnTerminalOutcome;
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_reserved<G: TerminalSurfaceGateway + ?Sized>(
@@ -186,7 +184,7 @@ pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
             if surface.owner != owner {
                 return Err(UsecaseError::OwnerConflict);
             }
-            return Ok(GetOrSpawnTerminalOutcome { surface });
+            return Ok(GetOrSpawnTerminalOutcome);
         }
 
         let reservation = match manager.reserve_spawn_slot(&session_key) {
@@ -198,11 +196,7 @@ pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
                     if surface.owner != owner {
                         return Err(UsecaseError::OwnerConflict);
                     }
-                    return Ok(GetOrSpawnTerminalOutcome {
-                        surface,
-
-
-                    });
+                    return Ok(GetOrSpawnTerminalOutcome);
                 }
                 continue;
             }
@@ -225,7 +219,7 @@ pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
                 return Err(error.into());
             }
         };
-        let surface = spawn_reserved(
+        spawn_reserved(
             performance,
             manager,
             output,
@@ -240,7 +234,7 @@ pub fn get_or_spawn_with_config<G: TerminalSurfaceGateway + ?Sized>(
             restored_terminal_surface,
         )?;
 
-        return Ok(GetOrSpawnTerminalOutcome { surface });
+        return Ok(GetOrSpawnTerminalOutcome);
     }
 }
 
@@ -271,7 +265,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
                 manager.remove_runtime(runtime_generation);
                 continue;
             }
-            return Ok(GetOrSpawnTerminalOutcome { surface });
+            return Ok(GetOrSpawnTerminalOutcome);
         }
         let reservation = match manager.reserve_spawn_slot(&session_key) {
             Ok(reservation) => reservation,
@@ -282,11 +276,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
                     if surface.owner != owner {
                         return Err(UsecaseError::OwnerConflict);
                     }
-                    return Ok(GetOrSpawnTerminalOutcome {
-                        surface,
-
-
-                    });
+                    return Ok(GetOrSpawnTerminalOutcome);
                 }
                 continue;
             }
@@ -302,7 +292,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
             }
         };
         checkpoint_lookup.finish();
-        let surface = spawn_reserved(
+        spawn_reserved(
             performance,
             manager,
             output,
@@ -316,7 +306,7 @@ pub fn get_or_spawn_with_process<G: TerminalSurfaceGateway + ?Sized>(
             Some(process),
             restored_terminal_surface,
         )?;
-        return Ok(GetOrSpawnTerminalOutcome { surface });
+        return Ok(GetOrSpawnTerminalOutcome);
     }
 }
 

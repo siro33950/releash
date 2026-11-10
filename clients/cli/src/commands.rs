@@ -526,9 +526,6 @@ fn history_entry(entry: wire::ReviewHistoryEntryDto) -> Result<Value, ConnectErr
         Entry::ThreadResolved(v) => {
             json!({"kind":"thread_resolved", "id":v.id,"threadId":v.thread_id,"actor":actor(v.actor)?,"outcome":v.outcome,"summary":v.summary,"at":v.at})
         }
-        Entry::ThreadDeleted(v) => {
-            json!({"kind":"thread_deleted", "id":v.id,"threadId":v.thread_id,"actor":actor(v.actor)?,"at":v.at})
-        }
     })
 }
 
@@ -576,12 +573,12 @@ async fn hook(dir: &Path, provider: HookProvider) -> Result<(), ConnectError> {
         .receive_provider_signal(to_rpc::<rpc::ReceiveProviderSignalRequest>(&request)?)
         .await?;
     let response: wire::ReceiveProviderSignalResponse = to_wire(&response.into_owned())?;
-    match absent(response.result)? {
-        wire::receive_provider_signal_response::Result::Rejected(value) => Err(ConnectError::new(
+    match response.rejected {
+        Some(value) => Err(ConnectError::new(
             ErrorCode::FailedPrecondition,
             value.reason,
         )),
-        _ => Ok(()),
+        None => Ok(()),
     }
 }
 

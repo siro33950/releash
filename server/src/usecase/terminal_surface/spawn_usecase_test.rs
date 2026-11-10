@@ -517,7 +517,7 @@ fn test_agent_session_terminal再開_終了済みruntimeを新しいprocessへ�
     )
     .unwrap();
 
-    let result = get_or_spawn_with_process(
+    let _result = get_or_spawn_with_process(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -529,8 +529,6 @@ fn test_agent_session_terminal再開_終了済みruntimeを新しいprocessへ�
         process,
     )
     .unwrap();
-
-    assert_ne!(result.surface.runtime_generation.value(), old_generation);
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
     assert!(gateway.snapshot(old_generation).is_none());
 }
@@ -618,12 +616,8 @@ fn test_ターミナル画面_取得または生成_同一所有者の生成中�
     *released.lock().unwrap() = true;
     changed.notify_all();
 
-    let first = first.join().unwrap().unwrap();
-    let second = second.join().unwrap().unwrap();
-    assert_eq!(
-        first.surface.runtime_generation,
-        second.surface.runtime_generation
-    );
+    let _first = first.join().unwrap().unwrap();
+    let _second = second.join().unwrap().unwrap();
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
 }
 
@@ -905,9 +899,9 @@ fn test_ターミナル画面生成_後始末終了失敗時は明示再試行�
 #[test]
 fn test_ターミナル画面取得または生成_既存所有者なら生成せず画面を返す() {
     let gateway = MockGateway::new();
-    let runtime_generation = gateway.insert_session("session-1", "/repo");
+    let _runtime_generation = gateway.insert_session("session-1", "/repo");
 
-    let result = get_or_spawn(
+    let _result = get_or_spawn(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -918,11 +912,6 @@ fn test_ターミナル画面取得または生成_既存所有者なら生成�
         None,
     )
     .unwrap();
-
-    assert_eq!(
-        result.surface.runtime_generation.value(),
-        runtime_generation
-    );
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 0);
 }
 
@@ -931,7 +920,7 @@ fn test_ターミナル画面取得または生成_既存所有者確認で復�
     let gateway = MockGateway::new();
     gateway.insert_session("session-1", "/repo");
 
-    let result = get_or_spawn(
+    let _result = get_or_spawn(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -942,16 +931,14 @@ fn test_ターミナル画面取得または生成_既存所有者確認で復�
         None,
     )
     .unwrap();
-
-    let _: TerminalSurfaceSummary = result.surface;
 }
 
 #[test]
 fn test_ターミナル画面取得または生成_別ワークスペースの同一所有者識別子を隔離して生成する() {
     let gateway = MockGateway::new();
-    let runtime_generation = gateway.insert_session("session-1", "/repo");
+    let _runtime_generation = gateway.insert_session("session-1", "/repo");
 
-    let result = get_or_spawn(
+    let _result = get_or_spawn(
         &crate::usecase::test_helpers::NoopPerformance,
         &gateway,
         &NoopOutput,
@@ -962,11 +949,6 @@ fn test_ターミナル画面取得または生成_別ワークスペースの�
         None,
     )
     .unwrap();
-
-    assert_ne!(
-        result.surface.runtime_generation.value(),
-        runtime_generation
-    );
     assert_eq!(*gateway.spawn_count.lock().unwrap(), 1);
 }
 

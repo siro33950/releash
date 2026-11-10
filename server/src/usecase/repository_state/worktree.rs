@@ -308,12 +308,7 @@ impl WorktreeState {
     }
 
     pub fn snapshot_for_read(&self) -> Arc<RepositorySnapshot> {
-        let snapshot = self.snapshot.read().clone();
-        if self.refreshing.load(Ordering::SeqCst) {
-            let stale = snapshot.version > 0;
-            return Arc::new(snapshot.with_read_flags(stale, true));
-        }
-        snapshot
+        self.snapshot.read().clone()
     }
 
     pub fn commit_snapshot(
@@ -344,10 +339,6 @@ impl WorktreeState {
     pub(crate) fn mark_scan_failed(&self, error: &RepositoryStateError) {
         *self.scan_failure.write() = Some(crate::usecase::failure::WorkFailure::from_error(error));
         self.refreshing.store(false, Ordering::SeqCst);
-        let current = self.snapshot.read().clone();
-        if current.version == 0 && current.flags.loading {
-            *self.snapshot.write() = Arc::new(current.with_read_flags(false, false));
-        }
     }
 
     fn notification_paths(&self) -> Vec<String> {

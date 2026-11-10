@@ -212,15 +212,15 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
         vec![resolved]
     );
     // When
-    repository
-        .stored
-        .lock()
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .session_mut()
-        .archive()
-        .unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(
+        repository
+            .stored
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .session_mut(),
+    );
     let count = store.0.lock().unwrap().len();
     // Then
     assert!(usecase
@@ -264,21 +264,6 @@ async fn test_sessionレビュー_解決したworkspaceで作成追記解決と�
         .is_none());
     assert!(usecase
         .history(data.clone(), "session", "missing".into())
-        .await
-        .unwrap()
-        .is_none());
-    // When
-    comments
-        .delete_thread(&data, "/workspace", ReviewActor::human(), &thread.id)
-        .unwrap();
-    // Then
-    assert!(usecase
-        .get_thread(data.clone(), "session", thread.id.clone())
-        .await
-        .unwrap()
-        .is_none());
-    assert!(usecase
-        .history(data.clone(), "session", thread.id.clone())
         .await
         .unwrap()
         .is_none());

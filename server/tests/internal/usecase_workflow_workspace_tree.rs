@@ -317,7 +317,13 @@ pub async fn test_workspaceツリー_背景失敗の対象と理由を表示し�
             node.id().to_string(),
         )
     };
-    let before = usecase.workspace_tree(&worktree).await.unwrap();
+    let before = usecase
+        .retained_workspace_trees(&[usecase.resolve_worktree_path(&worktree).unwrap()])
+        .await
+        .pop()
+        .unwrap()
+        .value
+        .unwrap();
     let (_, node_status, error_reason, node_id) = statuses(&before);
     assert_eq!(node_status, "active");
     assert!(error_reason.is_none());
@@ -331,7 +337,16 @@ pub async fn test_workspaceツリー_背景失敗の対象と理由を表示し�
                 message: "cancelled".into(),
             },
         );
-        assert_eq!(usecase.workspace_tree(&worktree).await.unwrap(), before);
+        assert_eq!(
+            usecase
+                .retained_workspace_trees(&[usecase.resolve_worktree_path(&worktree).unwrap()])
+                .await
+                .pop()
+                .unwrap()
+                .value
+                .unwrap(),
+            before
+        );
         failures.observe(
             &key,
             WorkFailure {
@@ -339,47 +354,29 @@ pub async fn test_workspaceツリー_背景失敗の対象と理由を表示し�
                 message: "repair required".into(),
             },
         );
-        let failed = usecase.workspace_tree(&worktree).await.unwrap();
+        let failed = usecase
+            .retained_workspace_trees(&[usecase.resolve_worktree_path(&worktree).unwrap()])
+            .await
+            .pop()
+            .unwrap()
+            .value
+            .unwrap();
         let (root_status, node_status, error_reason, _) = statuses(&failed);
         assert_eq!(root_status, "attention");
         assert_eq!(node_status, "attention");
         assert_eq!(error_reason.as_deref(), Some("repair required"));
         failures.resolve(&key);
-        assert_eq!(usecase.workspace_tree(&worktree).await.unwrap(), before);
+        assert_eq!(
+            usecase
+                .retained_workspace_trees(&[usecase.resolve_worktree_path(&worktree).unwrap()])
+                .await
+                .pop()
+                .unwrap()
+                .value
+                .unwrap(),
+            before
+        );
     }
-}
-
-#[tokio::test]
-pub async fn test_実行木の選択_選択先が画面に出す木にあるかを返す() {
-    // Given
-    let execution_id = "00000000-0000-4000-8000-000000001702";
-    let (_directory, usecase, worktree) = seeded_workflow(Default::default(), execution_id).await;
-
-    let node_id = usecase
-        .workspace_tree(&worktree)
-        .await
-        .unwrap()
-        .visible()
-        .roots()[0]
-        .children()[0]
-        .id()
-        .to_string();
-
-    // When
-    let (tree, selected) = usecase
-        .workspace_tree_selection(&worktree, &node_id)
-        .await
-        .unwrap();
-    let (missing_tree, missing) = usecase
-        .workspace_tree_selection(&worktree, "removed-node")
-        .await
-        .unwrap();
-
-    // Then: 選択先にできるのは葉の Node で、無くなった Node は木に無いと返る
-    assert!(selected);
-    assert!(!missing);
-    assert_eq!(tree, missing_tree);
-    assert_eq!(tree.visible().roots()[0].id(), execution_id);
 }
 
 #[tokio::test]

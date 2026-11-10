@@ -19,8 +19,8 @@ use crate::domain::local_event::LocalEventQueryError;
 use crate::domain::workflow::{
     ApprovalGrantedFact, ArtifactProducedFact, CommandSpawnedFact, ExecutionTreeLaunch, NodeFact,
     NodeFactMeta, NodeFactRecord, NodeKindName, ProcessExitedFact, RuntimeFailureObservedFact,
-    SessionAttachedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, SubmitRejectedFact,
-    TreeRootFact, WorkflowEvent,
+    SessionAttachedFact, StartedFact, StopReceivedFact, SubmitReceivedFact, TreeRootFact,
+    WorkflowEvent,
 };
 use crate::domain::workspace_tree::WorkspaceIdentity;
 
@@ -225,7 +225,6 @@ fn fact_rows_for_events(
             WorkflowEvent::ExecutionStarted {
                 repository_root,
                 worktree_path,
-                created_from,
                 request,
                 definition,
                 ..
@@ -234,7 +233,6 @@ fn fact_rows_for_events(
                     repository_root: repository_root.clone(),
                     workspace_identity: WorkspaceIdentity::new(worktree_path).as_str().to_string(),
                     worktree_path: worktree_path.clone(),
-                    created_from: *created_from,
                     request: request.clone(),
                     workflow_name: definition.name.clone(),
                     definition: Some(definition.clone()),
@@ -431,21 +429,6 @@ fn fact_rows_for_events(
                 });
                 rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
             }
-            WorkflowEvent::ContractViolated {
-                node_execution_id,
-                violations,
-                repair_attempt,
-                request_id,
-                ..
-            } => {
-                let meta = resolve(&batch_meta, node_execution_id)?;
-                let fact = NodeFact::SubmitRejected(SubmitRejectedFact {
-                    violations: violations.clone(),
-                    repair_attempt: *repair_attempt,
-                    request_id: request_id.clone(),
-                });
-                rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
-            }
             WorkflowEvent::ExecutionCompleted { .. } | WorkflowEvent::ExecutionAborted { .. } => {
                 let meta = match batch_roots.get(tree_id) {
                     Some(meta) => meta.clone(),
@@ -477,9 +460,7 @@ fn fact_rows_for_events(
                     });
                     rows.push(pending_row(&meta, tree_id, &fact, timestamp)?);
                 }
-            }
-            // 遷移・観測の導出はログに書かない。
-            WorkflowEvent::StallObserved { .. } | WorkflowEvent::StallCleared { .. } => {}
+            } // 遷移・観測の導出はログに書かない。
         }
     }
     Ok(rows)
@@ -764,19 +745,6 @@ pub(crate) fn records_from_appended_rows(
 
 pub(crate) fn records_from_tree_rows(rows: &[NodeEventRow]) -> Result<Vec<NodeFactRecord>, String> {
     let terminal = terminal_fact_in_rows(rows)?;
-    let mut legacy_worktrees = HashMap::new();
-    if terminal {
-        for row in rows.iter().take_while(|row| {
-            !fact_codec::terminal_event_types().contains(&row.event_type.as_str())
-        }) {
-            if row.event_type == "isolated_worktree_created" {
-                legacy_worktrees.insert(
-                    (row.node_execution_id.as_str(), row.attempt),
-                    decode_legacy_worktree(&row.detail)?,
-                );
-            }
-        }
-    }
     rows.iter()
         .filter_map(|row| {
             if terminal && row.event_type == "started" {
@@ -789,11 +757,6 @@ pub(crate) fn records_from_tree_rows(rows: &[NodeEventRow]) -> Result<Vec<NodeFa
                                     super::stored_definition::decode_started(&row.detail),
                                 ) {
                                     root.definition = decoded.root.and_then(|root| root.definition);
-                                }
-                                if started.worktree.is_none() {
-                                    started.worktree = legacy_worktrees
-                                        .get(&(row.node_execution_id.as_str(), row.attempt))
-                                        .cloned();
                                 }
                             }
                             Ok(NodeFactRecord {
@@ -923,53 +886,11 @@ pub async fn read_tree_records(
     read_tree_records_from(&FactLogReadBackend::Live(Arc::clone(store)), tree_id).await
 }
 
-fn decode_legacy_worktree(
-    detail: &str,
-) -> Result<crate::domain::workflow::IsolatedWorktree, String> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct RetiredWorktreeCreated {
-        #[serde(rename = "repositoryRoot")]
-        _repository_root: String,
-        worktree_path: String,
-        branch: String,
-    }
-    serde_json::from_str::<RetiredWorktreeCreated>(detail)
-        .map(|worktree| crate::domain::workflow::IsolatedWorktree {
-            path: worktree.worktree_path,
-            branch: worktree.branch,
-        })
-        .map_err(|error| format!("node fact decode failed: {error}"))
-}
-
 pub(crate) fn decode_stored_fact(
     event_type: &str,
     detail: &str,
-    timestamp_ms: i64,
 ) -> Result<Option<NodeFact>, String> {
     match event_type {
-        "isolated_worktree_created" => decode_legacy_worktree(detail).map(|_| None),
-        "isolated_worktree_released" | "isolated_worktree_lost" => {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(detail)
-                .map(|_| None)
-                .map_err(|error| error.to_string())
-        }
-        "archive_requested" => {
-            let mut detail: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(detail).map_err(|error| error.to_string())?;
-            if detail
-                .get("archivedAt")
-                .is_none_or(serde_json::Value::is_null)
-            {
-                detail.insert(
-                    "archivedAt".into(),
-                    serde_json::json!(timestamp_ms as f64 / 1000.0),
-                );
-            }
-            fact_codec::decode(event_type, &serde_json::Value::Object(detail).to_string())
-                .map(Some)
-                .map_err(|error| error.to_string())
-        }
         "started" => super::stored_definition::decode_started(detail).map(Some),
         _ => fact_codec::decode(event_type, detail)
             .map(Some)
@@ -982,7 +903,7 @@ pub fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecord>, Str
     let kind = kind_from_column(&row.kind)?;
     let attempt = u32::try_from(row.attempt)
         .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?;
-    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail, row.timestamp_ms)? else {
+    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail)? else {
         return Ok(None);
     };
     Ok(Some(NodeFactRecord {
@@ -1279,7 +1200,6 @@ pub(crate) fn metadata_record_from_read_model(
         status: model.status,
         worktree_path: model.worktree_path.clone(),
         current_node: model.current_node.clone(),
-        created_from: model.created_from,
         started_at_bits: model.started_at.to_bits(),
         updated_at_bits: model.updated_at.to_bits(),
         completed_at_bits: model.completed_at.map(f64::to_bits),

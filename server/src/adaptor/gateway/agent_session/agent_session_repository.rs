@@ -11,8 +11,7 @@ use crate::adaptor::gateway::local_event_store::writer::PreparedNodeEvent;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::adaptor::gateway::workflow::fact_log;
 use crate::domain::agent_session::aggregates::{
-    AgentSession, AgentSessionLifecycle, AgentSessionLifecycleEvent,
-    AgentSessionRemovalAuthorization,
+    AgentSession, AgentSessionLifecycleEvent, AgentSessionRemovalAuthorization,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
@@ -126,11 +125,8 @@ impl LocalAgentSessionRepository {
                         request_id: request_id.clone(),
                     })
                 }
-                AgentSessionLifecycleEvent::LifecycleChanged {
-                    lifecycle,
-                    last_exit_abnormal,
-                } => match lifecycle {
-                    AgentSessionLifecycle::Paused => NodeFact::ProcessExited(ProcessExitedFact {
+                AgentSessionLifecycleEvent::ProcessExited { last_exit_abnormal } => {
+                    NodeFact::ProcessExited(ProcessExitedFact {
                         exit_code: if *last_exit_abnormal {
                             session.last_exit_code()
                         } else {
@@ -140,15 +136,9 @@ impl LocalAgentSessionRepository {
                         failure_reason: last_exit_abnormal
                             .then(|| "provider process exited abnormally".to_string()),
                         failure_kind: None,
-                    }),
-                    AgentSessionLifecycle::Open => NodeFact::ResumeRequested,
-                    AgentSessionLifecycle::Archived => {
-                        NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                            reason: "manual".into(),
-                            archived_at: timestamp_ms as f64 / 1000.0,
-                        })
-                    }
-                },
+                    })
+                }
+                AgentSessionLifecycleEvent::Resumed => NodeFact::ResumeRequested,
                 AgentSessionLifecycleEvent::ActivityObserved { activity } => {
                     NodeFact::AgentActivityObserved(AgentActivityObservedFact {
                         activity: *activity,
@@ -189,8 +179,8 @@ impl LocalAgentSessionRepository {
         derive_session(session_id, location, &context, records)
     }
 
-    /// archive からの復帰は restore_requested として記録する（LifecycleChanged
-    /// Open の既定は resume_requested のため、呼び出し前の lifecycle で分岐する）。
+    /// archive からの復帰は restore_requested として記録する（Resumed の既定は
+    /// resume_requested のため、呼び出し前の lifecycle で分岐する）。
     async fn commit_provider_batch(
         &self,
         session_id: &str,
@@ -1013,7 +1003,7 @@ pub(crate) fn agent_session_from_fields(
             .map_err(|_| AgentSessionRepositoryError::Corrupt)?;
         session.take_uncommitted_events();
     }
-    session.restore_derived_lifecycle(lifecycle, view.last_exit_abnormal, view.activity);
+    session.restore_derived_lifecycle(lifecycle, view.activity);
     session.restore_display_names(
         view.manual_name
             .map(AgentSessionDisplayName::new)

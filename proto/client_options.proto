@@ -6,17 +6,14 @@ extend google.protobuf.MessageOptions {
   optional string json_wrapper = 51000;
   optional bool json_unit = 51001;
   optional string json_tag = 51003;
-  optional string json_content = 51004;
   optional bool json_untagged = 51006;
 }
 extend google.protobuf.FieldOptions {
   optional bool json_required = 51010;
   optional bool json_nullable = 51011;
-  optional bool json_default = 51012;
   optional bool json_omit_empty = 51013;
   optional bool json_omit_none = 51014;
   optional string json_literal = 51015;
-  optional bool json_flatten = 51016;
 }
 extend google.protobuf.EnumValueOptions {
   optional string json_enum_name = 51020;
@@ -30,15 +27,8 @@ message ConnectionBackoff {
   optional uint32 reset_after_ms = 5;
 }
 
-enum ReconnectStatusCode {
-  RECONNECT_STATUS_CODE_UNSPECIFIED = 0;
-  RECONNECT_STATUS_CODE_RESOURCE_EXHAUSTED = 8;
-  RECONNECT_STATUS_CODE_ABORTED = 10;
-  RECONNECT_STATUS_CODE_UNAVAILABLE = 14;
-}
 extend google.protobuf.ServiceOptions {
   optional ConnectionBackoff connection_backoff = 51030;
-  repeated ReconnectStatusCode reconnect_status_code = 51031;
   optional uint32 state_stream_silence_ms = 51032;
   optional uint32 default_timeout_ms = 51033;
   optional uint32 min_connect_timeout_ms = 51034;
@@ -56,6 +46,4 @@ extend google.protobuf.FileOptions {
   optional string data_dir_name = 51050;
   optional string development_data_dir_suffix = 51051;
   optional string data_dir_env = 51052;
-  // 移行前の既定のデータフォルダ名。既定のデータフォルダに自分のサーバが無いとき、CLI とサーバはこの名前の保存先を見る。
-  optional string legacy_data_dir_name = 51053;
 }

@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use attributes::{
-    usage_event_allowed, HotPathMetric, OpStatus, StartupMetric, TerminalLaunchMetric,
-    KEY_OPERATION, KEY_STATUS, KEY_USAGE_EVENT,
+    HotPathMetric, OpStatus, StartupMetric, TerminalLaunchMetric, KEY_OPERATION, KEY_STATUS,
 };
 use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
@@ -46,11 +45,11 @@ static TEST_METRIC_RECORDS: Mutex<Vec<TestMetricRecord>> = Mutex::new(Vec::new()
 static TEST_TELEMETRY_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static PERFORMANCE_CONFIGURED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static PERFORMANCE_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
-    static STARTUP_ORIGIN: std::cell::RefCell<Option<Instant>> = const { std::cell::RefCell::new(None) };
-    static FIRST_REPO_SNAPSHOT_RECORDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static TEST_TELEMETRY_RECORDING_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PERFORMANCE_CONFIGURED: std::cell::Cell<bool> = const {std::cell::Cell::new(false) };
+    static PERFORMANCE_ENABLED: std::cell::Cell<bool> = const {std::cell::Cell::new(true) };
+    static STARTUP_ORIGIN: std::cell::RefCell<Option<Instant>> = const {std::cell::RefCell::new(None) };
+    static FIRST_REPO_SNAPSHOT_RECORDED: std::cell::Cell<bool> = const {std::cell::Cell::new(false) };
+    static TEST_TELEMETRY_RECORDING_ENABLED: std::cell::Cell<bool> = const {std::cell::Cell::new(false) };
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -75,7 +74,6 @@ struct Metrics {
     startup_duration: Histogram<f64>,
     terminal_launch_duration: Histogram<f64>,
     operation_status: Counter<u64>,
-    usage_events: Counter<u64>,
     _rss_gauge: ObservableGauge<u64>,
     _cpu_gauge: ObservableGauge<f64>,
     _xterm_gauge: ObservableGauge<u64>,
@@ -191,10 +189,6 @@ pub fn is_performance_active() -> bool {
     load_performance_configured() && load_performance_enabled()
 }
 
-pub(crate) fn set_mounted_xterm_count(count: u64) {
-    MOUNTED_XTERM_COUNT.store(count, Ordering::Relaxed);
-}
-
 pub(crate) fn set_active_pty_count(count: u64) {
     ACTIVE_PTY_COUNT.store(count, Ordering::Relaxed);
 }
@@ -219,7 +213,6 @@ pub(crate) fn install_metrics() {
             .with_unit("ms")
             .build(),
         operation_status: meter.u64_counter("releash.operation.status").build(),
-        usage_events: meter.u64_counter("releash.usage.events").build(),
         _rss_gauge: meter
             .u64_observable_gauge("releash.process.rss_bytes")
             .with_unit("By")
@@ -469,19 +462,6 @@ pub(crate) fn record_terminal_launch(metric: TerminalLaunchMetric, elapsed: Dura
         return;
     };
     metrics.terminal_launch_duration.record(duration_ms, &attrs);
-}
-
-pub(crate) fn record_usage_event(name: &str) {
-    if !is_performance_active() || !usage_event_allowed(name) {
-        return;
-    }
-    let attrs = [KeyValue::new(KEY_USAGE_EVENT, name.to_string())];
-    #[cfg(any(test, feature = "test-support"))]
-    record_test_metric("releash.usage.events", 1.0, &attrs);
-    let Some(metrics) = METRICS.get() else {
-        return;
-    };
-    metrics.usage_events.add(1, &attrs);
 }
 
 #[cfg(test)]

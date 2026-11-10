@@ -101,7 +101,6 @@ pub(crate) mod tests {
         let snapshot = service.get_snapshot(dir.path().to_str().unwrap()).unwrap();
 
         assert_eq!(snapshot.version, 0);
-        assert!(!snapshot.flags.loading);
         assert_eq!(snapshot.status.len(), 1);
         assert_eq!(scanner.scan_count(), 1);
         assert_eq!(service.worktree_count(), 0);

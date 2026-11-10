@@ -1,12 +1,12 @@
 use super::{
-    AgentSession, AgentSessionArchiveOutcome, AgentSessionAvailability,
-    AgentSessionInitialInstructionOutcome, AgentSessionInstructionError, AgentSessionLifecycle,
-    AgentSessionLifecycleEvent, AgentSessionMutationOutcome, AgentSessionOpenAction,
-    AgentSessionOperations, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
-    AgentSessionTreeLocation, ManagedPtyPresence,
+    AgentSession, AgentSessionAvailability, AgentSessionInitialInstructionOutcome,
+    AgentSessionInstructionError, AgentSessionLifecycle, AgentSessionLifecycleEvent,
+    AgentSessionMutationOutcome, AgentSessionOpenAction, AgentSessionOperations,
+    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, AgentSessionTreeLocation,
+    ManagedPtyPresence,
 };
 use super::{
-    AgentSessionArchiveError, AgentSessionAssociationError, AgentSessionCreationError,
+    AgentSessionAssociationError, AgentSessionCreationError,
     AgentSessionExecutionTreeNodeStopError, AgentSessionInitialInstructionError,
     AgentSessionRecoveryError, AgentSessionRemovalAuthorization, AgentSessionRemovalError,
     AgentSessionTreeLocationError,
@@ -373,10 +373,7 @@ fn test_agent_session_resume_成功時にopen_eventを発生させる() {
 
     assert_eq!(
         session.uncommitted_events(),
-        &[AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Open,
-            last_exit_abnormal: false,
-        }]
+        &[AgentSessionLifecycleEvent::Resumed]
     );
 }
 
@@ -400,131 +397,6 @@ fn test_agent_session_resume_paused以外では拒否する() {
 }
 
 #[test]
-fn test_agent_sessionアーカイブ_session起動由来でprovider_session_id既知ならarchivedになる() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-
-    let outcome = session.archive().unwrap();
-
-    assert_eq!(outcome, AgentSessionArchiveOutcome::Archived);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
-}
-
-#[test]
-fn test_agent_sessionアーカイブ_永続化するarchived_eventを発生させる() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-    session.take_uncommitted_events();
-
-    session.archive().unwrap();
-
-    assert_eq!(
-        session.uncommitted_events(),
-        &[AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Archived,
-            last_exit_abnormal: false,
-        }]
-    );
-}
-
-#[test]
-fn test_agent_sessionアーカイブ_archivedへの再要求は冪等になる() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-    session.archive().unwrap();
-
-    let outcome = session.archive().unwrap();
-
-    assert_eq!(outcome, AgentSessionArchiveOutcome::AlreadyArchived);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
-}
-
-#[test]
-fn test_agent_sessionアーカイブ_pausedからarchivedへ遷移する() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-    session.observe_provider_process_exit(Some(0));
-
-    let outcome = session.archive().unwrap();
-
-    assert_eq!(outcome, AgentSessionArchiveOutcome::Archived);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
-}
-
-#[test]
-fn test_agent_sessionアーカイブ_provider_session_id不明でもarchiveできる() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        standalone_location("agent-session-1"),
-    )
-    .unwrap();
-
-    let outcome = session.archive().unwrap();
-
-    assert_eq!(outcome, AgentSessionArchiveOutcome::Archived);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
-}
-
-#[test]
-fn test_agent_sessionアーカイブ_workflow起動由来では拒否する() {
-    let mut session = AgentSession::create(
-        "agent-session-1",
-        WorkspaceIdentity::new("/repo"),
-        "/repo/.worktrees/feature",
-        ProviderKind::Claude,
-        workflow_location("workflow-execution-1", "node-execution-1"),
-    )
-    .unwrap();
-    session
-        .associate_provider_session("provider-session-1", None)
-        .unwrap();
-
-    let error = session.archive().unwrap_err();
-
-    assert_eq!(error, AgentSessionArchiveError::WorkflowOwned);
-    assert_eq!(session.lifecycle(), AgentSessionLifecycle::Open);
-}
-
-#[test]
 fn test_agent_session削除_archivedのsession起動由来だけを許可する() {
     let mut session = AgentSession::create(
         "agent-session-1",
@@ -537,7 +409,7 @@ fn test_agent_session削除_archivedのsession起動由来だけを許可する(
     session
         .associate_provider_session("provider-session-1", None)
         .unwrap();
-    session.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(&mut session);
 
     let authorization = session.authorize_delete().unwrap();
 
@@ -731,10 +603,6 @@ fn test_workflow起動由来のroot_sessionも利用者操作とgcを拒否し�
         }
     );
     assert_eq!(
-        session.archive().unwrap_err(),
-        AgentSessionArchiveError::WorkflowOwned
-    );
-    assert_eq!(
         session.authorize_restore().unwrap_err(),
         AgentSessionRecoveryError::WorkflowOwned
     );
@@ -753,7 +621,6 @@ fn test_workflow起動由来のroot_sessionも利用者操作とgcを拒否し�
 
     session.restore_derived_lifecycle(
         AgentSessionLifecycle::Archived,
-        false,
         AgentSessionActivity::Working,
     );
 
@@ -807,7 +674,12 @@ fn test_agent_session実行木node終端停止_node_execution一致だけを許�
         AgentSessionMutationOutcome::Applied
     );
     assert_eq!(workflow_session.lifecycle(), AgentSessionLifecycle::Paused);
-    assert!(!workflow_session.last_exit_abnormal());
+    assert!(matches!(
+        workflow_session.uncommitted_events().last(),
+        Some(AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: false
+        })
+    ));
     assert_eq!(
         standalone_session
             .stop_for_terminal_execution_tree_node("agent-session-2")
@@ -818,7 +690,12 @@ fn test_agent_session実行木node終端停止_node_execution一致だけを許�
         standalone_session.lifecycle(),
         AgentSessionLifecycle::Paused
     );
-    assert!(!standalone_session.last_exit_abnormal());
+    assert!(matches!(
+        standalone_session.uncommitted_events().last(),
+        Some(AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: false
+        })
+    ));
 }
 
 #[test]
@@ -884,7 +761,7 @@ fn test_agent_session生成_session起動木rootとsessionのid不一致を拒�
 }
 
 #[test]
-fn test_agent_session導出復元_lifecycleと異常終了と活動状態を未commit事実なしで設定する() {
+fn test_agent_session導出復元_lifecycleと活動状態を未commit事実なしで設定する() {
     let mut session = AgentSession::create(
         "agent-session-1",
         WorkspaceIdentity::new("/repo"),
@@ -897,12 +774,10 @@ fn test_agent_session導出復元_lifecycleと異常終了と活動状態を未c
 
     session.restore_derived_lifecycle(
         AgentSessionLifecycle::Paused,
-        true,
         AgentSessionActivity::AwaitingAnswer,
     );
 
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
-    assert!(session.last_exit_abnormal());
     assert_eq!(session.activity(), AgentSessionActivity::AwaitingAnswer);
     assert!(session.uncommitted_events().is_empty());
 }
@@ -1093,8 +968,7 @@ fn test_agent_session_process終了_永続化するpaused_eventを発生させ�
 
     assert_eq!(
         session.uncommitted_events(),
-        &[AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
+        &[AgentSessionLifecycleEvent::ProcessExited {
             last_exit_abnormal: false,
         }]
     );
@@ -1134,7 +1008,7 @@ fn test_agent_session_process終了_archivedへの遅延通知は状態を変え
     session
         .associate_provider_session("provider-session-1", None)
         .unwrap();
-    session.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(&mut session);
     session.take_uncommitted_events();
 
     let outcome = session.observe_provider_process_exit(Some(0));
@@ -1181,11 +1055,15 @@ fn test_agent_session_workflow停止_provider未確定でも異常終了にせ�
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Paused);
     assert_eq!(session.provider_session_id(), None);
     assert_eq!(session.transcript_ref(), None);
-    assert!(!session.last_exit_abnormal());
+    assert!(matches!(
+        session.uncommitted_events().last(),
+        Some(AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: false
+        })
+    ));
     assert_eq!(
         session.uncommitted_events(),
-        &[AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
+        &[AgentSessionLifecycleEvent::ProcessExited {
             last_exit_abnormal: false,
         }]
     );
@@ -1391,7 +1269,7 @@ fn test_agent_session_open判断_pty状態とlifecycleから唯一の操作を�
 
     open.complete_resume(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
-    open.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(&mut open);
     for presence in [
         ManagedPtyPresence::ConfirmedAbsent,
         ManagedPtyPresence::Live,
@@ -1436,7 +1314,7 @@ fn test_agent_session操作表示_archiveとrestoreとdeleteの可否をdomain�
         }
     );
 
-    standalone.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(&mut standalone);
     assert_eq!(
         standalone.operations(),
         AgentSessionOperations {
@@ -1512,7 +1390,7 @@ fn test_agent_session復帰開始_resumeとrestoreの受理状態をdomainが判
     session
         .complete_resume(AgentSessionRecoveryResult::Succeeded)
         .unwrap();
-    session.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(&mut session);
     assert!(session.authorize_restore().is_ok());
 }
 
@@ -1538,11 +1416,15 @@ fn test_agent_session_process終了_非0のexit_codeをlast_exit_abnormalとし�
 
     session.observe_provider_process_exit(Some(1));
 
-    assert!(session.last_exit_abnormal());
+    assert!(matches!(
+        session.uncommitted_events().last(),
+        Some(AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: true
+        })
+    ));
     assert_eq!(
         session.uncommitted_events(),
-        &[AgentSessionLifecycleEvent::LifecycleChanged {
-            lifecycle: AgentSessionLifecycle::Paused,
+        &[AgentSessionLifecycleEvent::ProcessExited {
             last_exit_abnormal: true,
         }]
     );
@@ -1554,7 +1436,12 @@ fn test_agent_session_process終了_exit_code_0は正常終了として記録す
 
     session.observe_provider_process_exit(Some(0));
 
-    assert!(!session.last_exit_abnormal());
+    assert!(matches!(
+        session.uncommitted_events().last(),
+        Some(AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: false
+        })
+    ));
 }
 
 #[test]
@@ -1563,7 +1450,12 @@ fn test_agent_session_process終了_exit_code不明は異常終了として記�
 
     session.observe_provider_process_exit(None);
 
-    assert!(session.last_exit_abnormal());
+    assert!(matches!(
+        session.uncommitted_events().last(),
+        Some(AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: true
+        })
+    ));
 }
 
 #[test]
@@ -1571,14 +1463,13 @@ fn test_agent_session活動状態_lifecycleとは独立しprocess終了で指示
     let mut session = paused_candidate();
     session.observe_activity(AgentSessionActivity::Working);
 
-    session.archive().unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(&mut session);
     assert_eq!(session.lifecycle(), AgentSessionLifecycle::Archived);
     assert_eq!(session.activity(), AgentSessionActivity::Working);
 
     session.take_uncommitted_events();
     session.restore_derived_lifecycle(
         AgentSessionLifecycle::Paused,
-        false,
         AgentSessionActivity::AwaitingInstruction,
     );
     session
@@ -1596,19 +1487,6 @@ fn test_agent_session活動状態_lifecycleとは独立しprocess終了で指示
         session.activity(),
         AgentSessionActivity::AwaitingInstruction
     );
-}
-
-#[test]
-fn test_agent_session_resume成功時にlast_exit_abnormalを解除する() {
-    let mut session = paused_candidate();
-    session.observe_provider_process_exit(Some(137));
-    assert!(session.last_exit_abnormal());
-
-    session
-        .complete_resume(AgentSessionRecoveryResult::Succeeded)
-        .unwrap();
-
-    assert!(!session.last_exit_abnormal());
 }
 
 #[test]
@@ -1652,11 +1530,7 @@ fn test_agent_session_gc_archiveとrestore後の未知provider記録を削除し
         AgentSessionLifecycle::Archived,
         AgentSessionLifecycle::Paused,
     ] {
-        session.restore_derived_lifecycle(
-            lifecycle,
-            false,
-            AgentSessionActivity::AwaitingInstruction,
-        );
+        session.restore_derived_lifecycle(lifecycle, AgentSessionActivity::AwaitingInstruction);
         assert_eq!(
             session.authorize_gc(ManagedPtyPresence::ConfirmedAbsent),
             Err(AgentSessionRemovalError::NotOpen)

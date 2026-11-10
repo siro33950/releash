@@ -2,20 +2,17 @@ locals {
   service_name = "releash"
 
   metrics = {
-    startup      = "releash.startup.duration_ms"
-    hot_path     = "releash.hot_path.duration_ms"
-    rss_bytes    = "releash.process.rss_bytes"
-    cpu_percent  = "releash.process.cpu_percent"
-    xterm_count  = "releash.frontend.mounted_xterm_count"
-    pty_count    = "releash.pty.active_count"
-    op_status    = "releash.operation.status"
-    usage_events = "releash.usage.events"
+    startup     = "releash.startup.duration_ms"
+    hot_path    = "releash.hot_path.duration_ms"
+    rss_bytes   = "releash.process.rss_bytes"
+    cpu_percent = "releash.process.cpu_percent"
+    pty_count   = "releash.pty.active_count"
+    op_status   = "releash.operation.status"
   }
 
   attr = {
-    operation   = "releash.operation"
-    status      = "releash.status"
-    usage_event = "releash.usage_event"
+    operation = "releash.operation"
+    status    = "releash.status"
   }
 
   allowed_resource_attrs = [
@@ -33,30 +30,9 @@ locals {
     "git.status_scan",
   ]
 
-  diff_open_operations = [
-    "git.diff_stats",
-    "review.file_open",
-  ]
-
-  session_io_operations = [
-    "session.list",
-    "session.get_meta",
-    "session.get_page",
-    "session.load_full",
-    "session.append",
-    "session.persist_parts",
-    "session.save_full",
-  ]
-
-  usage_events = [
-    "settings_saved",
-    "worktree_created",
-    "worktree_removed",
-  ]
 
   budget = {
     repo_snapshot_p95_ms = 300
-    diff_open_p95_ms     = 500
   }
 
   alert_counts = {
@@ -72,8 +48,6 @@ locals {
   operation_filter = {
     startup       = "`${local.attr.operation}` IN (${join(", ", [for op in local.startup_operations : "'${op}'"])})"
     repo_snapshot = "`${local.attr.operation}` IN (${join(", ", [for op in local.repo_snapshot_operations : "'${op}'"])})"
-    diff_open     = "`${local.attr.operation}` IN (${join(", ", [for op in local.diff_open_operations : "'${op}'"])})"
-    session_io    = "`${local.attr.operation}` IN (${join(", ", [for op in local.session_io_operations : "'${op}'"])})"
   }
 
   pii_attribute_keys = [

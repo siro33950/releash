@@ -31,8 +31,8 @@ use crate::adaptor::gateway::local_event_store::reader::{
     load_stream_page, run_query, QueryContext, ReaderPool, READER_POOL_SIZE,
 };
 use crate::adaptor::gateway::local_event_store::schema::{
-    evolve_schema, initialize_schema, validate_current_schema, validate_supported_schema_v1,
-    InitialStoreMetadata, APPLICATION_ID, CURRENT_SCHEMA_VERSION,
+    initialize_schema, validate_current_schema, InitialStoreMetadata, APPLICATION_ID,
+    CURRENT_SCHEMA_VERSION,
 };
 use crate::adaptor::gateway::local_event_store::writer::{
     AdmitRejection, PreparedBatch, PreparedEvent, PreparedNodeEvent, QueuePop, WriteJob,
@@ -236,23 +236,11 @@ fn remove_initial_create_database(layout: &StoreLayout) -> Result<(), LocalEvent
     layout.sync_app_data_root().map_err(io_open_failure)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExistingDatabaseKind {
-    Current,
-    SupportedV1,
-    SupportedV2,
-    SupportedV3,
-    SupportedV4,
-    SupportedV5,
-    SupportedV6,
-    SupportedV7,
-}
-
 pub fn classify_existing_database(
     layout: &StoreLayout,
     path: &std::path::Path,
     limiter: Arc<crate::common::retry::RetryLimiter>,
-) -> Result<ExistingDatabaseKind, LocalEventStoreOpenError> {
+) -> Result<(), LocalEventStoreOpenError> {
     layout.observe(StorePathOperation::Metadata, path);
     let length = std::fs::metadata(path).map_err(io_open_failure)?.len();
     if length == 0 || !sqlite_header_is_valid(layout, path)? {
@@ -288,43 +276,14 @@ pub fn classify_existing_database(
             },
         )
     })?;
-    let supported_v1_signature = columns.iter().any(|column| column == "store_id")
-        && columns.iter().any(|column| column == "generation_id")
-        && columns.iter().any(|column| column == "boot_id");
-    if supported_v1_signature {
-        if application_id != 0 && application_id != i64::from(APPLICATION_ID) {
-            return Err(LocalEventStoreOpenError::StoreValidationFailed);
-        }
-        if user_version != 0 && user_version != 1 {
-            return Err(LocalEventStoreOpenError::UnsupportedStoreVersion);
-        }
-        validate_supported_schema_v1(&connection).map_err(|error| {
-            classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
-        })?;
-        return Ok(ExistingDatabaseKind::SupportedV1);
-    }
     if application_id == i64::from(APPLICATION_ID) {
-        if matches!(user_version, 2..=7)
-            && columns.iter().any(|column| column == "installation_id")
-            && !columns.iter().any(|column| column == "store_id")
-        {
-            return Ok(match user_version {
-                2 => ExistingDatabaseKind::SupportedV2,
-                3 => ExistingDatabaseKind::SupportedV3,
-                4 => ExistingDatabaseKind::SupportedV4,
-                5 => ExistingDatabaseKind::SupportedV5,
-                6 => ExistingDatabaseKind::SupportedV6,
-                7 => ExistingDatabaseKind::SupportedV7,
-                _ => unreachable!("supported schema version was matched above"),
-            });
-        }
         if user_version != CURRENT_SCHEMA_VERSION {
             return Err(LocalEventStoreOpenError::UnsupportedStoreVersion);
         }
         validate_current_schema(&connection).map_err(|error| {
             classify_sqlite_error(&error, LocalEventStoreOpenError::StoreValidationFailed)
         })?;
-        return Ok(ExistingDatabaseKind::Current);
+        return Ok(());
     }
     if columns.iter().any(|column| column == "installation_id")
         || columns.iter().any(|column| column == "store_id")
@@ -569,38 +528,17 @@ impl LocalEventStore {
                 })?;
                 connection
             } else {
-                let kind = classify_existing_database(
-                    &layout,
-                    &database_path,
-                    config.retry_limiter.clone(),
-                )?;
+                classify_existing_database(&layout, &database_path, config.retry_limiter.clone())?;
                 layout.observe(StorePathOperation::Open, &database_path);
                 layout.observe(StorePathOperation::Write, &database_path);
-                let connection = open_existing_writer(&database_path, config.retry_limiter.clone())
-                    .map_err(|error| {
+                open_existing_writer(&database_path, config.retry_limiter.clone()).map_err(
+                    |error| {
                         classify_connection_error(
                             &error,
                             LocalEventStoreOpenError::StoreValidationFailed,
                         )
-                    })?;
-                if matches!(
-                    kind,
-                    ExistingDatabaseKind::SupportedV1
-                        | ExistingDatabaseKind::SupportedV2
-                        | ExistingDatabaseKind::SupportedV3
-                        | ExistingDatabaseKind::SupportedV4
-                        | ExistingDatabaseKind::SupportedV5
-                        | ExistingDatabaseKind::SupportedV6
-                        | ExistingDatabaseKind::SupportedV7
-                ) {
-                    evolve_schema(&connection, config.fault.as_ref()).map_err(|error| {
-                        classify_sqlite_error(
-                            &error,
-                            LocalEventStoreOpenError::SchemaEvolutionFailed,
-                        )
-                    })?;
-                }
-                connection
+                    },
+                )?
             }
         };
 

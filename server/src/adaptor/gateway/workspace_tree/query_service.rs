@@ -691,7 +691,6 @@ pub fn execution_summary(
         status: record.status,
         worktree_path: record.worktree_path,
         current_node: record.current_node,
-        created_from: record.created_from,
         started_at,
         updated_at,
         completed_at,

@@ -1,7 +1,6 @@
 pub(crate) mod agent_session;
 pub(crate) mod api_error;
 pub(crate) mod client;
-pub(crate) mod code;
 pub(crate) mod connect;
 pub(crate) mod connect_wire;
 pub(crate) mod daemon;

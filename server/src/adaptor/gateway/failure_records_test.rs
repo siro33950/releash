@@ -68,7 +68,6 @@ fn test_失敗記録_文面によらず集約し同じ鍵の古い分類を無�
     let current = store.records("a");
     assert_eq!(current.len(), 2);
     assert_eq!(current[0].record.count, 2);
-    assert_eq!(current[0].record.first_observed_ms, 1);
     assert_eq!(current[0].record.last_observed_ms, 3);
     assert_eq!(current[0].record.message, "changed");
     assert!(!current[0].record.active);

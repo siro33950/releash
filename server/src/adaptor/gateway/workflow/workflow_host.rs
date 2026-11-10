@@ -41,7 +41,6 @@ use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::reference as workflow_reference;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::services::transition as workflow_transition;
-use crate::domain::workflow::ExecutionOrigin;
 use crate::domain::workflow::RuntimeExecutionState;
 use crate::domain::workflow::WorkflowEvent;
 use crate::domain::workflow::WorkflowFacetContents;
@@ -136,7 +135,6 @@ pub struct WorkflowExecutionInsert {
     workflow: WorkflowDefinitionContent,
     worktree_path: String,
     request: Option<String>,
-    created_from: ExecutionOrigin,
     workflow_defaults: WorkflowDefaults,
     now: f64,
 }
@@ -615,7 +613,6 @@ impl WorkflowRuntimeHost {
             workflow,
             worktree_path,
             request,
-            created_from,
             workflow_defaults,
             now,
         } = input;
@@ -634,7 +631,6 @@ impl WorkflowRuntimeHost {
             state: RuntimeExecutionState::Running,
             node_history: Vec::new(),
             workflow_defaults,
-            created_from,
             error_reason: None,
             started_at: now,
             updated_at: now,
@@ -642,7 +638,6 @@ impl WorkflowRuntimeHost {
             scopes: Vec::new(),
             node_executions: Vec::new(),
             request,
-            current_stall_observations: Vec::new(),
             workspace_identity: crate::domain::workspace_tree::WorkspaceIdentity::new(&worktree_path)
                 .as_str()
                 .to_string(),
@@ -715,7 +710,6 @@ impl WorkflowRuntimeHost {
         workflow: WorkflowDefinitionContent,
         worktree_path: String,
         request: Option<String>,
-        created_from: ExecutionOrigin,
     ) -> Result<String, WorkflowRuntimeError> {
         let worktree_path = crate::domain::workspace_tree::WorkspaceIdentity::new(worktree_path)
             .as_str()
@@ -757,7 +751,6 @@ impl WorkflowRuntimeHost {
                 workflow: workflow.clone(),
                 worktree_path: worktree_path.clone(),
                 request: request.clone(),
-                created_from,
                 workflow_defaults,
                 now,
             })
@@ -777,7 +770,6 @@ impl WorkflowRuntimeHost {
             execution_id: snapshot.execution_id.clone(),
             workflow_name: snapshot.workflow_name.clone(),
             worktree_path: worktree_path.clone(),
-            created_from,
             request: request.clone().unwrap_or_default(),
             definition: workflow.clone(),
             timestamp: now,
@@ -850,9 +842,8 @@ impl WorkflowRuntimeHost {
         workflow: WorkflowDefinitionContent,
         worktree_path: String,
         request: Option<String>,
-        created_from: ExecutionOrigin,
     ) -> Result<String, WorkflowRuntimeError> {
-        Box::pin(self.start_workflow(app, workflow, worktree_path, request, created_from)).await
+        Box::pin(self.start_workflow(app, workflow, worktree_path, request)).await
     }
 
     pub async fn commit_control_plane_candidate(
@@ -2382,7 +2373,6 @@ impl WorkflowExecutionInsert {
         workflow: WorkflowDefinitionContent,
         worktree_path: String,
         request: Option<String>,
-        created_from: ExecutionOrigin,
         workflow_defaults: WorkflowDefaults,
         now: f64,
     ) -> Self {
@@ -2391,7 +2381,6 @@ impl WorkflowExecutionInsert {
             workflow,
             worktree_path,
             request,
-            created_from,
             workflow_defaults,
             now,
         }

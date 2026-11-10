@@ -3,10 +3,6 @@ config_version = "0"
 exclude_patterns = [
     "**/node_modules/**",
     "**/target/**",
-    "**/dist/**",
-    "**/coverage/**",
-    "**/*.min.js",
-    "server/resources/**",
 ]
 
 [[source]]

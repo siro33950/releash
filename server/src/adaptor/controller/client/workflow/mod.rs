@@ -52,17 +52,6 @@ fn validation_error_string(
 
 // ---- ワークフロー実行コマンド ----
 
-#[cfg(test)]
-fn parse_execution_origin(
-    value: Option<String>,
-) -> Result<crate::domain::workflow::ExecutionOrigin, String> {
-    value
-        .as_deref()
-        .map(crate::domain::workflow::ExecutionOrigin::from_public_value)
-        .unwrap_or(Ok(crate::domain::workflow::ExecutionOrigin::DesktopUi))
-        .map_err(|error| error.to_string())
-}
-
 /// `execution_id` の形式検証（path traversal / 不正文字対策）。
 /// UUID（RFC 4122）形式のみ許容する。
 fn validate_execution_id(

@@ -45,48 +45,6 @@ fn open_relative<'a>(path: &'a Path, repo: &'a Repository) -> Result<&'a Path, C
 // 系統ごとに 1 本へ集約し、公開関数は最終 encode（UTF-8 / Base64）のみ分岐させる。
 // 公開関数の戻り値・エラー種別・エラーメッセージは移行前と等価に保つ。
 
-fn blob_metadata_at_branch_base(
-    file_path: &str,
-    base_commit_oid: Option<&str>,
-) -> Result<ReviewSideMetadata, CodeError> {
-    Ok(
-        match resolve_blob_at_branch_base(file_path, base_commit_oid, |blob| blob.size() as u64)? {
-            Some(size_bytes) => ReviewSideMetadata::Present { size_bytes },
-            None => ReviewSideMetadata::Missing,
-        },
-    )
-}
-
-pub fn review_blob_at_branch_base(
-    file_path: &str,
-    base_commit_oid: Option<&str>,
-) -> Result<ReviewSideBytes, CodeError> {
-    Ok(
-        match resolve_blob_at_branch_base(file_path, base_commit_oid, |blob| {
-            blob.content().to_vec()
-        })? {
-            Some(bytes) => ReviewSideBytes::Present(bytes),
-            None => ReviewSideBytes::Missing,
-        },
-    )
-}
-
-fn resolve_blob_at_branch_base<T>(
-    file_path: &str,
-    base_commit_oid: Option<&str>,
-    present: impl FnOnce(&Blob<'_>) -> T,
-) -> Result<Option<T>, CodeError> {
-    let path = Path::new(file_path);
-    let repo = discover_repo(path)?;
-    let merge_base_commit = super::resolve_merge_base_commit(&repo, base_commit_oid)?;
-    let Some(entry) = resolve_entry_at_ref(&repo, path, &merge_base_commit.id().to_string())?
-    else {
-        return Ok(None);
-    };
-    let blob = git_operation::run(|| repo.find_blob(entry.id()))?;
-    Ok(Some(present(&blob)))
-}
-
 fn blob_metadata_at_ref(file_path: &str, git_ref: &str) -> Result<ReviewSideMetadata, CodeError> {
     Ok(
         match resolve_blob_at_ref(file_path, git_ref, |blob| blob.size() as u64)? {
@@ -147,46 +105,6 @@ fn is_missing_head_ref(error: &git_operation::GitOperationError, git_ref: &str) 
             error.code(),
             git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
         )
-}
-
-fn staged_blob_metadata(file_path: &str) -> Result<ReviewSideMetadata, CodeError> {
-    Ok(
-        match resolve_staged_blob(file_path, |blob| blob.size() as u64)? {
-            Some(size_bytes) => ReviewSideMetadata::Present { size_bytes },
-            None => ReviewSideMetadata::Missing,
-        },
-    )
-}
-
-pub fn review_blob_staged(file_path: &str) -> Result<ReviewSideBytes, CodeError> {
-    Ok(
-        match resolve_staged_blob(file_path, |blob| blob.content().to_vec())? {
-            Some(bytes) => ReviewSideBytes::Present(bytes),
-            None => ReviewSideBytes::Missing,
-        },
-    )
-}
-
-fn resolve_staged_blob<T>(
-    file_path: &str,
-    present: impl FnOnce(&Blob<'_>) -> T,
-) -> Result<Option<T>, CodeError> {
-    let path = Path::new(file_path);
-    let repo = discover_repo(path)?;
-    let relative_path = open_relative(path, &repo)?;
-
-    let index = git_operation::run(|| repo.index())?;
-
-    let relative_str = relative_path
-        .to_str()
-        .ok_or_else(|| CodeError::Rule("invalid path encoding".to_string()))?;
-
-    let Some(entry) = git_operation::run(|| Ok(index.get_path(Path::new(relative_str), 0)))? else {
-        return Ok(None);
-    };
-
-    let blob = git_operation::run(|| repo.find_blob(entry.id))?;
-    Ok(Some(present(&blob)))
 }
 
 fn working_tree_metadata(file_path: &str) -> Result<ReviewSideMetadata, CodeError> {
@@ -255,26 +173,6 @@ impl FileContentRepository for FileContentGateway {
         git_ref: &str,
     ) -> Result<ReviewSideBytes, CodeError> {
         review_blob_at_ref(file_path, git_ref)
-    }
-    fn review_file_metadata_at_branch_base(
-        &self,
-        file_path: &str,
-        base_commit_oid: Option<&str>,
-    ) -> Result<ReviewSideMetadata, CodeError> {
-        blob_metadata_at_branch_base(file_path, base_commit_oid)
-    }
-    fn review_file_bytes_at_branch_base(
-        &self,
-        file_path: &str,
-        base_commit_oid: Option<&str>,
-    ) -> Result<ReviewSideBytes, CodeError> {
-        review_blob_at_branch_base(file_path, base_commit_oid)
-    }
-    fn review_staged_metadata(&self, file_path: &str) -> Result<ReviewSideMetadata, CodeError> {
-        staged_blob_metadata(file_path)
-    }
-    fn review_staged_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError> {
-        review_blob_staged(file_path)
     }
     fn review_working_tree_metadata(
         &self,

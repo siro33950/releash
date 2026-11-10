@@ -28,10 +28,10 @@ pub enum AgentSessionLifecycleEvent {
         provider_session_id: String,
         transcript_ref: Option<String>,
     },
-    LifecycleChanged {
-        lifecycle: AgentSessionLifecycle,
+    ProcessExited {
         last_exit_abnormal: bool,
     },
+    Resumed,
     ActivityObserved {
         activity: AgentSessionActivity,
     },
@@ -212,17 +212,6 @@ pub enum AgentSessionProcessExitOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentSessionArchiveOutcome {
-    Archived,
-    AlreadyArchived,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentSessionArchiveError {
-    WorkflowOwned,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentSessionRecoveryError {
     WorkflowOwned,
     NotArchived,
@@ -317,7 +306,6 @@ pub struct AgentSession {
     transcript_ref: Option<String>,
     initial_instruction_admitted: bool,
     admitted_continuations: BTreeSet<String>,
-    last_exit_abnormal: bool,
     last_exit_code: Option<i32>,
     uncommitted_events: Vec<AgentSessionLifecycleEvent>,
 }
@@ -366,7 +354,6 @@ impl AgentSession {
             transcript_ref: None,
             initial_instruction_admitted: false,
             admitted_continuations: BTreeSet::new(),
-            last_exit_abnormal: false,
             last_exit_code: None,
             uncommitted_events: vec![created],
         })
@@ -377,12 +364,10 @@ impl AgentSession {
     pub(crate) fn restore_derived_lifecycle(
         &mut self,
         lifecycle: AgentSessionLifecycle,
-        last_exit_abnormal: bool,
         activity: AgentSessionActivity,
     ) {
         debug_assert!(self.uncommitted_events.is_empty());
         self.lifecycle = lifecycle;
-        self.last_exit_abnormal = last_exit_abnormal;
         self.last_exit_code = None;
         self.activity = activity;
     }
@@ -551,10 +536,6 @@ impl AgentSession {
         self.initial_instruction_admitted
     }
 
-    pub fn last_exit_abnormal(&self) -> bool {
-        self.last_exit_abnormal
-    }
-
     pub(crate) fn last_exit_code(&self) -> Option<i32> {
         self.last_exit_code
     }
@@ -619,7 +600,7 @@ impl AgentSession {
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
         self.activity = AgentSessionActivity::AwaitingInstruction;
-        self.last_exit_abnormal = ProcessExitedFact {
+        let last_exit_abnormal = ProcessExitedFact {
             exit_code,
             result_summary: None,
             failure_reason: None,
@@ -628,38 +609,8 @@ impl AgentSession {
         .is_abnormal();
         self.last_exit_code = exit_code;
         self.uncommitted_events
-            .push(AgentSessionLifecycleEvent::LifecycleChanged {
-                lifecycle: AgentSessionLifecycle::Paused,
-                last_exit_abnormal: self.last_exit_abnormal,
-            });
+            .push(AgentSessionLifecycleEvent::ProcessExited { last_exit_abnormal });
         AgentSessionProcessExitOutcome::Paused
-    }
-
-    pub(crate) fn authorize_archive(
-        &self,
-    ) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
-        if self.tree_location.launched_as == ExecutionTreeLaunch::Workflow {
-            return Err(AgentSessionArchiveError::WorkflowOwned);
-        }
-        Ok(if self.lifecycle == AgentSessionLifecycle::Archived {
-            AgentSessionArchiveOutcome::AlreadyArchived
-        } else {
-            AgentSessionArchiveOutcome::Archived
-        })
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn archive(&mut self) -> Result<AgentSessionArchiveOutcome, AgentSessionArchiveError> {
-        let outcome = self.authorize_archive()?;
-        if outcome == AgentSessionArchiveOutcome::Archived {
-            self.lifecycle = AgentSessionLifecycle::Archived;
-            self.uncommitted_events
-                .push(AgentSessionLifecycleEvent::LifecycleChanged {
-                    lifecycle: AgentSessionLifecycle::Archived,
-                    last_exit_abnormal: self.last_exit_abnormal,
-                });
-        }
-        Ok(outcome)
     }
 
     pub fn complete_resume(
@@ -670,13 +621,9 @@ impl AgentSession {
         match result {
             AgentSessionRecoveryResult::Succeeded => {
                 self.lifecycle = AgentSessionLifecycle::Open;
-                self.last_exit_abnormal = false;
                 self.last_exit_code = None;
                 self.uncommitted_events
-                    .push(AgentSessionLifecycleEvent::LifecycleChanged {
-                        lifecycle: AgentSessionLifecycle::Open,
-                        last_exit_abnormal: false,
-                    });
+                    .push(AgentSessionLifecycleEvent::Resumed);
                 let _ = self.observe_activity(AgentSessionActivity::AwaitingInstruction);
                 Ok(AgentSessionMutationOutcome::Applied)
             }
@@ -802,11 +749,9 @@ impl AgentSession {
         }
         self.lifecycle = AgentSessionLifecycle::Paused;
         self.activity = AgentSessionActivity::AwaitingInstruction;
-        self.last_exit_abnormal = false;
         self.last_exit_code = None;
         self.uncommitted_events
-            .push(AgentSessionLifecycleEvent::LifecycleChanged {
-                lifecycle: AgentSessionLifecycle::Paused,
+            .push(AgentSessionLifecycleEvent::ProcessExited {
                 last_exit_abnormal: false,
             });
         Ok(AgentSessionMutationOutcome::Applied)

@@ -287,10 +287,6 @@ impl crate::usecase::agent_session::AgentSessionExecutionTreeLifecycle for Workf
         self.lock_execution_tree(tree_id).await
     }
 
-    async fn archive_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
-        self.archive_execution_tree(tree_id, "manual").await
-    }
-
     async fn restore_execution_tree(&self, tree_id: &str) -> Result<(), WorkflowError> {
         self.restore_execution_tree_locked(tree_id).await
     }

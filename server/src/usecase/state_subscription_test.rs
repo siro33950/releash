@@ -17,7 +17,7 @@ async fn test_購読手順_開始と停止で購読状態と出力を更新す�
         vec![],
         String::new(),
     );
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     usecase.open_client("client".into()).unwrap();
     // When
     usecase
@@ -53,7 +53,7 @@ async fn test_購読手順_初期配信の失敗時にclientの対象を戻す()
         vec![],
         String::new(),
     );
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     usecase.open_client("client".into()).unwrap();
     // When
     let result = usecase
@@ -81,7 +81,7 @@ async fn test_購読手順_streamが無いと開始できない() {
         vec![],
         String::new(),
     );
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     // When
     let result = usecase
         .start_subscription("client", &target, &FakeDelivery)
@@ -108,17 +108,17 @@ fn test_購読手順_対象を検証してclient状態を更新する() {
     usecase.open_client("client".into()).unwrap();
 
     assert_eq!(
-        usecase.start("missing", &SubscriptionTarget::RepositoryPaths),
+        usecase.start("missing", &SubscriptionTarget::TerminalStartupCommand),
         Err(SubscriptionError::StreamEnded)
     );
     usecase
-        .start("client", &SubscriptionTarget::RepositoryPaths)
+        .start("client", &SubscriptionTarget::TerminalStartupCommand)
         .unwrap();
     assert!(usecase
         .active_targets()
-        .contains(&SubscriptionTarget::RepositoryPaths));
+        .contains(&SubscriptionTarget::TerminalStartupCommand));
     usecase
-        .stop("client", &SubscriptionTarget::RepositoryPaths)
+        .stop("client", &SubscriptionTarget::TerminalStartupCommand)
         .unwrap();
 
     assert!(usecase.active_targets().is_empty());
@@ -297,97 +297,6 @@ async fn test_購読手順_初回読取を共有し変化で再読取して最�
     assert_eq!(usecase.test_worker_count(), 0);
 }
 
-#[tokio::test]
-async fn test_購読手順_任意の対象で配信完了を待ち一度だけ読み直す() {
-    // Given
-    let output = Arc::new(RecordingOutput::default());
-    let reads = Arc::new(RecordingReads {
-        calls: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        output.clone(),
-        crate::test_support::state_subscription::pending_read_driver(),
-    )
-    .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::NodeDetail("/repo".into(), "node".into());
-    usecase.open_client("client".into()).unwrap();
-    usecase
-        .start_subscription("client", &target, &FakeDelivery)
-        .await
-        .unwrap();
-    // When
-    let wait_target = target.clone();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::task::spawn_blocking(move || {
-            usecase.notify_and_wait(StateChangeSource::Worktree("/repo".into()), &wait_target);
-        }),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    // Then
-    assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert_eq!(*output.updates.lock(), vec![target]);
-}
-
-#[tokio::test]
-async fn test_配信完了待機_待機対象以外の対象にも同じ変化を配信する() {
-    // Given
-    let output = Arc::new(RecordingOutput::default());
-    let reads = Arc::new(RecordingReads {
-        calls: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let usecase = StateSubscriptionUsecase::new_with_output(
-        output.clone(),
-        crate::test_support::state_subscription::pending_read_driver(),
-    )
-    .with_reads(reads.clone(), None, vec![], String::new());
-    let waited = SubscriptionTarget::NodeDetail("/repo".into(), "one".into());
-    let other = SubscriptionTarget::NodeDetail("/repo".into(), "two".into());
-    usecase.open_client("client".into()).unwrap();
-    usecase
-        .start_subscription("client", &waited, &FakeDelivery)
-        .await
-        .unwrap();
-    usecase
-        .start_subscription("client", &other, &FakeDelivery)
-        .await
-        .unwrap();
-
-    // When
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::task::spawn_blocking({
-            let usecase = usecase.clone();
-            let waited = waited.clone();
-            move || usecase.notify_and_wait(StateChangeSource::Worktree("/repo".into()), &waited)
-        }),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if output.updates.lock().len() == 2 {
-                break;
-            }
-            output.updated.notified().await;
-        }
-    })
-    .await
-    .unwrap();
-
-    // Then
-    let updates = output.updates.lock();
-    assert_eq!(
-        updates.iter().filter(|target| **target == waited).count(),
-        1
-    );
-    assert_eq!(updates.iter().filter(|target| **target == other).count(), 1);
-    assert_eq!(reads.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
-}
-
 async fn notify_while_reading(
     target: SubscriptionTarget,
     first: StateChangeSource,
@@ -490,7 +399,7 @@ async fn test_購読読取_初回失敗後も登録を残す() {
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     usecase.open_client("client".into()).unwrap();
     // When
     usecase
@@ -515,7 +424,7 @@ async fn test_購読読取_初回失敗から回復した値を配信する() {
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &target, &FakeDelivery)
@@ -526,7 +435,7 @@ async fn test_購読読取_初回失敗から回復した値を配信する() {
         .fail_read
         .store(false, std::sync::atomic::Ordering::SeqCst);
     output.updated.notified().await;
-    usecase.notify(StateChangeSource::Repositories);
+    usecase.notify(StateChangeSource::AppConfig);
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
@@ -548,7 +457,7 @@ async fn test_購読読取_回復後の再失敗を配信する() {
         crate::test_support::state_subscription::pending_read_driver(),
     )
     .with_reads(reads.clone(), None, vec![], String::new());
-    let target = SubscriptionTarget::RepositoryPaths;
+    let target = SubscriptionTarget::TerminalStartupCommand;
     usecase.open_client("client".into()).unwrap();
     usecase
         .start_subscription("client", &target, &FakeDelivery)
@@ -558,7 +467,7 @@ async fn test_購読読取_回復後の再失敗を配信する() {
         .fail_read
         .store(false, std::sync::atomic::Ordering::SeqCst);
     output.updated.notified().await;
-    usecase.notify(StateChangeSource::Repositories);
+    usecase.notify(StateChangeSource::AppConfig);
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
@@ -566,7 +475,7 @@ async fn test_購読読取_回復後の再失敗を配信する() {
     reads
         .fail_read
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    usecase.notify(StateChangeSource::Repositories);
+    usecase.notify(StateChangeSource::AppConfig);
     tokio::time::timeout(std::time::Duration::from_secs(2), output.updated.notified())
         .await
         .unwrap();
@@ -705,117 +614,6 @@ impl StateSubscriptionRead for RetainingReads {
 }
 
 #[tokio::test]
-async fn test_notion購読_初回取得中にclientが閉じたら開始の対象だけ解放する() {
-    // Given
-    let reads = Arc::new(RetainingReads::default());
-    reads.pause.store(true, std::sync::atomic::Ordering::SeqCst);
-    let subscriptions = StateSubscriptionUsecase::new_with_output(
-        Arc::new(RecordingOutput::default()),
-        crate::test_support::state_subscription::pending_read_driver(),
-    )
-    .with_reads(reads.clone(), None, vec![], String::new());
-    let target = notion_target();
-    let other = SubscriptionTarget::NotionLabelOptions("/other".into());
-    reads.retained.lock().insert(other.clone());
-    subscriptions.open_client("client".into()).unwrap();
-    let starting = subscriptions.clone();
-    let start_target = target.clone();
-    // When
-    let task = tokio::spawn(async move {
-        starting
-            .start_subscription("client", &start_target, &FakeDelivery)
-            .await
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(2), reads.entered.notified())
-        .await
-        .unwrap();
-    subscriptions.close_client("client");
-    reads.resume.notify_one();
-    let result = task.await.unwrap();
-    // Then
-    assert!(
-        matches!(result, Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::StreamEnded)
-    );
-    assert!(!reads.retained.lock().contains(&target));
-    assert!(reads.retained.lock().contains(&other));
-    assert_eq!(*reads.releases.lock(), vec![target]);
-    assert_eq!(subscriptions.test_worker_count(), 0);
-}
-
-#[tokio::test]
-async fn test_notion購読_別対象の監視失敗は開始を妨げず対象へ通知する() {
-    // Given
-    let reads = Arc::new(RetainingReads::default());
-    let watcher = Arc::new(crate::usecase::watcher::WatcherUsecase::new(
-        None,
-        Arc::new(crate::usecase::test_helpers::watcher::SubscriptionFiles::default()),
-    ));
-    let output = Arc::new(RecordingOutput::default());
-    let subscriptions = StateSubscriptionUsecase::new_with_output(
-        output.clone(),
-        crate::test_support::state_subscription::pending_read_driver(),
-    )
-    .with_reads(reads.clone(), Some(watcher), vec![], String::new());
-    let target = notion_target();
-    let other = SubscriptionTarget::NotionLabelOptions("/other".into());
-    reads.retained.lock().insert(other.clone());
-    subscriptions.open_client("client".into()).unwrap();
-    subscriptions.open_client("watcher".into()).unwrap();
-    subscriptions
-        .start("watcher", &SubscriptionTarget::ReviewThreads("repo".into()))
-        .unwrap();
-    // When
-    let result = subscriptions
-        .start_subscription("client", &target, &FakeDelivery)
-        .await;
-    subscriptions.close_client("watcher");
-    subscriptions.close_client("client");
-    // Then
-    assert!(result.is_ok());
-    assert_eq!(output.failures.lock().len(), 1);
-    assert_eq!(
-        output.failures.lock()[0].0,
-        SubscriptionTarget::ReviewThreads("repo".into())
-    );
-    assert!(!reads.retained.lock().contains(&target));
-    assert!(reads.retained.lock().contains(&other));
-    assert_eq!(*reads.releases.lock(), vec![target]);
-    assert_eq!(subscriptions.test_worker_count(), 0);
-}
-
-#[tokio::test]
-async fn test_notion購読_最初の値の配信が失敗したら開始の対象だけ解放する() {
-    // Given
-    let output = Arc::new(RecordingOutput::default());
-    output
-        .fail_initial
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let reads = Arc::new(RetainingReads::default());
-    let subscriptions = StateSubscriptionUsecase::new_with_output(
-        output,
-        crate::test_support::state_subscription::pending_read_driver(),
-    )
-    .with_reads(reads.clone(), None, vec![], String::new());
-    let target = notion_target();
-    let other = SubscriptionTarget::NotionLabelOptions("/other".into());
-    reads.retained.lock().insert(other.clone());
-    subscriptions.open_client("client".into()).unwrap();
-    // When
-    let result = subscriptions
-        .start_subscription("client", &target, &FakeDelivery)
-        .await;
-    subscriptions.close_client("client");
-    // Then
-    assert!(
-        matches!(result, Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::EncodingFailed)
-    );
-    assert!(!reads.retained.lock().contains(&target));
-    assert!(reads.retained.lock().contains(&other));
-    assert_eq!(*reads.releases.lock(), vec![target]);
-    assert_eq!(subscriptions.test_worker_count(), 0);
-}
-
-#[tokio::test]
 async fn test_notion購読_別のclientの開始が失敗しても購読中の対象は解放しない() {
     // Given
     let output = Arc::new(RecordingOutput::default());
@@ -847,38 +645,6 @@ async fn test_notion購読_別のclientの開始が失敗しても購読中の�
     assert!(retained);
     assert!(released.is_empty());
     assert_eq!(workers, 1);
-}
-
-#[tokio::test]
-async fn test_外部情報の購読_lagged後のrepository通知では_notionと_issueを取り直さない() {
-    // Given
-    let targets = [
-        notion_target(),
-        SubscriptionTarget::NotionLabelOptions("/repo".into()),
-        SubscriptionTarget::Issues("/repo".into()),
-    ];
-    let mut changes = vec![StateChangeSource::AppConfig; 200];
-    changes.push(StateChangeSource::Repositories);
-    let mut results = Vec::new();
-    // When
-    for target in targets {
-        let first = match &target {
-            SubscriptionTarget::Issues(path) => StateChangeSource::Issues(path.clone()),
-            _ => StateChangeSource::NotionConfig("/repo".into()),
-        };
-        let expected = if matches!(target, SubscriptionTarget::Issues(_)) {
-            1
-        } else {
-            2
-        };
-        let (reads, output) = notify_while_reading(target, first, changes.clone()).await;
-        results.push((reads.external(), expected, output.updates.lock().len()));
-    }
-    // Then
-    for (external, expected, updates) in results {
-        assert_eq!(external, expected);
-        assert_eq!(updates, 2);
-    }
 }
 
 #[tokio::test]
@@ -931,7 +697,7 @@ impl StateSubscriptionRead for InitialGatedReads {
             self.entered.notify_one();
             self.release.notified().await;
         }
-        Ok(StateValue::RepositoryPaths(vec![call.to_string()]))
+        Ok(StateValue::TerminalStartupCommand(call.to_string()))
     }
     fn repositories(&self) -> Vec<String> {
         Vec::new()
@@ -959,7 +725,7 @@ async fn test_購読開始_初回読取り中の変化をcontrollerへ引き継�
             usecase
                 .start_subscription(
                     "client",
-                    &SubscriptionTarget::RepositoryPaths,
+                    &SubscriptionTarget::TerminalStartupCommand,
                     &FakeDelivery,
                 )
                 .await
@@ -968,18 +734,18 @@ async fn test_購読開始_初回読取り中の変化をcontrollerへ引き継�
     });
     reads.entered.notified().await;
     // When
-    usecase.notify(StateChangeSource::Repositories);
+    usecase.notify(StateChangeSource::AppConfig);
     reads.release.notify_one();
     started.await.unwrap();
     output.updated.notified().await;
     // Then
     assert_eq!(
         *output.initial_values.lock(),
-        vec![StateValue::RepositoryPaths(vec!["0".into()])]
+        vec![StateValue::TerminalStartupCommand("0".into())]
     );
     assert_eq!(
         *output.update_values.lock(),
-        vec![StateValue::RepositoryPaths(vec!["1".into()])]
+        vec![StateValue::TerminalStartupCommand("1".into())]
     );
     usecase.close_client("client");
 }
@@ -1004,7 +770,7 @@ async fn test_購読開始_駆動部が終了したら登録を戻して失敗�
     let error = usecase
         .start_subscription(
             "client",
-            &SubscriptionTarget::RepositoryPaths,
+            &SubscriptionTarget::TerminalStartupCommand,
             &FakeDelivery,
         )
         .await
@@ -1110,7 +876,7 @@ async fn test_購読連携_usecaseが配信開始と失敗時の読取停止を�
             fail,
             calls: Default::default(),
         };
-        let target = SubscriptionTarget::RepositoryPaths;
+        let target = SubscriptionTarget::TerminalStartupCommand;
         // When
         let result = usecase
             .start_subscription("client", &target, &delivery)
@@ -1142,7 +908,7 @@ impl StateSubscriptionRead for WatchFailureReads {
         Ok(match target {
             SubscriptionTarget::Workspaces => StateValue::Workspaces(self.0.clone()),
             SubscriptionTarget::Workflows => StateValue::Workflows(vec![]),
-            _ => StateValue::CurrentBranch("main".into()),
+            _ => StateValue::ReleashBase(Some("main".into())),
         })
     }
     fn repositories(&self) -> Vec<String> {
@@ -1172,9 +938,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
                     deleting: false,
                     dirty_count: Fetched::ready(42),
                     merged: false,
-                    open_pull_request: None,
                     state_pull_request: None,
-                    pull_request_loaded: false,
                     tree: Fetched::default(),
                     pull_request_error: None,
                 }]),
@@ -1196,7 +960,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
         vec![],
         String::new(),
     );
-    let branch = SubscriptionTarget::CurrentBranch("/failed/linked".into());
+    let branch = SubscriptionTarget::ReleashBase("/failed/linked".into());
     subscriptions.open_client("client".into()).unwrap();
     for target in [
         &SubscriptionTarget::Workspaces,
@@ -1226,7 +990,11 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
         )
         .await;
     subscriptions
-        .publish_read(&branch, Ok(StateValue::CurrentBranch("main".into())), false)
+        .publish_read(
+            &branch,
+            Ok(StateValue::ReleashBase(Some("main".into()))),
+            false,
+        )
         .unwrap();
     assert!(output
         .failures
@@ -1353,14 +1121,12 @@ async fn test_監視対象読み取り失敗_reconcileから該当repositoryだ�
         .start("client", &SubscriptionTarget::Workspaces)
         .unwrap();
     let mut changes = subscriptions.changes.subscribe();
-    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
     // When
     subscriptions
         .refresh_read(
             &SubscriptionTarget::Workspaces,
             ReadSignal::Lagged,
             &mut changes,
-            &mut waiting,
         )
         .await;
     // Then
@@ -1421,8 +1187,8 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
                     }
                     Ok(StateValue::Workflows(vec![]))
                 }
-                SubscriptionTarget::WorkflowSource(_) => {
-                    Ok(StateValue::WorkflowSource(Some("source".into())))
+                SubscriptionTarget::Workflow(_) => {
+                    Ok(StateValue::TerminalStartupCommand("source".into()))
                 }
                 _ => panic!("unexpected target"),
             }
@@ -1457,20 +1223,18 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     );
     subscriptions.open_client("client".into()).unwrap();
     let target = SubscriptionTarget::Workflows;
-    let source = SubscriptionTarget::WorkflowSource("workflow".into());
+    let source = SubscriptionTarget::Workflow("workflow".into());
     subscriptions.start("client", &target).unwrap();
     subscriptions.start("client", &source).unwrap();
     assert!(subscriptions.reconcile_watches().is_empty());
     let refreshing = subscriptions.clone();
     let pending = tokio::spawn(async move {
         let mut changes = refreshing.changes.subscribe();
-        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
         refreshing
             .refresh_read(
                 &SubscriptionTarget::Workflows,
                 ReadSignal::Lagged,
                 &mut changes,
-                &mut waiting,
             )
             .await;
     });
@@ -1497,9 +1261,8 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     // When
     files.fail_start.store(true, Ordering::SeqCst);
     let mut changes = subscriptions.changes.subscribe();
-    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
     subscriptions
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     // Then
     assert_eq!(files.attempts.load(Ordering::SeqCst), 2);
@@ -1514,7 +1277,7 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     // When
     files.fail_start.store(false, Ordering::SeqCst);
     subscriptions
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     // Then
     assert_eq!(files.attempts.load(Ordering::SeqCst), 3);
@@ -1524,7 +1287,7 @@ async fn test_ファイル監視_読取中の失敗は張り直し成功まで�
     assert_eq!(
         *output.update_values.lock(),
         vec![
-            StateValue::WorkflowSource(Some("source".into())),
+            StateValue::TerminalStartupCommand("source".into()),
             StateValue::Workflows(vec![]),
         ]
     );
@@ -1612,9 +1375,8 @@ async fn test_ファイル監視_稼働中の失敗を配信し張り直しで�
             .unwrap();
         assert_eq!(output.failures.lock().last().unwrap().1, first_message);
         let mut changes = subscriptions.changes.subscribe();
-        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
         subscriptions
-            .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+            .refresh_read(&target, ReadSignal::Periodic, &mut changes)
             .await;
         assert_eq!(files.callbacks.lock().len(), 2);
         assert!(subscriptions.watch_failures.lock().is_empty());
@@ -1757,13 +1519,11 @@ fn test_ファイル監視_失敗と張り直しの配信順序を排他で保�
                     .unwrap()
                     .block_on(async {
                         let mut changes = second_subscriptions.changes.subscribe();
-                        let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
                         second_subscriptions
                             .refresh_read(
                                 &SubscriptionTarget::Workflows,
                                 ReadSignal::Periodic,
                                 &mut changes,
-                                &mut waiting,
                             )
                             .await;
                     });
@@ -1827,11 +1587,10 @@ async fn test_実行概要購読_失敗中だけ定期再取得し配信成功�
         .unwrap();
     let _worker = workers.recv().await.unwrap();
     let mut changes = usecase.changes.subscribe();
-    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
     assert_eq!(output.failures.lock().len(), 1);
     // When / Then
     usecase
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     assert_eq!(output.failures.lock().len(), 2);
     reads.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1846,22 +1605,22 @@ async fn test_実行概要購読_失敗中だけ定期再取得し配信成功�
         )
         .is_err());
     usecase
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     assert_eq!(
         *output.update_values.lock(),
         vec![StateValue::ExecutionOverview((vec![], vec![]))]
     );
     usecase
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     assert_eq!(output.update_values.lock().len(), 1);
     reads.0.store(true, std::sync::atomic::Ordering::SeqCst);
     usecase
-        .refresh_read(&target, ReadSignal::Lagged, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Lagged, &mut changes)
         .await;
     usecase
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     assert_eq!(output.failures.lock().len(), 4);
     usecase
@@ -1870,7 +1629,7 @@ async fn test_実行概要購読_失敗中だけ定期再取得し配信成功�
         .unwrap();
     assert!(!*usecase.execution_overview_read_failed.lock());
     usecase
-        .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+        .refresh_read(&target, ReadSignal::Periodic, &mut changes)
         .await;
     assert_eq!(output.failures.lock().len(), 4);
 }
@@ -1913,14 +1672,13 @@ async fn test_実行概要購読_部分失敗も定期再取得し全件回復�
         .unwrap();
     let _worker = workers.recv().await.unwrap();
     let mut changes = usecase.changes.subscribe();
-    let (_sender, mut waiting) = tokio::sync::mpsc::unbounded_channel();
     // When / Then
     assert!(
         matches!(&output.initial_values.lock()[0], StateValue::ExecutionOverview((_, failures)) if failures.len() == 1)
     );
     for _ in 0..2 {
         usecase
-            .refresh_read(&target, ReadSignal::Periodic, &mut changes, &mut waiting)
+            .refresh_read(&target, ReadSignal::Periodic, &mut changes)
             .await;
     }
     assert_eq!(reads.0.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -1929,4 +1687,48 @@ async fn test_実行概要購読_部分失敗も定期再取得し全件回復�
         vec![StateValue::ExecutionOverview((vec![], vec![]))]
     );
     usecase.close_client("client");
+}
+
+#[tokio::test]
+async fn test_notion購読_初回取得中にclientが閉じたら開始の対象だけ解放する() {
+    // Given
+    let reads = Arc::new(RetainingReads::default());
+    reads.pause.store(true, std::sync::atomic::Ordering::SeqCst);
+    let subscriptions = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let target = notion_target();
+    let other =
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
+            path: "/other".into(),
+            count: 20,
+            title: None,
+            labels: Default::default(),
+        });
+    reads.retained.lock().insert(other.clone());
+    subscriptions.open_client("client".into()).unwrap();
+    let starting = subscriptions.clone();
+    let start_target = target.clone();
+    // When
+    let task = tokio::spawn(async move {
+        starting
+            .start_subscription("client", &start_target, &FakeDelivery)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), reads.entered.notified())
+        .await
+        .unwrap();
+    subscriptions.close_client("client");
+    reads.resume.notify_one();
+    let result = task.await.unwrap();
+    // Then
+    assert!(
+        matches!(result, Err(StateReadError { source: StateReadFailure::Subscription(error), .. }) if *error == SubscriptionError::StreamEnded)
+    );
+    assert!(!reads.retained.lock().contains(&target));
+    assert!(reads.retained.lock().contains(&other));
+    assert_eq!(*reads.releases.lock(), vec![target]);
+    assert_eq!(subscriptions.test_worker_count(), 0);
 }

@@ -557,7 +557,7 @@ async fn test_daemon本番配線_repository一覧が購読へ配信される() {
         .start_state_subscription(rpc::StartStateSubscriptionRequest {
             client_id: "repositories".into(),
             subscription_id: "repositories".into(),
-            target: "repository-paths".into(),
+            target: "workspaces".into(),
             ..Default::default()
         })
         .await
@@ -590,7 +590,7 @@ async fn test_daemon本番配線_repository一覧が購読へ配信される() {
     )
     .await;
     // Then
-    let changed = tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event: wire::StateSubscriptionEvent = to_wire(
                 &states
@@ -601,19 +601,26 @@ async fn test_daemon本番配線_repository一覧が購読へ配信される() {
                     .to_owned_message(),
             )
             .unwrap();
-            if let Some(wire::state_subscription_event::Event::Change(change)) = event.event {
-                break change;
+            let Some(wire::state_subscription_event::Event::Change(change)) = event.event else {
+                continue;
+            };
+            let Some(wire::state_payload::Value::Workspaces(list)) = change.payload.unwrap().value
+            else {
+                panic!("workspaces");
+            };
+            if list
+                .repositories
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| item.path.as_deref() == Some(repository.as_str()))
+            {
+                break;
             }
         }
     })
     .await
     .unwrap();
-    assert!(!changed.delta);
-    let Some(wire::state_payload::Value::RepositoryPaths(paths)) = changed.payload.unwrap().value
-    else {
-        panic!("repository paths");
-    };
-    assert_eq!(paths.items, [repository]);
     drop(states);
     let wire::command_result::Command::AddRepoPath(added) = result else {
         panic!("add repo result");
@@ -914,22 +921,11 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     )
     .await;
     expect_state(&mut thread, "resolved thread by id", |value| matches!(value, wire::state_payload::Value::ReviewSessionThread(snapshot) if snapshot.value.as_ref().is_some_and(|thread| thread.state.as_ref().and_then(|state| state.value) == Some(wire::review_thread_state_dto::Value::Resolved as i32)))).await;
-    request(
-        &mut socket,
-        "delete-test-session-thread",
-        C::DeleteReviewThread(wire::DeleteReviewThreadRequest {
-            worktree_name: Some(worktree.into()),
-            thread_id: Some(thread_id),
-        }),
-    )
-    .await;
-    expect_state(&mut thread, "deleted thread", |value| matches!(value, wire::state_payload::Value::ReviewSessionThread(snapshot) if snapshot.value.is_none())).await;
-    expect_state(&mut history, "deleted thread history", |value| matches!(value, wire::state_payload::Value::ReviewSessionThreadHistory(snapshot) if snapshot.value.is_none())).await;
     drop((execution, output, missing, session_threads, history, thread));
 
     // When / Then: review threads reach the subscription after a comment command
     let mut threads = subscribe_state(&socket, "review-threads", vec!["repository".into()]).await;
-    expect_state(&mut threads, "initial review threads", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.is_empty())).await;
+    expect_state(&mut threads, "initial review threads", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if !list.items.iter().any(|thread| thread.comments.as_ref().unwrap().items.iter().any(|comment| comment.content.as_deref() == Some("production comment"))))).await;
     request(
         &mut socket,
         "comment",
@@ -949,16 +945,12 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         }
     }
     expect_state(&mut threads, "external comment edit", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.is_empty())).await;
-    // When / Then: the review subscription owns the worktree watch.
-    let mut review = subscribe_state(
-        &socket,
-        "review-snapshot",
-        vec![worktree.into(), "head".into()],
-    )
-    .await;
-    review.next().await.unwrap();
+    // When / Then: the directory subscription owns the worktree watch.
+    let mut directory =
+        subscribe_state(&socket, "directory", vec![worktree.into(), ".".into()]).await;
+    directory.next().await.unwrap();
     std::fs::write(repo_path.join("smoke.txt"), "smoke").unwrap();
-    expect_state(&mut review, "review snapshot after file change", |value| matches!(value, wire::state_payload::Value::ReviewSnapshot(snapshot) if snapshot.changed_files.as_ref().unwrap().items.iter().any(|file| file.path.as_deref() == Some("smoke.txt")))).await;
+    expect_state(&mut directory, "directory after file change", |value| matches!(value, wire::state_payload::Value::Directory(snapshot) if snapshot.entries.iter().any(|entry| entry.path == "smoke.txt"))).await;
     // Given: a branch merged into the default branch through a merge commit.
     let side = repository
         .commit(
@@ -995,18 +987,17 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     let created = request(
         &mut socket,
         "create-first-linked",
-        C::CreateWorktree(wire::CreateWorktreeRequest {
-            repo_path: Some(worktree.into()),
-            branch: Some("pushed-branch".into()),
-            create_branch: Some(false),
-            base_branch: None,
+        C::CreateWorktrees(wire::CreateWorktreesRequest {
+            repo_path: worktree.into(),
+            branches: vec!["pushed-branch".into()],
+            ..Default::default()
         }),
     )
     .await;
-    let wire::command_result::Command::CreateWorktree(created) = created else {
+    let wire::command_result::Command::CreateWorktrees(created) = created else {
         panic!("worktree creation result")
     };
-    let linked = created.value.unwrap();
+    let linked = created.items.into_iter().next().unwrap();
     expect_workspace(&mut states, "first linked worktree creation", |value| {
         any_branch(value, |branch| {
             branch.name.as_deref() == Some("pushed-branch")
@@ -1106,57 +1097,6 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         before_quit,
         "terminal shutdown must preserve AgentSession state"
     );
-    // Given: an unfinished workflow and its legacy archive file survive daemon shutdown.
-    let read_workflow_facts = || {
-        db.prepare("SELECT event_type, detail FROM node_events WHERE tree_id = ? AND parent_id IS NULL ORDER BY seq")
-            .unwrap()
-            .query_map([&execution_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    assert!(!read_workflow_facts()
-        .iter()
-        .any(|(event, _)| event == "abort_requested" || event == "archive_requested"));
-    let legacy_path = root.join("workflow_execution_archives.json");
-    std::fs::write(&legacy_path, serde_json::json!({"executions": {execution_id.clone(): {"archivedAt": 12.345678, "archiveReason": "manual"}}}).to_string()).unwrap();
-    // When: the production daemon startup invokes archive migration.
-    let (mut restarted, discovery) = start(&root);
-    let (mut socket, _) = connect(&discovery).await;
-    // Then
-    assert!(!legacy_path.exists());
-    let facts = read_workflow_facts();
-    let aborted = facts
-        .iter()
-        .position(|(event, _)| event == "abort_requested")
-        .unwrap();
-    let archived = facts
-        .iter()
-        .position(|(event, _)| event == "archive_requested")
-        .unwrap();
-    assert!(aborted < archived);
-    let archive: Value = serde_json::from_str(&facts[archived].1).unwrap();
-    assert_eq!(archive["archivedAt"], 12.345678);
-    assert_eq!(archive["reason"], "manual");
-    let mut restarted_states = subscribe_workspaces(&socket).await;
-    let snapshot = expect_workspace(&mut restarted_states, "restarted execution tree", |value| {
-        find_worktree(value, worktree).is_some_and(|tree| tree.snapshot.is_some())
-    })
-    .await;
-    let history = &worktree_state(&snapshot, worktree)
-        .workflow_history
-        .as_ref()
-        .unwrap()
-        .items;
-    let archived = history
-        .iter()
-        .find(|item| item.execution_id.as_deref() == Some(&execution_id))
-        .unwrap();
-    assert_eq!(
-        archived.status.as_ref().unwrap().value,
-        Some(wire::workspace_history_status::Value::Aborted as i32)
-    );
-    quit(&mut restarted, &mut socket).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

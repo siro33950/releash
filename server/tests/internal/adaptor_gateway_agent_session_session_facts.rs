@@ -165,7 +165,6 @@ pub async fn test_session読取_子sessionにもrootのarchiveとrestoreを反�
     for fact in [
         NodeFact::ArchiveRequested(
             releashd::test_support::integration::workflow::ArchiveRequestedFact {
-                reason: "manual".into(),
                 archived_at: 0.0,
             },
         ),

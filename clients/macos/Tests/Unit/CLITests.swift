@@ -22,7 +22,7 @@ final class CLITests: XCTestCase {
           #"{"running":false,"discovery_file":"/missing","startup_guidance":"CLI guidance"}"#.utf8)
       })
     do {
-      _ = try await cli.discover(startIfMissing: false)
+      _ = try await cli.discoverWithStatus(startIfMissing: false)
       XCTFail("Expected failure")
     } catch { XCTAssertTrue(error.localizedDescription.contains("CLI guidance")) }
     let recorded = await calls.values
@@ -37,7 +37,7 @@ final class CLITests: XCTestCase {
             .utf8)
       })
     do {
-      _ = try await cli.discover(startIfMissing: true)
+      _ = try await cli.discoverWithStatus(startIfMissing: true)
       XCTFail("Expected failure")
     } catch {
       XCTAssertTrue(error.localizedDescription.contains("server_older"))

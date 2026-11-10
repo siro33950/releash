@@ -42,8 +42,6 @@ enum UIStyle {
   static let attention = Color.yellow
   static let active = Color.blue
   static let idle = Color.green
-  static let addition = Color.green
-  static let deletion = Color.red
 
   static func statusColor(_ status: String) -> Color {
     switch status {

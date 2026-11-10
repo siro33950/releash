@@ -1,36 +1,11 @@
-use releashd::test_support::integration::repository::get_releash_base;
 use releashd::test_support::integration::repository::resolve_base_commit_oid;
 use releashd::test_support::integration::repository::resolve_effective_base_branch_with_git;
-use releashd::test_support::integration::repository::set_branch_base_override;
 use releashd::test_support::integration::repository::set_releash_base;
 use releashd::test_support::integration::repository::GitService;
 
 use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
 use crate::test_support_git::create_test_repo;
-
-#[test]
-pub fn test_git設定_各操作の停止を既定値に変えず後続へ進まない() {
-    // Given
-    let (dir, repo) = create_test_repo();
-    create_initial_commit(&repo);
-    let path = dir.path().to_str().unwrap();
-    // When / Then
-    assert_stops_at_each_checkpoint(|| settings().get_branch_base(path, "main"));
-    assert_stops_at_each_checkpoint(|| get_releash_base(path));
-    assert_stops_at_each_checkpoint(|| set_releash_base(path, Some("main")));
-    assert_stops_at_each_checkpoint(|| set_branch_base_override(path, "stale", Some("main")));
-    assert_stops_at_each_checkpoint(|| {
-        let repo = git2::Repository::open(path).unwrap();
-        let mut config = repo.config().unwrap();
-        for branch in ["stale", "stale.two"] {
-            config
-                .set_str(&format!("branch.{branch}.releash-base"), "main")
-                .unwrap();
-        }
-        settings().prune_stale_branch_bases(path, &[])
-    });
-}
 
 #[test]
 pub fn test_base解決_各停止点で欠損へ変換せず次の候補へ進まない() {
@@ -58,53 +33,6 @@ pub fn test_base解決_各停止点で欠損へ変換せず次の候補へ進ま
     assert_stops_at_each_checkpoint(|| {
         git().resolve_current_base_branch(deleted.to_str().unwrap())
     });
-}
-
-#[test]
-pub fn test_base読取_設定破損を未設定や既定branchに変換しない() {
-    // Given
-    let (dir, repo) = create_test_repo();
-    create_initial_commit(&repo);
-    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
-    std::fs::write(repo.path().join("config"), "[broken\n").unwrap();
-    let path = dir.path().to_str().unwrap();
-    // When
-    let branch_base = settings().get_branch_base(path, &branch);
-    let releash_base = get_releash_base(path);
-    let current_base = git().resolve_current_base_branch(path);
-    let effective_base = resolve_effective_base_branch(path);
-    // Then
-    assert!(branch_base.is_err());
-    assert!(releash_base.is_err());
-    assert!(current_base.is_err());
-    assert!(effective_base.is_err());
-}
-
-#[test]
-pub fn test_base読取_コミットがないbranchは未設定を返す() {
-    // Given
-    let (dir, _repo) = create_test_repo();
-    // When
-    let result = settings().get_branch_base(dir.path().to_str().unwrap(), "unborn");
-    // Then
-    assert_eq!(result.unwrap(), None);
-}
-
-#[test]
-pub fn test_base読取_正常な設定から現在branchと既定baseを読む() {
-    // Given
-    let (dir, repo) = create_test_repo();
-    create_initial_commit(&repo);
-    let path = dir.path().to_str().unwrap();
-    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
-    // When
-    let branch_base = settings().get_branch_base(path, &branch);
-    let releash_base = get_releash_base(path);
-    let effective_base = resolve_effective_base_branch(path);
-    // Then
-    assert_eq!(branch_base.unwrap(), Some(branch));
-    assert_eq!(releash_base.unwrap(), None);
-    assert!(effective_base.is_ok());
 }
 
 #[test]
@@ -148,61 +76,6 @@ pub(crate) mod git_config_gateway_tests {
     use releashd::test_support::integration::repository::get_releash_base;
     use releashd::test_support::integration::repository::set_branch_base_override;
     use releashd::test_support::integration::repository::set_releash_base;
-
-    #[test]
-    pub fn test_ベース解決_per_branch() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        set_branch_base_override(repo_path, "feat", Some("develop")).unwrap();
-        let result = settings()
-            .get_branch_base(repo.workdir().unwrap().to_str().unwrap(), "feat")
-            .unwrap();
-        assert_eq!(result, Some("develop".to_string()));
-    }
-
-    #[test]
-    pub fn test_ベース解決_releash_baseフォールバック() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        set_releash_base(repo_path, Some("develop")).unwrap();
-        let result = settings()
-            .get_branch_base(repo.workdir().unwrap().to_str().unwrap(), "feat")
-            .unwrap();
-        assert_eq!(result, Some("develop".to_string()));
-    }
-
-    #[test]
-    pub fn test_ベース解決_既定ブランチフォールバック() {
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let result = settings()
-            .get_branch_base(repo.workdir().unwrap().to_str().unwrap(), "feat")
-            .unwrap();
-        assert!(result.is_some());
-    }
-
-    #[test]
-    pub fn test_branch_base_取得設定() {
-        let (dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let repo_path = dir.path().to_str().unwrap();
-
-        let base = settings().get_branch_base(repo_path, "feat").unwrap();
-        assert!(base.is_some());
-
-        set_branch_base_override(repo_path, "feat", Some("develop")).unwrap();
-        let base = settings().get_branch_base(repo_path, "feat").unwrap();
-        assert_eq!(base, Some("develop".to_string()));
-
-        set_branch_base_override(repo_path, "feat", None).unwrap();
-        let base = settings().get_branch_base(repo_path, "feat").unwrap();
-        assert!(base.is_some());
-        assert_ne!(base, Some("develop".to_string()));
-    }
 
     #[test]
     pub fn test_releash_base_取得設定() {

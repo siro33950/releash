@@ -61,9 +61,10 @@ pub enum AcceptanceProvider {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AcceptanceAgentSessionLifecycle {
+pub enum AcceptanceAgentSessionAvailability {
     Open,
     Paused,
+    Indeterminate,
     Archived,
 }
 
@@ -79,10 +80,9 @@ pub struct AcceptanceAgentSessionTreeLocation {
 pub struct AcceptanceAgentSession {
     pub id: String,
     pub provider: AcceptanceProvider,
-    pub lifecycle: AcceptanceAgentSessionLifecycle,
+    pub availability: AcceptanceAgentSessionAvailability,
     pub tree_location: AcceptanceAgentSessionTreeLocation,
     pub provider_session_id: Option<String>,
-    pub transcript_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -90,22 +90,13 @@ pub struct AcceptanceAgentSession {
 pub struct AcceptanceHistoryCandidate {
     pub provider: AcceptanceProvider,
     pub provider_session_id: String,
-    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcceptanceHookWarning {
     pub provider: AcceptanceProvider,
-    pub launch_id: String,
     pub reason: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AcceptanceArchiveOutcome {
-    Archived,
-    AlreadyArchived,
 }
 
 struct AcceptanceUnusedWorkflowDefinitionResolver;
@@ -199,7 +190,6 @@ impl AgentSessionTuiAcceptanceHost {
         let session_tabs = crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
             Arc::new(
                 crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
-                    data_dir.clone(),
                     store.clone(),
                 ),
             ),
@@ -316,7 +306,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
             Arc::new(
                 crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
                     store.clone(),
-                    data_dir.clone(),
                 ),
             ),
             operations.clone(),
@@ -505,6 +494,13 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         Ok(session.id)
     }
 
+    pub async fn archive_execution_tree(&self, tree_id: &str) -> Result<(), String> {
+        self.runtime
+            .archive_execution_tree(tree_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn resume_session_node(&self, node_execution_id: &str) -> Result<(), String> {
         self.runtime
             .resume_session_node(
@@ -641,11 +637,14 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
         use crate::usecase::state_subscription::SubscriptionTarget as T;
         use crate::usecase::state_subscription::{StateReadError, StateValue};
         match target {
-            T::AgentSession(id) => self
+            T::SessionTab(id) => self
                 .sessions
                 .get(id)
                 .await
-                .map(StateValue::AgentSession)
+                .map(|session| StateValue::SessionTab {
+                    session,
+                    node: None,
+                })
                 .map_err(|e| StateReadError {
                     message: format!("{e:?}"),
                     source: e.into(),

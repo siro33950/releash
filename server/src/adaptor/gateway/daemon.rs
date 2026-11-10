@@ -113,27 +113,6 @@ pub(crate) fn acquire_startup_lock(
     }
 }
 
-pub(crate) fn acquire_legacy_writer_lock(
-    data_dir: &std::path::Path,
-) -> Result<std::fs::File, crate::domain::daemon::StartupFailureKind> {
-    use crate::domain::daemon::StartupFailureKind as K;
-    let unavailable = |_: std::io::Error| {
-        K::StorageUnavailable(crate::domain::failure::TechnicalFailureNature::Other)
-    };
-    std::fs::create_dir_all(data_dir).map_err(unavailable)?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(data_dir.join(super::local_event_store::layout::WRITER_LOCK_FILE))
-        .map_err(unavailable)?;
-    match fs2::FileExt::try_lock_exclusive(&lock) {
-        Ok(()) => Ok(lock),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(K::StoreInUse),
-        Err(error) => Err(unavailable(error)),
-    }
-}
-
 #[cfg(test)]
 #[path = "daemon_test.rs"]
 pub(crate) mod daemon_tests;

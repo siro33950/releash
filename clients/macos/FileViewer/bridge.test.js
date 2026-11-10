@@ -50,7 +50,7 @@ async function bridge() {
 }
 
 const payload = () => ({
-  path: 'file.rs', version: '1', original: 'a\nb\nc\n', modified: 'a\nc\n',
+  path: 'file.rs', original: 'a\nb\nc\n', modified: 'a\nc\n',
   patch: '--- a/file.rs\n+++ b/file.rs\n@@ -1,3 +1,2 @@\n a\n-b\n c\n',
   mode: 'diff', base: 'head', style: 'split', full: false, dark: false, deleted: false, accent: '#112233',
   threads: [],

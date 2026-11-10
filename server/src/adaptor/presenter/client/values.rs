@@ -8,45 +8,6 @@ where
 fn req<T>(value: Option<T>, name: &str) -> Result<T, String> {
     value.ok_or_else(|| format!("Missing {name}"))
 }
-impl TryFrom<String> for wire::AgentSessionArchiveResponse {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "archived" => wire::agent_session_archive_response::Value::Archived as i32,
-                "already_archived" => {
-                    wire::agent_session_archive_response::Value::AlreadyArchived as i32
-                }
-                _ => return Err(format!("Invalid AgentSessionArchiveResponse: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::AgentSessionArchiveResponse {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::AgentSessionLifecycleDto {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "open" => wire::agent_session_lifecycle_dto::Value::Open as i32,
-                "paused" => wire::agent_session_lifecycle_dto::Value::Paused as i32,
-                "archived" => wire::agent_session_lifecycle_dto::Value::Archived as i32,
-                _ => return Err(format!("Invalid AgentSessionLifecycleDto: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::AgentSessionLifecycleDto {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
 impl TryFrom<String> for wire::AgentSessionProviderDto {
     type Error = String;
     fn try_from(value: String) -> Result<Self, String> {
@@ -102,94 +63,6 @@ impl TryFrom<&str> for wire::DiagnosticStage {
         cv(value.to_owned())
     }
 }
-impl TryFrom<String> for wire::DiffBase {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "branch-base" => wire::diff_base::Value::BranchBase as i32,
-                "head" => wire::diff_base::Value::Head as i32,
-                _ => return Err(format!("Invalid DiffBase: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::DiffBase {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::DiffRangeKindDto {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "added" => wire::diff_range_kind_dto::Value::Added as i32,
-                "modified" => wire::diff_range_kind_dto::Value::Modified as i32,
-                "deleted" => wire::diff_range_kind_dto::Value::Deleted as i32,
-                _ => return Err(format!("Invalid DiffRangeKindDto: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::DiffRangeKindDto {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::DiffTreeNodeType {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "file" => wire::diff_tree_node_type::Value::File as i32,
-                "folder" => wire::diff_tree_node_type::Value::Folder as i32,
-                _ => return Err(format!("Invalid DiffTreeNodeType: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::DiffTreeNodeType {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<wire::DiffTreeNodeType> for String {
-    type Error = String;
-    fn try_from(value: wire::DiffTreeNodeType) -> Result<Self, String> {
-        Ok(
-            match wire::diff_tree_node_type::Value::try_from(req(value.value, "value")?)
-                .map_err(|_| "Invalid DiffTreeNodeType")?
-            {
-                wire::diff_tree_node_type::Value::File => "file".to_owned(),
-                wire::diff_tree_node_type::Value::Folder => "folder".to_owned(),
-            },
-        )
-    }
-}
-impl TryFrom<String> for wire::ExecutionOriginView {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "desktop_ui" => wire::execution_origin_view::Value::DesktopUi as i32,
-                "cli" => wire::execution_origin_view::Value::Cli as i32,
-                "agent" => wire::execution_origin_view::Value::Agent as i32,
-                "api" => wire::execution_origin_view::Value::Api as i32,
-                _ => return Err(format!("Invalid ExecutionOriginView: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::ExecutionOriginView {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
 impl TryFrom<String> for wire::ExecutionStatusView {
     type Error = String;
     fn try_from(value: String) -> Result<Self, String> {
@@ -204,67 +77,6 @@ impl TryFrom<String> for wire::ExecutionStatusView {
     }
 }
 impl TryFrom<&str> for wire::ExecutionStatusView {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::GitIndexStatus {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "new" => wire::git_index_status::Value::New as i32,
-                "modified" => wire::git_index_status::Value::Modified as i32,
-                "deleted" => wire::git_index_status::Value::Deleted as i32,
-                "none" => wire::git_index_status::Value::None as i32,
-                "renamed" => wire::git_index_status::Value::Renamed as i32,
-                _ => return Err(format!("Invalid GitIndexStatus: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::GitIndexStatus {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::GitWorktreeStatus {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "new" => wire::git_worktree_status::Value::New as i32,
-                "modified" => wire::git_worktree_status::Value::Modified as i32,
-                "deleted" => wire::git_worktree_status::Value::Deleted as i32,
-                "ignored" => wire::git_worktree_status::Value::Ignored as i32,
-                "none" => wire::git_worktree_status::Value::None as i32,
-                _ => return Err(format!("Invalid GitWorktreeStatus: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::GitWorktreeStatus {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::InlineChunkKindDto {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "unchanged" => wire::inline_chunk_kind_dto::Value::Unchanged as i32,
-                "added" => wire::inline_chunk_kind_dto::Value::Added as i32,
-                "removed" => wire::inline_chunk_kind_dto::Value::Removed as i32,
-                _ => return Err(format!("Invalid InlineChunkKindDto: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::InlineChunkKindDto {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
@@ -330,18 +142,6 @@ where
         })
     }
 }
-impl<T> TryFrom<Vec<T>> for wire::ListChangeGroupDto
-where
-    wire::ChangeGroupDto: TryFrom<T>,
-    <wire::ChangeGroupDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
 impl<T> TryFrom<Vec<T>> for wire::ListChildEntryDto
 where
     wire::ChildEntryDto: TryFrom<T>,
@@ -376,48 +176,6 @@ where
         Ok(Self {
             items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
         })
-    }
-}
-impl<T: TryFrom<wire::DiffFileEntryInput>> TryFrom<wire::ListDiffFileEntryInput> for Vec<T>
-where
-    T::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: wire::ListDiffFileEntryInput) -> Result<Self, String> {
-        value.items.into_iter().map(cv).collect()
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListDiffRangeDto
-where
-    wire::DiffRangeDto: TryFrom<T>,
-    <wire::DiffRangeDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListDiffTreeNodeDto
-where
-    wire::DiffTreeNodeDto: TryFrom<T>,
-    <wire::DiffTreeNodeDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T: TryFrom<wire::DiffTreeNodeInput>> TryFrom<wire::ListDiffTreeNodeInput> for Vec<T>
-where
-    T::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: wire::ListDiffTreeNodeInput) -> Result<Self, String> {
-        value.items.into_iter().map(cv).collect()
     }
 }
 impl<T> TryFrom<Vec<T>> for wire::ListEditorInfoDto
@@ -460,75 +218,6 @@ impl<T> TryFrom<Vec<T>> for wire::ListFanoutView
 where
     wire::FanoutView: TryFrom<T>,
     <wire::FanoutView as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListFileDiffStatDto
-where
-    wire::FileDiffStatDto: TryFrom<T>,
-    <wire::FileDiffStatDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListFileStatusDto
-where
-    wire::FileStatusDto: TryFrom<T>,
-    <wire::FileStatusDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListHiddenRangeDto
-where
-    wire::HiddenRangeDto: TryFrom<T>,
-    <wire::HiddenRangeDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListHunkDto
-where
-    wire::HunkDto: TryFrom<T>,
-    <wire::HunkDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T: TryFrom<wire::HunkInput>> TryFrom<wire::ListHunkInput> for Vec<T>
-where
-    T::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: wire::ListHunkInput) -> Result<Self, String> {
-        value.items.into_iter().map(cv).collect()
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListInlineChunkDto
-where
-    wire::InlineChunkDto: TryFrom<T>,
-    <wire::InlineChunkDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -618,18 +307,6 @@ where
         })
     }
 }
-impl<T> TryFrom<Vec<T>> for wire::ListNotionLabelOptionView
-where
-    wire::NotionLabelOptionView: TryFrom<T>,
-    <wire::NotionLabelOptionView as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
 impl<T> TryFrom<Vec<T>> for wire::ListNotionPropertyInfoView
 where
     wire::NotionPropertyInfoView: TryFrom<T>,
@@ -646,18 +323,6 @@ impl<T> TryFrom<Vec<T>> for wire::ListNotionTaskView
 where
     wire::NotionTaskView: TryFrom<T>,
     <wire::NotionTaskView as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListPrAuthorDto
-where
-    wire::PrAuthorDto: TryFrom<T>,
-    <wire::PrAuthorDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -714,58 +379,10 @@ where
         })
     }
 }
-impl<T> TryFrom<Vec<T>> for wire::ListReviewFileEntryDto
-where
-    wire::ReviewFileEntryDto: TryFrom<T>,
-    <wire::ReviewFileEntryDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
 impl<T> TryFrom<Vec<T>> for wire::ListReviewThreadDto
 where
     wire::ReviewThreadDto: TryFrom<T>,
     <wire::ReviewThreadDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListRuleDto
-where
-    wire::RuleDto: TryFrom<T>,
-    <wire::RuleDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListSplitRowDto
-where
-    wire::SplitRowDto: TryFrom<T>,
-    <wire::SplitRowDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListVisibleBlockDto
-where
-    wire::VisibleBlockDto: TryFrom<T>,
-    <wire::VisibleBlockDto as TryFrom<T>>::Error: std::fmt::Display,
 {
     type Error = String;
     fn try_from(value: Vec<T>) -> Result<Self, String> {
@@ -805,18 +422,6 @@ where
     type Error = String;
     fn try_from(value: wire::ListWorkspaceTabEntryDto) -> Result<Self, String> {
         value.items.into_iter().map(cv).collect()
-    }
-}
-impl<T> TryFrom<Vec<T>> for wire::ListWorktreeEntryDto
-where
-    wire::WorktreeEntryDto: TryFrom<T>,
-    <wire::WorktreeEntryDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
     }
 }
 impl<T> TryFrom<Vec<T>> for wire::Liststring
@@ -958,75 +563,6 @@ where
             .collect()
     }
 }
-impl<T> TryFrom<std::collections::BTreeMap<String, T>> for wire::Mapstring
-where
-    String: TryFrom<T>,
-    <String as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: std::collections::BTreeMap<String, T>) -> Result<Self, String> {
-        Ok(Self {
-            entries: value
-                .into_iter()
-                .map(|(key, value)| Ok((key, cv(value)?)))
-                .collect::<Result<_, String>>()?,
-        })
-    }
-}
-impl<T: TryFrom<String>> TryFrom<wire::Mapstring> for std::collections::BTreeMap<String, T>
-where
-    T::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: wire::Mapstring) -> Result<Self, String> {
-        value
-            .entries
-            .into_iter()
-            .map(|(key, value)| Ok((key, cv(value)?)))
-            .collect()
-    }
-}
-impl<T> TryFrom<std::collections::HashMap<String, T>> for wire::Mapstring
-where
-    String: TryFrom<T>,
-    <String as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: std::collections::HashMap<String, T>) -> Result<Self, String> {
-        Ok(Self {
-            entries: value
-                .into_iter()
-                .map(|(key, value)| Ok((key, cv(value)?)))
-                .collect::<Result<_, String>>()?,
-        })
-    }
-}
-impl<T: TryFrom<String>> TryFrom<wire::Mapstring> for std::collections::HashMap<String, T>
-where
-    T::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: wire::Mapstring) -> Result<Self, String> {
-        value
-            .entries
-            .into_iter()
-            .map(|(key, value)| Ok((key, cv(value)?)))
-            .collect()
-    }
-}
-impl TryFrom<wire::MarkdownDiffSideInput> for String {
-    type Error = String;
-    fn try_from(value: wire::MarkdownDiffSideInput) -> Result<Self, String> {
-        Ok(
-            match wire::markdown_diff_side_input::Value::try_from(req(value.value, "value")?)
-                .map_err(|_| "Invalid MarkdownDiffSideInput")?
-            {
-                wire::markdown_diff_side_input::Value::Modified => "modified".to_owned(),
-                wire::markdown_diff_side_input::Value::Original => "original".to_owned(),
-            },
-        )
-    }
-}
 impl TryFrom<String> for wire::NodeCompletionSignalView {
     type Error = String;
     fn try_from(value: String) -> Result<Self, String> {
@@ -1128,18 +664,6 @@ impl TryFrom<&str> for wire::NotionConfigStatusView {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
-    }
-}
-impl<T> TryFrom<Option<T>> for wire::NullableAgentSessionItemDto
-where
-    wire::AgentSessionItemDto: TryFrom<T>,
-    <wire::AgentSessionItemDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Option<T>) -> Result<Self, String> {
-        Ok(Self {
-            value: value.map(cv).transpose()?,
-        })
     }
 }
 impl<T> TryFrom<Option<T>> for wire::NullableNotionRepoConfigView
@@ -1277,26 +801,6 @@ impl TryFrom<&str> for wire::ReviewActorKindWireDto {
         cv(value.to_owned())
     }
 }
-impl TryFrom<String> for wire::ReviewLimitReasonDto {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "fileSize" => wire::review_limit_reason_dto::Value::FileSize as i32,
-                "lineCount" => wire::review_limit_reason_dto::Value::LineCount as i32,
-                "hunkCount" => wire::review_limit_reason_dto::Value::HunkCount as i32,
-                "tokenization" => wire::review_limit_reason_dto::Value::Tokenization as i32,
-                _ => return Err(format!("Invalid ReviewLimitReasonDto: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::ReviewLimitReasonDto {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
 impl TryFrom<String> for wire::ReviewTextSource {
     type Error = String;
     fn try_from(value: String) -> Result<Self, String> {
@@ -1378,26 +882,6 @@ impl TryFrom<String> for wire::Severity {
     }
 }
 impl TryFrom<&str> for wire::Severity {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::SplitRowKindDto {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "unchanged" => wire::split_row_kind_dto::Value::Unchanged as i32,
-                "added" => wire::split_row_kind_dto::Value::Added as i32,
-                "removed" => wire::split_row_kind_dto::Value::Removed as i32,
-                "modified" => wire::split_row_kind_dto::Value::Modified as i32,
-                _ => return Err(format!("Invalid SplitRowKindDto: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::SplitRowKindDto {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())
@@ -1640,24 +1124,6 @@ impl TryFrom<String> for wire::WorkspaceStatusClassification {
     }
 }
 impl TryFrom<&str> for wire::WorkspaceStatusClassification {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, String> {
-        cv(value.to_owned())
-    }
-}
-impl TryFrom<String> for wire::WorkspaceWaitingFor {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value.as_str() {
-                "submit" => wire::workspace_waiting_for::Value::Submit as i32,
-                "stop" => wire::workspace_waiting_for::Value::Stop as i32,
-                _ => return Err(format!("Invalid WorkspaceWaitingFor: {value}")),
-            }),
-        })
-    }
-}
-impl TryFrom<&str> for wire::WorkspaceWaitingFor {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, String> {
         cv(value.to_owned())

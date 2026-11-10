@@ -708,7 +708,7 @@ pub async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示�
     // When
     let snapshot = visible_rows(&repository, &workspace).await;
     let tree_title = snapshot[0].title.as_str();
-    archive_aborted(&store, directory.path(), execution_id, 10.0, "manual").await;
+    archive_aborted(&store, execution_id, 10.0).await;
     let archived = load_tree(&repository, &workspace).await;
     let history = archived.archived_workflows();
 
@@ -948,14 +948,10 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
         std::sync::Arc::new(FailureRecordStore::default()),
     );
     let fixtures = [
-        ("00000000-0000-4000-8000-000000000901", 12.345678, "manual"),
-        (
-            "00000000-0000-4000-8000-000000000902",
-            98.765432,
-            "worktree_removed",
-        ),
+        ("00000000-0000-4000-8000-000000000901", 12.345678),
+        ("00000000-0000-4000-8000-000000000902", 98.765432),
     ];
-    for (id, at, reason) in fixtures {
+    for (id, at) in fixtures {
         seed_workflow_session_facts(
             &store,
             WorkflowSessionFactSeed {
@@ -971,31 +967,24 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
         )
         .await
         .unwrap();
-        archive_aborted(&store, directory.path(), id, at, reason).await;
+        archive_aborted(&store, id, at).await;
     }
     // When
     let tree = load_tree(&repository, &WorkspaceIdentity::new("/repo")).await;
     let history = tree.archived_workflows();
     // Then
     assert_eq!(history.len(), 2);
-    for (id, at, reason) in fixtures {
+    for (id, at) in fixtures {
         let item = history.iter().find(|item| item.execution_id == id).unwrap();
         let archive = item.archive.as_ref().unwrap();
         assert_eq!(archive.archived_at, at);
-        assert_eq!(archive.archive_reason, reason);
         assert_eq!(item.status, ExecutionStatus::Aborted);
     }
     assert_eq!(history[0].execution_id, fixtures[1].0);
 }
 
 /// 実行木を abort してから archive する。
-async fn archive_aborted(
-    store: &Arc<LocalEventStore>,
-    data_dir: &std::path::Path,
-    execution_id: &str,
-    archived_at: f64,
-    reason: &str,
-) {
+async fn archive_aborted(store: &Arc<LocalEventStore>, execution_id: &str, archived_at: f64) {
     use releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
     use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
     let root =
@@ -1011,12 +1000,11 @@ async fn archive_aborted(
     )
     .await
     .unwrap();
-    ExecutionTreeArchiveFactRepository::new(store.clone(), data_dir)
+    ExecutionTreeArchiveFactRepository::new(store.clone())
         .archive(
             &releashd::test_support::integration::workflow::ExecutionTreeId::new(execution_id)
                 .unwrap(),
             archived_at,
-            reason,
         )
         .await
         .unwrap();
@@ -1168,8 +1156,7 @@ pub async fn test_session選択_記録済みsessionとnodeのdtoを返し対象�
 #[tokio::test]
 pub async fn test_command詳細_記録から実行環境と過去attemptの出力を読める() {
     use releashd::test_support::integration::workflow::{
-        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinitionContent,
-        WorkflowEvent,
+        append_facts_for_events, NodeKindName, WorkflowDefinitionContent, WorkflowEvent,
     };
     for child in [false, true] {
         // Given
@@ -1201,7 +1188,6 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
                 execution_id: tree_id.into(),
                 workflow_name: "retry".into(),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
                 definition,
                 timestamp: 1.0,
@@ -1344,8 +1330,8 @@ pub async fn test_command詳細_記録から実行環境と過去attemptの出�
 #[tokio::test]
 pub async fn test_command起動失敗_差分読取と再読込で詳細と過去attemptへ理由を配る() {
     use releashd::test_support::integration::workflow::{
-        append_facts_for_events, ExecutionOrigin, NodeExecutionFailureKind, NodeKindName,
-        WorkflowDefinitionContent, WorkflowEvent,
+        append_facts_for_events, NodeExecutionFailureKind, NodeKindName, WorkflowDefinitionContent,
+        WorkflowEvent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1369,7 +1355,6 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
                 execution_id: tree_id.into(),
                 workflow_name: "retry".into(),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
                 definition,
                 timestamp: 1.0,
@@ -1483,8 +1468,7 @@ pub async fn test_command起動失敗_差分読取と再読込で詳細と過去
 #[tokio::test]
 pub async fn test_command詳細_完了済み実行のabort不可をrepositoryから配る() {
     use releashd::test_support::integration::workflow::{
-        append_facts_for_events, ExecutionOrigin, NodeKindName, WorkflowDefinitionContent,
-        WorkflowEvent,
+        append_facts_for_events, NodeKindName, WorkflowDefinitionContent, WorkflowEvent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -1507,7 +1491,6 @@ pub async fn test_command詳細_完了済み実行のabort不可をrepositoryか
                 execution_id: tree_id.into(),
                 workflow_name: "completed".into(),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
                 definition,
                 timestamp: 1.0,
@@ -1704,7 +1687,6 @@ pub async fn test_sessionタブ詳細_id所在から名前と一覧と同じ色�
     let workflow =
         releashd::test_support::integration::platform::build_workflow_services_with_gateways(
             failures.clone(),
-            directory.path(),
             Arc::new(
                 releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway,
             ),
@@ -2002,8 +1984,8 @@ pub async fn test_sessionタブ詳細_保存定義と異なる終了履歴を復
 #[tokio::test]
 pub async fn test_旧会話参照照会_追記された紐付けと再試行と削除を反映する() {
     use releashd::test_support::integration::workflow::{
-        append_single_fact, ExecutionOrigin, NodeDefinition, NodeFactMeta, NodeKindName,
-        SessionAttachedFact, StartedFact, TreeRootFact, WorkflowDefinitionContent,
+        append_single_fact, NodeDefinition, NodeFactMeta, NodeKindName, SessionAttachedFact,
+        StartedFact, TreeRootFact, WorkflowDefinitionContent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -2032,7 +2014,6 @@ pub async fn test_旧会話参照照会_追記された紐付けと再試行と�
                 repository_root: None,
                 workspace_identity: "/repo".into(),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::Cli,
                 request: String::new(),
                 workflow_name: "main".into(),
                 definition: Some(WorkflowDefinitionContent {
@@ -2788,8 +2769,8 @@ pub async fn test_旧会話参照照会_未発見の単独参照で全workspace�
 #[tokio::test]
 pub async fn test_workflow一覧_fact_storeから項目と順序と絞り込みを復元する() {
     use releashd::test_support::integration::workflow::{
-        append_facts_for_events, ExecutionOrigin, ExecutionStatusFilter, NodeKindName,
-        WorkflowDefinitionContent, WorkflowEvent,
+        append_facts_for_events, ExecutionStatusFilter, NodeKindName, WorkflowDefinitionContent,
+        WorkflowEvent,
     };
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -2820,7 +2801,6 @@ pub async fn test_workflow一覧_fact_storeから項目と順序と絞り込み�
             execution_id: id.into(),
             workflow_name: "listed".into(),
             worktree_path: workspace.into(),
-            created_from: ExecutionOrigin::DesktopUi,
             request: String::new(),
             definition,
             timestamp: started,
@@ -2878,9 +2858,7 @@ pub async fn test_workflow一覧_fact_storeから項目と順序と絞り込み�
     );
     assert!(selected
         .iter()
-        .all(|record| record.workflow_name == "listed"
-            && record.worktree_path == "/repo"
-            && record.created_from == ExecutionOrigin::DesktopUi));
+        .all(|record| record.workflow_name == "listed" && record.worktree_path == "/repo"));
 
     // When
     append_facts_for_events(

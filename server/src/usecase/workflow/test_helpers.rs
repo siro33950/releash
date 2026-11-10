@@ -26,12 +26,6 @@ impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
     ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveCandidate>, WorkflowError> {
         unreachable!()
     }
-    async fn legacy_session_archive_page(
-        &self,
-        _: Option<&str>,
-    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
-        Ok(Vec::new())
-    }
 
     async fn worktree_target_page(
         &self,
@@ -46,20 +40,11 @@ impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
     ) -> Result<crate::domain::workflow::ExecutionTreeArchiveTarget, WorkflowError> {
         unreachable!()
     }
-    fn legacy_archives(
-        &self,
-    ) -> Result<Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>, WorkflowError> {
-        Ok(Vec::new())
-    }
-    fn finish_legacy_migration(&self) -> Result<(), WorkflowError> {
-        Ok(())
-    }
 
     async fn archive(
         &self,
         _execution_id: &crate::domain::workflow::ExecutionTreeId,
         _archived_at: f64,
-        _reason: &str,
     ) -> Result<(), WorkflowError> {
         Ok(())
     }
@@ -70,15 +55,6 @@ impl ExecutionTreeArchiveRepository for NoopArchiveRepository {
         _restored_at: f64,
     ) -> Result<(), WorkflowError> {
         Ok(())
-    }
-
-    async fn archive_snapshot_for(
-        &self,
-        _execution_ids: &[String],
-    ) -> Result<crate::domain::workflow::ExecutionTreeArchiveSnapshot, WorkflowError> {
-        Ok(crate::domain::workflow::ExecutionTreeArchiveSnapshot {
-            records: Vec::new(),
-        })
     }
 }
 
@@ -111,16 +87,6 @@ impl FakeFacetRepository {
 
 #[cfg(test)]
 impl FacetRepository for FakeFacetRepository {
-    fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-        Ok(self
-            .facets
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|(candidate, _)| *candidate == kind)
-            .map(|(_, key)| key.clone())
-            .collect())
-    }
     fn get(
         &self,
         kind: FacetKind,
@@ -144,34 +110,6 @@ impl FacetRepository for FakeFacetRepository {
             ));
         }
         Ok(facet(kind, key, content))
-    }
-    fn save(&self, facet: crate::domain::workflow::Facet, _: bool) -> Result<(), WorkflowError> {
-        self.facets.lock().unwrap().insert(
-            (facet.kind(), facet.key().as_str().into()),
-            facet.content().into(),
-        );
-        Ok(())
-    }
-    fn delete(&self, facet: &crate::domain::workflow::Facet) -> Result<(), WorkflowError> {
-        self.facets
-            .lock()
-            .unwrap()
-            .remove(&(facet.kind(), facet.key().as_str().into()));
-        Ok(())
-    }
-
-    fn get_or_new(
-        &self,
-        kind: FacetKind,
-        key: &str,
-    ) -> Result<crate::domain::workflow::Facet, WorkflowError> {
-        match self.get(kind, key) {
-            Err(WorkflowError::NotFound(_)) => {
-                crate::domain::workflow::FacetKey::new(key)?;
-                Ok(facet(kind, key, String::new()))
-            }
-            result => result,
-        }
     }
 }
 
@@ -230,7 +168,7 @@ pub(crate) mod startup {
     use crate::domain::workflow::repository::WorkflowStartupRecord;
     use crate::domain::workflow::repository::WorkflowStartupRepository;
     use crate::domain::workflow::WorkflowError;
-    use crate::domain::workflow::{ExecutionOrigin, ExecutionTreeLaunch, NodeFact, TreeRootFact};
+    use crate::domain::workflow::{ExecutionTreeLaunch, NodeFact, TreeRootFact};
     use crate::usecase::workflow::startup::*;
     use std::sync::Mutex;
 
@@ -257,7 +195,6 @@ pub(crate) mod startup {
                 repository_root: None,
                 workspace_identity: "/repo".into(),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::Cli,
                 request: String::new(),
                 workflow_name: "old".into(),
                 definition: None,
@@ -404,23 +341,18 @@ use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository};
 pub struct FakeDefinitionRepository {
     pub definitions: Mutex<HashMap<String, WorkflowDefinition>>,
     pub read_error: Mutex<Option<String>>,
-    pub deleted: Mutex<Vec<String>>,
-    pub saved_sources: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl FakeDefinitionRepository {
-    pub fn insert(&self, definition: WorkflowDefinition) {
+    pub fn insert(&self, name: &str, definition: WorkflowDefinition) {
         self.definitions
             .lock()
             .unwrap()
-            .insert(definition.file_stem().to_owned(), definition);
+            .insert(name.to_owned(), definition);
     }
 }
 
 impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-    fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
-        Ok(self.definitions.lock().unwrap().keys().cloned().collect())
-    }
     fn get(&self, name: &str) -> Result<WorkflowDefinition, WorkflowError> {
         if let Some(message) = self.read_error.lock().unwrap().as_ref() {
             return Err(WorkflowError::external(message));
@@ -432,52 +364,18 @@ impl WorkflowDefinitionRepository for FakeDefinitionRepository {
             .cloned()
             .ok_or_else(|| WorkflowError::NotFound(name.into()))
     }
-    fn save(
-        &self,
-        definition: WorkflowDefinition,
-        original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
-        if let Some(original) = original_name {
-            self.definitions.lock().unwrap().remove(original);
-        }
-        self.insert(definition);
-        Ok(())
-    }
-    fn delete(&self, definition: &WorkflowDefinition) -> Result<(), WorkflowError> {
-        self.definitions
-            .lock()
-            .unwrap()
-            .remove(definition.file_stem());
-        self.deleted
-            .lock()
-            .unwrap()
-            .push(definition.file_stem().into());
-        Ok(())
-    }
     fn find(&self, name: Option<&str>) -> Result<Option<WorkflowDefinition>, WorkflowError> {
         match name.map(|name| self.get(name)) {
             None | Some(Err(WorkflowError::NotFound(_))) => Ok(None),
             Some(result) => result.map(Some),
         }
     }
-    fn save_source(
-        &self,
-        definition: &WorkflowDefinition,
-        source: &str,
-        original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
-        self.saved_sources
-            .lock()
-            .unwrap()
-            .push((source.into(), original_name.map(str::to_string)));
-        self.save(definition.clone(), original_name)
-    }
 }
 
 #[cfg(test)]
 impl FakeDefinitionRepository {
-    pub fn seed(&self, definition: crate::domain::workflow::WorkflowDefinition) {
-        self.insert(definition);
+    pub fn seed(&self, name: &str, definition: crate::domain::workflow::WorkflowDefinition) {
+        self.insert(name, definition);
     }
     pub fn get_saved(&self, name: &str) -> Option<crate::domain::workflow::WorkflowDefinition> {
         self.definitions.lock().unwrap().get(name).cloned()
@@ -488,5 +386,12 @@ impl FakeDefinitionRepository {
 pub(crate) fn definition(
     content: crate::domain::workflow::WorkflowDefinitionContent,
 ) -> WorkflowDefinition {
-    WorkflowDefinition::new("/workflows".into(), content).unwrap()
+    WorkflowDefinition::restore(
+        "/workflows".into(),
+        crate::domain::workflow::WorkflowSource::File {
+            path: format!("/workflows/{}.yml", content.name).into(),
+        },
+        crate::domain::workflow::WorkflowSourceFormat::Yaml,
+        Ok(content),
+    )
 }

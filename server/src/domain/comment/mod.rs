@@ -18,13 +18,6 @@ pub struct ReviewActorDto {
     pub display_name: String,
 }
 
-pub fn unresolved_thread_count(threads: &[Thread]) -> u32 {
-    threads
-        .iter()
-        .filter(|thread| thread.state == State::Open)
-        .count() as u32
-}
-
 /// `ReviewThreadFilter.author` の値。spec issues-1022 design.md List contract:
 /// 「自分が作成した Thread」/「自分以外が作成した Thread」を表す。
 ///
@@ -81,12 +74,6 @@ pub enum ReviewEvent {
         summary: String,
         at: f64,
     },
-    ThreadDeleted {
-        event_id: String,
-        thread_id: String,
-        actor: Author,
-        at: f64,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,12 +101,6 @@ pub enum ReviewHistoryEntry {
         actor: ReviewActorDto,
         outcome: String,
         summary: String,
-        at: f64,
-    },
-    ThreadDeleted {
-        id: String,
-        thread_id: String,
-        actor: ReviewActorDto,
         at: f64,
     },
 }
@@ -180,17 +161,6 @@ impl From<&ReviewEvent> for ReviewHistoryEntry {
                 summary: summary.clone(),
                 at: *at,
             },
-            ReviewEvent::ThreadDeleted {
-                event_id,
-                thread_id,
-                actor,
-                at,
-            } => Self::ThreadDeleted {
-                id: event_id.clone(),
-                thread_id: thread_id.clone(),
-                actor: public_actor(actor),
-                at: *at,
-            },
         }
     }
 }
@@ -200,8 +170,7 @@ impl ReviewEvent {
         match self {
             Self::ThreadCreated { thread_id, .. }
             | Self::CommentAppended { thread_id, .. }
-            | Self::ThreadResolved { thread_id, .. }
-            | Self::ThreadDeleted { thread_id, .. } => thread_id,
+            | Self::ThreadResolved { thread_id, .. } => thread_id,
         }
     }
 
@@ -209,8 +178,7 @@ impl ReviewEvent {
         match self {
             Self::ThreadCreated { at, .. }
             | Self::CommentAppended { at, .. }
-            | Self::ThreadResolved { at, .. }
-            | Self::ThreadDeleted { at, .. } => *at,
+            | Self::ThreadResolved { at, .. } => *at,
         }
     }
 }
@@ -349,15 +317,6 @@ pub(crate) fn ensure_thread_open(thread: &Thread, thread_id: &str) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn ensure_can_delete(actor: &Author) -> Result<(), Error> {
-    if actor.kind != AuthorKind::Human {
-        return Err(Error::PermissionDenied(
-            "Only a human reviewer can delete a review thread".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 #[derive(Default)]
 pub(crate) struct ThreadAccumulator {
     target: Option<Target>,
@@ -366,7 +325,6 @@ pub(crate) struct ThreadAccumulator {
     created_at: f64,
     updated_at: f64,
     version: u64,
-    deleted: bool,
 }
 
 impl ThreadAccumulator {
@@ -422,18 +380,11 @@ impl ThreadAccumulator {
                     resolved_at: *at,
                 });
             }
-            ReviewEvent::ThreadDeleted { .. } => {
-                self.deleted = true;
-            }
         }
     }
 
-    /// 削除済みでない Thread を、最初の Comment を本文として復元する。
+    /// Thread を、最初の Comment を本文として復元する。
     pub(crate) fn finish(self, worktree_name: &str, thread_id: &str) -> Option<Thread> {
-        if self.deleted {
-            return None;
-        }
-
         self.comments.first()?;
         let target = self.target?;
         let state = if self.resolve.is_some() {

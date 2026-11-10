@@ -67,6 +67,20 @@ final class Fixture: Sendable {
       to: data.appendingPathComponent("releash.toml"), atomically: true, encoding: .utf8)
   }
 
+  func writeWorkflow(_ name: String, _ source: String) throws {
+    let directory = data.appendingPathComponent("workflows")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try source.write(
+      to: directory.appendingPathComponent("\(name).yml"), atomically: true, encoding: .utf8)
+  }
+
+  func writeFacet(_ directory: String, _ key: String, _ content: String) throws {
+    let folder = data.appendingPathComponent("workflows").appendingPathComponent(directory)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try content.write(
+      to: folder.appendingPathComponent("\(key).md"), atomically: true, encoding: .utf8)
+  }
+
   @discardableResult func process(_ executable: URL, _ arguments: [String], at path: URL? = nil)
     throws -> Data
   {

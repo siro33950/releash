@@ -1,5 +1,5 @@
 use super::*;
-use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
+use crate::usecase::repository_dto::FileStatusDto;
 use crate::usecase::repository_state::runtime::tests_support::TestRepositoryStateWorkerRuntime;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::mpsc as std_mpsc;
@@ -84,17 +84,7 @@ impl RepositoryScanner for FakeScanner {
                 index_status: "none".to_string(),
                 worktree_status: "modified".to_string(),
             }],
-            diff_stats: vec![FileDiffStatDto {
-                path: "file.txt".to_string(),
-                index_additions: 0,
-                index_deletions: 0,
-                wt_additions: 1,
-                wt_deletions: 0,
-            }],
             dirty_count: 1,
-            diff_file_tree: Vec::new(),
-            staged_diff_file_tree: Vec::new(),
-            changes_diff_file_tree: Vec::new(),
         })
     }
 
@@ -150,7 +140,7 @@ fn test_state_with_notifier(
 async fn wait_for_version(state: &WorktreeState, version: u64) -> Arc<RepositorySnapshot> {
     for _ in 0..100 {
         let snapshot = state.snapshot_for_read();
-        if snapshot.version >= version && !snapshot.flags.loading {
+        if snapshot.version >= version {
             return snapshot;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -207,19 +197,16 @@ async fn loading_snapshot_becomes_ready_after_scan() {
 
     let initial = state.snapshot_for_read();
     assert_eq!(initial.version, 0);
-    assert!(initial.flags.loading);
 
     state.invalidate(InvalidateReason::change());
     let ready = wait_for_version(&state, 1).await;
 
     assert_eq!(ready.version, 1);
-    assert!(!ready.flags.loading);
-    assert!(!ready.flags.stale);
     assert_eq!(scanner.take_prune_calls(), vec!["/repo".to_string()]);
 }
 
 #[tokio::test]
-async fn snapshot_is_stale_while_refresh_is_running() {
+async fn snapshot_keeps_previous_value_while_refresh_is_running() {
     let scanner = Arc::new(FakeScanner::new("first.txt").with_sleep(Duration::from_millis(80)));
     let state = test_state(scanner.clone(), Duration::ZERO);
 
@@ -233,16 +220,13 @@ async fn snapshot_is_stale_while_refresh_is_running() {
 
     let stale = state.snapshot_for_read();
     assert_eq!(stale.version, 1);
-    assert!(stale.flags.loading);
-    assert!(stale.flags.stale);
 
     let second = wait_for_version(&state, 2).await;
     assert_eq!(second.status[0].path, "second.txt");
-    assert!(!second.flags.stale);
 }
 
 #[tokio::test]
-async fn test_スキャン通知_開始時はstaleとloadingにして通知せず正常完了時だけ通知する() {
+async fn test_スキャン通知_開始時は通知せず正常完了時だけ通知する() {
     // Given
     let scanner = Arc::new(FakeScanner::new("first.txt"));
     let subscriptions = crate::test_support::state_subscription::test_subscriptions();
@@ -274,8 +258,6 @@ async fn test_スキャン通知_開始時はstaleとloadingにして通知せ�
     // Then
     let snapshot = state.snapshot_for_read();
     assert_eq!(snapshot.version, 1);
-    assert!(snapshot.flags.loading);
-    assert!(snapshot.flags.stale);
     assert!(notifier.take().is_empty());
 
     // When
@@ -285,8 +267,6 @@ async fn test_スキャン通知_開始時はstaleとloadingにして通知せ�
     // Then
     assert_eq!(snapshot.version, 2);
     assert_eq!(snapshot.status[0].path, "second.txt");
-    assert!(!snapshot.flags.loading);
-    assert!(!snapshot.flags.stale);
     let notifications = notifier.take();
     assert_eq!(notifications.len(), 1);
     state.shutdown();
@@ -344,7 +324,6 @@ async fn failed_scan_is_not_pruned_or_committed() {
 
     let snapshot = state.snapshot_for_read();
     assert_eq!(snapshot.version, 0);
-    assert!(!snapshot.flags.loading);
     assert!(scanner.take_prune_calls().is_empty());
 }
 
@@ -414,7 +393,6 @@ async fn test_repository走査_駆動への送信失敗は読み込みを終え�
         workers,
     );
     // Then
-    assert!(!state.snapshot_for_read().flags.loading);
     let failure = state.scan_failure.read().clone().unwrap();
     assert_eq!(
         failure.kind,

@@ -23,7 +23,6 @@ impl ExecutionTree {
                 workspace_identity: root.workspace_identity.clone(),
                 repository_root: root.repository_root.clone(),
                 launched_as: root.launched_as,
-                created_from: root.created_from,
                 error_reason: None,
                 started_at: timestamp,
                 updated_at: timestamp,
@@ -32,7 +31,6 @@ impl ExecutionTree {
                 node_executions: Vec::new(),
                 retry_predecessors: HashMap::new(),
                 request: (!root.request.is_empty()).then(|| root.request.clone()),
-                current_stall_observations: Vec::new(),
             },
         }
     }

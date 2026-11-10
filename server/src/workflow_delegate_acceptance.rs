@@ -34,8 +34,7 @@ use crate::domain::provider_lifecycle::{
 pub use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
 pub use crate::domain::workflow::NodeExecutionStatus;
 use crate::domain::workflow::{
-    ExecutionOrigin, IsolatedWorktree, IsolatedWorktreeGateway, NodeFact,
-    WorkflowDefinitionContent, WorkflowError,
+    IsolatedWorktree, IsolatedWorktreeGateway, NodeFact, WorkflowDefinitionContent, WorkflowError,
 };
 pub use crate::provider_lifecycle_acceptance::{AcceptanceIngressResult, AcceptanceProvider};
 use crate::usecase::agent_session::AgentSessionUsecase;
@@ -76,10 +75,7 @@ impl WorkflowDelegateAcceptanceHost {
             crate::adaptor::gateway::workspace_tree::execution_reads::ExecutionReads::new(
                 store.clone(),
             );
-        let archives = Arc::new(ExecutionTreeArchiveFactRepository::new(
-            store.clone(),
-            data_dir,
-        ));
+        let archives = Arc::new(ExecutionTreeArchiveFactRepository::new(store.clone()));
         let workspace_query =
             SqliteWorkspaceQueryService::with_reads(execution_reads.clone(), work.failures.clone());
         let sessions = Arc::new(AcceptanceSessions::default());
@@ -116,7 +112,7 @@ impl WorkflowDelegateAcceptanceHost {
                 ),
             )),
             crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
-                Arc::new(crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(data_dir.into(), store.clone())),
+                Arc::new(crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store( store.clone())),
                 SqliteWorkspaceTreeRepository::with_reads(execution_reads.clone(), work.failures.clone()),
                 dependencies.state_changes.clone(),
             ),
@@ -170,13 +166,7 @@ impl WorkflowDelegateAcceptanceHost {
         ))
         .unwrap();
         self.host
-            .start_resolved_workflow(
-                &self.dependencies,
-                definition,
-                worktree.into(),
-                None,
-                ExecutionOrigin::Cli,
-            )
+            .start_resolved_workflow(&self.dependencies, definition, worktree.into(), None)
             .await
             .unwrap()
     }

@@ -1,8 +1,8 @@
 //! 2 つのテキストバッファの差分計算（git2 依存）の gateway 実装。
 //!
 //! `git2::Patch::from_buffers` による unified diff を `Hunk` 列へ変換する部分のみを
-//! 担う。hunk 区切り（change group）・range 算出・patch 生成といった後段の純粋ロジックは
-//! ドメインサービス（`domain::code::services::hunk`）が担う。
+//! 担う。patch 生成といった後段の純粋ロジックはドメインサービス
+//! （`domain::code::services::file_hunk`）が担う。
 
 use crate::adaptor::gateway::shared::git_operation;
 use std::path::Path;
@@ -62,8 +62,6 @@ pub fn diff_buffers(
             }
 
             hunks.push(Hunk {
-                index: hunk_idx as u32,
-                hunk_id: String::new(),
                 old_start: hdr.old_start(),
                 old_lines: hdr.old_lines(),
                 new_start: hdr.new_start(),

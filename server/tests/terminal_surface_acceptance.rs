@@ -318,7 +318,7 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
         data_dir.path().to_path_buf(),
         releashd::test_support::terminal_config(""),
     );
-    let spawned = runtime
+    let _spawned = runtime
         .get_or_spawn(
             24,
             2_000,
@@ -356,7 +356,6 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
         .expect("production attach");
     let first = attached.next().await.expect("initial snapshot");
     let attached_surface = snapshot(std::slice::from_ref(&first));
-    assert_eq!(attached_surface.session_key, spawned.session_key);
 
     let mut forwarded = vec![first];
     for (index, marker) in markers
@@ -406,7 +405,6 @@ async fn test_atui_010_実ptyのproduction_attachが欠落重複逆転なく再�
         .expect("reattach after renderer reload");
     let first_reloaded = reloaded.next().await.expect("reload snapshot");
     let reloaded_surface = snapshot(std::slice::from_ref(&first_reloaded));
-    assert_eq!(reloaded_surface.session_key, spawned.session_key);
     assert!(surface_text(&reloaded_surface).contains(&format!(
         "received-{}:{}",
         REATTACH_BOUNDARY - 1,
@@ -767,7 +765,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         data_dir.path().to_path_buf(),
         releashd::test_support::terminal_config(&startup_command),
     );
-    let first = first_runtime
+    let _first = first_runtime
         .get_or_spawn(
             24,
             100,
@@ -814,7 +812,7 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
         data_dir.path().to_path_buf(),
         releashd::test_support::terminal_config(&startup_command),
     );
-    let restored = second_runtime
+    let _restored = second_runtime
         .get_or_spawn(
             24,
             100,
@@ -823,7 +821,6 @@ async fn test_atui_012_app再構築後は同一process扱いせず最終画面�
             Some("ATUI-012 fixture".to_string()),
         )
         .expect("cold restore into new PTY");
-    assert_eq!(restored.session_key, first.session_key);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(std::fs::read_to_string(&startup_count_path).unwrap(), "x");
     second_runtime
@@ -1005,13 +1002,12 @@ async fn test_terminalタブ_別shellへ接続しcwdと前面処理を配信す�
         data.path().into(),
         releashd::test_support::terminal_config(""),
     );
-    let spawn = runtime
+    let _spawn = runtime
         .get_or_spawn(24, 80, Some(path.clone()), first.clone(), None)
         .unwrap();
-    let other = runtime
+    let _other = runtime
         .get_or_spawn(24, 80, Some(path.clone()), second.clone(), None)
         .unwrap();
-    assert_ne!(spawn.session_key, other.session_key);
     let mut stream = runtime
         .subscribe("tab-first".into(), first.clone())
         .await
@@ -1069,13 +1065,9 @@ async fn test_terminalタブ_別shellへ接続しcwdと前面処理を配信す�
         .terminal_surface
         .replay
         .contains("unique-first"));
-    assert_eq!(
-        runtime
-            .get_or_spawn(24, 80, Some(path.clone()), first.clone(), None)
-            .unwrap()
-            .session_key,
-        spawn.session_key
-    );
+    runtime
+        .get_or_spawn(24, 80, Some(path.clone()), first.clone(), None)
+        .unwrap();
     // When
     runtime.write(first.clone(), "sleep 30\r").unwrap();
     wait_shell_state(&mut stream, Some(&moved_again), true).await;

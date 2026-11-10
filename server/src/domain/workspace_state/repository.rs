@@ -3,11 +3,6 @@ use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateError, Worksp
 
 #[async_trait::async_trait]
 pub trait WorkspaceStateRepository: Send + Sync {
-    async fn migrate_legacy(
-        &self,
-        repositories: &[String],
-        worktrees: &[String],
-    ) -> Result<(), WorkspaceStateError>;
     async fn load_repository_group(
         &self,
         repository_path: &str,

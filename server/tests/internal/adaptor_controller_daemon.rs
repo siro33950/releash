@@ -1,5 +1,4 @@
 use releashd::test_support::integration::daemon::compose;
-use releashd::test_support::integration::daemon::migrate_legacy_execution_archives;
 use releashd::test_support::integration::daemon::shutdown_with_deadline;
 use releashd::test_support::integration::daemon::Daemon;
 use releashd::test_support::integration::platform::FakeShutdown;
@@ -230,46 +229,6 @@ pub fn test_daemon終了_subprocess() {
 }
 
 #[tokio::test]
-pub async fn test_daemon起動のarchive移行結線_未終了対象をabortし事実保存後に旧ファイルを削除する()
-{
-    use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
-    use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_workflow;
-    use releashd::test_support::integration::workflow::ExecutionStatus;
-    use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
-    // Given
-    let fixture = archive_fixture();
-    let id = archive_workflow(&fixture).await;
-    let path = fixture
-        .directory
-        .path()
-        .join("workflow_execution_archives.json");
-    std::fs::write(&path, serde_json::json!({"executions": {id.clone(): {"archivedAt": 12.345678, "archiveReason": "manual"}}}).to_string()).unwrap();
-    // When
-    migrate_legacy_execution_archives(
-        fixture.directory.path(),
-        fixture.store.clone(),
-        &fixture.runtime,
-    )
-    .await
-    .unwrap();
-    // Then
-    assert!(!path.exists());
-    assert_eq!(
-        fixture.repository.target(&id).await.unwrap().status,
-        ExecutionStatus::Aborted
-    );
-    let archived = fixture
-        .repository
-        .archive_snapshot_for(&[id])
-        .await
-        .unwrap()
-        .records
-        .remove(0);
-    assert_eq!(archived.archived_at, 12.345678);
-    assert_eq!(archived.archive_reason, "manual");
-}
-
-#[tokio::test]
 pub async fn test_開始計測_組み立て失敗前に起点を記録する() {
     // Given
     let _guard = releashd::test_support::integration::telemetry::lock_test_telemetry();
@@ -282,7 +241,6 @@ pub async fn test_開始計測_組み立て失敗前に起点を記録する() {
     // When
     let result = compose(
         invalid_data_dir,
-        None,
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         Ok(std::ffi::OsString::new()),
     )
@@ -357,104 +315,5 @@ pub async fn test_終了処理_期限切れで別サーバの発見ファイル�
     assert_eq!(
         files.each_ref().map(|path| std::fs::read(path).unwrap()),
         contents
-    );
-}
-
-#[tokio::test]
-pub async fn test_旧ui状態の起動時移行_repositoryの不在とjson破損で正常なrepositoryを妨げない() {
-    use releashd::test_support::integration::daemon::migrate_legacy_workspace_states;
-    use releashd::test_support::integration::platform::build_repository_usecase;
-    use releashd::test_support::integration::repository::WorkspaceStateRepository;
-    // Given
-    let data = tempfile::tempdir().unwrap();
-    let repos = tempfile::tempdir().unwrap();
-    let healthy = repos.path().join("healthy");
-    let broken = repos.path().join("broken");
-    for path in [&healthy, &broken] {
-        let repo = git2::Repository::init(path).unwrap();
-        let signature = git2::Signature::now("test", "test@example.com").unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
-            .unwrap();
-    }
-    let legacy = data.path().join("workspace_state");
-    std::fs::create_dir(&legacy).unwrap();
-    let state = serde_json::json!({"version":1,"tabs":{"editors":[],"activeEditorPath":null},"layout":{"centerTab":"agent","activeView":"git","leftNavCollapsed":true,"rightCollapsed":false,"rightBottomCollapsed":false}});
-    std::fs::write(legacy.join("healthy.json"), state.to_string()).unwrap();
-    std::fs::write(legacy.join("broken.json"), "broken").unwrap();
-    let healthy = healthy
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let broken = broken
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    use sha2::Digest;
-    let group = data.path().join("repository_group_state");
-    std::fs::create_dir(&group).unwrap();
-    std::fs::write(
-        group.join(format!(
-            "{}.json",
-            hex::encode(sha2::Sha256::digest(healthy.as_bytes()))
-        )),
-        "true",
-    )
-    .unwrap();
-    let repository = build_repository_usecase();
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(data.path().into());
-    let unresolved = repos
-        .path()
-        .join("unmounted/healthy")
-        .to_string_lossy()
-        .into_owned();
-    // When
-    migrate_legacy_workspace_states(
-        &store,
-        &[healthy.clone(), broken.clone(), unresolved.clone()],
-        &repository,
-    )
-    .await;
-    // Then
-    assert!(repository.list_worktrees(&healthy).is_ok());
-    assert!(repository.list_worktrees(&unresolved).is_err());
-    assert!(
-        crate::adaptor_gateway_workspace_state_repository_impl::load(&store, &healthy, &healthy)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(store.load_repository_group(&healthy).await.unwrap());
-    assert!(legacy.join("healthy.json").exists());
-    assert_eq!(
-        std::fs::read_to_string(legacy.join("broken.json")).unwrap(),
-        "broken"
-    );
-    // When
-    migrate_legacy_workspace_states(&store, &[healthy.clone(), broken.clone()], &repository).await;
-    // Then
-    assert!(
-        crate::adaptor_gateway_workspace_state_repository_impl::load(&store, &healthy, &healthy)
-            .await
-            .unwrap()
-            .unwrap()
-            .layout
-            .unwrap()
-            .left_nav_collapsed
-    );
-    assert!(repository.list_worktrees(&healthy).is_ok());
-    assert!(
-        crate::adaptor_gateway_workspace_state_repository_impl::load(&store, &broken, &broken)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        std::fs::read_to_string(legacy.join("broken.json")).unwrap(),
-        "broken"
     );
 }

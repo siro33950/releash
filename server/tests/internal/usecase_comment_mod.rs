@@ -11,7 +11,7 @@ pub(crate) mod tests {
     use releashd::test_support::integration::platform::ReviewEvent;
     use releashd::test_support::integration::platform::ReviewEventMutation;
     use releashd::test_support::integration::platform::ReviewEventStore;
-    use releashd::test_support::integration::platform::ReviewHistoryEntry;
+
     use releashd::test_support::integration::platform::ReviewIdGenerator;
     use releashd::test_support::integration::platform::ReviewTarget;
     use releashd::test_support::integration::platform::ReviewThreadFilter;
@@ -128,11 +128,8 @@ pub(crate) mod tests {
                 "late".into()
             )
             .is_err());
-        usecase
-            .delete_thread(dir.path(), "repository", ReviewActor::human(), &thread.id)
-            .unwrap();
         // Then
-        for _ in 0..4 {
+        for _ in 0..3 {
             assert_eq!(
                 changes.try_recv().unwrap(),
                 StateChangeSource::ReviewComments(Some("repository".into()))
@@ -203,10 +200,6 @@ pub(crate) mod tests {
 
         let history = usecase.history(dir.path(), "wt", &thread.id).unwrap();
         assert_eq!(history.len(), 3);
-        let handoff = usecase
-            .build_handoff(dir.path(), "wt", &thread.id, "releash-dev")
-            .unwrap();
-        assert!(handoff.contains("releash-dev review get"));
     }
 
     #[test]
@@ -287,31 +280,6 @@ pub(crate) mod tests {
 
         let history = usecase.history(dir.path(), "wt", &thread.id).unwrap();
         assert_eq!(history.len(), 1);
-    }
-
-    #[test]
-    pub fn get_returns_live_thread_and_rejects_deleted_thread() {
-        let dir = TempDir::new().unwrap();
-        let usecase = usecase();
-        let thread = usecase
-            .create_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                file_target("src/main.rs", 3),
-                "Claim".to_string(),
-            )
-            .unwrap();
-
-        let got = usecase.get_thread(dir.path(), "wt", &thread.id).unwrap();
-        assert_eq!(got.id, thread.id);
-        assert_eq!(got.target.file_path.as_deref(), Some("src/main.rs"));
-
-        usecase
-            .delete_thread(dir.path(), "wt", ReviewActor::human(), &thread.id)
-            .unwrap();
-        let deleted = usecase.get_thread(dir.path(), "wt", &thread.id);
-        assert!(matches!(deleted, Err(ReviewError::NotFound(_))));
     }
 
     #[test]
@@ -411,9 +379,6 @@ pub(crate) mod tests {
 
         let history = usecase.history(dir.path(), "wt", "missing-thread");
         assert!(matches!(history, Err(ReviewError::NotFound(_))));
-
-        let handoff = usecase.build_handoff(dir.path(), "wt", "missing-thread", "releash");
-        assert!(matches!(handoff, Err(ReviewError::NotFound(_))));
     }
 
     #[test]
@@ -574,86 +539,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(combined.len(), 1);
         assert_eq!(combined[0].id, resolved_other.id);
-    }
-
-    #[test]
-    pub fn delete_is_human_only_and_hides_thread() {
-        let dir = TempDir::new().unwrap();
-        let usecase = usecase();
-        let thread = usecase
-            .create_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                target(),
-                "Claim".to_string(),
-            )
-            .unwrap();
-        let agent = ReviewActor::provider_agent("codex".to_string(), Some("s1".to_string()));
-
-        let denied = usecase.delete_thread(dir.path(), "wt", agent, &thread.id);
-        assert!(matches!(denied, Err(ReviewError::PermissionDenied(_))));
-
-        usecase
-            .delete_thread(dir.path(), "wt", ReviewActor::human(), &thread.id)
-            .unwrap();
-        let got = usecase.get_thread(dir.path(), "wt", &thread.id);
-        assert!(matches!(got, Err(ReviewError::NotFound(_))));
-        let history = usecase.history(dir.path(), "wt", &thread.id).unwrap();
-        assert!(matches!(
-            history.last(),
-            Some(ReviewHistoryEntry::ThreadDeleted { .. })
-        ));
-    }
-
-    #[test]
-    pub fn delete_rejects_unknown_and_already_deleted_threads_but_allows_resolved_threads() {
-        let dir = TempDir::new().unwrap();
-        let usecase = usecase();
-
-        let unknown =
-            usecase.delete_thread(dir.path(), "wt", ReviewActor::human(), "missing-thread");
-        assert!(matches!(unknown, Err(ReviewError::NotFound(_))));
-
-        let deleted = usecase
-            .create_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                target(),
-                "Delete me".to_string(),
-            )
-            .unwrap();
-        usecase
-            .delete_thread(dir.path(), "wt", ReviewActor::human(), &deleted.id)
-            .unwrap();
-        let second = usecase.delete_thread(dir.path(), "wt", ReviewActor::human(), &deleted.id);
-        assert!(matches!(second, Err(ReviewError::NotFound(_))));
-
-        let resolved = usecase
-            .create_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                target(),
-                "Resolve then delete".to_string(),
-            )
-            .unwrap();
-        usecase
-            .resolve_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                &resolved.id,
-                "accepted".to_string(),
-                "done".to_string(),
-            )
-            .unwrap();
-        usecase
-            .delete_thread(dir.path(), "wt", ReviewActor::human(), &resolved.id)
-            .unwrap();
-        let got = usecase.get_thread(dir.path(), "wt", &resolved.id);
-        assert!(matches!(got, Err(ReviewError::NotFound(_))));
     }
 
     #[test]

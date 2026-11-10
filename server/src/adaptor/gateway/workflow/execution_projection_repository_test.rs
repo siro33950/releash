@@ -49,23 +49,3 @@ fn test_成果の事実変換_破損した識別情報と未知の事実を拒�
         assert!(records_from_drafts(&[event]).is_err());
     }
 }
-
-#[test]
-fn test_成果の事実変換_旧隔離事実を状態入力に復活させず順序を保持する() {
-    // Given
-    let events = ["isolated_worktree_created", "isolated_worktree_released", "isolated_worktree_lost", "submit_received"]
-        .into_iter().map(|event_kind| WorkflowEventDraft {
-            execution_id: "tree".into(), event_kind: event_kind.into(), timestamp: 1.0,
-            payload: serde_json::json!({"nodeExecutionId": "child", "nodeName": "work", "kind": "session", "attempt": 1,
-                "repositoryRoot": "/repo", "worktreePath": "/old", "branch": "old"}),
-        }).collect::<Vec<_>>();
-    // When
-    let records = records_from_drafts(&events).unwrap();
-    // Then
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].seq, 4);
-    assert!(matches!(
-        records[0].fact,
-        crate::domain::workflow::NodeFact::SubmitReceived(_)
-    ));
-}

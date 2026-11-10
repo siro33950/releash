@@ -85,7 +85,6 @@ impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
                         workflow_name: name.clone(),
                         worktree_path: path.into(),
                         request: request.clone(),
-                        created_from: crate::domain::workflow::ExecutionOrigin::DesktopUi,
                     })
                     .await?;
             }

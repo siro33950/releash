@@ -8,14 +8,10 @@
 use std::sync::Arc;
 
 use crate::domain::code::{
-    ChangeGroup, DiffFileEntry, DiffSide, DiffTreeNode, Hunk, ReviewBase, ReviewBlobSide,
-    ReviewSection, ReviewSideBytes, ReviewSideMetadata, StagingRepository,
+    ReviewBase, ReviewBlobSide, ReviewSideBytes, ReviewSideMetadata, StagingRepository,
 };
 
-use super::code_dto::{
-    BranchDiffSummaryDto, DiffHunksResultDto, DiffRangeDto, DiffTreeNodeDto,
-    FileNavigationResultDto, HiddenRangeDto, InlineChunkDto, SplitRowDto, VisibleBlockDto,
-};
+use super::code_dto::DiffHunksResultDto;
 use super::code_error::CodeUsecaseError;
 use super::code_query_service::CodeQueryService;
 
@@ -100,35 +96,9 @@ impl CodeUsecase {
         Ok(())
     }
 
-    pub async fn git_stage_hunk(
-        &self,
-        repo_path: &str,
-        patch: &str,
-    ) -> Result<(), CodeUsecaseError> {
-        self.staging.stage_hunk(repo_path, patch).await?;
-        Ok(())
-    }
-
-    pub async fn git_unstage_hunk(
-        &self,
-        repo_path: &str,
-        patch: &str,
-    ) -> Result<(), CodeUsecaseError> {
-        self.staging.unstage_hunk(repo_path, patch).await?;
-        Ok(())
-    }
-
     // ── ファイル内容参照（読み取り → QueryService へ委譲） ──
 
     // ── branch diff ──
-
-    pub fn get_branch_diff_summary(
-        &self,
-        repo_path: &str,
-        base_branch: Option<&str>,
-    ) -> Result<BranchDiffSummaryDto, CodeUsecaseError> {
-        self.query.get_branch_diff_summary(repo_path, base_branch)
-    }
 
     // ── review primitives（snapshot/version orchestration は ReviewUsecase が持つ） ──
 
@@ -136,10 +106,9 @@ impl CodeUsecase {
         &self,
         file_path: &str,
         side: ReviewBlobSide,
-        section: ReviewSection,
         base: ReviewBase,
     ) -> Result<SelectedReviewSide, CodeUsecaseError> {
-        self.select_review_source(file_path, ReviewContentSource::select(side, section, base))
+        self.select_review_source(file_path, ReviewContentSource::select(side, base))
     }
 
     fn select_review_source(
@@ -159,14 +128,10 @@ impl CodeUsecase {
         source: ReviewContentSource,
     ) -> Result<ReviewSideMetadata, CodeUsecaseError> {
         match source {
-            ReviewContentSource::BranchBase => {
-                self.query.review_file_metadata_at_branch_base(file_path)
-            }
             ReviewContentSource::BranchBaseTip => self
                 .query
                 .review_file_metadata_at_branch_base_tip(file_path),
             ReviewContentSource::Head => self.query.review_file_metadata_at_ref(file_path, "HEAD"),
-            ReviewContentSource::Staged => self.query.review_staged_metadata(file_path),
             ReviewContentSource::WorkingTree => self.query.review_working_tree_metadata(file_path),
         }
     }
@@ -177,14 +142,10 @@ impl CodeUsecase {
         source: ReviewContentSource,
     ) -> Result<ReviewSideBytes, CodeUsecaseError> {
         match source {
-            ReviewContentSource::BranchBase => {
-                self.query.review_file_bytes_at_branch_base(file_path)
-            }
             ReviewContentSource::BranchBaseTip => {
                 self.query.review_file_bytes_at_branch_base_tip(file_path)
             }
             ReviewContentSource::Head => self.query.review_file_bytes_at_ref(file_path, "HEAD"),
-            ReviewContentSource::Staged => self.query.review_staged_bytes(file_path),
             ReviewContentSource::WorkingTree => self.query.review_working_tree_bytes(file_path),
         }
     }
@@ -207,18 +168,6 @@ impl CodeUsecase {
 
     // ── diff tree ──
 
-    pub fn build_diff_file_tree(&self, entries: Vec<DiffFileEntry>) -> Vec<DiffTreeNodeDto> {
-        self.query.build_diff_file_tree(entries)
-    }
-
-    pub fn get_file_navigation(
-        &self,
-        tree: &[DiffTreeNode],
-        current_file: &str,
-    ) -> FileNavigationResultDto {
-        self.query.get_file_navigation(tree, current_file)
-    }
-
     // ── hunk / patch / range ──
 
     pub fn compute_diff_hunks(
@@ -230,79 +179,5 @@ impl CodeUsecase {
         self.query.compute_diff_hunks(original, modified, file_path)
     }
 
-    pub fn generate_group_patch(
-        &self,
-        file_path: &str,
-        hunk: &Hunk,
-        group: &ChangeGroup,
-    ) -> String {
-        self.query.generate_group_patch(file_path, hunk, group)
-    }
-
-    pub fn compute_hidden_ranges(
-        &self,
-        hunks: &[Hunk],
-        total_lines: u32,
-        context_lines: u32,
-    ) -> Vec<HiddenRangeDto> {
-        self.query
-            .compute_hidden_ranges(hunks, total_lines, context_lines)
-    }
-
-    pub fn compute_hidden_ranges_from_content(
-        &self,
-        original: &str,
-        modified: &str,
-        context_lines: u32,
-    ) -> Result<Vec<HiddenRangeDto>, CodeUsecaseError> {
-        self.query
-            .compute_hidden_ranges_from_content(original, modified, context_lines)
-    }
-
-    pub fn compute_visible_markdown_blocks(
-        &self,
-        original: &str,
-        modified: &str,
-        context_lines: u32,
-    ) -> Result<Vec<VisibleBlockDto>, CodeUsecaseError> {
-        self.query
-            .compute_visible_markdown_blocks(original, modified, context_lines)
-    }
-
-    pub fn compute_markdown_diff_ranges(
-        &self,
-        original: &str,
-        modified: &str,
-        side: DiffSide,
-    ) -> Result<Vec<DiffRangeDto>, CodeUsecaseError> {
-        self.query
-            .compute_markdown_diff_ranges(original, modified, side)
-    }
-
-    pub fn compute_markdown_split_rows(
-        &self,
-        original: &str,
-        modified: &str,
-    ) -> Result<Vec<SplitRowDto>, CodeUsecaseError> {
-        self.query.compute_markdown_split_rows(original, modified)
-    }
-
-    pub fn compute_markdown_inline_chunks(
-        &self,
-        original: &str,
-        modified: &str,
-    ) -> Result<Vec<InlineChunkDto>, CodeUsecaseError> {
-        self.query
-            .compute_markdown_inline_chunks(original, modified)
-    }
-
     // ── language ──
-
-    pub fn get_language_from_path(&self, file_path: &str) -> String {
-        self.query.get_language_from_path(file_path)
-    }
 }
-
-#[cfg(test)]
-#[path = "code_usecase_test.rs"]
-mod code_usecase_tests;

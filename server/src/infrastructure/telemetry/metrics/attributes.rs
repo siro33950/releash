@@ -1,6 +1,5 @@
 pub(crate) const KEY_OPERATION: &str = "releash.operation";
 pub(crate) const KEY_STATUS: &str = "releash.status";
-pub(crate) const KEY_USAGE_EVENT: &str = "releash.usage_event";
 pub(crate) const KEY_FAILURE_KIND: &str = "failure.kind";
 pub(crate) const KEY_FAILURE_DISPOSITION: &str = "failure.disposition";
 pub(crate) const KEY_RETRY_COUNT: &str = "failure.retry_count";
@@ -24,21 +23,18 @@ impl OpStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HotPathMetric {
     GitStatusScan,
-    DiffStats,
 }
 
 impl HotPathMetric {
     pub(crate) fn operation(self) -> &'static str {
         match self {
             Self::GitStatusScan => "git.status_scan",
-            Self::DiffStats => "git.diff_stats",
         }
     }
 
     pub(crate) fn span_name(self) -> &'static str {
         match self {
             Self::GitStatusScan => "Git status scan",
-            Self::DiffStats => "Git diff stats",
         }
     }
 }
@@ -85,13 +81,6 @@ impl StartupMetric {
             Self::FirstRepoSnapshotReady => "startup.first_repo_snapshot_ready",
         }
     }
-}
-
-pub(crate) fn usage_event_allowed(name: &str) -> bool {
-    matches!(
-        name,
-        "settings_saved" | "worktree_created" | "worktree_removed"
-    )
 }
 
 #[cfg(test)]

@@ -1168,25 +1168,24 @@ fn test_実行木archive遷移_未終了を拒否し終了状態を変えずarch
     // Given
     let mut execution = ExecutionTree::restore(RuntimeExecutionState::Running);
     // When / Then
-    assert!(execution.archive(1.0, "manual").is_err());
+    assert!(execution.archive(1.0).is_err());
     assert!(execution.restore_archive().is_none());
     execution.replay_aborted_at(2.0, None);
     let before = execution.state().clone();
     assert_eq!(
-        execution.archive(3.125, "worktree_removed").unwrap(),
+        execution.archive(3.125).unwrap(),
         Some(NodeFact::ArchiveRequested(ArchiveRequestedFact {
             archived_at: 3.125,
-            reason: "worktree_removed".into()
         }))
     );
-    assert!(execution.archive(4.0, "manual").unwrap().is_none());
+    assert!(execution.archive(4.0).unwrap().is_none());
     assert_eq!(
         execution.restore_archive(),
         Some(NodeFact::RestoreRequested)
     );
     assert!(execution.restore_archive().is_none());
     assert_eq!(execution.state(), &before);
-    assert!(execution.archive(5.0, "manual").unwrap().is_some());
+    assert!(execution.archive(5.0).unwrap().is_some());
 }
 
 #[test]

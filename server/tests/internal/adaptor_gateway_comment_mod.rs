@@ -111,46 +111,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn test_thread取得_存在しないidか削除済みidが一つでもあれば失敗する() {
-        // Given
-        let dir = TempDir::new().unwrap();
-        let comments = usecase(Arc::new(FileReviewEventStore::default()));
-        let first = comments
-            .create_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                target(),
-                "first".into(),
-            )
-            .unwrap();
-        let deleted = comments
-            .create_thread(
-                dir.path(),
-                "wt",
-                ReviewActor::human(),
-                target(),
-                "deleted".into(),
-            )
-            .unwrap();
-        comments
-            .delete_thread(dir.path(), "wt", ReviewActor::human(), &deleted.id)
-            .unwrap();
-
-        for missing in ["missing".into(), deleted.id] {
-            // When
-            let result = find_review_threads_by_ids(
-                dir.path(),
-                &WorkspaceIdentity::new("wt"),
-                &[first.id.clone(), missing],
-            );
-
-            // Then
-            assert!(matches!(result, Err(ReviewError::NotFound(_))));
-        }
-    }
-
-    #[test]
     pub fn test_thread取得_空の要求は保存データを読まず空を返す() {
         // Given
         let dir = TempDir::new().unwrap();
@@ -258,44 +218,6 @@ pub(crate) mod tests {
 
         assert!(matches!(result, Err(ReviewError::Serialize(_))));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{not-json");
-    }
-
-    #[test]
-    pub fn load_rejects_non_uuid_thread_id_before_projection() {
-        let dir = TempDir::new().unwrap();
-        let file = state_file(dir.path(), "wt");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(
-            &file,
-            r#"[
-  {
-    "eventType": "thread_created",
-    "eventId": "event-1",
-    "threadId": "thread-1",
-    "commentId": "comment-1",
-    "actor": {
-      "kind": "agent",
-      "backendId": "codex",
-      "model": "gpt-5",
-      "sessionId": "legacy-session",
-      "displayName": "codex/gpt-5"
-    },
-    "target": {
-      "filePath": null,
-      "lineNumber": null,
-      "endLine": null
-    },
-    "content": "Claim",
-    "at": 1.0
-  }
-]"#,
-        )
-        .unwrap();
-        let store = Arc::new(FileReviewEventStore::default());
-
-        let result = usecase(store).build_handoff(dir.path(), "wt", "thread-1", "releash");
-
-        assert!(matches!(result, Err(ReviewError::Serialize(_))));
     }
 
     #[test]

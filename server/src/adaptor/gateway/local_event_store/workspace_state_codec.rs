@@ -154,7 +154,6 @@ struct StoredWorkspaceTabEntry {
 #[serde(rename_all = "camelCase")]
 struct StoredWorkspaceTabsState {
     editors: Vec<StoredWorkspaceTabEntry>,
-    active_editor_path: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -165,10 +164,6 @@ struct StoredWorkspaceLayoutState {
     left_nav_collapsed: bool,
     right_collapsed: bool,
     right_bottom_collapsed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    right_bottom_active_tab: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_diff_file: Option<String>,
 }
 
 impl From<&WorkspaceState> for StoredWorkspaceState {
@@ -198,7 +193,6 @@ impl From<WorkspaceTabsState> for StoredWorkspaceTabsState {
     fn from(tabs: WorkspaceTabsState) -> Self {
         Self {
             editors: tabs.editors.into_iter().map(Into::into).collect(),
-            active_editor_path: tabs.active_editor_path,
         }
     }
 }
@@ -207,7 +201,6 @@ impl From<StoredWorkspaceTabsState> for WorkspaceTabsState {
     fn from(dto: StoredWorkspaceTabsState) -> Self {
         Self {
             editors: dto.editors.into_iter().map(Into::into).collect(),
-            active_editor_path: dto.active_editor_path,
         }
     }
 }
@@ -238,8 +231,6 @@ impl From<WorkspaceLayoutState> for StoredWorkspaceLayoutState {
             left_nav_collapsed: layout.left_nav_collapsed,
             right_collapsed: layout.right_collapsed,
             right_bottom_collapsed: layout.right_bottom_collapsed,
-            right_bottom_active_tab: layout.right_bottom_active_tab,
-            selected_diff_file: layout.selected_diff_file,
         }
     }
 }
@@ -252,8 +243,6 @@ impl From<StoredWorkspaceLayoutState> for WorkspaceLayoutState {
             left_nav_collapsed: dto.left_nav_collapsed,
             right_collapsed: dto.right_collapsed,
             right_bottom_collapsed: dto.right_bottom_collapsed,
-            right_bottom_active_tab: dto.right_bottom_active_tab,
-            selected_diff_file: dto.selected_diff_file,
         }
     }
 }
@@ -294,8 +283,6 @@ struct StoredPaneTab {
 #[serde(rename_all = "snake_case")]
 enum StoredPaneTabKind {
     Terminal,
-    #[serde(rename = "workflow", skip_serializing)]
-    LegacyWorkflow,
     File,
     Session,
     Command,
@@ -351,18 +338,13 @@ impl TryFrom<StoredPaneLayout>
                 tabs,
                 active_tab,
             } => {
-                let mut removed_active = false;
                 let tabs = tabs
                     .into_iter()
-                    .filter_map(|tab| match tab.kind.domain_kind() {
-                        Some(kind) => Some(tab.into_domain(kind)),
-                        None => {
-                            removed_active |= active_tab.as_deref() == Some(tab.id.as_str());
-                            None
-                        }
+                    .map(|tab| {
+                        let kind = tab.kind.domain_kind();
+                        tab.into_domain(kind)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let active_tab = if removed_active { None } else { active_tab };
                 Self::pane(id, tabs, active_tab)
             }
             StoredPaneLayout::Split {
@@ -395,13 +377,12 @@ impl From<PaneTab> for StoredPaneTab {
     }
 }
 impl StoredPaneTabKind {
-    fn domain_kind(&self) -> Option<PaneTabKind> {
+    fn domain_kind(&self) -> PaneTabKind {
         match self {
-            Self::Terminal => Some(PaneTabKind::Terminal),
-            Self::File => Some(PaneTabKind::File),
-            Self::Session => Some(PaneTabKind::Session),
-            Self::Command => Some(PaneTabKind::Command),
-            Self::LegacyWorkflow => None,
+            Self::Terminal => PaneTabKind::Terminal,
+            Self::File => PaneTabKind::File,
+            Self::Session => PaneTabKind::Session,
+            Self::Command => PaneTabKind::Command,
         }
     }
 }

@@ -77,7 +77,6 @@ pub async fn test_worktree削除一覧_本番runtime配線で受理した削除�
     let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
     let (_, workspace_query) = build_workflow_services_with_repository_worktrees(
         Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-        data_dir,
         repository.clone(),
         config.clone(),
         execution_reads.clone(),
@@ -183,7 +182,6 @@ pub(crate) mod tests {
         std::fs::write(workflows.path().join("configured.yml"), "name: [").unwrap();
         let read = workflow_read(
             releashd::test_support::integration::workspace::ExecutionReads::new(_store.clone()),
-            data.path(),
             Some(workflows.path().to_path_buf()),
         );
 
@@ -199,7 +197,6 @@ pub(crate) mod tests {
     }
 
     async fn seed_b006_execution(store: &Arc<LocalEventStore>, workspace: &str) {
-        use releashd::test_support::integration::workflow::ExecutionOrigin;
         use releashd::test_support::integration::workflow::ExecutionStatus;
 
         let execution_id = "00000000-0000-4000-8000-000000001491";
@@ -211,7 +208,6 @@ pub(crate) mod tests {
                 status: ExecutionStatus::Running,
                 worktree_path: workspace.to_string(),
                 current_node: None,
-                created_from: ExecutionOrigin::DesktopUi,
                 started_at: 1.0,
                 updated_at: 2.0,
                 completed_at: None,
@@ -247,7 +243,6 @@ pub(crate) mod tests {
         seed_b006_execution(&store, &workspace).await;
         let (workflow, query) = build_workflow_services_with_gateways(
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-            root.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
@@ -255,7 +250,13 @@ pub(crate) mod tests {
             None,
             None,
         );
-        let tree = workflow.workspace_tree(&workspace).await.unwrap();
+        let tree = workflow
+            .retained_workspace_trees(&[workflow.resolve_worktree_path(&workspace).unwrap()])
+            .await
+            .pop()
+            .unwrap()
+            .value
+            .unwrap();
         // Then
         assert!(!tree.visible().roots().is_empty());
         assert_eq!(
@@ -349,7 +350,6 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
     let processes = Arc::new(WorkflowNodeProcesses::new(terminal));
     let (_, workspace_query) = build_workflow_services_with_repository_worktrees(
         Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-        data_dir,
         repository.clone(),
         config.clone(),
         execution_reads.clone(),
@@ -401,8 +401,6 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
                 workflow_name: "isolated-runtime".into(),
                 worktree_path: worktree.path.clone(),
                 request: None,
-                created_from:
-                    releashd::test_support::integration::workflow::ExecutionOrigin::DesktopUi,
             },
         )
         .await

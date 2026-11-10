@@ -66,11 +66,6 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
         "server is already running\n"
     );
     assert_eq!(discovery::read(&root.join("data")).unwrap(), first);
-    let discovery_path = root.join("data/client-api.json");
-    let mut legacy = serde_json::to_value(&first).unwrap();
-    legacy["instance_id"] = legacy.as_object_mut().unwrap().remove("daemon_id").unwrap();
-    legacy["process_started_at"] = serde_json::json!(first.process_started_at);
-    std::fs::write(&discovery_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let status: serde_json::Value =
         serde_json::from_str(&success(run(root, &["status", "--json"]))).unwrap();
     assert_eq!(status["release_compatibility"], "compatible");
@@ -82,7 +77,6 @@ fn test_cli_起動後も独立して稼働し重複起動せず再起動して�
     );
     assert_eq!(status["server"]["servingStatus"], "SERVING_STATUS_SERVING");
     assert!(!status.to_string().contains(&first.token));
-    std::fs::write(&discovery_path, serde_json::to_vec(&first).unwrap()).unwrap();
     assert!(success(run(root, &["server", "restart"])).contains("stopped and started"));
     let second = discovery::read(&root.join("data")).unwrap();
     assert_ne!(second.daemon_id, first.daemon_id);
@@ -272,42 +266,4 @@ fn test_cli_app内の引数なし実行_symlink経由でも隣のサーバ起動
             Some(observed.process_started_at)
         );
     }
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn test_cli_旧既定サーバの再起動は新既定へ移行する() {
-    // Given
-    let root = tempfile::tempdir().unwrap();
-    let base = root.path().join("Library/Application Support");
-    let profile = releash::data_dir::BuildProfile::current();
-    let old = base.join(releash::data_dir::legacy_data_dir_name_for_profile(profile));
-    let current = base.join(releash::data_dir::default_data_dir_name_for_profile(
-        profile,
-    ));
-    let _old_cleanup = RunningServer(old.clone());
-    let _current_cleanup = RunningServer(current.clone());
-    let command = |explicit: bool, args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_releash"));
-        command
-            .env("HOME", root.path())
-            .env_remove("RELEASH_DATA_DIR")
-            .env("SHELL", "/bin/sh")
-            .current_dir(root.path());
-        if explicit {
-            command.arg("--data-dir").arg(&old);
-        }
-        command.args(args).output().unwrap()
-    };
-    success(command(true, &["server", "start"]));
-    std::fs::write(old.join("sentinel"), b"retained").unwrap();
-    // When
-    success(command(false, &["server", "restart"]));
-    // Then
-    assert!(discovery::read(&current).is_ok());
-    assert!(!old.join("client-api.json").exists());
-    assert_eq!(
-        std::fs::read(current.join("sentinel")).unwrap(),
-        b"retained"
-    );
 }

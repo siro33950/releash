@@ -23,7 +23,10 @@ fn test_terminalのclient管理_二重openを拒否し閉じた購読の処理�
     ));
     assert_eq!(error.message, "Terminal subscription ended");
     usecase.open_client("client".into()).unwrap();
-    usecase.schedule_terminal_refresh(vec!["client".into()], SubscriptionTarget::RepositoryPaths);
+    usecase.schedule_terminal_refresh(
+        vec!["client".into()],
+        SubscriptionTarget::TerminalStartupCommand,
+    );
     assert!(usecase.terminal_resets.lock().is_empty());
     assert_eq!(usecase.test_worker_count(), 0);
 }

@@ -38,8 +38,6 @@ pub trait WorkflowExecutionProjectionRepository: Send + Sync {
     ) -> Result<Option<ExecutionTree>, WorkflowError>;
 }
 
-pub use crate::domain::workflow::WorkflowSourceSaveError;
-
 /// workflow diagnostics の診断対象。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowDiagnosticsTarget {

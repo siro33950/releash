@@ -24,7 +24,6 @@ use releashd::test_support::integration::sessions::AgentSessionTreeLocation;
 use releashd::test_support::integration::workflow::definition_FacetRefs as FacetRefs;
 use releashd::test_support::integration::workflow::ChildEntry;
 use releashd::test_support::integration::workflow::EffectiveRules;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionParentRef;
 use releashd::test_support::integration::workflow::FanoutSpec;
 use releashd::test_support::integration::workflow::ItemsSource;
@@ -155,7 +154,6 @@ fn reported_fanout_events(execution_id: &str, workspace: &str) -> Vec<WorkflowEv
             execution_id: execution_id.to_string(),
             workflow_name: "dev-cycle".to_string(),
             worktree_path: workspace.to_string(),
-            created_from: ExecutionOrigin::DesktopUi,
             request: "https://github.com/siro33950/releash/issues/1696".to_string(),
             definition: reported_fanout_definition(),
             timestamp: 1.0,
@@ -509,7 +507,6 @@ fn duplicate_session_binding_events(execution_id: &str, workspace: &str) -> Vec<
             execution_id: execution_id.to_string(),
             workflow_name: "duplicate-session-binding".to_string(),
             worktree_path: workspace.to_string(),
-            created_from: ExecutionOrigin::DesktopUi,
             request: "duplicate Session binding".to_string(),
             definition,
             timestamp: 1.0,
@@ -570,7 +567,6 @@ fn fanout_with_sequence_child_events(execution_id: &str, workspace: &str) -> Vec
             execution_id: execution_id.to_string(),
             workflow_name: "multi-execution".to_string(),
             worktree_path: workspace.to_string(),
-            created_from: ExecutionOrigin::DesktopUi,
             request: "review".to_string(),
             definition: fanout_with_sequence_child_definition(),
             timestamp: 1.0,
@@ -657,7 +653,6 @@ fn dynamic_fanout_with_sequence_child_events(
             execution_id: execution_id.to_string(),
             workflow_name: "dynamic-multi-execution".to_string(),
             worktree_path: workspace.to_string(),
-            created_from: ExecutionOrigin::DesktopUi,
             request: "review".to_string(),
             definition: dynamic_fanout_with_sequence_child_definition(),
             timestamp: 1.0,
@@ -898,7 +893,6 @@ pub async fn test_ツリー読み出し_command形のsession成果物を含む�
                 execution_id: execution_id.to_string(),
                 workflow_name: definition.name.clone(),
                 worktree_path: workspace.as_str().to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
                 request: "report".to_string(),
                 definition: definition.clone(),
                 timestamp: 1.0,
@@ -1478,7 +1472,6 @@ pub(super) async fn delegate_fixture(
                     repository_root: None,
                     workspace_identity: WorkspaceIdentity::new(workspace).as_str().into(),
                     worktree_path: workspace.into(),
-                    created_from: ExecutionOrigin::DesktopUi,
                     request: "test".into(),
                     workflow_name: "delegate".into(),
                     definition: Some(definition),
@@ -1972,8 +1965,22 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
                 sessions.save(saved, "pause-session").await.unwrap();
             }
             "archived-session" => {
-                saved.session_mut().archive().unwrap();
-                sessions.save(saved, "archive-session").await.unwrap();
+                let records =
+                    releashd::test_support::integration::workflow::read_tree_records(&store, id)
+                        .await
+                        .unwrap();
+                append_single_fact(
+                    &store,
+                    &records[0].meta,
+                    &NodeFact::ArchiveRequested(
+                        releashd::test_support::integration::workflow::ArchiveRequestedFact {
+                            archived_at: 1.0,
+                        },
+                    ),
+                    1_000,
+                )
+                .await
+                .unwrap();
             }
             _ => {}
         }
@@ -2267,7 +2274,6 @@ pub async fn test_会話詳細の合成子_保存事実から部分完了と承�
                         repository_root: Some("/repo".into()),
                         workspace_identity: "/repo".into(),
                         worktree_path: "/repo".into(),
-                        created_from: ExecutionOrigin::Cli,
                         request: String::new(),
                         workflow_name: "composite".into(),
                         definition: Some(definition),

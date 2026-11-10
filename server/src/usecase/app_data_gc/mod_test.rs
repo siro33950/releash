@@ -43,14 +43,12 @@ pub(crate) mod tests {
                 LiveWorktreeSet::from_worktrees([live_worktree("/live", "live")]),
                 Vec::new(),
             )),
-            workspace_state_records: vec![WorkspaceStateGcRecord {
-                path: app_data.join("workspace_state/stale.json"),
-                key: WorkspaceStateKey::for_test("stale"),
+            review_comment_records: vec![ReviewCommentGcRecord {
+                path: app_data.join("review-comments/stale.events.json"),
+                key: "stale".into(),
             }],
-            review_comment_records: Vec::new(),
             checkpoint_paths: Vec::new(),
             cache_records: Vec::new(),
-            legacy_comment_paths: Vec::new(),
             runtime_protection: RuntimeProtection::incomplete(),
             now_secs: 0.0,
             retention: RetentionPolicy::default(),
@@ -223,13 +221,6 @@ mod workspace_state_gc_tests {
     }
     #[async_trait::async_trait]
     impl crate::domain::workspace_state::WorkspaceStateRepository for States {
-        async fn migrate_legacy(
-            &self,
-            _: &[String],
-            _: &[String],
-        ) -> Result<(), WorkspaceStateError> {
-            unreachable!()
-        }
         async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
             unreachable!()
         }
@@ -337,11 +328,9 @@ mod workspace_state_gc_tests {
                     vec![]
                 },
             )),
-            workspace_state_records: vec![],
             review_comment_records: vec![],
             checkpoint_paths: vec![],
             cache_records: vec![],
-            legacy_comment_paths: vec![],
             runtime_protection: if initial_complete {
                 RuntimeProtection::complete(worktrees(&["active"]))
             } else {

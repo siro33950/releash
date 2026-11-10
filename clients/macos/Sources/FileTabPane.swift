@@ -46,8 +46,6 @@ struct FileTabPane: View {
             ForEach(binaryDescription(binary), id: \.self) { Text($0) }
             Button("外部エディタで開く", action: openInEditor)
           }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .fallback:
-          Text("ファイルを表示できません")
         }
       } else {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -184,7 +182,7 @@ struct FileTabPane: View {
     colorScheme: ColorScheme
   ) -> [String: Any] {
     [
-      "path": path, "version": String(text.version), "original": text.original,
+      "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
       "style": settings.style, "full": settings.full, "dark": colorScheme == .dark,

@@ -3,7 +3,6 @@ use releashd::test_support::integration::persistence::LocalEventStoreConfig;
 use releashd::test_support::integration::platform::FailureRecordStore;
 use releashd::test_support::integration::providers::ProviderKind;
 use releashd::test_support::integration::workflow::current_timestamp;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::IsolatedWorktree;
 use releashd::test_support::integration::workflow::IsolatedWorktreeGateway;
 use releashd::test_support::integration::workflow::ManagedWorktreeResolver;
@@ -373,13 +372,7 @@ impl Fixture {
         ))
         .unwrap();
         self.host
-            .start_resolved_workflow(
-                &self.app,
-                definition,
-                root.into(),
-                None,
-                ExecutionOrigin::Cli,
-            )
+            .start_resolved_workflow(&self.app, definition, root.into(), None)
             .await
             .unwrap()
     }
@@ -411,7 +404,6 @@ impl Fixture {
                 workflow.clone(),
                 root.into(),
                 None,
-                ExecutionOrigin::Cli,
                 WorkflowDefaults,
                 now,
             ))
@@ -422,7 +414,6 @@ impl Fixture {
             execution_id: snapshot.execution_id.clone(),
             workflow_name: workflow.name.clone(),
             worktree_path: root.into(),
-            created_from: ExecutionOrigin::Cli,
             request: String::new(),
             definition: workflow,
             timestamp: now,
@@ -582,10 +573,7 @@ pub(crate) fn archive_fixture_with_resolver(
         std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
     ))
     .unwrap();
-    let repository = Arc::new(ExecutionTreeArchiveFactRepository::new(
-        store.clone(),
-        directory.path(),
-    ));
+    let repository = Arc::new(ExecutionTreeArchiveFactRepository::new(store.clone()));
     let trees = SqliteWorkspaceTreeRepository::new(
         store.clone(),
         std::sync::Arc::new(FailureRecordStore::default()),
@@ -637,7 +625,6 @@ pub(crate) async fn archive_workflow(fixture: &ArchiveFixture) -> String {
         workflow,
         "/missing/worktree".into(),
         None,
-        ExecutionOrigin::Cli,
     ))
     .await
     .unwrap()
