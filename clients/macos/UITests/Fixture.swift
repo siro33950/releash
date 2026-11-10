@@ -227,7 +227,8 @@ final class Fixture: Sendable {
     matches: (Releash_Client_V1_StatePayload) throws -> Bool
   ) async throws {
     let (client, headers) = try client()
-    let stream = client.openStateStream(headers: headers)
+    // Connect 1.0.0 registers the body after starting the task; its delegate runs on the main queue.
+    let stream = await MainActor.run { client.openStateStream(headers: headers) }
     let timeout = DispatchWorkItem { stream.cancel() }
     DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: timeout)
     defer {
