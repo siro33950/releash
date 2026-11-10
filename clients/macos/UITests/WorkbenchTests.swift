@@ -176,6 +176,8 @@ final class WorkbenchTests: XCTestCase {
     app.checkBoxes["ファイル"].click()
     let file = app.descendants(matching: .any).matching(identifier: "file:file.swift").firstMatch
     XCTAssertTrue(file.waitForExistence(timeout: 30), app.debugDescription)
+    let central = app.scrollViews.containing(.menuButton, identifier: "開く").firstMatch
+    let centralTabs = central.buttons.count
     file.click()
     XCTAssertTrue(
       app.buttons["file.swift"].firstMatch.waitForExistence(timeout: 10), app.debugDescription)
@@ -186,6 +188,11 @@ final class WorkbenchTests: XCTestCase {
     ).firstMatch
     XCTAssertTrue(after.waitForExistence(timeout: 30), app.debugDescription)
     XCTAssertTrue(before.waitForExistence(timeout: 10), app.debugDescription)
+    let tab = app.buttons["file.swift"].firstMatch
+    XCTAssertGreaterThanOrEqual(tab.frame.minX, file.frame.maxX)
+    XCTAssertGreaterThanOrEqual(tab.frame.minX, central.frame.maxX)
+    XCTAssertEqual(central.buttons.count, centralTabs)
+    XCTAssertFalse(central.buttons["file.swift"].exists)
     let mode = app.descendants(matching: .any).matching(identifier: "file-mode").firstMatch
     mode.click()
     XCTAssertTrue(after.waitForExistence(timeout: 10), app.debugDescription)

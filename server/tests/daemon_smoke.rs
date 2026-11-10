@@ -1394,3 +1394,6 @@ async fn test_daemon状態購読_server_infoと一致し停止受理後にstoppi
     }
     assert!(!directory.path().join("client-api.json").exists());
 }
+
+#[path = "daemon_smoke/file_workspace_acceptance.rs"]
+mod file_workspace_acceptance;
