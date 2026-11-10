@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import XCTest
 
 @MainActor final class UpdateTests: XCTestCase, @unchecked Sendable {
@@ -119,31 +118,13 @@ import XCTest
     app.launch()
     XCTAssertTrue(app.buttons["Worktreeを作成"].waitForExistence(timeout: 30))
     // When
-    let status = app.descendants(matching: .statusItem)["Releash"]
+    let items = app.descendants(matching: .statusItem)
+    let status = items["Releash"]
     let running = try XCTUnwrap(
       NSRunningApplication.runningApplications(withBundleIdentifier: update.identifier).first)
-    let application = AXUIElementCreateApplication(running.processIdentifier)
-    var menuBar: CFTypeRef?
-    XCTAssertEqual(
-      AXUIElementCopyAttributeValue(application, kAXExtrasMenuBarAttribute as CFString, &menuBar),
-      .success)
-    let bar = try XCTUnwrap(menuBar)
-    var children: CFTypeRef?
-    XCTAssertEqual(
-      AXUIElementCopyAttributeValue(
-        bar as! AXUIElement, kAXChildrenAttribute as CFString, &children),
-      .success)
-    let items = try XCTUnwrap(children as? [AXUIElement])
-    let tooltips = items.compactMap { item -> String? in
-      var help: CFTypeRef?
-      guard AXUIElementCopyAttributeValue(item, kAXHelpAttribute as CFString, &help) == .success
-      else { return nil }
-      return help as? String
-    }
     // Then
-    XCTAssertEqual(tooltips.count, 1)
-    XCTAssertEqual(tooltips.first?.components(separatedBy: ":").first, "Releash")
-    XCTAssertFalse(tooltips.contains { $0.contains("Releash Preview") })
+    XCTAssertEqual(items.count, 1)
+    XCTAssertEqual(status.label, "Releash")
     XCTAssertFalse(app.debugDescription.contains("Releash Preview"))
     // When
     status.click()
@@ -194,19 +175,10 @@ import XCTest
     check.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
     // Then
     try await waitUntil {
-      guard
-        NSWorkspace.shared.frontmostApplication?.processIdentifier == running.processIdentifier
-      else { return false }
-      var window: CFTypeRef?
-      guard
-        AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &window)
-          == .success,
-        let window
-      else { return false }
-      var identifier: CFTypeRef?
-      return AXUIElementCopyAttributeValue(
-        window as! AXUIElement, kAXIdentifierAttribute as CFString, &identifier) == .success
-        && identifier as? String == "SUUpdateAlert"
+      NSWorkspace.shared.frontmostApplication?.processIdentifier == running.processIdentifier
+        && self.app.debugDescription.split(separator: "\n").contains {
+          $0.contains("Window (Main)") && $0.contains("identifier: 'SUUpdateAlert'")
+        }
     }
   }
 
