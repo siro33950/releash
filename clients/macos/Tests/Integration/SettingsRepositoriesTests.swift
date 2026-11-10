@@ -37,7 +37,7 @@ final class SettingsRepositoriesTests: XCTestCase {
     payload.workspaces.repositories.items = []
     try http.publish(payload, target: "workspaces")
     // Then
-    try await eventuallyView(host) { host.element("Repositoryを選択してください") != nil }
+    try await eventuallyView(host) { host.element("リポジトリを選択してください") != nil }
     await model.stop()
   }
 

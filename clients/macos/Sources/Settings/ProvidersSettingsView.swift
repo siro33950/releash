@@ -62,7 +62,7 @@ struct ProvidersSettingsView: View {
       if let previous { saveExecutable(previous) }
     }
     .onDisappear {
-      if let editingProvider { saveExecutable(editingProvider) }
+      for provider in state.executables.keys { saveExecutable(provider) }
       state.unsubscribe(model)
     }
   }

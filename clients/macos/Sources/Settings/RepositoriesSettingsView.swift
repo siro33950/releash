@@ -14,7 +14,7 @@ struct RepositoriesSettingsView: View {
       if let path = selectedPath, model.repositories.contains(where: { $0.path == path }) {
         RepositorySettingsView(model: model, path: path).id(path)
       } else {
-        ContentUnavailableView { Label("Repositoryを選択してください", image: "folder") }
+        ContentUnavailableView { Label("リポジトリを選択してください", image: "folder") }
       }
     }
     .onChange(of: model.repositories.map(\.path), initial: true) { _, paths in
