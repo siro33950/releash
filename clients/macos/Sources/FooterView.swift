@@ -16,13 +16,15 @@ struct FooterView: View {
           }
         }
         if !model.hookHealth.readErrors.isEmpty || model.hookSubscriptionFailure != nil {
-          Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(UIStyle.attention)
-            .help(
-              ([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors)
-                .joined(separator: "\n")
-            )
-            .accessibilityLabel("hookの状態を確認できません")
+          Image("triangle-alert").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
+          )
+          .foregroundStyle(UIStyle.attention)
+          .help(
+            ([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors)
+              .joined(separator: "\n")
+          )
+          .accessibilityLabel("hookの状態を確認できません")
         }
         Spacer(minLength: 0)
         if let version = model.updater.availableVersion {
@@ -45,12 +47,9 @@ struct FooterView: View {
             Label {
               Text(serverLabel)
             } icon: {
-              if let icon = NSImage(
-                systemSymbolName: model.releaseCompatibility == "compatible"
-                  ? "server.rack" : "exclamationmark.triangle",
-                accessibilityDescription: serverLabel)
-              {
-                Image(nsImage: icon)
+              if let icon = serverIcon(label: serverLabel) {
+                Image(nsImage: icon).resizable()
+                  .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
               }
             }
           }
@@ -74,6 +73,17 @@ struct FooterView: View {
     }
   }
 
+  private func serverIcon(label: String) -> NSImage? {
+    guard
+      let icon = NSImage(
+        named: model.releaseCompatibility == "compatible" ? "server" : "triangle-alert")?.copy()
+        as? NSImage
+    else { return nil }
+    icon.accessibilityDescription = label
+    icon.size = NSSize(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+    return icon
+  }
+
   private func uptime(_ info: Releash_Client_V1_ServerInfo, now: Date) -> String {
     let duration = max(0, Int(now.timeIntervalSince1970) - Int(info.processStartedAt))
     return "\(duration / 3600)h \((duration % 3600) / 60)m"
@@ -91,8 +101,9 @@ private struct ProviderFooterView: View {
       expanded.toggle()
     } label: {
       HStack(spacing: UIStyle.statusSpacing) {
-        Image(systemName: provider == "claude" ? "sparkles" : "terminal")
-          .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+        Image(provider == "claude" ? "sparkles" : "terminal").resizable().frame(
+          width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
+        )
         Text(provider.capitalized)
         if let usage {
           ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, window in
@@ -101,7 +112,9 @@ private struct ProviderFooterView: View {
           }
         }
         if !warnings.isEmpty || usage?.windows.contains(where: { $0.warning }) == true {
-          Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(UIStyle.attention)
+          Image("triangle-alert").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
+          ).foregroundStyle(UIStyle.attention)
         }
       }
     }

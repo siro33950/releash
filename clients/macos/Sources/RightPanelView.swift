@@ -17,10 +17,10 @@ struct RightPanelView: View {
     }
     var icon: String {
       switch self {
-      case .files: "doc"
-      case .sourceControl: "arrow.triangle.branch"
-      case .threads: "bubble.left"
-      case .roots: "list.bullet"
+      case .files: "file"
+      case .sourceControl: "git-branch"
+      case .threads: "message-square"
+      case .roots: "list"
       }
     }
   }
@@ -30,7 +30,8 @@ struct RightPanelView: View {
         if expanded {
           ForEach(Panel.allCases) { panel in
             Toggle(isOn: Binding(get: { selected == panel }, set: { if $0 { selected = panel } })) {
-              Image(systemName: panel.icon)
+              Image(panel.icon).resizable().frame(
+                width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
             }
             .toggleStyle(IconToggleStyle())
             .iconButtonFrame()
@@ -43,7 +44,8 @@ struct RightPanelView: View {
         Button {
           expanded.toggle()
         } label: {
-          Image(systemName: "sidebar.right")
+          Image("panel-right").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
         }
         .buttonStyle(IconButtonStyle())
         .iconButtonFrame()

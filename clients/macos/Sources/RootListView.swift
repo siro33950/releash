@@ -78,10 +78,10 @@ struct RootListView: View {
     VStack(spacing: 0) {
       HStack {
         Spacer()
-        IconMenu(title: "その他", systemImage: "ellipsis") {
+        IconMenu(title: "その他", image: "ellipsis") {
           Button("History…") { history = true }
         }
-        IconMenu(title: "開始", systemImage: "plus") {
+        IconMenu(title: "開始", image: "plus") {
           Menu("New Session") {
             ForEach(model.providers, id: \.value) { provider in
               Button(provider.displayName) {
@@ -186,13 +186,21 @@ struct RootListView: View {
     .accessibilityIdentifier("node-artifact:\(item.rootID)").accessibilityAddTraits(.isStaticText)
     .accessibilityValue(item.hasArtifact ? "◆" : "")
   }
+  private func nodeIcon(_ item: Releash_Client_V1_WorkspaceTreeItem) -> String {
+    switch item.variant {
+    case .node(let node): node.contentKind.value == .command ? "terminal" : "bot"
+    case .sequence: "waypoints"
+    case .fanout: "git-fork"
+    case nil: "waypoints"
+    }
+  }
   func nameCell(_ item: Releash_Client_V1_WorkspaceTreeItem, isRoot: Bool) -> some View {
     HStack(spacing: UIStyle.rowSpacing) {
       HStack(spacing: UIStyle.rowSpacing) {
-        Image(systemName: "circle.fill").font(.system(size: UIStyle.statusSize)).foregroundStyle(
-          UIStyle.statusColor(String(describing: item.rootStatus.value))
-        )
-        .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
+        Image(nodeIcon(item)).resizable()
+          .frame(width: UIStyle.statusSize, height: UIStyle.statusSize)
+          .foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
+          .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
         if isRoot, case .node(let node) = item.variant, node.hasProvider {
           Text(node.provider.displayName).fontWeight(.medium)
         }
@@ -255,7 +263,8 @@ struct RootListView: View {
             expandedPastAttempts.insert(item.rootID)
           }
         } label: {
-          Image(systemName: "clock.arrow.circlepath")
+          Image("history").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
         }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
       }
     }.frame(maxWidth: .infinity, alignment: .leading)

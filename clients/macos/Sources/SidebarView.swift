@@ -18,16 +18,19 @@ struct SidebarView: View {
         Text("Workspaces").font(.callout).foregroundStyle(.secondary)
         Spacer()
         Button(action: model.addRepository) {
-          Image(systemName: "folder.badge.plus")
+          Image("folder-plus").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加").accessibilityLabel(
           "Repositoryを追加")
         Button(action: model.refresh) {
-          Image(systemName: "arrow.clockwise")
+          Image("refresh-cw").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("再読み込み").accessibilityLabel("再読み込み")
         Button {
           creating = true
         } label: {
-          Image(systemName: "plus")
+          Image("plus").resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Worktreeを作成").accessibilityLabel(
           "Worktreeを作成")
       }
@@ -102,16 +105,19 @@ struct WorktreeCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
       HStack(spacing: UIStyle.rowSpacing) {
-        Image(systemName: branch.isMainWorktree ? "house" : "arrow.triangle.branch")
-          .frame(width: UIStyle.cardIconWidth)
+        Image(branch.isMainWorktree ? "house" : "git-branch").resizable().frame(
+          width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
+        )
         Text(branch.name).fontWeight(.medium)
       }
       VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
         if branch.isMerged || (branch.hasDirtyCount && branch.dirtyCount > 0) || branch.isDeleting {
           HStack {
             if branch.isMerged {
-              Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
-                .accessibilityLabel("Merged").help("Merged")
+              Image("circle-check").resizable().frame(
+                width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
+              )
+              .foregroundStyle(.secondary).accessibilityLabel("Merged").help("Merged")
             }
             if branch.hasDirtyCount && branch.dirtyCount > 0 {
               Text("\(branch.dirtyCount) changes").font(.caption).foregroundStyle(.secondary)
@@ -123,9 +129,11 @@ struct WorktreeCard: View {
           }
         }
         if branch.hasPrState {
-          Image(systemName: prIcon(branch.prState))
-            .foregroundStyle(.secondary)
-            .help("PR #\(branch.prStateNumber): \(branch.prState)")
+          Image(prIcon(branch.prState)).resizable().frame(
+            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
+          )
+          .foregroundStyle(.secondary)
+          .help("PR #\(branch.prStateNumber): \(branch.prState)")
         }
         if branch.hasDirtyCountError { Text("Changes unavailable").help(branch.dirtyCountError) }
         if branch.hasPullRequestError { Text("PR unavailable").help(branch.pullRequestError) }
@@ -135,7 +143,7 @@ struct WorktreeCard: View {
             VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
               if execution.isWorkflow {
                 HStack(spacing: UIStyle.rowSpacing) {
-                  Image("WorkflowWaypoints")
+                  Image("waypoints")
                     .resizable()
                     .renderingMode(.template)
                     .scaledToFit()
@@ -158,7 +166,7 @@ struct WorktreeCard: View {
                 .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
               } else {
                 HStack(spacing: UIStyle.rowSpacing) {
-                  Image("SessionBot")
+                  Image("bot")
                     .resizable()
                     .renderingMode(.template)
                     .scaledToFit()
@@ -195,10 +203,10 @@ struct WorktreeCard: View {
 
   private func prIcon(_ value: String) -> String {
     switch value {
-    case "open": "arrow.triangle.pull"
-    case "draft": "ellipsis.circle"
-    case "merged": "arrow.triangle.merge"
-    default: "xmark.circle"
+    case "open": "git-pull-request"
+    case "draft": "git-pull-request-draft"
+    case "merged": "git-merge"
+    default: "git-pull-request-closed"
     }
   }
   func remove() {

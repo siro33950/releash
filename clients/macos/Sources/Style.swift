@@ -83,13 +83,15 @@ struct IconButtonStyle: ButtonStyle {
 /// アイコンだけのメニュー
 struct IconMenu<Content: View>: View {
   let title: String
-  let systemImage: String
+  let image: String
   @ViewBuilder let content: () -> Content
   var body: some View {
-    Menu(content: content) { Image(systemName: systemImage) }
-      .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden)
-      .iconButtonFrame()
-      .help(title).accessibilityLabel(title)
+    Menu(content: content) {
+      Image(image).resizable().frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+    }
+    .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden)
+    .iconButtonFrame()
+    .help(title).accessibilityLabel(title)
   }
 }
 

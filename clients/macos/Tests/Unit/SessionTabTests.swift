@@ -40,7 +40,7 @@ final class SessionTabTests: XCTestCase {
       XCTAssertEqual(actual.greenComponent, expected.greenComponent, accuracy: 0.000001)
       XCTAssertEqual(actual.blueComponent, expected.blueComponent, accuracy: 0.000001)
       XCTAssertEqual(actual.alphaComponent, expected.alphaComponent, accuracy: 0.000001)
-      XCTAssertEqual(workspace.controller.tab(tab)?.icon, "sparkle")
+      XCTAssertEqual(workspace.controller.tab(tab)?.icon, "circle.fill")
     }
     // Given
     let restored = PaneWorkspace()

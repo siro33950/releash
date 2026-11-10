@@ -12,12 +12,7 @@ struct PaneTab: Equatable, Identifiable {
   enum Kind: String, CaseIterable {
     case terminal, file, session, command
     var icon: String {
-      switch self {
-      case .terminal: "terminal"
-      case .file: "doc"
-      case .session: "sparkle"
-      case .command: "terminal"
-      }
+      "circle.fill"
     }
     var title: String {
       switch self {
