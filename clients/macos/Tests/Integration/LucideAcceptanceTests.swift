@@ -360,7 +360,7 @@ extension LucideAcceptanceTests {
     view.layoutSubtreeIfNeeded()
     host.window.displayIfNeeded()
     let tab = try frame(title, in: host)
-    let region = NSRect(x: tab.minX, y: tab.minY, width: 28, height: tab.height)
+    let region = NSRect(x: tab.minX, y: tab.minY, width: 44, height: tab.height)
       .integral.intersection(view.bounds)
     let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: region))
     view.cacheDisplay(in: region, to: bitmap)
@@ -376,6 +376,14 @@ extension LucideAcceptanceTests {
         match = found
         break
       }
+    }
+    if match == nil {
+      let image = NSImage(size: bitmap.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = "tab-\(title)"
+      attachment.lifetime = .keepAlways
+      add(attachment)
     }
     XCTAssertNotNil(match, "B-006/B-007: \(title) のアイコンが \(active ? "青い" : "無彩色の") ● である")
     if !active {
@@ -492,6 +500,8 @@ private struct IconRaster {
   }
 
   init(bitmap: NSBitmapImageRep) throws {
+    // 画面を写した画像は表示先のディスプレイの色空間である。色を比べる前に sRGB に直す
+    let bitmap = try XCTUnwrap(bitmap.converting(to: .sRGB, renderingIntent: .default))
     let width = bitmap.pixelsWide
     let height = bitmap.pixelsHigh
     self.width = width

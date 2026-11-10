@@ -63,3 +63,4 @@ clients/macos/Generated/
 **/__pycache__/
 
 /.tmp/
+.pnpm-store
