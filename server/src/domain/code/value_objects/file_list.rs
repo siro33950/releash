@@ -20,18 +20,25 @@ pub struct NameQuery(String);
 impl NameQuery {
     /// 入力から検索の入力を作る。空の入力は検索の入力ではないので失敗する。
     pub fn new(input: &str) -> Result<Self, CodeError> {
-        todo!()
+        if input.is_empty() {
+            return Err(CodeError::Rule("empty file name query".into()));
+        }
+        Ok(Self(input.to_owned()))
     }
 
     /// 名前の中に、入力の文字がその順に現れるかを決める。
     /// 文字の間に別の文字があってもよい。大文字と小文字は区別しない。
     pub fn matches(&self, name: &str) -> bool {
-        todo!()
+        let mut name = name.chars().flat_map(char::to_lowercase);
+        self.0
+            .chars()
+            .flat_map(char::to_lowercase)
+            .all(|wanted| name.any(|found| found == wanted))
     }
 
     /// 利用者が入れたままの入力を返す。
     pub fn as_str(&self) -> &str {
-        todo!()
+        &self.0
     }
 }
 
@@ -49,17 +56,25 @@ pub enum FileFilter {
 impl FileFilter {
     /// 検索の入力と「差分のみ」の指定から条件を作る。どちらも無い指定は絞り込みではないので失敗する。
     pub fn new(name: Option<NameQuery>, changed: bool) -> Result<Self, CodeError> {
-        todo!()
+        match (name, changed) {
+            (Some(name), false) => Ok(Self::Name(name)),
+            (None, true) => Ok(Self::Changed),
+            (Some(name), true) => Ok(Self::NameAndChanged(name)),
+            (None, false) => Err(CodeError::Rule("empty file filter".into())),
+        }
     }
 
     /// 条件が検索の入力を持つなら、それを返す。
     pub fn name(&self) -> Option<&NameQuery> {
-        todo!()
+        match self {
+            Self::Name(name) | Self::NameAndChanged(name) => Some(name),
+            Self::Changed => None,
+        }
     }
 
     /// 条件が「差分のみ」を含むかを返す。
     pub fn changed(&self) -> bool {
-        todo!()
+        !matches!(self, Self::Name(_))
     }
 }
 

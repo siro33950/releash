@@ -57,6 +57,7 @@ struct FileWorkspaceView: View {
       } catch is CancellationError {
       } catch { model.failure = error.localizedDescription }
     }
+    .onChange(of: model.filePanes.layoutInput) { _, _ in model.saveFilePaneLayout() }
     .onDisappear {
       if let subscription { model.unsubscribe(subscription) }
       subscription = nil

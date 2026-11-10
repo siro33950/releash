@@ -13,7 +13,13 @@ import SwiftProtobuf
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
+  /// 右カラムのファイルタブの領域。
+  ///
+  /// 配置（分割、各領域のタブ、選択中のタブ、各タブの File 表示か Diff 表示かと比較の基準）は、
+  /// worktree ごとに `fileLayoutDefaults` へ保存する。このアプリが所有し、サーバへは送らない。
   var filePanes = PaneWorkspace()
+  /// ファイルタブの領域の配置を保存する UserDefaults。
+  var fileLayoutDefaults: UserDefaults = .standard
   var filesFocused = false
   var focusedPanes: PaneWorkspace { filesFocused ? filePanes : panes }
   private enum Failure {
@@ -443,7 +449,7 @@ import SwiftProtobuf
     stopTerminals()
     resetWorkspaceReadErrors()
     selectedWorktree = path
-    filePanes = PaneWorkspace()
+    restoreFilePaneLayout(path)
     filesFocused = false
     layoutLoaded = false
     layout = .empty()
@@ -634,6 +640,14 @@ import SwiftProtobuf
     let base = UserDefaults.standard.string(forKey: "diffBase") ?? "head"
     filePanes.openFile(path, base: base)
     filesFocused = true
+  }
+  /// `filePanes` を、worktree に保存された配置で作り直す。保存が無いか読めなければ、空の配置にする。
+  func restoreFilePaneLayout(_ worktree: String) {
+    fatalError("未実装: fileLayoutDefaults から worktree の配置を読み、filePanes に戻す")
+  }
+  /// 選択中の worktree の `filePanes` の配置を保存する。worktree を選んでいなければ何もしない。
+  func saveFilePaneLayout() {
+    fatalError("未実装: filePanes の配置を、選択中の worktree のものとして fileLayoutDefaults へ保存する")
   }
   func savePaneLayout() {
     do {
