@@ -424,7 +424,8 @@ extension LucideAcceptanceTests {
     trackingMenu?.cancelTracking()
   }
 
-  @MainActor private static func reference(_ name: String, size: Int, scale: CGFloat = 2) throws
+  @MainActor private static func reference(_ name: String, size: Int, scale: CGFloat? = nil)
+    throws
     -> IconRaster
   {
     let svg = try XCTUnwrap(LucideAcceptanceReference.svg[name])
@@ -515,13 +516,25 @@ private struct IconRaster {
   let height: Int
   let pixels: [SIMD3<Double>]
 
-  @MainActor init(image: NSImage, size: Int, scale: CGFloat = 2) throws {
-    let renderer = ImageRenderer(
-      content: Image(nsImage: image).resizable().renderingMode(.template)
-        .foregroundStyle(.black).frame(width: CGFloat(size), height: CGFloat(size))
-        .background(.white))
-    renderer.scale = scale
-    try self.init(bitmap: NSBitmapImageRep(cgImage: XCTUnwrap(renderer.cgImage)))
+  /// 参照画像を、実画面と同じ描画経路（NSHostingView を cacheDisplay で写す）で作る。
+  /// 描画経路が違うと、8 ポイントのような小さい大きさでは同じ SVG でも画素が合わない
+  @MainActor init(image: NSImage, size: Int, scale: CGFloat? = nil) throws {
+    let side = CGFloat(size)
+    let view = NSHostingView(
+      rootView: Image(nsImage: image).resizable().renderingMode(.template)
+        .foregroundStyle(.black).frame(width: side, height: side).background(.white))
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: side, height: side), styleMask: [.borderless],
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = view
+    view.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    if let scale {
+      XCTAssertEqual(CGFloat(bitmap.pixelsWide), side * scale, "参照画像と実画面の倍率が違う")
+    }
+    try self.init(bitmap: bitmap)
   }
 
   init(bitmap: NSBitmapImageRep) throws {
