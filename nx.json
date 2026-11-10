@@ -1,9 +1,6 @@
 {
   "installation": {
-    "version": "23.3.0",
-    "plugins": {
-      "@nx/js": "23.3.0"
-    }
+    "version": "23.3.0"
   },
   "$schema": "./.nx/installation/node_modules/nx/schemas/nx-schema.json",
   "targetDefaults": {
@@ -64,53 +61,6 @@
       {
         "env": "CARGO_TARGET_DIR"
       }
-    ],
-    "frontend": [
-      "{workspaceRoot}/clients/desktop/**/*",
-      "!{workspaceRoot}/clients/desktop/src-native/**/*",
-      "sharedGlobals",
-      {
-        "env": "CI"
-      },
-      {
-        "runtime": "node --version"
-      },
-      {
-        "runtime": "pnpm --version"
-      }
     ]
-  },
-  "release": {
-    "projects": [
-      "desktop"
-    ],
-    "projectsRelationship": "fixed",
-    "version": {
-      "currentVersionResolver": "disk",
-      "updateDependents": "never",
-      "versionActionsOptions": {
-        "skipLockFileUpdate": true
-      },
-      "git": {
-        "commit": false,
-        "tag": false,
-        "stageChanges": false
-      }
-    },
-    "changelog": {
-      "workspaceChangelog": {
-        "createRelease": false,
-        "file": ".nx/release-notes.md"
-      },
-      "projectChangelogs": false,
-      "git": {
-        "commit": false,
-        "tag": false,
-        "stageChanges": false
-      }
-    },
-    "releaseTag": {
-      "pattern": "v{version}"
-    }
   }
 }

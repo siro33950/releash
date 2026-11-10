@@ -1,7 +1,7 @@
 //! Domain error for workflow.
 //!
 //! Concrete external errors are converted to strings by adaptor/gateway
-//! implementations. The domain layer must not depend on git2, tauri, tokio, or
+//! implementations. The domain layer must not depend on git2, tokio, or
 //! filesystem-specific error types.
 
 #[derive(Debug, Clone, PartialEq, Eq)]

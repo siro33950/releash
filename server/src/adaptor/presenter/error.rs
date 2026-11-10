@@ -2,7 +2,7 @@ use crate::adaptor::presenter::connect::ConnectFailure;
 use serde::ser::SerializeStruct;
 use serde::Serialize;
 
-/// アプリ横断のエラー型。adaptor 層（Tauri コマンドなど）の
+/// アプリ横断のエラー型。adaptor 層（ClientService の入口など）の
 /// 戻り値で用いる。
 ///
 /// フロント／リモートへ返却される serialize 表現は、通常エラーでは移行前の

@@ -28,10 +28,8 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "pnpm --dir clients/desktop exec vitest run --coverage",
           "cargo llvm-cov clean --workspace",
           "cargo llvm-cov --no-report --locked",
-          "cargo llvm-cov --no-report --locked -p releash-desktop",
           "cargo llvm-cov report --workspace --codecov --output-path rust-codecov.json"
         ],
         "cwd": ".",
@@ -47,7 +45,6 @@
         "sharedGlobals"
       ],
       "outputs": [
-        "{workspaceRoot}/clients/desktop/coverage",
         "{workspaceRoot}/rust-codecov.json"
       ],
       "cache": false
@@ -55,7 +52,11 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "commands": ["node --test .github/scripts/*_test.cjs", "python3 .github/scripts/macos-e2e_test.py", "python3 .github/scripts/verify-release_test.py"],
+        "commands": [
+          "node --test .github/scripts/*_test.cjs",
+          "python3 .github/scripts/macos-e2e_test.py",
+          "python3 .github/scripts/verify-release_test.py"
+        ],
         "cwd": "."
       }
     }

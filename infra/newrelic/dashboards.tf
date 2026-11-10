@@ -4,7 +4,7 @@ resource "newrelic_one_dashboard" "releash" {
 
   page {
     name        = "Performance and reliability"
-    description = "Releash desktop app hot paths, agent streaming, resource pressure, and usage signals."
+    description = "Releash server hot paths, resource pressure, and usage signals."
 
     widget_line {
       title  = "Startup P95 by operation"
@@ -80,80 +80,8 @@ resource "newrelic_one_dashboard" "releash" {
     }
 
     widget_line {
-      title  = "Session save bytes P95"
-      row    = 4
-      column = 7
-      width  = 6
-      height = 3
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT percentile(`${local.metrics.session_bytes}`, 95) WHERE ${local.operation_filter.session_io} FACET `${local.attr.operation}` TIMESERIES"
-      }
-
-      legend_enabled   = true
-      y_axis_left_zero = true
-      units {
-        unit = "bytes"
-      }
-    }
-
-    widget_line {
-      title            = "Agent stream payload P95"
-      row              = 7
-      column           = 1
-      width            = 6
-      height           = 3
-      is_label_visible = true
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT percentile(`${local.metrics.payload_bytes}`, 95) WHERE `${local.attr.channel}` IN (${join(", ", [for channel in local.stream_channels : "'${channel}'"])}) FACET `${local.attr.channel}` TIMESERIES"
-      }
-
-      threshold {
-        name     = "64KB frame budget"
-        from     = local.budget.payload_bytes
-        to       = 104857600
-        severity = "critical"
-      }
-
-      legend_enabled   = true
-      y_axis_left_zero = true
-      units {
-        unit = "bytes"
-      }
-    }
-
-    widget_line {
-      title  = "Agent stream quality"
-      row    = 7
-      column = 7
-      width  = 6
-      height = 3
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT percentile(`${local.metrics.emit_interval}`, 95) AS 'emit interval p95 ms' TIMESERIES"
-      }
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT sum(`${local.metrics.dropped_frames}`) AS 'dropped frames' TIMESERIES"
-      }
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT sum(`${local.metrics.ws_reconnects}`) AS 'ws reconnects' TIMESERIES"
-      }
-
-      legend_enabled   = true
-      y_axis_left_zero = true
-    }
-
-    widget_line {
       title  = "Process resources"
-      row    = 10
+      row    = 7
       column = 1
       width  = 6
       height = 3
@@ -174,7 +102,7 @@ resource "newrelic_one_dashboard" "releash" {
 
     widget_line {
       title  = "Terminal pressure"
-      row    = 10
+      row    = 7
       column = 7
       width  = 6
       height = 3
@@ -195,7 +123,7 @@ resource "newrelic_one_dashboard" "releash" {
 
     widget_bar {
       title  = "Operation status"
-      row    = 13
+      row    = 10
       column = 1
       width  = 6
       height = 3
@@ -208,7 +136,7 @@ resource "newrelic_one_dashboard" "releash" {
 
     widget_bar {
       title  = "Usage events"
-      row    = 13
+      row    = 10
       column = 7
       width  = 6
       height = 3
@@ -216,46 +144,6 @@ resource "newrelic_one_dashboard" "releash" {
       nrql_query {
         account_id = var.newrelic_account_id
         query      = "FROM Metric SELECT sum(`${local.metrics.usage_events}`) WHERE `${local.attr.usage_event}` IN (${join(", ", [for event in local.usage_events : "'${event}'"])}) FACET `${local.attr.usage_event}`"
-      }
-    }
-
-    widget_line {
-      title            = "Agent turn latency P50 by operation x context"
-      row              = 16
-      column           = 1
-      width            = 6
-      height           = 3
-      is_label_visible = true
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT percentile(`${local.metrics.agent_turn}`, 50) WHERE ${local.operation_filter.agent_turn} FACET `${local.attr.operation}`, `${local.attr.agent_context}` TIMESERIES"
-      }
-
-      legend_enabled   = true
-      y_axis_left_zero = true
-      units {
-        unit = "ms"
-      }
-    }
-
-    widget_line {
-      title            = "Agent turn latency P95 by operation x context"
-      row              = 16
-      column           = 7
-      width            = 6
-      height           = 3
-      is_label_visible = true
-
-      nrql_query {
-        account_id = var.newrelic_account_id
-        query      = "FROM Metric SELECT percentile(`${local.metrics.agent_turn}`, 95) WHERE ${local.operation_filter.agent_turn} FACET `${local.attr.operation}`, `${local.attr.agent_context}` TIMESERIES"
-      }
-
-      legend_enabled   = true
-      y_axis_left_zero = true
-      units {
-        unit = "ms"
       }
     }
   }

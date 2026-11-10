@@ -4,7 +4,7 @@
 
 - **アプリケーション固有の業務手順**を表現する
 - 外部世界へのアクセスは domain の trait（Repository、ドメインサービス）または usecase の QueryService の trait を介する。購読の配信は usecase の配信の口の trait を介して出す。具体実装は知らない
-- 外部世界との接続を担う依存禁止（`tauri`, `git2`, `reqwest` 等を直接 `use` しない）。Usecase自身が所有する非同期排他・通知・タスク協調には`tokio::sync`等の実行制御primitiveを使用してよいが、I/O、時刻、process、transport、永続化をUsecaseへ持ち込む理由にはならない
+- 外部世界との接続を担う依存禁止（`git2`, `reqwest` 等を直接 `use` しない）。Usecase自身が所有する非同期排他・通知・タスク協調には`tokio::sync`等の実行制御primitiveを使用してよいが、I/O、時刻、process、transport、永続化をUsecaseへ持ち込む理由にはならない
 - CQRS に従い、Command の業務手順は Usecase、Query の読み取り処理は QueryService に分離する。両者は別ファイルに置き、controller からの入口は読み取りも含めて Usecase に統一する
 - **QueryService は Usecase ではない。** Usecase はアプリケーション固有の業務手順（オーケストレーション）を表現する唯一の単位であり、QueryService は読み取りクエリのサービスにすぎない。「ユースケース」と呼んでよいのは Usecase のみ。QueryService を「Query 側ユースケース」等と呼んで usecase 扱いしない
 - **usecase は業務の状態機械を持たない**: 業務の状態・ライフサイクルの表現主体は domain の集約である（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。usecase が持つのは「何を、どの順で呼ぶか」であり、「この状態でこの操作を受理してよいか」は domain に問う。domain の状態型を usecase で再定義しない

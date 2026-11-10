@@ -173,7 +173,7 @@ pub(crate) mod tests {
 
     // ---- duplicate logic tests ----
     // These test the core duplicate logic using storage/facet/builtin functions directly,
-    // mirroring what the Tauri commands do inside spawn_blocking.
+    // mirroring what the ClientService handlers do inside spawn_blocking.
 
     fn make_test_workflow(name: &str) -> WorkflowDefinitionYaml {
         WorkflowDefinitionYaml {
@@ -507,7 +507,7 @@ pub(crate) mod tests {
         assert!(result.unwrap_err().contains("既に存在します"));
     }
 
-    // ---- [05] read-only Execution 観測 API: Tauri command 境界の直接テスト ----
+    // ---- [05] read-only Execution 観測 API: ClientService 境界の直接テスト ----
 
     pub(crate) fn make_read_only_app() -> (
         WorkflowTestDependencies,

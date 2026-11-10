@@ -341,7 +341,6 @@ pub mod platform {
     pub use crate::infrastructure::file_watcher::FileWatcherManager;
     pub use crate::infrastructure::local_log::init_with_limits;
     pub use crate::infrastructure::local_log::LocalFileLogger;
-    pub use crate::infrastructure::local_log::LocalLogProcess;
     pub use crate::infrastructure::local_log::LocalLogWriter;
     pub use crate::infrastructure::local_log::ACTIVE_FILE_NAME;
     pub use crate::infrastructure::local_log::LOCK_FILE_NAME;

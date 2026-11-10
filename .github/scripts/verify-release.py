@@ -15,7 +15,6 @@ def verify(root, app):
         info = plistlib.load(file)
     assert info['CFBundleVersion'] == version, 'Build/Cargo version mismatch'
     assert info['CFBundleShortVersionString'] == version, 'Swift/Cargo version mismatch'
-    assert json.loads((root / 'clients/desktop/package.json').read_text())['version'] == version, 'Tauri/Cargo version mismatch'
     assert info['CFBundleIdentifier'] == 'com.releash.macos', 'Unexpected bundle ID'
     helpers = app.resolve() / 'Contents/Helpers'
     with tempfile.TemporaryDirectory(prefix='releash-release-check-') as directory:

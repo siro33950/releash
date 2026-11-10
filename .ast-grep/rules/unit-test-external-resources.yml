@@ -6,9 +6,6 @@ files:
   - server/src/**/*_test.rs
   - server/src/**/test_helpers*.rs
   - server/src/**/test_support/**/*.rs
-  - clients/desktop/src-native/**/*_test.rs
-  - clients/desktop/src-native/**/test_helpers*.rs
-  - clients/desktop/src-native/**/test_support/**/*.rs
 rule:
   any:
     - all:

@@ -6,7 +6,7 @@
 //! 外部リソースに触れる責務（ファイル内容参照・diff バッファ計算・branch diff・
 //! staging・mention のファイル走査）は trait（`repository.rs`）で抽象化し、具体実装は
 //! `adaptor/gateway/code/` に閉じる。`docs/architecture/DOMAIN.md` 準拠で
-//! 外部ライブラリ（git2・tokio・tauri・std I/O）を直接 `use` しない。
+//! 外部ライブラリ（git2・tokio・std I/O）を直接 `use` しない。
 
 pub mod error;
 #[allow(clippy::module_inception)]

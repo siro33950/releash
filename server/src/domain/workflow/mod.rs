@@ -2,7 +2,7 @@
 //!
 //! This module owns workflow meaning: definitions, execution state, approvals,
 //! contracts, facets, and execution lifecycle vocabulary. External resources such as
-//! Tauri events, git2, file I/O, and agent runtime handles
+//! git2, file I/O, and agent runtime handles
 //! are represented only by traits in `repository` / `gateway`.
 
 pub mod entities;

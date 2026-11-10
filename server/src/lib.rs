@@ -25,7 +25,6 @@ mod terminal_surface {
         TerminalSurfaceV1,
     };
 }
-pub mod desktop_api;
 // Test-only helpers are intentionally kept as a root module.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

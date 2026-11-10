@@ -6,9 +6,7 @@
 - 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Usecase の引数に変えて Usecase を呼ぶことのみ。きっかけの種類で入口の部品を分けない。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く
 - 業務ロジックを書かない（Usecase を呼ぶだけ。QueryService や Repository を controller から直接呼ばない）
 - **受理判定を controller で書かない**: 「この状態でこの操作を受理してよいか」の判断は domain の集約が答える（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。controller が状態型を独自解釈してゲートを設けると、同じ判断が層をまたいで二重化し、domain 側の不変条件が効かなくなる
-- 2系統の入口を分離する：
-  - `controller/api/client*.rs` と `controller/client/` — Connect の ClientService。画面からの呼び出しと購読の入口。契約は `proto/client.proto`
-  - `controller/command/` — Tauri コマンド（`#[tauri::command]`）。desktop 固有の操作（ウィンドウ、daemon の起動と監視、更新、接続先の受け渡し）だけの入口
+- クライアントからの呼び出しと購読の入口は、Connect の ClientService（`controller/api/client*.rs` と `controller/client/`）である。契約は `proto/client.proto`
 
 入口が増えても業務手順は複製しない。
 
@@ -26,11 +24,7 @@
 
 ドメインごとに `controller/client/<domain>/` に登録関数を用意し、`client/dispatch.rs` がそれらをまとめる。Main にコマンド名を列挙しない。
 
-画面はこの入口を React（`src/lib/client.ts`）から直接呼ぶ。Tauri コマンドを経由した中継を作らない。
-
-## Tauri コマンド
-
-desktop 固有の操作だけを置く。サーバの業務操作や、Connect の呼び出し・購読の中継を Tauri コマンドに追加しない。ドメインごとに登録関数を用意し、`command/mod.rs` がそれらをまとめる。
+クライアントはこの入口を Connect で直接呼ぶ。
 
 ## Connect の入口
 

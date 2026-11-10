@@ -23,12 +23,12 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: jdx/mise-action@v3
-      - name: Bump version with Nx
+      - name: Bump version
         env:
           BUMP: ${{ inputs.bump }}
         run: |
           node .github/scripts/bump-version.cjs "$BUMP"
-          VERSION=$(node -p "require('./clients/desktop/package.json').version")
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Create PR

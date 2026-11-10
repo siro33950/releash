@@ -1,4 +1,4 @@
-//! staging（差分 Approve）の Tauri コマンド。
+//! staging（差分 Approve）の ClientService の入口。
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;

@@ -10,10 +10,9 @@
       "customType": "regex",
       "managerFilePatterns": ["/^nx\\.json$/"],
       "matchStrings": [
-        "\"installation\"\\s*:\\s*\\{\\s*\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
-        "\"(?<depName>@nx/js)\"\\s*:\\s*\"(?<currentValue>[^\"]+)\""
+        "\"installation\"\\s*:\\s*\\{\\s*\"version\"\\s*:\\s*\"(?<currentValue>[^\"]+)\""
       ],
-      "depNameTemplate": "{{#if depName}}{{{depName}}}{{else}}nx{{/if}}",
+      "depNameTemplate": "nx",
       "datasourceTemplate": "npm"
     }
   ],
@@ -37,7 +36,7 @@
       "groupName": "connect-swift"
     },
     {
-      "matchPackageNames": ["nx", "@nx/js"],
+      "matchPackageNames": ["nx"],
       "groupName": "Nx",
       "separateMultipleMajor": true,
       "automerge": false

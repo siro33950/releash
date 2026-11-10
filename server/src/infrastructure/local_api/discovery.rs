@@ -8,9 +8,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[path = "discovery_record.rs"]
 mod discovery_record;
 pub(crate) use discovery_record::decode;
-pub use discovery_record::{
-    lookup_process_start_time, process_start_time, LocalApiDiscovery, ProcessStartTimeLookup,
-};
+#[cfg(feature = "test-support")]
+pub use discovery_record::ProcessStartTimeLookup;
+pub use discovery_record::{lookup_process_start_time, process_start_time, LocalApiDiscovery};
 
 #[derive(Debug, Clone)]
 pub struct LocalApiDiscoveryFile {

@@ -1,4 +1,4 @@
-//! review read model の Tauri コマンド。
+//! review read model の ClientService の入口。
 
 use crate::adaptor::controller::state::AppState;
 use crate::adaptor::presenter::code::ReviewGroupActionInput;

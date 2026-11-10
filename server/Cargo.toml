@@ -2,7 +2,7 @@
 name = "releashd"
 autobins = false
 version.workspace = true
-description = "A Tauri App"
+description = "Releash server daemon"
 authors = ["you"]
 license = "MIT OR Apache-2.0"
 edition = "2021"

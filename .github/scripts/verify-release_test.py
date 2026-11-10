@@ -17,9 +17,7 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(component=component), tempfile.TemporaryDirectory() as directory:
                 # Given
                 root = Path(directory).resolve()
-                (root / 'clients/desktop').mkdir(parents=True)
                 (root / 'Cargo.toml').write_text('[workspace.package]\nversion = "0.4.21"\n')
-                (root / 'clients/desktop/package.json').write_text('{"version":"0.4.21"}')
                 app = root / 'Releash.app'
                 (app / 'Contents').mkdir(parents=True)
                 (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({

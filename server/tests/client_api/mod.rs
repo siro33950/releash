@@ -69,24 +69,18 @@ async fn request(client: &NativeClient, frame: Value) -> Value {
 async fn test_クライアントconnect_認証と相関を保つ() {
     // Given
     let fixture = Fixture::new().await;
-    for (token, origin, status) in [
-        ("wrong", "tauri://localhost", 401),
-        (fixture.token.as_ref(), "https://evil.example", 403),
-    ] {
-        let response = reqwest::Client::new()
-            .post(format!(
-                "{}/releash.client.v1.ClientService/UpdateExternalEditor",
-                fixture.url
-            ))
-            .bearer_auth(token)
-            .header("origin", origin)
-            .header("content-type", "application/proto")
-            .body(Vec::new())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status().as_u16(), status);
-    }
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/releash.client.v1.ClientService/UpdateExternalEditor",
+            fixture.url
+        ))
+        .bearer_auth("wrong")
+        .header("content-type", "application/proto")
+        .body(Vec::new())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401);
     let client = fixture.client();
     // When
     let response = request(
@@ -128,7 +122,6 @@ async fn test_connect_不正protoを拒否する() {
             fixture.url
         ))
         .bearer_auth(&*fixture.token)
-        .header("origin", "tauri://localhost")
         .header("content-type", "application/proto")
         .body(vec![1u8])
         .send()

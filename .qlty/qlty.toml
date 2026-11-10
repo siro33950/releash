@@ -16,11 +16,6 @@ default = true
 [[plugin]]
 name = "clippy"
 
-[[plugin]]
-name = "biome"
-version = "2.5.15"
-prefix = "clients/desktop"
-
 [smells.function_complexity]
 threshold = 20
 

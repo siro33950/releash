@@ -1,4 +1,4 @@
-//! Markdown diff read model Tauri コマンド。
+//! Markdown diff read model の ClientService の入口。
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;

@@ -45,9 +45,6 @@ impl HotPathMetric {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupMetric {
-    AppStartup,
-
-    FirstWindowReady,
     FirstRepoSnapshotReady,
 }
 
@@ -85,9 +82,6 @@ impl TerminalLaunchMetric {
 impl StartupMetric {
     pub(crate) fn operation(self) -> &'static str {
         match self {
-            Self::AppStartup => "startup.app",
-
-            Self::FirstWindowReady => "startup.first_window_ready",
             Self::FirstRepoSnapshotReady => "startup.first_repo_snapshot_ready",
         }
     }
