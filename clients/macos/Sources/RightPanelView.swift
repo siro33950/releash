@@ -56,7 +56,7 @@ struct RightPanelView: View {
       if expanded, selected == .roots, let path = model.selectedWorktree {
         RootListView(model: model, path: path).id(path)
       } else if expanded, selected == .files, let path = model.selectedWorktree {
-        FileTreeView(model: model, worktree: path).id(path)
+        FileWorkspaceView(model: model, worktree: path).id(path)
       } else if expanded, selected == .threads, let path = model.selectedWorktree {
         ThreadPanelView(model: model, worktree: path).id(path)
       } else {

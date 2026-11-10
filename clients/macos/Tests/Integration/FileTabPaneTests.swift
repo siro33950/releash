@@ -10,10 +10,10 @@ final class FileTabPaneTests: XCTestCase {
   @MainActor func pane(_ model: AppModel, value: Releash_Client_V1_FileTabView? = nil) throws
     -> FileTabPane
   {
-    try model.panes.restore(.empty())
-    model.panes.openFile("src/file.rs", base: "head")
+    try model.filePanes.restore(.empty())
+    model.filePanes.openFile("src/file.rs", base: "head")
     return FileTabPane(
-      model: model, tabID: try XCTUnwrap(model.panes.controller.allTabIds.first),
+      model: model, tabID: try XCTUnwrap(model.filePanes.controller.allTabIds.first),
       path: "src/file.rs", worktree: "/repo", value: value)
   }
   @MainActor func testToolbarShowsModeSpecificItemsAndFitsDefaultPaneWidthWithLongPath()
@@ -98,11 +98,13 @@ final class FileTabPaneTests: XCTestCase {
     let first = try pane(model)
     model.openFile("default.rs")
     XCTAssertEqual(
-      model.panes.tab(try XCTUnwrap(model.panes.controller.allTabIds.last))?.fileBase, "head")
+      model.filePanes.tab(try XCTUnwrap(model.filePanes.controller.allTabIds.last))?.fileBase,
+      "head")
     defaults.set("branch-base", forKey: "diffBase")
     model.openFile("base.rs")
     XCTAssertEqual(
-      model.panes.tab(try XCTUnwrap(model.panes.controller.allTabIds.last))?.fileBase, "branch-base"
+      model.filePanes.tab(try XCTUnwrap(model.filePanes.controller.allTabIds.last))?.fileBase,
+      "branch-base"
     )
     let second = try pane(AppModel())
     var text = Releash_Client_V1_ReviewTextDiffDto()
@@ -124,7 +126,8 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertEqual(payload["dark"] as? Bool, false)
     restarted.openFile("new.rs")
     XCTAssertEqual(
-      restarted.panes.tab(try XCTUnwrap(restarted.panes.controller.allTabIds.last))?.fileBase,
+      restarted.filePanes.tab(try XCTUnwrap(restarted.filePanes.controller.allTabIds.last))?
+        .fileBase,
       "branch-base")
     second.settings.style = "split"
     second.settings.full = false

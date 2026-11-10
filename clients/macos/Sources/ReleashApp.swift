@@ -21,15 +21,15 @@ import SwiftUI
             .disabled(!model.connected || model.selectedWorktree == nil)
         }
         CommandMenu("タブ") {
-          Button("タブを閉じる") { model.panes.closeCurrentTab() }
+          Button("タブを閉じる") { model.focusedPanes.closeCurrentTab() }
             .keyboardShortcut("w").disabled(!model.layoutLoaded)
-          Button("ほかのタブを閉じる") { model.panes.closeOtherTabs() }
+          Button("ほかのタブを閉じる") { model.focusedPanes.closeOtherTabs() }
             .keyboardShortcut("t", modifiers: [.command, .option]).disabled(!model.layoutLoaded)
           Divider()
-          Button("前のタブ") { model.panes.controller.selectPreviousTab() }
+          Button("前のタブ") { model.focusedPanes.controller.selectPreviousTab() }
             .keyboardShortcut(.leftArrow, modifiers: [.command, .option]).disabled(
               !model.layoutLoaded)
-          Button("次のタブ") { model.panes.controller.selectNextTab() }
+          Button("次のタブ") { model.focusedPanes.controller.selectNextTab() }
             .keyboardShortcut(.rightArrow, modifiers: [.command, .option]).disabled(
               !model.layoutLoaded)
         }

@@ -13,6 +13,9 @@ import SwiftProtobuf
   var selectedWorktree: String?
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
+  var filePanes = PaneWorkspace()
+  var filesFocused = false
+  var focusedPanes: PaneWorkspace { filesFocused ? filePanes : panes }
   private enum Failure {
     case operation(String)
     case workspace([String: String])
@@ -440,6 +443,8 @@ import SwiftProtobuf
     stopTerminals()
     resetWorkspaceReadErrors()
     selectedWorktree = path
+    filePanes = PaneWorkspace()
+    filesFocused = false
     layoutLoaded = false
     layout = .empty()
 
@@ -627,8 +632,8 @@ import SwiftProtobuf
 
   func openFile(_ path: String) {
     let base = UserDefaults.standard.string(forKey: "diffBase") ?? "head"
-    panes.openFile(path, base: base)
-    savePaneLayout()
+    filePanes.openFile(path, base: base)
+    filesFocused = true
   }
   func savePaneLayout() {
     do {

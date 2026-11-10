@@ -330,7 +330,51 @@ impl TryFrom<StoredPaneLayout>
     /// 以前の版が保存したファイルタブ（`kind` が `file` のタブ）は、配置に入れずに落とす。
     /// 落としたタブが選択中だったときは、その pane の選択を、落とさなかったタブの中から決める。
     fn try_from(value: StoredPaneLayout) -> Result<Self, Self::Error> {
-        todo!()
+        match value {
+            StoredPaneLayout::Pane {
+                id,
+                tabs,
+                mut active_tab,
+            } => {
+                let removed_active = tabs.iter().any(|tab| {
+                    tab.kind == StoredPaneTabKind::File && active_tab.as_ref() == Some(&tab.id)
+                });
+                let tabs: Vec<_> = tabs
+                    .into_iter()
+                    .filter_map(|tab| {
+                        let kind = match tab.kind {
+                            StoredPaneTabKind::File => return None,
+                            StoredPaneTabKind::Terminal => PaneTabKind::Terminal,
+                            StoredPaneTabKind::Session => PaneTabKind::Session,
+                            StoredPaneTabKind::Command => PaneTabKind::Command,
+                        };
+                        Some(PaneTab {
+                            id: tab.id,
+                            kind,
+                            node_id: tab.node_id,
+                            agent_session_id: tab.agent_session_id,
+                        })
+                    })
+                    .collect();
+                if removed_active {
+                    active_tab = tabs.first().map(|tab| tab.id.clone());
+                }
+                Self::pane(id, tabs, active_tab)
+            }
+            StoredPaneLayout::Split {
+                id,
+                axis,
+                ratio,
+                first,
+                second,
+            } => Self::split(
+                id,
+                axis.into(),
+                ratio,
+                (*first).try_into()?,
+                (*second).try_into()?,
+            ),
+        }
     }
 }
 impl From<PaneTab> for StoredPaneTab {

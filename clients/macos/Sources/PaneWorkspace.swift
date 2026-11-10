@@ -410,10 +410,10 @@ import SwiftUI
 
   func openFile(_ path: String, base: String) {
     guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
-    if let existing = controller.tabs(inPane: pane).first(where: {
-      tabs[$0.id.id.uuidString]?.filePath == path
+    if let existing = controller.allTabIds.first(where: {
+      tabs[$0.id.uuidString]?.filePath == path
     }) {
-      controller.selectTab(existing.id)
+      controller.selectTab(existing)
       return
     }
     guard
@@ -472,11 +472,6 @@ struct WorkspacePaneView: View {
           focused: model.panes.isFocused(tab.id, in: pane),
           tabID: tab.id
         ).id(path + nodeID)
-      } else if let file = model.panes.tab(tab.id), let path = file.filePath,
-        let worktree = model.selectedWorktree
-      {
-        FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree).id(
-          "\(worktree):\(tab.id):\(path)")
       } else {
         Text(tab.title).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -484,6 +479,7 @@ struct WorkspacePaneView: View {
     } emptyPane: { _ in
       Color(nsColor: .textBackgroundColor)
     }
+    .simultaneousGesture(TapGesture().onEnded { model.filesFocused = false })
     .onAppear {
       model.panes.requestClose = { [weak model] tab in await model?.closeTerminal(tab) ?? false }
       model.panes.controller.tabContextMenu = { [weak model] id in

@@ -15,7 +15,7 @@ struct FileTabPane: View {
   @State private var subscription: UUID?
   @State private var threadSubscription: UUID?
   @State var draft = FileThreadDraft()
-  var tab: PaneTab? { model.panes.tab(tabID) }
+  var tab: PaneTab? { model.filePanes.tab(tabID) }
   var base: String { tab?.fileBase ?? "head" }
   var mode: String { tab?.fileMode ?? value?.initialMode ?? "file" }
 
@@ -140,11 +140,16 @@ struct FileTabPane: View {
     }
   }
   func setPresentation(mode: String? = nil, base: String? = nil) {
-    model.panes.setFilePresentation(tabID, mode: mode, base: base)
-    model.savePaneLayout()
+    model.filePanes.setFilePresentation(tabID, mode: mode, base: base)
   }
   func openInEditor() {
-    fatalError("未実装: OpenInEditor に worktree の path と、worktree からの相対 path を渡す")
+    guard let client = model.client else { return }
+    var request = Releash_Client_V1_OpenInEditorRequest()
+    request.worktreePath = worktree
+    request.file = path
+    model.perform {
+      _ = try await client.openInEditor(request: request, headers: model.headers).result.get()
+    }
   }
   func imageURLs(_ image: Releash_Client_V1_ReviewImageDto, initialMode: String) -> [(
     url: String, label: String

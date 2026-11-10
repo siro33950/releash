@@ -83,6 +83,21 @@ impl DirectoryQuery for DirectoryQueryGateway {
         worktree: &str,
         visit: &mut dyn FnMut(WorktreeEntry) -> WalkStep,
     ) -> Result<(), CodeUsecaseError> {
-        todo!()
+        let mut pending = vec![".".to_owned()];
+        while let Some(directory) = pending.pop() {
+            for entry in self.entries(worktree, &directory)? {
+                let child = entry.directory.then(|| entry.path.clone());
+                match visit(entry) {
+                    WalkStep::Stop => return Ok(()),
+                    WalkStep::SkipChildren => {}
+                    WalkStep::Continue => {
+                        if let Some(child) = child {
+                            pending.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

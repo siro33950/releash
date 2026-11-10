@@ -1213,3 +1213,49 @@ fn test_実行概要の部分成功_正常木と失敗idと原因を転送して
         );
     }
 }
+
+#[test]
+fn test_絞込一覧_木を親ごとの順序に写し上限を伝える() {
+    // Given
+    use crate::domain::code::services::directory::GitStatus;
+    use crate::domain::code::value_objects::file_list::{FileNode, FilteredFiles, WorktreeEntry};
+    let leaf = FileNode {
+        entry: WorktreeEntry {
+            path: "src/file".into(),
+            name: "file".into(),
+            directory: false,
+            ignored: true,
+        },
+        status: GitStatus::Modified,
+        children: vec![],
+    };
+    let files = FilteredFiles {
+        roots: vec![FileNode {
+            entry: WorktreeEntry {
+                path: "src".into(),
+                name: "src".into(),
+                directory: true,
+                ignored: false,
+            },
+            status: GitStatus::Modified,
+            children: vec![leaf],
+        }],
+        truncated: true,
+    };
+    // When
+    let value = filtered_files(&files);
+    // Then
+    assert!(value.truncated);
+    assert_eq!(value.directories.len(), 2);
+    assert_eq!(value.directories[0].path, ".");
+    assert_eq!(value.directories[0].entries[0].path, "src");
+    assert_eq!(value.directories[1].path, "src");
+    assert!(value.directories[1].entries[0].ignored);
+    assert_eq!(value.directories[1].entries[0].status, "modified");
+    assert!(filtered_files(&FilteredFiles {
+        roots: vec![],
+        truncated: false
+    })
+    .directories
+    .is_empty());
+}

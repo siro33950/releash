@@ -4,7 +4,7 @@ import XCTest
 
 final class PaneLayoutTests: XCTestCase {
   func testWireRoundTripPreservesKindsOrderSelectionAndNestedSplits() throws {
-    let tabs = PaneTab.Kind.allCases.map { PaneTab(kind: $0) }
+    let tabs = PaneTab.Kind.allCases.filter { $0 != .file }.map { PaneTab(kind: $0) }
     let layout = PaneLayout.split(
       id: "outer", axis: .horizontal, ratio: 0.3,
       first: .pane(id: "first", tabs: tabs, active: tabs[1].id),
@@ -39,5 +39,16 @@ extension PaneLayoutTests {
     ]
     let layout = PaneLayout.pane(id: "pane", tabs: tabs, active: tabs[1].id)
     XCTAssertEqual(try PaneLayout(layout.message), layout)
+  }
+}
+
+extension PaneLayoutTests {
+  func testFileTabsAreExcludedFromServerLayoutAndSelectionMovesToRemainingTab() throws {
+    let file = PaneTab(kind: .file, filePath: "file")
+    let terminal = PaneTab(kind: .terminal)
+    let layout = PaneLayout.pane(id: "pane", tabs: [file, terminal], active: file.id)
+    XCTAssertEqual(
+      try PaneLayout(layout.message),
+      .pane(id: "pane", tabs: [terminal], active: terminal.id))
   }
 }

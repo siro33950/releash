@@ -366,7 +366,7 @@ extension AppModelTests {
     for (path, axis) in [("/repo/a", PaneLayout.Axis.horizontal), ("/repo/b", .vertical)] {
       model.selectWorktree(path)
       try await eventually { model.layoutLoaded }
-      let tabs = PaneTab.Kind.allCases.map { PaneTab(kind: $0) }
+      let tabs = PaneTab.Kind.allCases.filter { $0 != .file }.map { PaneTab(kind: $0) }
       model.editLayout { layout in
         layout = .split(
           id: "split", axis: axis, ratio: 0.5,
@@ -404,7 +404,7 @@ extension AppModelTests {
     model.selectWorktree("/repo/a")
     try await eventually { model.layoutLoaded }
     http.state.withLock { $0.failedMethod = "SaveWorkspaceState" }
-    model.editLayout { $0 = testLayout(.file) }
+    model.editLayout { $0 = testLayout(.session) }
     try await eventually {
       model.pendingSaves["/repo/a"] == nil
         && model.failure?.contains("SaveWorkspaceState failed") == true
@@ -600,7 +600,7 @@ extension AppModelTests {
     let model = AppModel()
     model.selectedWorktree = "/repo"
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
-    state.value.paneLayout = testLayout(.file).message
+    state.value.paneLayout = testLayout(.session).message
     model.receiveWorkspaceState(state, path: "/repo")
     XCTAssertTrue(model.layoutLoaded)
     let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
@@ -630,7 +630,7 @@ extension AppModelTests {
     // Then
     XCTAssertEqual(model.panes.controller.allPaneIds, [first, second])
     // When
-    state.value.paneLayout = testLayout(.file).message
+    state.value.paneLayout = testLayout(.session).message
     model.receiveWorkspaceState(state, path: "/repo")
     state.value.clearPaneLayout()
     model.receiveWorkspaceState(state, path: "/repo")
@@ -643,7 +643,7 @@ extension AppModelTests {
     // Given
     let model = AppModel()
     model.selectedWorktree = "/repo"
-    let saved = testLayout(.file)
+    let saved = testLayout(.session)
     var state = Releash_Client_V1_NullableWorkspaceStateDto()
     state.value.paneLayout = saved.message
     model.receiveWorkspaceState(state, path: "/repo")
@@ -677,7 +677,7 @@ extension AppModelTests {
     http.state.withLock { $0.deferSave = true }
     model.editLayout { $0 = testLayout(.terminal) }
     try await eventually { http.state.withLock { $0.pendingSave != nil } }
-    model.editLayout { $0 = testLayout(.file) }
+    model.editLayout { $0 = testLayout(.session) }
     model.editLayout { $0 = testLayout(.command) }
     let last = model.layout
     XCTAssertEqual(http.requests("SaveWorkspaceState").count, 1)
@@ -714,7 +714,7 @@ extension AppModelTests {
       try Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: $0.message!)
     }
     XCTAssertEqual(saves.count, 3)
-    for (request, kind) in zip(saves, [PaneTab.Kind.terminal, .file, .command]) {
+    for (request, kind) in zip(saves, [PaneTab.Kind.terminal, .session, .command]) {
       guard case .pane(_, let tabs, _) = try PaneLayout(request.state.paneLayout) else {
         return XCTFail("Saved pane missing")
       }
@@ -1118,7 +1118,7 @@ extension AppModelTests {
     let path = "/repo/a"
     model.selectWorktree(path)
     try await eventually { model.layoutLoaded }
-    let last = testLayout(.file)
+    let last = testLayout(.session)
     model.editLayout { $0 = testLayout(.terminal) }
     model.editLayout { $0 = last }
     try await eventually { model.pendingSaves[path] == nil }
@@ -1144,7 +1144,7 @@ extension AppModelTests {
     server.paneLayout = serverLayout.message
     server.etag = "1"
     http.state.withLock { $0.layouts[path] = server }
-    model.editLayout { $0 = testLayout(.file) }
+    model.editLayout { $0 = testLayout(.session) }
     try await eventually { model.pendingSaves[path] == nil && model.layout == serverLayout }
     XCTAssertEqual(http.state.withLock { $0.layouts[path] }, server)
     XCTAssertNil(model.failure)

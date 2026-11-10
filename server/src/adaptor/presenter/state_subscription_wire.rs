@@ -85,8 +85,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 }.into() }).collect(),
                 removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
             }),
-            // 木を、項目が残ったディレクトリごとの並びにして `FilteredFilesSnapshot` に入れる。worktree の直下は path を "." にする。
-            StateValue::FilteredFiles(_files) => todo!(),
+            StateValue::FilteredFiles(files) => wire::state_payload::Value::FilteredFiles(filtered_files(files)),
             StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
                 view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
                 patch: value.patch.clone(),
@@ -290,3 +289,46 @@ pub(crate) fn event(
 #[cfg(test)]
 #[path = "state_subscription_wire_test.rs"]
 pub(crate) mod state_subscription_wire_tests;
+
+fn filtered_files(
+    files: &crate::domain::code::value_objects::file_list::FilteredFiles,
+) -> wire::FilteredFilesSnapshot {
+    use crate::domain::code::value_objects::file_list::FileNode;
+    fn append(path: &str, nodes: &[FileNode], directories: &mut Vec<wire::FilteredDirectory>) {
+        if nodes.is_empty() {
+            return;
+        }
+        directories.push(wire::FilteredDirectory {
+            path: path.into(),
+            entries: nodes
+                .iter()
+                .map(|node| wire::DirectoryEntry {
+                    path: node.entry.path.clone(),
+                    name: node.entry.name.clone(),
+                    directory: node.entry.directory,
+                    ignored: node.entry.ignored,
+                    status: match node.status {
+                        crate::domain::code::services::directory::GitStatus::None => "none",
+                        crate::domain::code::services::directory::GitStatus::New => "new",
+                        crate::domain::code::services::directory::GitStatus::Modified => "modified",
+                        crate::domain::code::services::directory::GitStatus::Renamed => "renamed",
+                        crate::domain::code::services::directory::GitStatus::Deleted => "deleted",
+                        crate::domain::code::services::directory::GitStatus::Conflicted => {
+                            "conflicted"
+                        }
+                    }
+                    .into(),
+                })
+                .collect(),
+        });
+        for node in nodes {
+            append(&node.entry.path, &node.children, directories);
+        }
+    }
+    let mut directories = Vec::new();
+    append(".", &files.roots, &mut directories);
+    wire::FilteredFilesSnapshot {
+        directories,
+        truncated: files.truncated,
+    }
+}

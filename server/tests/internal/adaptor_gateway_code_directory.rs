@@ -72,3 +72,70 @@ fn test_対象検証_親への移動と外向きsymlinkを拒否する() {
         .file_target(root.to_str().unwrap(), "deleted/file")
         .is_ok());
 }
+
+#[test]
+fn test_再帰列挙_除外項目も辿りgitとsymlinkの中へ入らず親から渡す() {
+    // Given
+    use releashd::test_support::integration::code::WalkStep;
+    let (_dir, repo) = create_test_repo();
+    let root = repo.workdir().unwrap();
+    std::fs::create_dir_all(root.join("ignored/nested")).unwrap();
+    std::fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+    std::fs::write(root.join("ignored/nested/file"), "x").unwrap();
+    std::os::unix::fs::symlink(root, root.join("loop")).unwrap();
+    let mut paths = Vec::new();
+    // When
+    DirectoryQueryGateway
+        .walk(root.to_str().unwrap(), &mut |entry| {
+            paths.push((entry.path, entry.ignored));
+            WalkStep::Continue
+        })
+        .unwrap();
+    // Then
+    assert!(!paths
+        .iter()
+        .any(|(path, _)| path == ".git" || path.starts_with(".git/") || path.starts_with("loop/")));
+    let parent = paths
+        .iter()
+        .position(|(path, _)| path == "ignored")
+        .unwrap();
+    let child = paths
+        .iter()
+        .position(|(path, _)| path == "ignored/nested/file")
+        .unwrap();
+    assert!(parent < child);
+    assert!(paths[child].1);
+}
+
+#[test]
+fn test_再帰列挙_枝の省略と終了と読取失敗を返す() {
+    // Given
+    use releashd::test_support::integration::code::WalkStep;
+    let (_dir, repo) = create_test_repo();
+    let root = repo.workdir().unwrap();
+    std::fs::create_dir(root.join("skip")).unwrap();
+    std::fs::write(root.join("skip/file"), "x").unwrap();
+    let mut paths = Vec::new();
+    // When
+    DirectoryQueryGateway
+        .walk(root.to_str().unwrap(), &mut |entry| {
+            paths.push(entry.path);
+            WalkStep::SkipChildren
+        })
+        .unwrap();
+    let mut count = 0;
+    DirectoryQueryGateway
+        .walk(root.to_str().unwrap(), &mut |_| {
+            count += 1;
+            WalkStep::Stop
+        })
+        .unwrap();
+    // Then
+    assert!(!paths.iter().any(|path| path == "skip/file"));
+    assert_eq!(count, 1);
+    assert!(DirectoryQueryGateway
+        .walk(root.join("missing").to_str().unwrap(), &mut |_| {
+            WalkStep::Continue
+        })
+        .is_err());
+}

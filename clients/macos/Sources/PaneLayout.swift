@@ -75,20 +75,26 @@ indirect enum PaneLayout: Equatable {
     case .pane(let id, let tabs, let active):
       var pane = Releash_Client_V1_Pane()
       pane.id = id
-      pane.tabs = tabs.map { tab in
+      pane.tabs = tabs.compactMap { tab in
         var value = Releash_Client_V1_PaneTab()
         value.id = tab.id
         if let nodeID = tab.nodeID { value.nodeID = nodeID }
         if let id = tab.agentSessionID { value.agentSessionID = id }
         switch tab.kind {
         case .terminal: value.kind = .terminal
-        case .file: fatalError("未実装: ファイルタブはサーバの配置に入れない")
+        case .file: return nil
         case .session: value.kind = .session
         case .command: value.kind = .command
         }
         return value
       }
-      if let active { pane.activeTab = active }
+      if let active {
+        if tabs.contains(where: { $0.id == active && $0.kind == .file }) {
+          if let first = pane.tabs.first { pane.activeTab = first.id }
+        } else {
+          pane.activeTab = active
+        }
+      }
       result.pane = pane
     case .split(let id, let axis, let ratio, let first, let second):
       var split = Releash_Client_V1_PaneSplit()
