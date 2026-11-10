@@ -37,8 +37,7 @@ test('test_stable昇格_mainが先でも選択したnightlyのcommitをビルド
       } }, paginate: async () => [] };
       await new AsyncFunction('github', 'context', 'core', 'require', versionStep.with.script)(
         selectedGithub, { repo: {} }, { setOutput: (key, value) => { values[key] = value; } },
-        path => { assert.equal(path, './clients/desktop/package.json'); return { version: '0.4.21' }; });
-      assert.equal(values.version, '0.4.21');
+        path => { assert.equal(path, 'node:fs'); return { readFileSync: () => '[workspace.package]\nversion = "0.4.21"\n' }; });
       assert.equal(values.tag, 'v0.4.21');
     } finally {
       if (releaseSHA === undefined) delete process.env.RELEASE_SHA;

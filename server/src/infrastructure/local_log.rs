@@ -1,10 +1,8 @@
-use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const LOG_DIRECTORY_NAME: &str = "logs";
@@ -13,24 +11,6 @@ pub const LOCK_FILE_NAME: &str = "releash.lock";
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_FILE_COUNT: usize = 5;
 const QUEUE_CAPACITY: usize = 256;
-static DEFERRED_LOGGER: OnceLock<&'static LocalFileLogger> = OnceLock::new();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalLogProcess {
-    Gui,
-    Daemon,
-    Cli,
-}
-
-impl LocalLogProcess {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Gui => "gui",
-            Self::Daemon => "daemon",
-            Self::Cli => "cli",
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum LocalLogInitError {
@@ -55,32 +35,16 @@ impl From<io::Error> for LocalLogInitError {
     }
 }
 
-pub fn init(data_dir: &Path, process: LocalLogProcess) -> Result<(), LocalLogInitError> {
-    init_with_limits(data_dir, process, MAX_FILE_BYTES, MAX_FILE_COUNT)
-}
-
-pub fn init_deferred(process: LocalLogProcess) -> Result<(), LocalLogInitError> {
-    let logger = Box::leak(Box::new(LocalFileLogger::new_deferred(process)?));
-    log::set_logger(logger).map_err(|_| LocalLogInitError::AlreadyInitialized)?;
-    let _ = DEFERRED_LOGGER.set(logger);
-    log::set_max_level(log::LevelFilter::Warn);
-    Ok(())
-}
-
-pub fn activate(data_dir: &Path) -> io::Result<()> {
-    match DEFERRED_LOGGER.get() {
-        Some(logger) => logger.activate(data_dir),
-        None => Ok(()),
-    }
+pub fn init(data_dir: &Path) -> Result<(), LocalLogInitError> {
+    init_with_limits(data_dir, MAX_FILE_BYTES, MAX_FILE_COUNT)
 }
 
 pub fn init_with_limits(
     data_dir: &Path,
-    process: LocalLogProcess,
     max_file_bytes: u64,
     max_file_count: usize,
 ) -> Result<(), LocalLogInitError> {
-    let logger = LocalFileLogger::new(data_dir, process, max_file_bytes, max_file_count)?;
+    let logger = LocalFileLogger::new(data_dir, max_file_bytes, max_file_count)?;
     let logger = Box::leak(Box::new(logger));
     log::set_logger(logger).map_err(|_| LocalLogInitError::AlreadyInitialized)?;
     log::set_max_level(log::LevelFilter::Warn);
@@ -128,7 +92,6 @@ fn timestamp_unix_ms() -> u64 {
 enum WriterCommand {
     Record(PendingLogRecord),
     Flush(SyncSender<()>),
-    Activate(PathBuf, SyncSender<io::Result<()>>),
 }
 
 pub struct LocalFileLogger {
@@ -137,27 +100,6 @@ pub struct LocalFileLogger {
 }
 
 impl LocalFileLogger {
-    // shortcut: 保留中は最大256件をメモリに保持する。終了時にも保留ログが必要なら一時ファイルに保存する。
-    pub fn new_deferred(process: LocalLogProcess) -> Result<Self, io::Error> {
-        Self::spawn(
-            None,
-            process,
-            MAX_FILE_BYTES,
-            MAX_FILE_COUNT,
-            QUEUE_CAPACITY,
-        )
-    }
-
-    pub fn activate(&self, data_dir: &Path) -> io::Result<()> {
-        let (completed, completion) = mpsc::sync_channel(0);
-        self.sender
-            .send(WriterCommand::Activate(data_dir.to_path_buf(), completed))
-            .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))?;
-        completion
-            .recv()
-            .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))?
-    }
-
     #[cfg(feature = "test-support")]
     pub fn test_dropped_records(&self) -> u64 {
         self.dropped_records.load(Ordering::Relaxed)
@@ -165,53 +107,23 @@ impl LocalFileLogger {
 
     pub fn new(
         data_dir: &Path,
-        process: LocalLogProcess,
         max_file_bytes: u64,
         max_file_count: usize,
     ) -> Result<Self, io::Error> {
-        Self::new_with_queue_capacity(
-            data_dir,
-            process,
-            max_file_bytes,
-            max_file_count,
-            QUEUE_CAPACITY,
-        )
+        Self::new_with_queue_capacity(data_dir, max_file_bytes, max_file_count, QUEUE_CAPACITY)
     }
 
     pub fn new_with_queue_capacity(
         data_dir: &Path,
-        process: LocalLogProcess,
-        max_file_bytes: u64,
-        max_file_count: usize,
-        queue_capacity: usize,
-    ) -> Result<Self, io::Error> {
-        Self::spawn(
-            Some(data_dir),
-            process,
-            max_file_bytes,
-            max_file_count,
-            queue_capacity,
-        )
-    }
-
-    fn spawn(
-        data_dir: Option<&Path>,
-        process: LocalLogProcess,
         max_file_bytes: u64,
         max_file_count: usize,
         queue_capacity: usize,
     ) -> Result<Self, io::Error> {
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
-        let deferred = data_dir.is_none();
-        let writer = LocalLogWriter::new(
-            data_dir.unwrap_or(Path::new("")),
-            process,
-            max_file_bytes,
-            max_file_count,
-        );
+        let writer = LocalLogWriter::new(data_dir, max_file_bytes, max_file_count);
         std::thread::Builder::new()
             .name("releash-local-log-writer".to_string())
-            .spawn(move || writer.run(receiver, deferred))?;
+            .spawn(move || writer.run(receiver))?;
         Ok(Self {
             sender,
             dropped_records: AtomicU64::new(0),
@@ -227,9 +139,7 @@ impl LocalFileLogger {
                 self.add_dropped(record.dropped_records_before.saturating_add(1));
             }
             Err(TrySendError::Full(WriterCommand::Flush(_)))
-            | Err(TrySendError::Disconnected(WriterCommand::Flush(_)))
-            | Err(TrySendError::Full(WriterCommand::Activate(..)))
-            | Err(TrySendError::Disconnected(WriterCommand::Activate(..))) => unreachable!(),
+            | Err(TrySendError::Disconnected(WriterCommand::Flush(_))) => unreachable!(),
         }
     }
 
@@ -289,61 +199,25 @@ impl log::Log for LocalFileLogger {
 pub struct LocalLogWriter {
     directory: PathBuf,
     directory_initialized: bool,
-    process: LocalLogProcess,
     max_file_bytes: u64,
     max_file_count: usize,
 }
 
 impl LocalLogWriter {
-    pub fn new(
-        data_dir: &Path,
-        process: LocalLogProcess,
-        max_file_bytes: u64,
-        max_file_count: usize,
-    ) -> Self {
+    pub fn new(data_dir: &Path, max_file_bytes: u64, max_file_count: usize) -> Self {
         Self {
             directory: data_dir.join(LOG_DIRECTORY_NAME),
             directory_initialized: false,
-            process,
             max_file_bytes,
             max_file_count: max_file_count.max(1),
         }
     }
 
-    fn run(mut self, receiver: Receiver<WriterCommand>, mut deferred: bool) {
-        let retain_on_failure = deferred;
-        let mut pending = VecDeque::<PendingLogRecord>::new();
+    fn run(mut self, receiver: Receiver<WriterCommand>) {
         while let Ok(command) = receiver.recv() {
             match command {
-                WriterCommand::Record(mut record) => {
-                    if !deferred {
-                        if self.append(&record).is_ok() || !retain_on_failure {
-                            continue;
-                        }
-                        deferred = true;
-                    }
-                    if pending.len() == QUEUE_CAPACITY {
-                        let dropped = pending.pop_front().unwrap();
-                        let next = pending.front_mut().unwrap_or(&mut record);
-                        next.dropped_records_before = next
-                            .dropped_records_before
-                            .saturating_add(dropped.dropped_records_before.saturating_add(1));
-                    }
-                    pending.push_back(record);
-                }
-                WriterCommand::Activate(data_dir, completed) => {
-                    self.directory = data_dir.join(LOG_DIRECTORY_NAME);
-                    self.directory_initialized = false;
-                    let result = (|| {
-                        self.append_bytes(&[])?;
-                        while let Some(record) = pending.front() {
-                            self.append(record)?;
-                            pending.pop_front();
-                        }
-                        Ok(())
-                    })();
-                    deferred = result.is_err();
-                    let _ = completed.send(result);
+                WriterCommand::Record(record) => {
+                    let _ = self.append(&record);
                 }
                 WriterCommand::Flush(completed) => {
                     let _ = completed.send(());
@@ -391,7 +265,7 @@ impl LocalLogWriter {
             "level": record.level.as_str(),
             "target": record.target,
             "message": record.message,
-            "process": self.process.as_str(),
+            "process": "daemon",
         });
         if record.dropped_records_before > 0 {
             serialized["dropped_records_before"] =

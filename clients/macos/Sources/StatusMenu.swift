@@ -14,8 +14,8 @@ import SwiftUI
     self.showWindow = showWindow
     item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     super.init()
-    let image = NSImage(
-      systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Releash")
+    let image = NSImage(named: "StatusBarIcon")
+    image?.size = NSSize(width: 18, height: 18)
     image?.isTemplate = true
     item.button?.image = image
     item.button?.setAccessibilityLabel("Releash")

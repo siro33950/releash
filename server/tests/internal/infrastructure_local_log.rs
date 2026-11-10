@@ -15,7 +15,6 @@ use opentelemetry_sdk::logs::SdkLoggerProvider;
 
 use releashd::test_support::integration::platform::init_with_limits;
 use releashd::test_support::integration::platform::LocalFileLogger;
-use releashd::test_support::integration::platform::LocalLogProcess;
 use releashd::test_support::integration::platform::LocalLogWriter;
 use releashd::test_support::integration::platform::ACTIVE_FILE_NAME;
 use releashd::test_support::integration::platform::LOCK_FILE_NAME;
@@ -28,96 +27,6 @@ const CONFIGURATION_CHILD_TEST_NAME: &str =
 const CONFIGURATION_CHILD_SUCCESS_MARKER: &str = "releash-local-log-configuration-test-passed";
 const TEST_MAX_FILE_BYTES: u64 = 256;
 
-#[test]
-fn test_起動前ログ_保存先を変更せず保留し接続後に一度だけ書き出す() {
-    // Given
-    let root = tempfile::tempdir().unwrap();
-    let current = root.path().join("current");
-    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
-    // When
-    log::Log::log(
-        &logger,
-        &log::Record::builder()
-            .level(log::Level::Error)
-            .args(format_args!("startup failed"))
-            .build(),
-    );
-    log::Log::flush(&logger);
-    // Then
-    assert!(!current.exists());
-    fs::create_dir_all(current.join(LOG_DIRECTORY_NAME)).unwrap();
-    fs::write(
-        current.join(LOG_DIRECTORY_NAME).join(ACTIVE_FILE_NAME),
-        b"{\"message\":\"migrated log\"}\n",
-    )
-    .unwrap();
-    logger.activate(&current).unwrap();
-    logger.activate(&current).unwrap();
-    log::Log::log(
-        &logger,
-        &log::Record::builder()
-            .level(log::Level::Warn)
-            .args(format_args!("connected"))
-            .build(),
-    );
-    log::Log::flush(&logger);
-    let records = records(&current);
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[0]["message"], "migrated log");
-    assert_eq!(records[1]["message"], "startup failed");
-    assert_eq!(records[1]["process"], "gui");
-    assert_eq!(records[2]["message"], "connected");
-}
-
-#[test]
-fn test_起動前ログ_書き出し失敗後も保留したログを再試行できる() {
-    // Given
-    let root = tempfile::tempdir().unwrap();
-    let current = root.path().join("current");
-    fs::write(&current, b"blocked").unwrap();
-    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
-    log::Log::log(
-        &logger,
-        &log::Record::builder()
-            .level(log::Level::Error)
-            .args(format_args!("retained"))
-            .build(),
-    );
-    // When
-    assert!(logger.activate(&current).is_err());
-    fs::remove_file(&current).unwrap();
-    logger.activate(&current).unwrap();
-    // Then
-    let records = records(&current);
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["message"], "retained");
-}
-
-#[test]
-fn test_起動前ログ_保留上限を超えると古いログを除き欠落数を残す() {
-    // Given
-    let root = tempfile::tempdir().unwrap();
-    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
-    // When
-    for index in 0..300 {
-        log::Log::log(
-            &logger,
-            &log::Record::builder()
-                .level(log::Level::Warn)
-                .args(format_args!("failure {index}"))
-                .build(),
-        );
-        log::Log::flush(&logger);
-    }
-    logger.activate(root.path()).unwrap();
-    // Then
-    let records = records(root.path());
-    assert_eq!(records.len(), 256);
-    assert_eq!(records[0]["message"], "failure 44");
-    assert_eq!(records[0]["dropped_records_before"], 44);
-    assert_eq!(records[255]["message"], "failure 299");
-}
-
 fn serialized_record_with_size(size: usize) -> Vec<u8> {
     let serialize = |message: &str| {
         let mut record = serde_json::to_vec(&serde_json::json!({
@@ -125,7 +34,7 @@ fn serialized_record_with_size(size: usize) -> Vec<u8> {
             "level": "WARN",
             "target": "local_log_test",
             "message": message,
-            "process": "gui",
+            "process": "daemon",
         }))
         .unwrap();
         record.push(b'\n');
@@ -178,27 +87,15 @@ fn records(data_dir: &Path) -> Vec<serde_json::Value> {
 
 fn writer(data_dir: &Path) -> LocalLogWriter {
     fs::create_dir_all(data_dir.join(LOG_DIRECTORY_NAME)).unwrap();
-    LocalLogWriter::new(
-        data_dir,
-        LocalLogProcess::Gui,
-        TEST_MAX_FILE_BYTES,
-        MAX_FILE_COUNT,
-    )
+    LocalLogWriter::new(data_dir, TEST_MAX_FILE_BYTES, MAX_FILE_COUNT)
 }
 
-fn child_writer(
-    data_dir: &Path,
-    process: LocalLogProcess,
-    writer: &str,
-    count: usize,
-    max_file_bytes: u64,
-) -> Child {
+fn child_writer(data_dir: &Path, writer: &str, count: usize, max_file_bytes: u64) -> Child {
     Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg(CHILD_TEST_NAME)
         .arg("--ignored")
         .env("RELEASH_LOCAL_LOG_TEST_DIR", data_dir)
-        .env("RELEASH_LOCAL_LOG_TEST_PROCESS", process.as_str())
         .env("RELEASH_LOCAL_LOG_TEST_WRITER", writer)
         .env("RELEASH_LOCAL_LOG_TEST_COUNT", count.to_string())
         .env(
@@ -222,14 +119,6 @@ pub fn test_local_log_child_writer() {
     let Some(data_dir) = std::env::var_os("RELEASH_LOCAL_LOG_TEST_DIR") else {
         return;
     };
-    let process = match std::env::var("RELEASH_LOCAL_LOG_TEST_PROCESS")
-        .unwrap()
-        .as_str()
-    {
-        "gui" => LocalLogProcess::Gui,
-        "cli" => LocalLogProcess::Cli,
-        value => panic!("unexpected process kind: {value}"),
-    };
     let writer = std::env::var("RELEASH_LOCAL_LOG_TEST_WRITER").unwrap();
     let count = std::env::var("RELEASH_LOCAL_LOG_TEST_COUNT")
         .unwrap()
@@ -239,13 +128,7 @@ pub fn test_local_log_child_writer() {
         .unwrap()
         .parse::<u64>()
         .unwrap();
-    init_with_limits(
-        Path::new(&data_dir),
-        process,
-        max_file_bytes,
-        MAX_FILE_COUNT,
-    )
-    .unwrap();
+    init_with_limits(Path::new(&data_dir), max_file_bytes, MAX_FILE_COUNT).unwrap();
 
     log::info!(target: "local_log_test", "writer={writer} info must not be written");
     for index in 0..count {
@@ -273,13 +156,7 @@ pub fn test_local_log_file_only構成_child() {
         true,
         true,
     );
-    init_with_limits(
-        Path::new(&data_dir),
-        LocalLogProcess::Gui,
-        1_024 * 1_024,
-        MAX_FILE_COUNT,
-    )
-    .unwrap();
+    init_with_limits(Path::new(&data_dir), 1_024 * 1_024, MAX_FILE_COUNT).unwrap();
 
     log::warn!(target: "local_log_configuration_test", "local-file-only-marker");
     releashd::test_support::integration::telemetry::report_error(
@@ -350,13 +227,8 @@ pub fn test_local_log_初期化とflushだけではdata_dirを作らない() {
     let missing_data_dir = directory.path().join("missing");
 
     // When
-    let logger = LocalFileLogger::new(
-        &missing_data_dir,
-        LocalLogProcess::Cli,
-        TEST_MAX_FILE_BYTES,
-        MAX_FILE_COUNT,
-    )
-    .unwrap();
+    let logger =
+        LocalFileLogger::new(&missing_data_dir, TEST_MAX_FILE_BYTES, MAX_FILE_COUNT).unwrap();
     log::Log::flush(&logger);
 
     // Then
@@ -380,7 +252,6 @@ pub fn test_local_log_process間lock保持中もlog呼び出しをブロック�
     let logger = Arc::new(
         LocalFileLogger::new_with_queue_capacity(
             directory.path(),
-            LocalLogProcess::Gui,
             1_024 * 1_024,
             MAX_FILE_COUNT,
             1,
@@ -425,27 +296,15 @@ pub fn test_local_log_process間lock保持中もlog呼び出しをブロック�
 }
 
 #[test]
-pub fn test_local_log_guiとcliのwarningとerrorをprocess終了後も共通fileから参照できる() {
+pub fn test_local_log_複数processのwarningとerrorをprocess終了後も共通fileから参照できる() {
     // Given
     let directory = tempfile::tempdir().unwrap();
 
     // When
-    let mut gui = child_writer(
-        directory.path(),
-        LocalLogProcess::Gui,
-        "gui",
-        1,
-        1_024 * 1_024,
-    );
-    assert!(gui.wait().unwrap().success());
-    let mut cli = child_writer(
-        directory.path(),
-        LocalLogProcess::Cli,
-        "cli",
-        1,
-        1_024 * 1_024,
-    );
-    assert!(cli.wait().unwrap().success());
+    for name in ["first", "second"] {
+        let mut child = child_writer(directory.path(), name, 1, 1_024 * 1_024);
+        assert!(child.wait().unwrap().success());
+    }
 
     // Then
     let records = records(directory.path());
@@ -455,10 +314,14 @@ pub fn test_local_log_guiとcliのwarningとerrorをprocess終了後も共通fil
         assert!(matches!(record["level"].as_str(), Some("WARN" | "ERROR")));
         assert_eq!(record["target"], "local_log_test");
         assert!(record["message"].as_str().unwrap().contains("writer="));
-        assert!(matches!(record["process"].as_str(), Some("gui" | "cli")));
+        assert_eq!(record["process"], "daemon");
     }
-    assert!(records.iter().any(|record| record["process"] == "gui"));
-    assert!(records.iter().any(|record| record["process"] == "cli"));
+    for name in ["first", "second"] {
+        let writer = format!("writer={name}");
+        assert!(records
+            .iter()
+            .any(|record| record["message"].as_str().unwrap().contains(&writer)));
+    }
     assert!(!records.iter().any(|record| record["message"]
         .as_str()
         .unwrap()
@@ -466,14 +329,12 @@ pub fn test_local_log_guiとcliのwarningとerrorをprocess終了後も共通fil
 }
 
 #[test]
-pub fn test_local_log_guiと複数cliの同時rotationでrecordを混線させず最大5fileを保持する() {
+pub fn test_local_log_複数processの同時rotationでrecordを混線させず最大5fileを保持する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
-    let mut children = vec![
-        child_writer(directory.path(), LocalLogProcess::Gui, "gui", 80, 512),
-        child_writer(directory.path(), LocalLogProcess::Cli, "cli-1", 80, 512),
-        child_writer(directory.path(), LocalLogProcess::Cli, "cli-2", 80, 512),
-    ];
+    let mut children: Vec<_> = ["first", "second", "third"]
+        .map(|name| child_writer(directory.path(), name, 80, 512))
+        .into();
 
     // When
     for child in &mut children {
@@ -488,7 +349,7 @@ pub fn test_local_log_guiと複数cliの同時rotationでrecordを混線させ�
         let message = record["message"].as_str().unwrap();
         assert!(message.starts_with("writer="));
         assert!(message.contains(" index=") || message.ends_with(" terminal error"));
-        assert!(matches!(record["process"].as_str(), Some("gui" | "cli")));
+        assert_eq!(record["process"], "daemon");
     }
 }
 
@@ -571,87 +432,4 @@ pub fn test_local_log_既存record後の上限超過recordも分割せず世代�
         128 + record_size as u64
     );
     assert_eq!(records(directory.path()).len(), 2);
-}
-
-#[test]
-fn test_移行中ログ_旧保存先への追記失敗を保留して新保存先へ再送する() {
-    // Given
-    let root = tempfile::tempdir().unwrap();
-    let legacy = root.path().join("old");
-    let current = root.path().join("new");
-    let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
-    logger.activate(&legacy).unwrap();
-    log::Log::log(
-        &logger,
-        &log::Record::builder()
-            .level(log::Level::Warn)
-            .args(format_args!("before"))
-            .build(),
-    );
-    log::Log::flush(&logger);
-    fs::create_dir_all(&current).unwrap();
-    fs::rename(
-        legacy.join(LOG_DIRECTORY_NAME),
-        current.join(LOG_DIRECTORY_NAME),
-    )
-    .unwrap();
-    // When
-    for message in ["during", "subscription failed"] {
-        log::Log::log(
-            &logger,
-            &log::Record::builder()
-                .level(log::Level::Warn)
-                .args(format_args!("{message}"))
-                .build(),
-        );
-    }
-    log::Log::flush(&logger);
-    assert!(!legacy.join(LOG_DIRECTORY_NAME).exists());
-    logger.activate(&current).unwrap();
-    logger.activate(&current).unwrap();
-    // Then
-    let saved = records(&current);
-    assert_eq!(
-        saved
-            .iter()
-            .map(|record| record["message"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["before", "during", "subscription failed"]
-    );
-}
-
-#[test]
-fn test_空の保留ログ_保存先確認に失敗したら後続ログを保留する() {
-    for component in ["", LOCK_FILE_NAME, ACTIVE_FILE_NAME] {
-        // Given
-        let root = tempfile::tempdir().unwrap();
-        let logs = root.path().join(LOG_DIRECTORY_NAME);
-        let blocked = logs.join(component);
-        if component.is_empty() {
-            fs::write(&logs, b"blocked").unwrap();
-        } else {
-            fs::create_dir_all(&blocked).unwrap();
-        }
-        let logger = LocalFileLogger::new_deferred(LocalLogProcess::Gui).unwrap();
-        // When
-        assert!(logger.activate(root.path()).is_err());
-        log::Log::log(
-            &logger,
-            &log::Record::builder()
-                .level(log::Level::Warn)
-                .args(format_args!("retained"))
-                .build(),
-        );
-        log::Log::flush(&logger);
-        if component.is_empty() {
-            fs::remove_file(&logs).unwrap();
-        } else {
-            fs::remove_dir(&blocked).unwrap();
-        }
-        logger.activate(root.path()).unwrap();
-        // Then
-        let saved = records(root.path());
-        assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0]["message"], "retained");
-    }
 }

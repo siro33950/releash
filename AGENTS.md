@@ -38,9 +38,9 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ### サーバがロジックを所有する
 
 - **全てのアプリケーションロジックはサーバ（daemon）に置く。** 例外は、アプリ自身の更新設定（自動更新、nightly の受け入れ）だけである。この設定はクライアントが所有し、サーバに置かない。
-- client は、画面（frontend）と Tauri のシェルである。Tauri のシェルは Rust で書かれていても client であり、ロジックを置かない。
+- client は Swift.app（`clients/macos/`）と CLI（`clients/cli/`）である。
 - client に許すのは、表示とレイアウト制御、ユーザー入力の受付とフォーム状態管理、サーバの呼び出しと購読（接続、受け取り、つなぎ直し）、受け取ったデータの表示用フォーマット（日付表示形式の変換等）だけ。
-- サーバとの通信（呼び出し、購読、受け取り、つなぎ直し）は画面側の React（`clients/desktop/src/lib/client.ts`）が直接行う。Tauri のシェルは通信を中継しない。Tauri のシェルが持つのは、ウィンドウ、daemon の起動と監視、更新、接続先の受け渡しなど desktop 固有の操作だけ。
+- サーバとの通信（呼び出し、購読、受け取り、つなぎ直し）は Swift.app が Connect で直接行う。サーバの発見、互換判定、起動は同梱した CLI を呼んで行う。
 - サーバに置くのは、ビジネスロジック全般、データ変換・加工・計算、バリデーション、外部リソースアクセス（ファイル、Git、ネットワーク等）。
 - 新しい振る舞いはサーバの usecase / query service の背後に実装し、client からは proto で定義した呼び出しと購読で使う。
 - workflow、session、artifact、terminal、review、persistence のロジックを client に追加しない。
@@ -49,33 +49,33 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 ### 通信の原則
 
 - サーバは状態を配信し、client は購読する。client からサーバへの単発の呼び出しは、状態を変える操作と、client の入力に対する計算だけ。
-- client とサーバの間の期限・再試行の値は proto の service option に置き、両側がそこから読む。同じやり取りの両側が同じ期限で動くためである。シェルの中だけの待ちなど、片側だけの待ちは対象外。
+- client とサーバの間の期限・再試行の値は proto の service option に置き、両側がそこから読む。同じやり取りの両側が同じ期限で動くためである。client の中だけの待ちなど、片側だけの待ちは対象外。
 
 ### 状態の所有者を明確にする
 
 - workflow runtime、workflow artifact、agent session state、review comment、terminal state、persistence の所有者を明確にする。
 - full-retention 設計を避ける。summary、page、id-based operation、delta で足りる場合に、session body、artifact、stream、workflow state 全体を clone / store / recompute / resend しない。
-- read model は、Tauri、Connect の ClientService、将来の daemon / native client が同じ backend-owned state を読める形にする。
-- frontend state は UI に必要な状態の mirror に留め、domain behavior の source of truth にしない。
+- read model は、Connect の ClientService と将来の client が同じ backend-owned state を読める形にする。
+- client の state は UI に必要な状態の mirror に留め、domain behavior の source of truth にしない。
 
 ## 技術スタック
 
-- **フロントエンド**: React 19 + TypeScript + TailwindCSS 4 + shadcn/ui (Radix)。差分表示は Shiki（Web Worker）、terminal は xterm.js + WebGL
-- **バックエンド**: Rust + tokio。Tauri 2 は `releash-desktop` のシェルだけで使う
+- **クライアント**: SwiftUI（macOS 15 以上）+ Connect Swift。terminal は SwiftTerm、ファイルと差分の表示は WKWebView 上の `@pierre/diffs`
+- **バックエンド**: Rust + tokio
 - **永続化**: SQLite（rusqlite bundled）
 - **workflow 定義の評価**: mlua (Lua 5.4)
 - **観測**: OpenTelemetry (OTLP)
-- **ビルド**: Vite + Biome
+- **ビルド**: Cargo + Xcode（XcodeGen）+ Nx
 
 ## 構成で押さえる点
 
-リポジトリ直下は package を持たない Cargo workspace である。member はサーバ `server/`、CLI `clients/cli/`、desktop `clients/desktop/`。Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。desktop の Rust は `clients/desktop/src-native/`、画面は `clients/desktop/src/` に置く。シェルがサーバを使う公開入口は `desktop_api`、テスト用区画は `test-support` feature でのみ有効になる。
+リポジトリ直下は package を持たない Cargo workspace である。member はサーバ `server/` と CLI `clients/cli/`。Cargo.lock と target を共有し、版は `[workspace.package]` から継承する。Swift.app は `clients/macos/` に置く。サーバのテスト用区画は `test-support` feature でのみ有効になる。
 
 ディレクトリの内訳はコードを見る。コードからは読み取りにくい点だけ挙げる。
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
-- **実行ファイルは3つある**。`releash-desktop` は desktop シェル、`releashd` は daemon と内部 background worker、`releash`（`clients/cli/`）は独立 CLI。CLI は backend に依存しない。サーバと CLI は `proto/` からそれぞれ型・descriptor・Connect 定義を生成する。発見と同一性確認、protocol 互換性、サーバの起動・停止は CLI の lib が提供し、desktop はこの lib に依存する。
-- **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。Tauri コマンドは desktop 固有の操作だけを扱う。
+- **Rust の実行ファイルは2つある**。`releashd` は daemon と内部 background worker、`releash`（`clients/cli/`）は独立 CLI。CLI は backend に依存しない。サーバと CLI は `proto/` からそれぞれ型・descriptor・Connect 定義を生成する。発見と同一性確認、protocol 互換性、サーバの起動・停止は CLI が提供し、Swift.app は同梱した CLI を呼ぶ。
+- **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。
 - **daemon は 127.0.0.1 のみに bind する**。`client-api.json` に port と client token を書き出す。CLI と画面はこのファイルだけを読む。
 
 - **永続化は event store**。`domain/local_event/` と `adaptor/gateway/local_event_store/`。事実を追記し、読み側で projection を導出する。full-recompute 経路を増やさない。
@@ -98,8 +98,6 @@ Rust は `rust-toolchain.toml`、Xcode は `clients/macos/.xcode-version`、Xcod
 mise trust
 mise install
 rustup toolchain install
-mise exec -- pnpm --dir clients/desktop install --frozen-lockfile
-mise exec -- pnpm --dir clients/desktop exec playwright install chromium
 ```
 
 以下のコマンドはリポジトリ直下で実行する。
@@ -115,7 +113,7 @@ Nx Cloud は使わない。
 ```
 
 PR と main push の CI は `nx show projects --affected` で変更の影響を受けるプロジェクトを判定し、検証の種類ごとに別の job から Nx を呼ぶ。
-必須チェックは `frontend-required`、`server-required`、`shell-required`、`cli-required`、`quality-required`、`macos-required` を指定する。
+必須チェックは `server-required`、`cli-required`、`quality-required`、`macos-required` を指定する。
 各集約 job は `plan` とそのグループの全チェックの成功を要求し、失敗・キャンセル・job のスキップを通さない。
 変更対象外の検証も同じチェック名を作り、実行ステップを省略する。変更判定の失敗は各集約 job で止める。
 macos は macOS runner、それ以外は Linux runner で実行する。
@@ -123,13 +121,11 @@ macos は macOS runner、それ以外は Linux runner で実行する。
 | プロジェクト | target |
 |---|---|
 | server、cli | `lint`、`test`、`build` |
-| desktop | `lint`、`test`、`build`、`e2e`、`dev`、`tauri` |
 | macos | `lint`、`generate`、`helpers`、`build`、`test`、`test-unit`、`test-integration`、`e2e`、`dev` |
 | workspace | `lint`、`test`、`coverage` |
 
 `test` は各テスト target を集約する。
-server と cli の `test` は `test-unit`（単体・doc）と `test-integration`、desktop の `test` は `rust-test-unit`、`rust-test-integration`、`frontend-test-unit`、`frontend-test-integration` を集約する。
-desktop の `lint` は `rust-lint` と `frontend-lint` を集約する。
+server と cli の `test` は `test-unit`（単体・doc）と `test-integration` を集約する。
 バイナリの build 依存は Rust の統合テストにだけ置く。
 macOS の CI は `lint`、`test-unit`、`test-integration` を別々の job で実行する。
 `macos:test` は単体と統合を集約する。各テストは必要なアプリをビルドするため、CI で `macos:build` を重ねて実行しない。
@@ -152,14 +148,13 @@ Nightly は macOS の回帰の E2E を全件実行する。失敗したテスト
 画面の機能を足す・変える PR で、手元の回帰 E2E の全件実行は必須としない。変更した機能の確認と証跡の記録は引き続き行う。
 
 `macos:helpers` は対象 CPU 向けのバイナリを直接作り、通常の server・cli build は先行させない。
-Cargo、pnpm、SwiftPM、Nx の導入先 `.nx/installation`、macOS の Debug 用 helper binary（server・cli・proto・workflows の hash が鍵）のキャッシュは GitHub Actions で再利用する。Nx のタスクキャッシュは runner 間で共有しない。
+Cargo、SwiftPM、Nx の導入先 `.nx/installation`、macOS の Debug 用 helper binary（server・cli・proto・workflows の hash が鍵）のキャッシュは GitHub Actions で再利用する。Nx のタスクキャッシュは runner 間で共有しない。
 `workspace:lint` は buf、テスト配置、ast-grep、Qlty、cargo-deny を検査する。
 意図した proto の非互換には PR の `buf skip breaking` ラベルを使い、ラベルを付けた後に次の commit を push するか、PR を閉じて開き直す。
 
 開発用アプリは次の入口から起動する。
 
 ```bash
-./nx run desktop:dev
 ./nx run macos:dev
 ```
 
@@ -175,43 +170,26 @@ Release 用の helper とアプリは `./nx run macos:build -c release` でビ�
 初回は `rustup target add aarch64-apple-darwin x86_64-apple-darwin` が必要になる。
 helper は configuration ごとの `.build/Helpers/` に出力し、Xcode が Copy Files で組み込んで署名する。
 
-振る舞いテストとカバレッジは nightly で実行する。
+カバレッジは nightly で実行する。
 Rust coverage に必要な component を導入してから呼ぶ。
 
 ```bash
 rustup component add llvm-tools-preview
-./nx run-many -t e2e coverage --exclude=macos --parallel=1
+./nx run workspace:coverage
 ```
 
-`workspace:coverage` は vitest と cargo-llvm-cov のカバレッジを生成する。
+`workspace:coverage` は cargo-llvm-cov のカバレッジを生成する。
 子プロセス強制終了時の profile 保持と負荷干渉を避ける設定は、この target 内だけに適用する。
 
-版上げは `./nx release version patch`（`minor`、`major` も可）を使う。
-Nx は desktop の `package.json` を更新し、bump workflow が `tauri.conf.json`、Swift 版の `MARKETING_VERSION`、Cargo workspace の版を同期する。
-`@monodon/rust` の version actions は `version.workspace = true` に対応していないため、Rust の版同期は workflow に残す。
-タグとリリースノートは `nx release changelog`、draft Release の作成と成果物が揃った後の公開は GitHub API で行う。
-
-サーバの Tauri 依存は、プロジェクトルートで `cargo tree -p releashd -i tauri -e normal,dev,build --target all --all-features` を実行して確認する。依存がないときの確認済みの結果は終了コード `101`、出力は ``error: package ID specification `tauri` did not match any packages``（続いて ``help: a package with a similar name exists: `ntapi` ``）。この終了コードは依存が見つからないことを示す。
+版の正は `Cargo.toml` の `[workspace.package].version` である。
+版上げは `node .github/scripts/bump-version.cjs patch`（`minor`、`major`、`X.Y.Z` も可）を使い、`Cargo.lock` と Swift 版の `MARKETING_VERSION` を同期する。
+タグは git で作り、draft Release の作成、リリースノートの生成、成果物が揃った後の公開は GitHub API で行う。
 
 ## テスト方針
 
 Rust テストの配置、命名、レイヤー別の必須／柔軟、モック方針は `docs/architecture/TEST.md` を正とする。
 
-フロントエンド:
-
-- テストは対象ファイルの隣に `*.test.tsx` / `*.test.ts` として置く。
-- `@tauri-apps/api` の `core` / `event`、xterm、`plugin-dialog` / `plugin-updater` / `plugin-process` は `clients/desktop/src/test/setup.ts` で mock 済み。個別ファイルで重ねて mock しない。
-- `react-resizable-panels` は jsdom で動作しないため、使うテストごとに `vi.mock` する。
-- 外部プロセスはテストで実行しない。
-- utility は入出力と edge case、hook は状態遷移と副作用、component は user interaction と conditional rendering をテストする。
-
 ## コーディング規約
-
-### フロントエンド
-
-- インデントは tab。import 整理を含め Biome に従う。Biome の対象は `clients/desktop/src/**`、`*.json`、`clients/desktop/vite.config.ts`（`tests/` は対象外）。
-- UI component は shadcn/ui と Radix UI をベースにする。styling は TailwindCSS。
-- React component は interface-oriented に保つ。domain decision を hook、reducer、view helper に埋め込まない。
 
 ### Rust
 
@@ -240,8 +218,6 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 ## セキュリティ
 
 - 依存の advisory とライセンスは `cargo deny`（`deny.toml` の allow list）で検査する。新しいライセンスの依存を足すときは allow list への追記が要る。
-- CodeQL が javascript-typescript を PR と週次で解析する。
-- Tauri capability は `clients/desktop/capabilities/`。`startup-pre-admission` は permissions を空にし、main window は Rust の startup authority が Ready に達した後にだけ作る。permission を追加するときは対象 window を確認する。
 - hook の token はファイルに書かず、provider の agent を起動する env だけで渡す。terminal 用は別 token を使う。
 - Lua の評価環境は外部 I/O を持たず、メモリ量と命令数に上限がある。この上限を緩めない。
 - command テンプレートの `{{ }}` は shell quoting を行わない。信頼できない値を shell syntax へ直接連結しない。
@@ -250,7 +226,6 @@ Rust テストの配置、命名、レイヤー別の必須／柔軟、モック
 
 - `git2` の `UnbornBranch`: `repo.head()` が `ErrorCode::UnbornBranch` を返す場合の分岐が要る。
 - `git apply --cached`: パッチのベースはステージング状態にする。HEAD ベースだとコンテキストが一致しない。
-- worktree をリポジトリルート内に作らない。Biome が nested config で失敗する。
 
 ## レビュー観点
 
@@ -261,6 +236,6 @@ Releash を変更するときは、次を確認する。
 - 変更した state の source of truth は明確か。
 - ドメインの規則（判断・計算・分類・検証・遷移）を domain が所有しているか。状態を持つ概念は集約が、持たない概念は値オブジェクトとドメインサービスが表現しているか。同じ概念が二つの場所で表現されていないか。domain の型と規則は実行経路にあるか。
 - full-retention / full-recompute 経路を増やしていないか。
-- 同じ backend-owned state を Tauri、Connect の ClientService、将来の client surface で再利用できるか。
+- 同じ backend-owned state を Connect の ClientService と将来の client surface で再利用できるか。
 - artifact が workflow の判断材料として扱われているか。
 - `docs/glossary/DOMAIN.md` の使用禁止語を持ち込んでいないか。

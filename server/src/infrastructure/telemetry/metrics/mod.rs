@@ -18,7 +18,6 @@ use resource::ProcessResourceObserver;
 
 pub(crate) use attributes::HotPathMetric as HotPath;
 
-pub use attributes::StartupMetric as Startup;
 pub(crate) use attributes::TerminalLaunchMetric as TerminalLaunch;
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -268,12 +267,6 @@ pub(crate) fn install_metrics() {
 
 fn startup_elapsed() -> Option<Duration> {
     load_startup_elapsed()
-}
-
-pub fn record_startup_from_origin(metric: StartupMetric) {
-    if let Some(elapsed) = startup_elapsed() {
-        record_startup(metric, elapsed);
-    }
 }
 
 pub fn record_first_repo_snapshot_ready() {

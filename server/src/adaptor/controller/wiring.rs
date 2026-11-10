@@ -2,7 +2,7 @@
 //!
 //! gateway 実装を repository / usecase へ合成する組み立ては controller の責務であり、
 //! gateway 層や各エントリポイントへ漏らさない（依存方向の遵守）。AppState を持つ
-//! Tauri コマンドだけでなく、MCP・watcher・workflow など非 AppState
+//! ClientService の入口だけでなく、MCP・watcher・workflow など非 AppState
 //! エントリも、ここで構築した usecase を各 State へ注入する形で受け取る。
 //!
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
@@ -83,7 +83,7 @@ pub fn build_repository_usecase() -> GitUsecase {
 }
 
 /// worktree 削除時に紐づく terminal surface を停止できる repository usecase を構築する
-/// （Tauri アプリ本体の composition 用）。
+/// （daemon の composition 用）。
 pub(crate) fn build_repository_usecase_with_worktree_terminals(
     worktree_terminals: Arc<dyn WorktreeTerminalGateway>,
     repository_config: Arc<dyn RepositoryConfigRepository>,

@@ -1,11 +1,16 @@
-const { execFileSync } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
 
-execFileSync('./nx', ['release', 'version', process.argv[2]], { stdio: 'inherit' });
-const version = JSON.parse(readFileSync('clients/desktop/package.json')).version;
-const tauri = JSON.parse(readFileSync('clients/desktop/tauri.conf.json'));
-tauri.version = version;
-writeFileSync('clients/desktop/tauri.conf.json', `${JSON.stringify(tauri, null, '\t')}\n`);
-writeFileSync('Cargo.toml', readFileSync('Cargo.toml', 'utf8').replace(/^version = ".*"/m, `version = "${version}"`));
-writeFileSync('Cargo.lock', readFileSync('Cargo.lock', 'utf8').replace(/(name = "(?:releashd|releash|releash-desktop)"\n)version = ".*"/g, `$1version = "${version}"`));
+function nextVersion(current, bump) {
+  const [major, minor, patch] = current.split('.').map(Number);
+  if (bump === 'major') return `${major + 1}.0.0`;
+  if (bump === 'minor') return `${major}.${minor + 1}.0`;
+  if (bump === 'patch') return `${major}.${minor}.${patch + 1}`;
+  if (/^\d+\.\d+\.\d+$/.test(bump)) return bump;
+  throw new Error('Expected major, minor, patch or X.Y.Z');
+}
+
+const cargo = readFileSync('Cargo.toml', 'utf8');
+const version = nextVersion(cargo.match(/^version = "(.*)"/m)[1], process.argv[2]);
+writeFileSync('Cargo.toml', cargo.replace(/^version = ".*"/m, `version = "${version}"`));
+writeFileSync('Cargo.lock', readFileSync('Cargo.lock', 'utf8').replace(/(name = "(?:releashd|releash)"\n)version = ".*"/g, `$1version = "${version}"`));
 writeFileSync('clients/macos/project.yml', readFileSync('clients/macos/project.yml', 'utf8').replace(/^    MARKETING_VERSION:.*$/m, `    MARKETING_VERSION: '${version}'`));

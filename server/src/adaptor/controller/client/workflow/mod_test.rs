@@ -75,7 +75,7 @@ fn parse_facet_kind_unknown_returns_error() {
     assert!(parse_facet_kind("").is_err());
 }
 
-/// Gherkin: parse_facet_kind を経由する Tauri コマンドは 3種それぞれの種別指定で
+/// Gherkin: parse_facet_kind を経由する ClientService の入口は 3種それぞれの種別指定で
 /// 正常経路に到達する（種別解決層）
 #[test]
 fn parse_facet_kind_resolves_all_three_kinds_for_command_routing() {

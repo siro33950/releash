@@ -1,4 +1,4 @@
-//! 言語判定の Tauri コマンド。
+//! 言語判定の ClientService の入口。
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;

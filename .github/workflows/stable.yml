@@ -68,7 +68,7 @@ jobs:
         with:
           github-token: ${{ env.STABLE_RELEASE_TOKEN }}
           script: |
-            const { version } = require('./clients/desktop/package.json');
+            const version = require('node:fs').readFileSync('Cargo.toml', 'utf8').match(/^version = "(.*)"/m)[1];
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
             if (!process.env.NIGHTLY_TAG.startsWith(`v${version}-nightly.`)) throw new Error('Nightly tag and repository version differ');
             const tag = `v${version}`;
@@ -84,14 +84,12 @@ jobs:
             });
             const existing = releases.find(release => release.tag_name === tag);
             if (existing && (!commit || existing.prerelease)) throw new Error('Expected an unpublished stable release at the selected commit');
-            core.setOutput('version', version);
             core.setOutput('tag', tag);
             core.setOutput('tag-exists', Boolean(commit));
             core.setOutput('release-id', existing?.id || '');
       - id: create
         uses: ./.github/actions/create-release
         with:
-          version: ${{ steps.version.outputs.version }}
           tag: ${{ steps.version.outputs.tag }}
           release-id: ${{ steps.version.outputs.release-id }}
           tag-exists: ${{ steps.version.outputs.tag-exists }}

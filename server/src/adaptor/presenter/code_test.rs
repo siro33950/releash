@@ -1,5 +1,5 @@
 pub(crate) mod protocol_code_tests {
-    //! フロント境界（Tauri コマンド引数）の deserialize 表現と `into_domain()` 変換を固定する。
+    //! クライアント境界（ClientService の引数）の deserialize 表現と `into_domain()` 変換を固定する。
     //! 型ごとの camelCase / snake_case の別、`is_staged` の省略時 default、再帰変換が移行前と
     //! 等価にマッピングされることを担保する。
     use super::super::*;

@@ -23,7 +23,6 @@
       "inputs": [
         "default",
         "rust",
-        "{workspaceRoot}/clients/desktop/**/*",
         "{workspaceRoot}/clients/cli/**/*"
       ]
     },
@@ -53,7 +52,6 @@
       "inputs": [
         "default",
         "rust",
-        "{workspaceRoot}/clients/desktop/**/*",
         "{workspaceRoot}/clients/cli/**/*"
       ],
       "cache": false
@@ -79,7 +77,6 @@
       "inputs": [
         "default",
         "rust",
-        "{workspaceRoot}/clients/desktop/**/*",
         "{workspaceRoot}/clients/cli/**/*"
       ],
       "cache": false

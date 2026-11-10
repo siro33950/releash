@@ -50,7 +50,7 @@ pub enum WorkflowDiagnosticsTarget {
 }
 
 impl WorkflowDiagnosticsTarget {
-    /// 入口（Tauri command / local API）が受け取る optional な directory 文字列を対象へ写す。
+    /// 入口（ClientService / local API）が受け取る optional な directory 文字列を対象へ写す。
     /// 絶対 path であることだけを検証する。空文字列と空白のみの文字列も相対 path として
     /// 弾かれる。前後の空白は path の一部として保持する（空白を含む directory 名は正当で
     /// あり、trim すると実在する対象を診断できなくなる）。対象 directory の実在検査は

@@ -82,7 +82,6 @@ jobs:
           if [ -n "$version" ]; then
             rm -f migrations.json
             ./nx migrate "$version" --interactive=false
-            pnpm --dir clients/desktop install --no-frozen-lockfile
             if [ -f migrations.json ]; then
               ./nx migrate --run-migrations --interactive=false
             fi

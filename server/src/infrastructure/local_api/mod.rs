@@ -5,7 +5,6 @@ pub(crate) mod server;
 
 pub use discovery::{
     lookup_process_start_time, process_start_time, LocalApiDiscovery, LocalApiDiscoveryFile,
-    ProcessStartTimeLookup,
 };
 pub(crate) use server::LocalApiServer;
 pub(crate) use server::LocalApiServerBinding;

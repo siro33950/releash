@@ -24,9 +24,4 @@ flags:
   rust:
     paths:
       - server/src/
-      - clients/desktop/src-native/
-    carryforward: true
-  typescript:
-    paths:
-      - clients/desktop/src/
     carryforward: true

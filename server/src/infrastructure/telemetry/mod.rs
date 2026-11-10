@@ -139,5 +139,5 @@ pub(crate) mod metrics;
 #[path = "mod_test.rs"]
 pub(crate) mod mod_tests;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) mod test_helpers;

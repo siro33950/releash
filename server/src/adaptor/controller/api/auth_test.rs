@@ -24,67 +24,32 @@ mod restored_memory_tests {
     }
 
     #[tokio::test]
-    pub async fn test_リクエスト認証_許可originとtokenを毎回検証し失効後の次の要求を拒否する() {
+    pub async fn test_リクエスト認証_tokenを毎回検証し失効後の次の要求を拒否する() {
         // Given
         let (router, token) = fixture();
-        for origin in ["tauri://localhost", "http://tauri.localhost"] {
-            // When
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::post("/rpc")
-                        .header("origin", origin)
-                        .header("authorization", "Bearer client")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            // Then
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(response.headers()["access-control-allow-origin"], origin);
-            assert!(response.headers()["access-control-expose-headers"]
-                .to_str()
-                .unwrap()
-                .split(", ")
-                .any(|header| header == "grpc-status-details-bin"));
-        }
-        for (origin, bearer, expected) in [
-            (
-                Some("https://attacker.example"),
-                "client",
-                StatusCode::FORBIDDEN,
-            ),
-            (None, "client", StatusCode::OK),
-            (
-                Some("tauri://localhost"),
-                "master",
-                StatusCode::UNAUTHORIZED,
-            ),
+        for (bearer, expected) in [
+            (Some("client"), StatusCode::OK),
+            (Some("master"), StatusCode::UNAUTHORIZED),
+            (None, StatusCode::UNAUTHORIZED),
         ] {
-            let mut request =
-                Request::post("/rpc").header("authorization", format!("Bearer {bearer}"));
-            if let Some(origin) = origin {
-                request = request.header("origin", origin);
+            let mut request = Request::post("/rpc");
+            if let Some(bearer) = bearer {
+                request = request.header("authorization", format!("Bearer {bearer}"));
             }
+            // When
             let response = router
                 .clone()
                 .oneshot(request.body(Body::empty()).unwrap())
                 .await
                 .unwrap();
+            // Then
             assert_eq!(response.status(), expected);
-            if origin.is_none() {
-                assert!(!response
-                    .headers()
-                    .contains_key("access-control-allow-origin"));
-            }
         }
         // When
         token.revoke();
         let response = router
             .oneshot(
                 Request::post("/rpc")
-                    .header("origin", "tauri://localhost")
                     .header("authorization", "Bearer client")
                     .body(Body::empty())
                     .unwrap(),
@@ -93,62 +58,6 @@ mod restored_memory_tests {
             .unwrap();
         // Then
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    pub async fn test_preflight_許可originのpostだけtokenなしで受理し業務処理は実行しない() {
-        // Given
-        let (router, _) = fixture();
-        for (origin, method, headers, expected) in [
-            (
-                "tauri://localhost",
-                "POST",
-                "Authorization, Content-Type, Connect-Protocol-Version",
-                StatusCode::NO_CONTENT,
-            ),
-            (
-                "http://tauri.localhost",
-                "POST",
-                "content-type",
-                StatusCode::NO_CONTENT,
-            ),
-            (
-                "https://attacker.example",
-                "POST",
-                "content-type",
-                StatusCode::FORBIDDEN,
-            ),
-            (
-                "tauri://localhost",
-                "DELETE",
-                "content-type",
-                StatusCode::FORBIDDEN,
-            ),
-            (
-                "tauri://localhost",
-                "POST",
-                "x-untrusted",
-                StatusCode::FORBIDDEN,
-            ),
-        ] {
-            // When
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("OPTIONS")
-                        .uri("/rpc")
-                        .header("origin", origin)
-                        .header("access-control-request-method", method)
-                        .header("access-control-request-headers", headers)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            // Then
-            assert_eq!(response.status(), expected);
-        }
     }
 }
 

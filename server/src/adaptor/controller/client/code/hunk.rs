@@ -1,4 +1,4 @@
-//! hunk / patch / range Tauri コマンド。
+//! hunk / patch / range の ClientService の入口。
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;

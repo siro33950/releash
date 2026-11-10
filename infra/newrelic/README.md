@@ -3,7 +3,7 @@
 このディレクトリは Releash の New Relic 側の観測リソースを管理する。
 
 - `newrelic_one_dashboard`: #1209 メトリクスと M0 性能予算のダッシュボード
-- `newrelic_alert_policy` / `newrelic_nrql_alert_condition`: 性能予算、クラッシュ、ストリーム品質、ペイロードのアラート
+- `newrelic_alert_policy` / `newrelic_nrql_alert_condition`: 性能予算、クラッシュのアラート
 - `newrelic_metric_pruning_rule`: メトリクス取り込み量 / カーディナリティ制御
 - HCP Terraform: リモート state と手動 CLI 実行
 

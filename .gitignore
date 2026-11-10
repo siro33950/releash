@@ -13,7 +13,6 @@ dist/
 out/
 .next/
 build/
-.vite/
 *.tsbuildinfo
 
 # Environment files
@@ -38,14 +37,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Tauri
-target/
-clients/desktop/WixTools/
-clients/desktop/icons/generated/
-clients/desktop/generated/
-clients/desktop/gen/schemas/
-
 # Rust
+target/
 *.rs.bk
 Cargo.lock
 !Cargo.lock
@@ -60,10 +53,6 @@ coverage/
 rust-codecov.json
 .qlty/
 
-# Playwright
-test-results/
-playwright-report/
-
 # Performance harness run output (canonical baselines live in specs/*/performance-baselines/)
 performance-results/
 
@@ -73,8 +62,6 @@ performance-results/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
-
-clients/desktop/binaries/
 
 clients/macos/*.xcodeproj/*
 !clients/macos/Releash.xcodeproj/project.xcworkspace/

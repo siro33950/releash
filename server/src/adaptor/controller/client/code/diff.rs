@@ -1,4 +1,4 @@
-//! diff_tree / branch_diff / 相対パスの Tauri コマンド。
+//! diff_tree / branch_diff / 相対パスの ClientService の入口。
 
 use super::run_blocking;
 use crate::adaptor::controller::state::AppState;

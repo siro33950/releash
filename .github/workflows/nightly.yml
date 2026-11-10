@@ -158,26 +158,11 @@ jobs:
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 0
-      - id: apt-key
-        run: echo "key=apt-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v6
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-key.outputs.key }}
-          restore-keys: apt-
-      - name: Install Tauri dependencies
-        run: |
-          mkdir -p ~/apt-archives/partial
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev -o Dir::Cache::Archives="$HOME/apt-archives"
-          sudo chown -R "$USER" ~/apt-archives
       - uses: jdx/mise-action@v3
       - uses: actions/cache@v6
         with:
           path: .nx/installation
           key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
-      - working-directory: clients/desktop
-        run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain
         run: |
           rustup toolchain install
@@ -187,17 +172,7 @@ jobs:
           workspaces: .
           shared-key: coverage
           cache-on-failure: true
-      - working-directory: clients/desktop
-        run: pnpm exec playwright install --with-deps chromium
-      - run: ./nx run-many -t e2e coverage --exclude=macos --parallel=1 --outputStyle=static
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          override_branch: main
-          override_commit: ${{ steps.checkout.outputs.commit }}
-          files: clients/desktop/coverage/coverage-final.json
-          flags: typescript
-          fail_ci_if_error: true
+      - run: ./nx run workspace:coverage --outputStyle=static
       - uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -207,7 +182,6 @@ jobs:
           flags: rust
           fail_ci_if_error: true
 
-  # Tauri 版の sidecar と Swift 版の helper は同じ universal binary なので、一度だけ作って両方へ渡す
   swift-build:
     needs: check
     if: needs.check.outputs.run == 'true'
@@ -241,14 +215,13 @@ jobs:
           RELEASE_SHA: ${{ needs.check.outputs.sha }}
         with:
           script: |
-            const { version } = require('./clients/desktop/package.json');
+            const version = require('node:fs').readFileSync('Cargo.toml', 'utf8').match(/^version = "(.*)"/m)[1];
             if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Expected an X.Y.Z version');
             const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
             const existing = releases.find(release => release.prerelease && release.tag_name.startsWith(`v${version}-nightly.`));
             if (existing) {
               const commit = (await github.rest.repos.getCommit({ ...context.repo, ref: existing.tag_name })).data;
               if (commit.sha !== process.env.RELEASE_SHA) throw new Error('Version already belongs to another commit');
-              core.setOutput('version', existing.tag_name.slice(1));
               core.setOutput('tag', existing.tag_name);
               core.setOutput('release-id', existing.id);
               return;
@@ -261,12 +234,10 @@ jobs:
               .filter(match => match?.[1] === date).map(match => Number(match[2]));
             const number = numbers.reduce((max, n) => Math.max(max, n), 0) + 1;
             const tag = `v${version}-nightly.${date}.${number}`;
-            core.setOutput('version', tag.slice(1));
             core.setOutput('tag', tag);
       - id: create
         uses: ./.github/actions/create-release
         with:
-          version: ${{ steps.version.outputs.version }}
           tag: ${{ steps.version.outputs.tag }}
           release-id: ${{ steps.version.outputs.release-id }}
           tag-exists: ${{ steps.version.outputs.tag-exists }}

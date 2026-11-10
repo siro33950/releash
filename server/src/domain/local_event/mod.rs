@@ -4,7 +4,7 @@
 //! agent sessions and workflows: store identities, the atomic batch, the
 //! closed state-mutation family, the closed query sum, and the
 //! `LocalEventTransactionRepository` port. No serde, rusqlite, filesystem,
-//! Tauri, or WebSocket dependency is allowed here.
+//! or WebSocket dependency is allowed here.
 
 pub mod batch;
 pub mod events;

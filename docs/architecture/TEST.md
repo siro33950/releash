@@ -8,8 +8,7 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 種類 | 確かめること |
 |---|---|
 | 単体 | 単一の仕組みで完結すること |
-| 統合 | 2つ以上の仕組み（サーバ/DB、フロント/サーバ、サーバ/OS）の関連 |
-| 振る舞い（desktop） | 本物のサーバ・DB・OS を含む構成に対し、ユーザと同様の操作をして確かめる妥当性 |
+| 統合 | 2つ以上の仕組み（サーバ/DB、クライアント/サーバ、サーバ/OS）の関連 |
 | 振る舞い（macOS） | 本物のサーバ・DB・OS を含む構成に対し、XCUITest でユーザと同様の操作をして確かめる妥当性 |
 
 ## 書かないテスト
@@ -28,14 +27,9 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 | 種類 | 置き場所 | 実行 | CI |
 |---|---|---|---|
 | 単体（サーバ） | `server/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releashd`、`cargo test --doc -p releashd` | PR 層の `test` target |
-| 単体（シェル） | `clients/desktop/src-native/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash-desktop`、`cargo test --doc -p releash-desktop` | PR 層の `test` target |
 | 単体（CLI） | `clients/cli/src/` の `<impl>_test.rs` | `cargo test --lib --bins -p releash`、`cargo test --doc -p releash` | PR 層の `test` target |
-| 単体（フロント） | `clients/desktop/src/` の `*.test.ts(x)` | `pnpm test` | PR 層の `test` target |
 | 統合（サーバ） | `server/tests/` | `cargo test --test '*' -p releashd` | PR 層の `test` target |
-| 統合（シェル） | `clients/desktop/tests/` | `cargo test --test '*' -p releash-desktop` | PR 層の `test` target |
 | 統合（CLI） | `clients/cli/tests/` | `cargo test --test '*' -p releash` | PR 層の `test` target |
-| 統合（desktop 画面） | `clients/desktop/tests/integration/` | `pnpm test:integration` | PR 層の `test` target |
-| 振る舞い（desktop） | `clients/desktop/tests/behavior/` | `pnpm test:behavior` | nightly 層 |
 | 単体（macOS） | `clients/macos/Tests/Unit/` | `./nx run macos:test-unit` | PR 層 |
 | 統合（macOS） | `clients/macos/Tests/Integration/` | `./nx run macos:test-integration` | PR 層 |
 | 単体（配布スクリプト） | `.github/scripts/` の `<impl>_test.cjs`、`<impl>_test.py` | `./nx run workspace:test` | PR 層の `test` target |
@@ -49,7 +43,7 @@ FileViewer の JavaScript 単体テストは `macos:test-unit` に含める。
 手動で実行するテストはコミットしない。
 
 統合テストに必要なバイナリは、各 `test` target の `dependsOn` で先にビルドする。
-サーバのテストは `cli:build`、シェルと CLI のテストは `server:build` と `cli:build` に依存する。
+サーバのテストは `cli:build`、CLI のテストは `server:build` と `cli:build` に依存する。
 個別のテストを直接実行する場合も、対応する build target を先に実行する。
 テストから cargo は呼ばない。
 
@@ -75,7 +69,6 @@ mod terminal_surface_registry_tests;
 | `domain/` | **必須** | ビジネスロジックの中核 |
 | `usecase/` | **必須** | 業務手順の正しさを担保 |
 | `adaptor/gateway/` | **必須** | 外部システムとの境界、モデル変換の検証 |
-| `adaptor/controller/command/` | 柔軟 | Tauri 依存で書きにくい場合は省略可 |
 | `adaptor/controller/api/` | 柔軟 | Connect 依存で書きにくい場合は省略可 |
 | `adaptor/presenter/` | 柔軟 | 表示整形のみ、必要に応じて |
 | `infrastructure/` | 柔軟 | 外部世界の都合をそのまま扱う層。判断も変換も持たないため、統合テストで検証 |
@@ -90,7 +83,6 @@ Given / When / Then をコメントで区切り、前提・操作・検証を分
 ## モック方針
 
 - **domain の trait（Repository、ドメインサービス）と usecase の trait（QueryService、購読の配信の口）**: `mockall` でモック生成可、または手書きの fake 実装
-- **Tauri API**: テストでは呼ばない設計を優先。やむを得ない場合は薄いラッパー化してテスト側で差し替え
 - **git2**: 実 git リポジトリを `tempdir` 上に作り、統合テストとして書く
 - **外部 HTTP API**: 偽サーバを立てる
 - **長時間プロセス（PTY, Provider CLI）**: 単体テストでは呼ばず、Terminal Surfaceのbyte I/O、AgentSession lifecycle、Provider lifecycle signalを個別に単体テストし、実processは別途手動・統合テストで検証する。Provider conversationをReleashのMessage modelへ変換するtestは作らない

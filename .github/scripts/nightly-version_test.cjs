@@ -131,7 +131,7 @@ for (const reason of ['manual-bump', 'failed-distribution']) {
     git('init', '-q');
     git('config', 'user.name', 'test');
     git('config', 'user.email', 'test@example.invalid');
-    for (const name of ['Cargo.toml', 'Cargo.lock', 'clients/desktop/package.json', 'clients/desktop/tauri.conf.json', 'clients/macos/project.yml']) {
+    for (const name of ['Cargo.toml', 'Cargo.lock', 'clients/macos/project.yml']) {
       mkdirSync(require('node:path').dirname(join(root, name)), { recursive: true });
       writeFileSync(join(root, name), '0.4.21');
     }

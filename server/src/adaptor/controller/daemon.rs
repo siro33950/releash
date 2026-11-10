@@ -861,10 +861,7 @@ impl Daemon {
 }
 
 fn init_local_log(data_dir: &Path) {
-    if let Err(error) = infrastructure::local_log::init(
-        data_dir,
-        infrastructure::local_log::LocalLogProcess::Daemon,
-    ) {
+    if let Err(error) = infrastructure::local_log::init(data_dir) {
         eprintln!("{error}");
     }
 }

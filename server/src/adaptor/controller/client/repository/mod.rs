@@ -1,4 +1,4 @@
-//! repository 責務の Tauri コマンド（薄い入口）。
+//! repository 責務の ClientService の入口。
 //!
 //! 引数の受け渡しと型変換のみを行い、ビジネスロジックは usecase /
 //! query service に委ねる。git2 のブロッキング呼び出しを非同期境界へ

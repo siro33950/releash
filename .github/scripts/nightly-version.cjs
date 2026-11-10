@@ -14,7 +14,7 @@ function compareVersions(a, b) {
 
 async function main(
   run = (...args) => execFileSync(args[0], args.slice(1), { encoding: 'utf8' }).trim(),
-  mainVersion = () => JSON.parse(readFileSync('clients/desktop/package.json')).version,
+  mainVersion = () => readFileSync('Cargo.toml', 'utf8').match(/^version = "(.*)"/m)[1],
 ) {
   const api = path => JSON.parse(run('gh', 'api', path));
   const repo = process.env.GITHUB_REPOSITORY;
@@ -50,7 +50,7 @@ async function main(
     run('node', '.github/scripts/bump-version.cjs', version);
     run('git', 'config', 'user.name', 'github-actions[bot]');
     run('git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com');
-    run('git', 'add', 'Cargo.toml', 'Cargo.lock', 'clients/desktop/package.json', 'clients/desktop/tauri.conf.json', 'clients/macos/project.yml');
+    run('git', 'add', 'Cargo.toml', 'Cargo.lock', 'clients/macos/project.yml');
     run('git', 'commit', '--allow-empty', '-m', `release: v${version}\n\n${marker}`);
     sha = run('git', 'rev-parse', 'HEAD');
     run('git', 'push', 'origin', 'HEAD:main');
