@@ -18,9 +18,9 @@
 | domain | Entity・集約 | 業務の状態、遷移、不変条件 |
 | domain | 値オブジェクト | 業務の値と、状態を持たない業務の規則 |
 | domain | ドメインサービス | 複数の集約にまたがる業務の規則。外部世界が要るときは trait を domain に置き、adaptor/gateway が実装する |
-| domain | Repository の trait | 集約の保存。adaptor/gateway が実装する |
+| domain | Repository の trait | 集約の保存と取得。adaptor/gateway が実装する |
 | usecase | Usecase（Interactor） | アプリの業務手順。Entity でも DTO でも返してよい |
-| usecase | QueryService の trait | 読み取り要求に DTO で答える口。adaptor/gateway が実装する |
+| usecase | QueryService の trait | Entity から組み立てると高くつく読み取りに、DTO で答える口。adaptor/gateway が実装する |
 | usecase | DTO | QueryService が返す Response。Entity から導かれず、データソースから直接組み立てる |
 | usecase | 購読の配信の口の trait | 購読で状態の変化を外へ押し出す口。adaptor/presenter が実装する |
 | adaptor/controller | Controller | 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Usecase の引数に変えて、Usecase を呼ぶ。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く |
