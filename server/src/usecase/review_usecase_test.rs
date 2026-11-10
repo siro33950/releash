@@ -144,6 +144,22 @@ mod tests {
             Ok(Vec::new())
         }
 
+        fn filtered_files(
+            &self,
+            worktree: &str,
+            filter: &FileFilter,
+            statuses: &[FileStatusDto],
+        ) -> Result<FilteredFiles, CodeUsecaseError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("filtered:{worktree}:{filter:?}:{statuses:?}"));
+            Ok(FilteredFiles {
+                roots: vec![],
+                truncated: true,
+            })
+        }
+
         fn select_review_side_source(
             &self,
             file_path: &str,
@@ -296,6 +312,49 @@ mod tests {
             Arc::new(FakeSnapshotProvider::new(snapshots)),
             Arc::new(code),
         )
+    }
+
+    #[test]
+    fn test_絞込一覧_最新snapshotの状態と条件を渡し結果を返す() {
+        // Given
+        let snapshot = snapshot_with_single_status(7, "src/a", "new", "modified");
+        let code = Arc::new(FakeReviewCode::new());
+        let filter = FileFilter::Changed;
+        let expected = format!("filtered:/repo:{filter:?}:{:?}", snapshot.status);
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![snapshot])),
+            code.clone(),
+        );
+        // When
+        let result = usecase.filtered_files("/repo", &filter).unwrap();
+        // Then
+        assert_eq!(
+            result,
+            FilteredFiles {
+                roots: vec![],
+                truncated: true
+            }
+        );
+        assert_eq!(code.calls(), vec![expected]);
+    }
+
+    #[test]
+    fn test_絞込一覧_snapshot取得失敗ではcodeを呼ばず失敗を返す() {
+        // Given
+        let code = Arc::new(FakeReviewCode::new());
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![])),
+            code.clone(),
+        );
+        // When
+        let error = usecase
+            .filtered_files("/repo", &FileFilter::Changed)
+            .unwrap_err();
+        // Then
+        assert!(
+            matches!(error, CodeUsecaseError::Code(CodeError::Rule(message)) if message == "snapshot queue exhausted")
+        );
+        assert!(code.calls().is_empty());
     }
 
     #[tokio::test]

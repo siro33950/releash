@@ -204,3 +204,7 @@ impl CodeUsecase {
 
     // ── language ──
 }
+
+#[cfg(test)]
+#[path = "code_usecase_test.rs"]
+mod code_usecase_tests;

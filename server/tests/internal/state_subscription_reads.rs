@@ -1149,9 +1149,6 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
             node_id: None,
             id: "workflow".into(),
             kind: PaneTabKind::Command,
-            file_path: None,
-            file_mode: None,
-            file_base: None,
         }],
         Some("workflow".into()),
     )
@@ -1467,9 +1464,6 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             kind: PaneTabKind::Session,
             node_id: Some(id.into()),
             agent_session_id: None,
-            file_path: None,
-            file_mode: None,
-            file_base: None,
         })
         .collect(),
         Some(ready_node.clone()),

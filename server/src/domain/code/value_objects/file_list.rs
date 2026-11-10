@@ -91,3 +91,7 @@ pub struct FilteredFiles {
     /// 条件に合うファイルが上限を超え、結果が一致の一部だけであるか。
     pub truncated: bool,
 }
+
+#[cfg(test)]
+#[path = "file_list_test.rs"]
+mod file_list_tests;

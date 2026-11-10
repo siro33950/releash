@@ -36,3 +36,7 @@ impl EditorTarget {
         todo!()
     }
 }
+
+#[cfg(test)]
+#[path = "editor_target_test.rs"]
+mod editor_target_tests;

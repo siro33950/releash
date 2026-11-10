@@ -342,9 +342,6 @@ async fn test_実行木archiveとrestore_sessionタブを増減して選択を�
         kind: PaneTabKind::Terminal,
         node_id: None,
         agent_session_id: None,
-        file_path: None,
-        file_mode: None,
-        file_base: None,
     };
     let mut state = WorkspaceState {
         panes: Some(

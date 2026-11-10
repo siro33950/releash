@@ -371,9 +371,6 @@ mod memory_tests {
             kind: PaneTabKind::Terminal,
             node_id: None,
             agent_session_id: None,
-            file_path: None,
-            file_mode: None,
-            file_base: None,
         };
         let pending = PaneTab {
             id: "pending".into(),

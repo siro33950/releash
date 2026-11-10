@@ -79,3 +79,76 @@ fn test_editor設定_読書きとgatewayエラーをそのまま返す() {
         ))
     );
 }
+
+#[derive(Default)]
+struct Launcher {
+    calls: Mutex<Vec<(Vec<std::path::PathBuf>, String, String)>>,
+    failure: Option<EditorError>,
+}
+
+impl EditorLauncherGateway for Launcher {
+    fn open_paths(
+        &self,
+        paths: &[std::path::PathBuf],
+        editor: &str,
+        label: &str,
+    ) -> Result<(), EditorError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((paths.into(), editor.into(), label.into()));
+        self.failure.clone().map_or(Ok(()), Err)
+    }
+}
+
+#[test]
+fn test_エディタ起動_選択設定と対象を一度の呼出しに渡す() {
+    // Given / When / Then
+    for editor in ["code", ""] {
+        for target in [
+            EditorTarget::worktree("/repo").unwrap(),
+            EditorTarget::file("/repo", "src/a.rs").unwrap(),
+        ] {
+            let settings = Settings(Mutex::new(Ok(editor.into())));
+            let launcher = Launcher::default();
+            open_in_editor(&launcher, &settings, &target).unwrap();
+            assert_eq!(
+                *launcher.calls.lock().unwrap(),
+                vec![(target.editor_paths(), editor.into(), target.label().into())]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_エディタ起動_設定取得に失敗したら起動せず失敗を返す() {
+    // Given
+    let failure = AppConfigError::Technical(crate::domain::failure::TechnicalFailure {
+        nature: crate::domain::failure::TechnicalFailureNature::Other,
+        message: "settings unavailable".into(),
+    });
+    let settings = Settings(Mutex::new(Err(failure.clone())));
+    let launcher = Launcher::default();
+    let target = EditorTarget::worktree("/repo").unwrap();
+    // When / Then
+    assert_eq!(
+        open_in_editor(&launcher, &settings, &target),
+        Err(EditorError::Settings(failure))
+    );
+    assert!(launcher.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_エディタ起動_起動の失敗をそのまま返す() {
+    // Given
+    let settings = Settings(Mutex::new(Ok("code".into())));
+    let failure = EditorError::Launch("launch failed".into());
+    let launcher = Launcher {
+        failure: Some(failure.clone()),
+        ..Default::default()
+    };
+    let target = EditorTarget::worktree("/repo").unwrap();
+    // When / Then
+    assert_eq!(open_in_editor(&launcher, &settings, &target), Err(failure));
+    assert_eq!(launcher.calls.lock().unwrap().len(), 1);
+}

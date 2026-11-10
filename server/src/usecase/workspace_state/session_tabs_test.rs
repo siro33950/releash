@@ -97,9 +97,6 @@ fn tab(id: &str, session: Option<&str>) -> PaneTab {
         kind: PaneTabKind::Session,
         node_id: None,
         agent_session_id: session.map(Into::into),
-        file_path: None,
-        file_mode: None,
-        file_base: None,
     }
 }
 

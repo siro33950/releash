@@ -31,7 +31,3 @@ pub fn scan_applications_in(dirs: &[PathBuf]) -> Vec<EditorInfo> {
 
     editors
 }
-
-#[cfg(test)]
-#[path = "services_test.rs"]
-pub(crate) mod services_tests;

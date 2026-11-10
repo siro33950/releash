@@ -60,9 +60,6 @@ fn tab(id: &str, kind: PaneTabKind, node: Option<&str>, session: Option<&str>) -
         kind,
         node_id: node.map(Into::into),
         agent_session_id: session.map(Into::into),
-        file_path: None,
-        file_mode: None,
-        file_base: None,
     }
 }
 

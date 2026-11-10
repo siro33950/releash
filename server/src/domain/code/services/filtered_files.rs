@@ -58,3 +58,7 @@ impl FilteredFilesCollector {
         todo!()
     }
 }
+
+#[cfg(test)]
+#[path = "filtered_files_test.rs"]
+mod filtered_files_tests;

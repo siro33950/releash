@@ -87,7 +87,8 @@ final class FileTabPaneTests: XCTestCase {
     }
     let open = try Releash_Client_V1_OpenInEditorRequest(
       serializedBytes: XCTUnwrap(http.requests("OpenInEditor").first?.message))
-    XCTAssertEqual(open.filePath, "/repo/src/file.rs")
+    XCTAssertEqual(open.worktreePath, "/repo")
+    XCTAssertEqual(open.file, "src/file.rs")
     XCTAssertEqual(acceptedReplies, 1)
     let reply = try Releash_Client_V1_AppendReviewCommentRequest(
       serializedBytes: XCTUnwrap(http.requests("AppendReviewComment").first?.message))
