@@ -2,9 +2,10 @@ use crate::domain::code::services::directory::worktree_path_is_visible;
 use std::path::Path;
 
 use crate::adaptor::gateway::shared::git_operation;
+use crate::domain::code::value_objects::file_list::{WalkStep, WorktreeEntry};
 use crate::domain::code::CodeError;
 use crate::usecase::code_error::CodeUsecaseError;
-use crate::usecase::directory_query::{DirectoryEntry, DirectoryQuery};
+use crate::usecase::directory_query::DirectoryQuery;
 
 pub struct DirectoryQueryGateway;
 
@@ -36,7 +37,7 @@ impl DirectoryQuery for DirectoryQueryGateway {
         &self,
         worktree: &str,
         directory: &str,
-    ) -> Result<Vec<DirectoryEntry>, CodeUsecaseError> {
+    ) -> Result<Vec<WorktreeEntry>, CodeUsecaseError> {
         let relative = Path::new(directory);
         if !worktree_path_is_visible(directory) {
             return Err(CodeError::Rule("invalid directory path".into()).into());
@@ -67,7 +68,7 @@ impl DirectoryQuery for DirectoryQueryGateway {
                 .to_owned();
             let ignored = git_operation::run(|| repo.status_should_ignore(Path::new(&path)))
                 .map_err(CodeError::from)?;
-            entries.push(DirectoryEntry {
+            entries.push(WorktreeEntry {
                 path,
                 name,
                 directory: kind.is_dir(),
@@ -75,5 +76,13 @@ impl DirectoryQuery for DirectoryQueryGateway {
             });
         }
         Ok(entries)
+    }
+
+    fn walk(
+        &self,
+        worktree: &str,
+        visit: &mut dyn FnMut(WorktreeEntry) -> WalkStep,
+    ) -> Result<(), CodeUsecaseError> {
+        todo!()
     }
 }

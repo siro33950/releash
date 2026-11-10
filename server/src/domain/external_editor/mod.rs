@@ -5,4 +5,4 @@ pub(crate) mod value_objects;
 pub use gateway::{
     EditorError, EditorLauncherGateway, EditorSettingsGateway, InstalledEditorGateway,
 };
-pub use value_objects::EditorInfo;
+pub use value_objects::{EditorInfo, EditorTarget};

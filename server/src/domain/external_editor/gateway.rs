@@ -5,8 +5,6 @@ pub trait InstalledEditorGateway: Send + Sync {
 }
 
 pub trait EditorLauncherGateway: Send + Sync {
-    fn open_path(&self, path: &str, editor: &str, label: &str) -> Result<(), EditorError>;
-
     /// 指定されたパスを一度に外部エディタで開く。
     fn open_paths(
         &self,

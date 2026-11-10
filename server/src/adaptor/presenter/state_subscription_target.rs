@@ -110,6 +110,10 @@ impl SubscriptionTarget {
             ("directory", [path, directory]) => {
                 Ok(Self::Directory((*path).into(), (*directory).into()))
             }
+            ("filtered-files", [path, filters @ ..]) => Ok(Self::FilteredFiles(
+                (*path).into(),
+                parse_file_filter(filters)?,
+            )),
             ("file-tab", [path, file, base]) => Ok(Self::FileTab(
                 (*path).into(),
                 (*file).into(),
@@ -209,6 +213,18 @@ impl SubscriptionTarget {
             Self::NotionTasks(request) => format_notion_tasks(request),
             Self::WorkspaceState(n, p) => ("workspace-state", vec![n.clone(), p.clone()]),
             Self::Directory(p, directory) => ("directory", vec![p.clone(), directory.clone()]),
+            Self::FilteredFiles(p, filter) => {
+                let mut args = vec![p.clone()];
+                args.extend(
+                    filter
+                        .name()
+                        .map(|name| format!("{FILE_FILTER_NAME_PREFIX}{}", name.as_str())),
+                );
+                if filter.changed() {
+                    args.push(FILE_FILTER_CHANGED.into());
+                }
+                ("filtered-files", args)
+            }
             Self::FileTab(p, file, base) => (
                 "file-tab",
                 vec![p.clone(), file.clone(), base.as_str().into()],
@@ -248,6 +264,33 @@ impl SubscriptionTarget {
             Self::ExecutionOverview => ("execution-overview", vec![]),
         }
     }
+}
+
+const FILE_FILTER_NAME_PREFIX: &str = "name=";
+const FILE_FILTER_CHANGED: &str = "changed=true";
+
+/// `filtered-files` の引数から絞り込みの条件を読む。
+/// 引数は `name=<検索の入力>` と `changed=true` のうち指定するものを、この順で並べたものである。
+fn parse_file_filter(
+    args: &[&str],
+) -> Result<crate::domain::code::value_objects::file_list::FileFilter, SubscriptionError> {
+    use crate::domain::code::value_objects::file_list::{FileFilter, NameQuery};
+    let (name, rest) = match args.split_first() {
+        Some((first, rest)) if first.starts_with(FILE_FILTER_NAME_PREFIX) => (
+            Some(
+                NameQuery::new(&first[FILE_FILTER_NAME_PREFIX.len()..])
+                    .map_err(|_| SubscriptionError::InvalidId)?,
+            ),
+            rest,
+        ),
+        _ => (None, args),
+    };
+    let changed = match rest {
+        [] => false,
+        [FILE_FILTER_CHANGED] => true,
+        _ => return Err(SubscriptionError::InvalidId),
+    };
+    FileFilter::new(name, changed).map_err(|_| SubscriptionError::InvalidId)
 }
 
 const NOTION_TITLE_PREFIX: &str = "title=";

@@ -372,6 +372,7 @@ impl WorkspaceStateReads {
                     .collect(),
             ),
             T::Directory(path, directory) => StateValue::Directory(self.review.directory_entries(path, directory).map_err(error)?),
+            T::FilteredFiles(path, filter) => StateValue::FilteredFiles(self.review.filtered_files(path, filter).map_err(error)?),
             T::FileTab(path, file, base) => StateValue::FileTab(self.review.get_file_tab_view(path, file, base.as_str()).map_err(error)?),
             T::FileThreads(path, file) => {
                 let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::Author::human()).map_err(error)?;

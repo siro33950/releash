@@ -197,7 +197,6 @@ pub mod platform {
     pub use crate::adaptor::gateway::comment::FileReviewEventStore;
     pub use crate::adaptor::gateway::comment::SystemReviewClock;
     pub use crate::adaptor::gateway::comment::UuidReviewIdGenerator;
-    pub use crate::adaptor::gateway::external_editor::launcher_impl::open_path_with;
     pub use crate::adaptor::gateway::external_editor::scanner_impl::MacInstalledEditorGateway;
     pub use crate::adaptor::gateway::external_editor::settings_gateway_impl::EditorSettingsConfigGateway;
     pub use crate::adaptor::gateway::failure_records::FailureRecordStore;

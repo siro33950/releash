@@ -1,4 +1,3 @@
-use crate::domain::code::value_objects::review::{FileMode, ReviewBase};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -20,20 +19,17 @@ enum PaneLayoutNode {
     },
 }
 
+/// 中央の pane のタブ。ファイルタブは macOS アプリが持ち、この配置には入らない。
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaneTab {
     pub id: String,
     pub kind: PaneTabKind,
     pub node_id: Option<String>,
     pub agent_session_id: Option<String>,
-    pub file_path: Option<String>,
-    pub file_mode: Option<FileMode>,
-    pub file_base: Option<ReviewBase>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneTabKind {
     Terminal,
-    File,
     Session,
     Command,
 }
@@ -76,9 +72,6 @@ impl PaneLayout {
             kind: PaneTabKind::Session,
             node_id: None,
             agent_session_id: Some(session_id.into()),
-            file_path: None,
-            file_mode: None,
-            file_base: None,
         });
     }
 
@@ -292,14 +285,6 @@ impl PaneLayout {
                                 .is_none_or(|id| !id.trim().is_empty() && !id.contains('\0'))
                             && (tab.agent_session_id.is_none()
                                 || (tab.kind == PaneTabKind::Session && tab.node_id.is_none()))
-                            && tab
-                                .file_path
-                                .as_deref()
-                                .is_none_or(|path| !path.trim().is_empty() && !path.contains('\0'))
-                            && (tab.kind == PaneTabKind::File
-                                || (tab.file_path.is_none()
-                                    && tab.file_mode.is_none()
-                                    && tab.file_base.is_none()))
                     }) && active_tab
                         .as_ref()
                         .is_none_or(|active| tabs.iter().any(|tab| &tab.id == active))

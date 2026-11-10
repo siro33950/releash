@@ -1749,12 +1749,8 @@ impl TryFrom<&crate::domain::workspace_state::value_objects::pane_layout::PaneLa
                             id: tab.id.clone(),
                             node_id: tab.node_id.clone(),
                             agent_session_id: tab.agent_session_id.clone(),
-                            file_path: tab.file_path.clone(),
-                            file_mode: tab.file_mode.map(|mode| mode.as_str().into()),
-                            file_base: tab.file_base.map(|base| base.as_str().into()),
                             kind: match tab.kind {
                                 PaneTabKind::Terminal => wire::PaneTabKind::Terminal,
-                                PaneTabKind::File => wire::PaneTabKind::File,
                                 PaneTabKind::Session => wire::PaneTabKind::Session,
                                 PaneTabKind::Command => wire::PaneTabKind::Command,
                             } as i32,
@@ -1809,22 +1805,8 @@ impl TryFrom<wire::PaneLayout>
                             id: tab.id,
                             node_id: tab.node_id,
                             agent_session_id: tab.agent_session_id,
-                            file_path: tab.file_path,
-                            file_mode: tab
-                                .file_mode
-                                .as_deref()
-                                .map(crate::domain::code::value_objects::review::FileMode::parse)
-                                .transpose()
-                                .map_err(|error| error.to_string())?,
-                            file_base: tab
-                                .file_base
-                                .as_deref()
-                                .map(crate::domain::code::ReviewBase::parse)
-                                .transpose()
-                                .map_err(|error| error.to_string())?,
                             kind: match wire::PaneTabKind::try_from(tab.kind) {
                                 Ok(wire::PaneTabKind::Terminal) => PaneTabKind::Terminal,
-                                Ok(wire::PaneTabKind::File) => PaneTabKind::File,
                                 Ok(wire::PaneTabKind::Session) => PaneTabKind::Session,
                                 Ok(wire::PaneTabKind::Command) => PaneTabKind::Command,
                                 _ => return Err("Unknown pane tab kind".to_owned()),

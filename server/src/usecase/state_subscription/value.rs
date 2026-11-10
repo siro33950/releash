@@ -46,6 +46,7 @@ pub enum StateValue {
         Option<crate::domain::workspace_state::WorkspaceStateError>,
     ),
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
+    FilteredFiles(crate::domain::code::value_objects::file_list::FilteredFiles),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
     FileThreads(Vec<crate::domain::comment::Thread>),
     ReviewThreads(Vec<crate::domain::comment::Thread>),

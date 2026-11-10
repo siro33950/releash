@@ -32,13 +32,6 @@ pub fn scan_applications_in(dirs: &[PathBuf]) -> Vec<EditorInfo> {
     editors
 }
 
-pub fn validate_path(path: &str, label: &str) -> Result<(), String> {
-    if path.is_empty() {
-        return Err(format!("{label}が指定されていません"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "services_test.rs"]
 pub(crate) mod services_tests;

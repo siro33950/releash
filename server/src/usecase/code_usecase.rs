@@ -7,6 +7,9 @@
 
 use std::sync::Arc;
 
+use crate::domain::code::services::directory::GitStatus;
+use crate::domain::code::services::filtered_files::FilteredFilesCollector;
+use crate::domain::code::value_objects::file_list::{FileFilter, FilteredFiles};
 use crate::domain::code::{
     ReviewBase, ReviewBlobSide, ReviewSideBytes, ReviewSideMetadata, StagingRepository,
 };
@@ -28,6 +31,21 @@ pub(super) use crate::domain::code::value_objects::review::ReviewContentSource;
 pub(super) struct SelectedReviewSide {
     pub source: ReviewContentSource,
     pub metadata: ReviewSideMetadata,
+}
+
+fn parse_statuses(
+    statuses: &[super::repository_dto::FileStatusDto],
+) -> Result<Vec<(&str, GitStatus, GitStatus)>, crate::domain::code::CodeError> {
+    statuses
+        .iter()
+        .map(|entry| {
+            Ok((
+                entry.path.as_str(),
+                GitStatus::parse(&entry.index_status)?,
+                GitStatus::parse(&entry.worktree_status)?,
+            ))
+        })
+        .collect()
 }
 
 impl CodeUsecase {
@@ -57,17 +75,8 @@ impl CodeUsecase {
         directory: &str,
         statuses: &[super::repository_dto::FileStatusDto],
     ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
-        use crate::domain::code::services::directory::{entry_order, entry_status, GitStatus};
-        let statuses = statuses
-            .iter()
-            .map(|entry| {
-                Ok((
-                    entry.path.as_str(),
-                    GitStatus::parse(&entry.index_status)?,
-                    GitStatus::parse(&entry.worktree_status)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, crate::domain::code::CodeError>>()?;
+        use crate::domain::code::services::directory::{entry_order, entry_status};
+        let statuses = parse_statuses(statuses)?;
         let mut entries: Vec<_> = self
             .directory
             .entries(worktree, directory)?
@@ -82,6 +91,20 @@ impl CodeUsecase {
             .collect();
         entries.sort_by(|a, b| entry_order(a.directory, &a.name, b.directory, &b.name));
         Ok(entries)
+    }
+
+    /// worktree の項目を列挙し、条件で絞り込んだファイル一覧を返す。
+    pub fn filtered_files(
+        &self,
+        worktree: &str,
+        filter: &FileFilter,
+        statuses: &[super::repository_dto::FileStatusDto],
+    ) -> Result<FilteredFiles, CodeUsecaseError> {
+        let statuses = parse_statuses(statuses)?;
+        let mut collector = FilteredFilesCollector::new(filter.clone(), statuses.iter().copied());
+        self.directory
+            .walk(worktree, &mut |entry| collector.offer(entry))?;
+        Ok(collector.finish())
     }
 
     // ── staging（書き込み = 差分 Approve） ──

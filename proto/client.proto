@@ -1236,18 +1236,18 @@ message PaneSplit {
   PaneLayout second = 5;
 }
 message PaneTab {
+  reserved 3, 4, 5;
+  reserved "file_path", "file_mode", "file_base";
   string id = 1;
   PaneTabKind kind = 2;
-  optional string file_path = 3;
-  optional string file_mode = 4;
-  optional string file_base = 5;
   optional string node_id = 6;
   optional string agent_session_id = 7;
 }
 enum PaneTabKind {
+  reserved 3;
+  reserved "PANE_TAB_KIND_FILE";
   PANE_TAB_KIND_UNSPECIFIED = 0;
   PANE_TAB_KIND_TERMINAL = 1 [(json_enum_name) = "terminal"];
-  PANE_TAB_KIND_FILE = 3 [(json_enum_name) = "file"];
   PANE_TAB_KIND_SESSION = 4 [(json_enum_name) = "session"];
   PANE_TAB_KIND_COMMAND = 5 [(json_enum_name) = "command"];
 }
@@ -1310,8 +1310,15 @@ message OpenFacetInEditorRequest {
   optional string key = 2 [json_name = "key", (json_required) = true];
 }
 
+// 選択中の外部エディタで、worktree のディレクトリか、その中のファイルを開く。
 message OpenInEditorRequest {
-  optional string file_path = 1 [json_name = "filePath", (json_required) = true];
+  reserved 1;
+  reserved "file_path";
+  // 開く worktree のディレクトリの絶対 path。
+  optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
+  // worktree からの相対 path。指定すると、外部エディタに worktree のディレクトリとこのファイルを一度に渡す。
+  // worktree の外か `.git` を指す path は受け付けない。
+  optional string file = 3 [json_name = "file"];
 }
 
 message OpenWorkflowInEditorRequest {
@@ -1921,6 +1928,7 @@ message StatePayload {
     FileThreadsSnapshot file_threads = 74;
     ProviderUsageSnapshot provider_usage = 70;
     ExecutionOverviewDto execution_overview = 76;
+    FilteredFilesSnapshot filtered_files = 77;
   }
 }
 message FileThreadsSnapshot {
@@ -1938,6 +1946,22 @@ message DirectorySnapshot {
   repeated string removed = 2;
   bool delta = 3;
   repeated string order = 4;
+}
+// 検索と「差分のみ」で絞り込んだファイル一覧。購読の対象 `filtered-files` で届く。
+// 購読の引数は、worktree の path に続けて、`name=<検索の入力>` と `changed=true` のうち指定するものを、この順で並べる。
+// どちらも無い指定は受け付けない。
+message FilteredFilesSnapshot {
+  // 項目が残ったディレクトリ。worktree の直下は path が "." である。残った項目が無いときは空である。
+  repeated FilteredDirectory directories = 1;
+  // 条件に合うファイルが上限の 512 件を超え、結果が一致の一部だけであるとき true。
+  bool truncated = 2;
+}
+// 絞り込みで項目が残ったディレクトリ一つと、その直下に残った項目。
+message FilteredDirectory {
+  // worktree からの相対 path。
+  string path = 1;
+  // 直下に残った項目。ファイル一覧の並び（ディレクトリが先、名前の順）で入る。
+  repeated DirectoryEntry entries = 2;
 }
 message FileTabView {
   ReviewFileViewDto view = 1;

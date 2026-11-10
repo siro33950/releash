@@ -144,12 +144,7 @@ struct FileTabPane: View {
     model.savePaneLayout()
   }
   func openInEditor() {
-    guard let client = model.client else { return }
-    var request = Releash_Client_V1_OpenInEditorRequest()
-    request.filePath = URL(fileURLWithPath: worktree).appendingPathComponent(path).path
-    model.perform {
-      _ = try await client.openInEditor(request: request, headers: model.headers).result.get()
-    }
+    fatalError("未実装: OpenInEditor に worktree の path と、worktree からの相対 path を渡す")
   }
   func imageURLs(_ image: Releash_Client_V1_ReviewImageDto, initialMode: String) -> [(
     url: String, label: String

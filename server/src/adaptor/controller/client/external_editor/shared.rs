@@ -60,11 +60,13 @@ pub(crate) fn register_shared(
                         crate::adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
                             config,
                         );
+                        // `worktree_path` と任意の `file` から `EditorTarget` を作り、Usecase に渡す。
+                        let target: crate::domain::external_editor::EditorTarget = todo!();
                         outcome(
                             crate::usecase::external_editor::open_usecase::open_in_editor(
                                 launcher.as_ref(),
                                 &settings,
-                                &required(args.file_path, "filePath")?,
+                                &target,
                             ),
                         )
                     }

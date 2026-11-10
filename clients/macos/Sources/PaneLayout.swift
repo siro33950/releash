@@ -45,7 +45,6 @@ indirect enum PaneLayout: Equatable {
         let kind: PaneTab.Kind
         switch tab.kind {
         case .terminal: kind = .terminal
-        case .file: kind = .file
         case .session: kind = .session
         case .command: kind = .command
         default: throw CLIFailure(message: "Unknown pane tab kind")
@@ -53,10 +52,7 @@ indirect enum PaneLayout: Equatable {
         return PaneTab(
           id: tab.id, kind: kind,
           nodeID: tab.hasNodeID ? tab.nodeID : nil,
-          agentSessionID: tab.hasAgentSessionID ? tab.agentSessionID : nil,
-          filePath: tab.hasFilePath ? tab.filePath : nil,
-          fileMode: tab.hasFileMode ? tab.fileMode : nil,
-          fileBase: tab.hasFileBase ? tab.fileBase : nil)
+          agentSessionID: tab.hasAgentSessionID ? tab.agentSessionID : nil)
       }
       self = .pane(id: pane.id, tabs: tabs, active: pane.hasActiveTab ? pane.activeTab : nil)
     case .split(let split):
@@ -84,12 +80,9 @@ indirect enum PaneLayout: Equatable {
         value.id = tab.id
         if let nodeID = tab.nodeID { value.nodeID = nodeID }
         if let id = tab.agentSessionID { value.agentSessionID = id }
-        if let path = tab.filePath { value.filePath = path }
-        if let mode = tab.fileMode { value.fileMode = mode }
-        if let base = tab.fileBase { value.fileBase = base }
         switch tab.kind {
         case .terminal: value.kind = .terminal
-        case .file: value.kind = .file
+        case .file: fatalError("未実装: ファイルタブはサーバの配置に入れない")
         case .session: value.kind = .session
         case .command: value.kind = .command
         }

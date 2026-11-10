@@ -85,6 +85,8 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 }.into() }).collect(),
                 removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
             }),
+            // 木を、項目が残ったディレクトリごとの並びにして `FilteredFilesSnapshot` に入れる。worktree の直下は path を "." にする。
+            StateValue::FilteredFiles(_files) => todo!(),
             StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
                 view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
                 patch: value.patch.clone(),
