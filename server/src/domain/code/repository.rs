@@ -38,18 +38,6 @@ pub trait FileContentRepository: Send + Sync {
         file_path: &str,
         git_ref: &str,
     ) -> Result<ReviewSideBytes, CodeError>;
-    fn review_file_metadata_at_branch_base(
-        &self,
-        file_path: &str,
-        base_commit_oid: Option<&str>,
-    ) -> Result<ReviewSideMetadata, CodeError>;
-    fn review_file_bytes_at_branch_base(
-        &self,
-        file_path: &str,
-        base_commit_oid: Option<&str>,
-    ) -> Result<ReviewSideBytes, CodeError>;
-    fn review_staged_metadata(&self, file_path: &str) -> Result<ReviewSideMetadata, CodeError>;
-    fn review_staged_bytes(&self, file_path: &str) -> Result<ReviewSideBytes, CodeError>;
     fn review_working_tree_metadata(
         &self,
         file_path: &str,
@@ -68,15 +56,12 @@ pub trait FileContentRepository: Send + Sync {
 pub trait StagingRepository: Send + Sync {
     fn stage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>;
     fn unstage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>;
-    async fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError>;
-    async fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError>;
 }
 
 /// 2 つのテキストバッファの差分を hunk 列として計算する。
 ///
 /// 差分アルゴリズム自体（git2 依存）を gateway へ閉じ込めるための抽象。
-/// hunk 区切り（change group）や patch 生成といった後段の純粋ロジックは
-/// ドメインサービス（`services::hunk`）が担う。
+/// patch 生成といった後段の純粋ロジックはドメインサービス（`services::file_hunk`）が担う。
 pub trait DiffComputer: Send + Sync {
     fn diff_buffers(
         &self,

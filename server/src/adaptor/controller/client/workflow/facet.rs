@@ -7,58 +7,6 @@ fn parse_domain_facet_kind(kind: &str) -> Result<FacetKind, AppError> {
         .map_err(|_| AppError::invalid_request(format!("Unknown facet kind: {kind}")))
 }
 
-pub(crate) async fn save_facet_shared(
-    state: &AppState,
-    kind: String,
-    key: String,
-    content: String,
-    is_new: Option<bool>,
-) -> Result<(), AppError> {
-    let kind = parse_domain_facet_kind(&kind)?;
-    let is_new = is_new.unwrap_or(false);
-    let usecase = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        usecase
-            .save_facet(kind, &key, &content, is_new)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
-}
-
-pub(crate) async fn delete_facet_shared(
-    state: &AppState,
-    kind: String,
-    key: String,
-) -> Result<(), AppError> {
-    let kind = parse_domain_facet_kind(&kind)?;
-    let usecase = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        usecase
-            .delete_facet(kind, &key)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
-}
-
-pub(crate) async fn duplicate_facet_shared(
-    state: &AppState,
-    kind: String,
-    source_key: String,
-    new_key: String,
-) -> Result<(), AppError> {
-    let kind = parse_domain_facet_kind(&kind)?;
-    let usecase = state.workflow_usecase.clone();
-    crate::common::operation_context::spawn_blocking(move || {
-        usecase
-            .duplicate_facet(kind, &source_key, &new_key)
-            .map_err(AppError::from_failure)
-    })
-    .await
-    .map_err(|e| AppError::from_failure(crate::domain::failure::TechnicalFailure::from(e)))?
-}
-
 pub(crate) fn open_facet_in_editor_shared(
     state: &AppState,
     kind: String,

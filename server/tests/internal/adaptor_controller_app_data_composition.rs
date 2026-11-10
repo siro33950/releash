@@ -244,7 +244,6 @@ pub(crate) mod tests {
         releashd::test_support::integration::workflow::NodeFactMeta,
         releashd::test_support::integration::workflow::NodeFact,
     )> {
-        use releashd::test_support::integration::workflow::ExecutionOrigin;
         use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
         use releashd::test_support::integration::workflow::NodeCompletion;
         use releashd::test_support::integration::workflow::NodeDefinition;
@@ -272,7 +271,6 @@ pub(crate) mod tests {
                     repository_root: None,
                     workspace_identity: worktree_path.to_string(),
                     worktree_path: worktree_path.to_string(),
-                    created_from: ExecutionOrigin::Cli,
                     request: String::new(),
                     workflow_name: "wf".to_string(),
                     definition: Some(WorkflowDefinitionContent {
@@ -346,18 +344,13 @@ pub(crate) mod tests {
         WorkspaceState {
             panes: Some(PaneLayout::pane("old-pane".into(), vec![], None).unwrap()),
             version: 1,
-            tabs: Some(WorkspaceTabsState {
-                editors: vec![],
-                active_editor_path: None,
-            }),
+            tabs: Some(WorkspaceTabsState { editors: vec![] }),
             layout: Some(WorkspaceLayoutState {
                 center_tab: "agent".into(),
                 active_view: "git".into(),
                 left_nav_collapsed: false,
                 right_collapsed: false,
                 right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
             }),
         }
     }
@@ -393,7 +386,6 @@ pub(crate) mod tests {
 
         let states = Arc::new(
             releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
-                app_data.path().into(),
                 repository.inner.clone(),
             ),
         );
@@ -499,9 +491,6 @@ pub(crate) mod tests {
             app_data.path(),
             "/deleted-worktree-revalidation-failure",
         );
-        let legacy_comments = app_data.path().join("comments");
-        std::fs::create_dir(&legacy_comments).expect("legacy comments");
-        std::fs::write(legacy_comments.join("entry"), b"legacy").expect("legacy comment fixture");
         let expired_cache = app_data.path().join("lsp/typescript");
         std::fs::create_dir_all(&expired_cache).expect("cache directory");
         let expired_cache_entry = expired_cache.join("cache.bin");
@@ -525,7 +514,6 @@ pub(crate) mod tests {
                 Arc::new(NoExecutionTrees),
                 Arc::new(
                     releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
-                        app_data.path().into(),
                         repository.inner.clone(),
                     ),
                 ),
@@ -536,10 +524,6 @@ pub(crate) mod tests {
         assert_eq!(report.report.errors, 0);
         assert!(workspace_state.exists());
         assert!(review_comments.exists());
-        assert!(
-            !legacy_comments.exists(),
-            "owner-independent legacy-comment cleanup must remain active"
-        );
         assert!(
             !expired_cache.exists(),
             "owner-independent regenerable-cache cleanup must remain active"
@@ -596,7 +580,6 @@ pub(crate) mod tests {
                 Arc::new(NoExecutionTrees),
                 Arc::new(
                     releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
-                        app_data.path().into(),
                         repository.inner.clone(),
                     ),
                 ),
@@ -652,7 +635,6 @@ pub(crate) mod tests {
                 Arc::new(NoExecutionTrees),
                 Arc::new(
                     releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
-                        app_data.path().into(),
                         repository.inner.clone(),
                     ),
                 ),
@@ -688,10 +670,7 @@ pub(crate) mod tests {
             Arc::new(RecordingObserver::default()),
         );
         let events = composition.open_local_event_store().unwrap();
-        let states = Arc::new(WorkspaceStateStore::with_store(
-            data.path().into(),
-            events.clone(),
-        ));
+        let states = Arc::new(WorkspaceStateStore::with_store(events.clone()));
         let (repo_dir, repo) = crate::test_support_git::create_test_repo();
         crate::test_support_git::create_initial_commit(&repo);
         let main = repo_dir
@@ -719,17 +698,6 @@ pub(crate) mod tests {
             .await
             .unwrap();
         }
-        let migrated = data.path().join("workspace_state.migrated");
-        let legacy = data.path().join("workspace_state");
-        std::fs::create_dir_all(&migrated).unwrap();
-        std::fs::create_dir_all(&legacy).unwrap();
-        let imported = migrated.join(format!(
-            "{}.json",
-            releashd::test_support::integration::platform::storage_key(&key)
-        ));
-        std::fs::write(&imported, "{}").unwrap();
-        let unimported = legacy.join("unknown.json");
-        std::fs::write(&unimported, "broken").unwrap();
         std::fs::remove_dir_all(&removed).unwrap();
         repo.find_worktree("removed").unwrap().prune(None).unwrap();
         let unresolved = repo_dir
@@ -759,7 +727,6 @@ pub(crate) mod tests {
             .unwrap()
             .is_some()
         );
-        assert!(imported.exists());
         // When
         let report = composition
             .run_startup_gc_pass(
@@ -792,8 +759,6 @@ pub(crate) mod tests {
             .unwrap(),
             Some(state)
         );
-        assert!(!imported.exists());
-        assert_eq!(std::fs::read_to_string(&unimported).unwrap(), "broken");
         let reference = repo.find_reference("refs/heads/removed").unwrap();
         let mut options = git2::WorktreeAddOptions::new();
         options.reference(Some(&reference));
@@ -895,7 +860,6 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
             Arc::new(fixture.runtime),
             Arc::new(
                 releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
-                    fixture.directory.path().into(),
                     fixture.store.clone(),
                 ),
             ),
@@ -908,16 +872,6 @@ pub async fn test_startup_gc結線_消失候補の未終了実行木をabortし�
     assert_eq!(
         fixture.repository.target(id).await.unwrap().status,
         ExecutionStatus::Aborted
-    );
-    assert_eq!(
-        fixture
-            .repository
-            .archive_snapshot_for(&[id.into()])
-            .await
-            .unwrap()
-            .records[0]
-            .archive_reason,
-        "worktree_removed"
     );
 }
 
@@ -971,10 +925,7 @@ async fn test_起動時gc入口_後続ページの失敗にも先行処理の警
     let composition =
         ProductionAppDataComposition::new(data.path().into(), Arc::new(RetryLimiter::new()));
     let events = composition.open_local_event_store().unwrap();
-    let states = Arc::new(WorkspaceStateStore::with_store(
-        data.path().into(),
-        events.clone(),
-    ));
+    let states = Arc::new(WorkspaceStateStore::with_store(events.clone()));
     // When
     let failure = composition
         .run_startup_gc_pass(

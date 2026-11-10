@@ -76,56 +76,6 @@ fn registry() -> Subscriptions<u64> {
     state
 }
 
-#[test]
-fn test_再開_変更直後のbookmarkと送り待ち量が対応する() {
-    // Given
-    let mut state = registry();
-    let target = "terminal:3:pty";
-    let before = Version {
-        epoch: "runtime".into(),
-        sequence: 0,
-    };
-    state.register_delta(target, before.clone(), 100).unwrap();
-    state.set_delta_snapshot(target, before.clone(), 0).unwrap();
-    state
-        .publish_delta(
-            target,
-            Version {
-                sequence: 1,
-                ..before.clone()
-            },
-            1,
-            8,
-            true,
-        )
-        .unwrap();
-    // When
-    state
-        .reserve("client", target, target)
-        .and_then(|()| {
-            state.activate(target, Some(&before)).inspect_err(|_| {
-                let _ = state.stop("client", target);
-            })
-        })
-        .unwrap();
-    // Then
-    assert_eq!(state.pending_amount("client", target), 8);
-    assert_eq!(state.clients["client"].subscriptions[target].sizes.len(), 2);
-    assert!(matches!(
-        state.next("client"),
-        Some((
-            _,
-            Event::Change(Version { sequence: 1, .. }, Delivery::Delta, _)
-        ))
-    ));
-    assert_eq!(state.pending_amount("client", target), 0);
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Bookmark(Version { sequence: 1, .. })))
-    ));
-    assert!(state.next("client").is_none());
-}
-
 #[tokio::test(start_paused = true)]
 async fn test_定期印_別対象の更新が続いても無通信の購読へ送る() {
     // Given
@@ -145,7 +95,7 @@ async fn test_定期印_別対象の更新が続いても無通信の購読へ�
         let mut state = runtime.state.lock();
         state
             .reserve("client", "idle", "idle")
-            .and_then(|()| state.activate("idle", None))
+            .and_then(|()| state.activate("idle"))
     }
     .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
@@ -203,7 +153,7 @@ async fn test_定期印_snapshot待ちの購読だけでもstreamに送る() {
         let mut state = runtime.state.lock();
         state
             .reserve("client", "waiting", "waiting")
-            .and_then(|()| state.activate("waiting", None))
+            .and_then(|()| state.activate("waiting"))
     }
     .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
@@ -236,7 +186,7 @@ async fn test_定期印_変更が送り待ちでもstreamへ間隔どおり送�
         let mut state = runtime.state.lock();
         state
             .reserve("client", "target", "target")
-            .and_then(|()| state.activate("target", None))
+            .and_then(|()| state.activate("target"))
     }
     .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
@@ -300,7 +250,7 @@ fn test_定期印_版付き合図を積めたか返す() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -319,7 +269,7 @@ fn test_購読_初期状態と区切りの後に変更が届く() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -347,7 +297,7 @@ fn test_購読_重複と停止と存在しない対象() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -355,7 +305,7 @@ fn test_購読_重複と停止と存在しない対象() {
     assert_eq!(
         state
             .reserve("client", "workspaces", "workspaces")
-            .and_then(|()| state.activate("workspaces", None).inspect_err(|_| {
+            .and_then(|()| state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })),
         Err(SubscriptionError::AlreadyExists)
@@ -365,7 +315,7 @@ fn test_購読_重複と停止と存在しない対象() {
     assert_eq!(
         state
             .reserve("client", "missing", "missing")
-            .and_then(|()| state.activate("missing", None).inspect_err(|_| {
+            .and_then(|()| state.activate("missing").inspect_err(|_| {
                 let _ = state.stop("client", "missing");
             })),
         Err(SubscriptionError::UnknownTarget)
@@ -377,7 +327,7 @@ fn test_購読_重複と停止と存在しない対象() {
     state
         .reserve("client", "providers", "providers")
         .and_then(|()| {
-            state.activate("providers", None).inspect_err(|_| {
+            state.activate("providers").inspect_err(|_| {
                 let _ = state.stop("client", "providers");
             })
         })
@@ -386,88 +336,11 @@ fn test_購読_重複と停止と存在しない対象() {
     assert_eq!(
         state
             .reserve("client", "workspaces", "workspaces")
-            .and_then(|()| state.activate("workspaces", None).inspect_err(|_| {
+            .and_then(|()| state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })),
         Err(SubscriptionError::StreamEnded)
     );
-}
-
-#[test]
-fn test_再開_履歴内と古い版と別起動と未来の版() {
-    // Given
-    let mut state = registry();
-    state.publish("workspaces", 1, None).unwrap();
-    let version = Version {
-        epoch: "boot".into(),
-        sequence: 0,
-    };
-    // When
-    state
-        .reserve("client", "workspaces", "workspaces")
-        .and_then(|()| {
-            state
-                .activate("workspaces", Some(&version))
-                .inspect_err(|_| {
-                    let _ = state.stop("client", "workspaces");
-                })
-        })
-        .unwrap();
-    // Then
-    assert!(matches!(state.next("client"), Some((_, Event::Change(_, _, value))) if *value == 1));
-    for version in [
-        Version {
-            epoch: "old".into(),
-            sequence: 0,
-        },
-        Version {
-            epoch: "boot".into(),
-            sequence: 100,
-        },
-    ] {
-        state.stop("client", "workspaces").unwrap();
-        state
-            .reserve("client", "workspaces", "workspaces")
-            .and_then(|()| {
-                state
-                    .activate("workspaces", Some(&version))
-                    .inspect_err(|_| {
-                        let _ = state.stop("client", "workspaces");
-                    })
-            })
-            .unwrap();
-        assert!(
-            matches!(state.next("client"), Some((_, Event::Snapshot(_, value))) if *value == 1)
-        );
-        assert!(matches!(
-            state.next("client"),
-            Some((_, Event::Bookmark(_)))
-        ));
-    }
-    for n in 2..=70 {
-        state.publish("workspaces", n, None).unwrap();
-    }
-    state.stop("client", "workspaces").unwrap();
-    state
-        .reserve("client", "workspaces", "workspaces")
-        .and_then(|()| {
-            state
-                .activate(
-                    "workspaces",
-                    Some(&Version {
-                        epoch: "boot".into(),
-                        sequence: 0,
-                    }),
-                )
-                .inspect_err(|_| {
-                    let _ = state.stop("client", "workspaces");
-                })
-        })
-        .unwrap();
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Snapshot(Version { sequence: 70, .. }, _)))
-    ));
 }
 
 #[test]
@@ -477,7 +350,7 @@ fn test_送り待ち_溢れた購読のみ再開し他の対象は続く() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -485,7 +358,7 @@ fn test_送り待ち_溢れた購読のみ再開し他の対象は続く() {
     state
         .reserve("client", "providers", "providers")
         .and_then(|()| {
-            state.activate("providers", None).inspect_err(|_| {
+            state.activate("providers").inspect_err(|_| {
                 let _ = state.stop("client", "providers");
             })
         })
@@ -527,7 +400,7 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
         state
             .reserve("client", &id, &id)
             .and_then(|()| {
-                state.activate(&id, None).inspect_err(|_| {
+                state.activate(&id).inspect_err(|_| {
                     let _ = state.stop("client", &id);
                 })
             })
@@ -539,7 +412,7 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -557,70 +430,6 @@ fn test_購読数_上限がなく版は購読し直しても戻らない() {
 }
 
 #[test]
-fn test_再開_送り待ちが溢れても保持した版以降だけを再生する() {
-    // Given
-    let mut state = registry();
-    state
-        .reserve("client", "workspaces", "workspaces")
-        .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
-                let _ = state.stop("client", "workspaces");
-            })
-        })
-        .unwrap();
-    state.next("client").unwrap();
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Bookmark(_)))
-    ));
-    // When
-    for n in 1..=64 {
-        state.publish("workspaces", n, None).unwrap();
-    }
-    // Then
-    for n in 1..=64 {
-        assert!(
-            matches!(state.next("client"), Some((_, Event::Change(Version {sequence,..}, _, _))) if sequence == n)
-        );
-    }
-    assert!(state.next("client").is_none());
-    state.bookmark("client");
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Bookmark(Version { sequence: 64, .. })))
-    ));
-    state.stop("client", "workspaces").unwrap();
-    state
-        .reserve("client", "workspaces", "workspaces")
-        .and_then(|()| {
-            state
-                .activate(
-                    "workspaces",
-                    Some(&Version {
-                        epoch: "boot".into(),
-                        sequence: 64,
-                    }),
-                )
-                .inspect_err(|_| {
-                    let _ = state.stop("client", "workspaces");
-                })
-        })
-        .unwrap();
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Bookmark(_)))
-    ));
-    assert!(state.next("client").is_none());
-    state.bookmark("client");
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Bookmark(_)))
-    ));
-    state.publish("workspaces", 64, None).unwrap();
-    assert!(state.next("client").is_none());
-}
-
-#[test]
 fn test_共有購読_最後のclient終了時に対象がinactiveになる() {
     // Given
     let mut state = registry();
@@ -629,7 +438,7 @@ fn test_共有購読_最後のclient終了時に対象がinactiveになる() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -637,7 +446,7 @@ fn test_共有購読_最後のclient終了時に対象がinactiveになる() {
     state
         .reserve("other", "other-workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("other-workspaces", None).inspect_err(|_| {
+            state.activate("other-workspaces").inspect_err(|_| {
                 let _ = state.stop("other", "other-workspaces");
             })
         })
@@ -655,7 +464,7 @@ fn test_購読開始_切断で解放したsnapshotは再取得前に再開しな
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -666,7 +475,7 @@ fn test_購読開始_切断で解放したsnapshotは再取得前に再開しな
     assert_eq!(
         state
             .reserve("next", "workspaces", "workspaces")
-            .and_then(|()| state.activate("workspaces", None).inspect_err(|_| {
+            .and_then(|()| state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("next", "workspaces");
             })),
         Err(SubscriptionError::UnknownTarget)
@@ -675,7 +484,7 @@ fn test_購読開始_切断で解放したsnapshotは再取得前に再開しな
     state
         .reserve("next", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("next", "workspaces");
             })
         })
@@ -688,15 +497,15 @@ fn test_購読開始失敗_切断済みclientの対象を登録せず既存対�
     // Given
     let mut state = registry();
     state
-        .register("repository-paths".into(), 0, Delivery::Full)
+        .register("terminal-startup-command".into(), 0, Delivery::Full)
         .unwrap();
     let target = "branches";
     // When
     state.register(target.into(), 1, Delivery::Full).unwrap();
     assert_eq!(
-        state.reserve("closed", target, target).and_then(|()| state
-            .activate(target, None)
-            .inspect_err(|_| {
+        state
+            .reserve("closed", target, target)
+            .and_then(|()| state.activate(target).inspect_err(|_| {
                 let _ = state.stop("closed", target);
             })),
         Err(SubscriptionError::StreamEnded)
@@ -707,12 +516,12 @@ fn test_購読開始失敗_切断済みclientの対象を登録せず既存対�
     );
     // Then
     assert!(!state.registered(target));
-    assert!(state.registered("repository-paths"));
+    assert!(state.registered("terminal-startup-command"));
     state.register(target.into(), 1, Delivery::Full).unwrap();
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -732,7 +541,7 @@ fn test_対象ごとの配信_変更値を購読clientへ届ける() {
     state
         .reserve("client", raw, raw)
         .and_then(|()| {
-            state.activate(raw, None).inspect_err(|_| {
+            state.activate(raw).inspect_err(|_| {
                 let _ = state.stop("client", raw);
             })
         })
@@ -771,7 +580,7 @@ fn test_複数対象の配信_指定した対象だけに変更値を届ける()
         state
             .reserve("client", raw, raw)
             .and_then(|()| {
-                state.activate(raw, None).inspect_err(|_| {
+                state.activate(raw).inspect_err(|_| {
                     let _ = state.stop("client", raw);
                 })
             })
@@ -805,7 +614,7 @@ fn test_差分対象_最後のclient切断後もruntimeの登録を保持する(
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -825,13 +634,13 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読を�
     // Given
     let mut state = registry();
     state
-        .register("repository-paths".into(), 0, Delivery::Full)
+        .register("terminal-startup-command".into(), 0, Delivery::Full)
         .unwrap();
     state.open("other".into()).unwrap();
     state
         .reserve("other", "providers", "providers")
         .and_then(|()| {
-            state.activate("providers", None).inspect_err(|_| {
+            state.activate("providers").inspect_err(|_| {
                 let _ = state.stop("other", "providers");
             })
         })
@@ -839,7 +648,7 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読を�
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -855,10 +664,10 @@ fn test_購読開始確認_切断後は対象の鍵を解放し他の購読を�
     assert!(!state.registered("workspaces"));
     assert_eq!(state.ensure_active("providers"), Ok(()));
     assert_eq!(
-        state.ensure_active("repository-paths"),
+        state.ensure_active("terminal-startup-command"),
         Err(SubscriptionError::StreamEnded)
     );
-    assert!(!state.registered("repository-paths"));
+    assert!(!state.registered("terminal-startup-command"));
 }
 
 #[test]
@@ -872,7 +681,7 @@ fn test_provider一覧購読_指定対象に更新一覧を配信する() {
     state
         .reserve("client", "providers", "providers")
         .and_then(|()| {
-            state.activate("providers", None).inspect_err(|_| {
+            state.activate("providers").inspect_err(|_| {
                 let _ = state.stop("client", "providers");
             })
         })
@@ -883,7 +692,7 @@ fn test_provider一覧購読_指定対象に更新一覧を配信する() {
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -909,7 +718,7 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
     state
         .reserve("client", "workspaces", "workspaces")
         .and_then(|()| {
-            state.activate("workspaces", None).inspect_err(|_| {
+            state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("client", "workspaces");
             })
         })
@@ -923,7 +732,7 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
     assert_eq!(
         state
             .reserve("closed", "workspaces", "workspaces")
-            .and_then(|()| state.activate("workspaces", None).inspect_err(|_| {
+            .and_then(|()| state.activate("workspaces").inspect_err(|_| {
                 let _ = state.stop("closed", "workspaces");
             })),
         Err(SubscriptionError::StreamEnded)
@@ -940,11 +749,9 @@ fn test_開始失敗で解放した対象_再登録時は以前の版を再利�
     state
         .reserve("next", "workspaces", "workspaces")
         .and_then(|()| {
-            state
-                .activate("workspaces", Some(&version))
-                .inspect_err(|_| {
-                    let _ = state.stop("next", "workspaces");
-                })
+            state.activate("workspaces").inspect_err(|_| {
+                let _ = state.stop("next", "workspaces");
+            })
         })
         .unwrap();
     // Then
@@ -964,58 +771,6 @@ fn test_対象の解放_世代番号が尽きたら版を再利用せずエラ�
         Err(SubscriptionError::VersionExhausted)
     );
     assert!(state.registered("workspaces"));
-}
-
-#[test]
-fn test_差分購読_対象の版で再開し件数では溢れない() {
-    // Given
-    let mut state = registry();
-    let target = "terminal:3:pty";
-    let version = |sequence| Version {
-        epoch: "runtime-1".into(),
-        sequence,
-    };
-    state.register_delta(target, version(20), 100_000).unwrap();
-    assert!(state.needs_snapshot(target, None).unwrap());
-    state.set_delta_snapshot(target, version(20), 0).unwrap();
-    state
-        .reserve("client", target, target)
-        .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
-                let _ = state.stop("client", target);
-            })
-        })
-        .unwrap();
-    // When
-    for sequence in 21..=120 {
-        state
-            .publish_delta(target, version(sequence), sequence, 1, true)
-            .unwrap();
-    }
-    // Then
-    assert!(matches!(state.next("client"), Some((_, Event::Snapshot(v, _))) if v.sequence == 20));
-    assert!(matches!(
-        state.next("client"),
-        Some((_, Event::Bookmark(_)))
-    ));
-    for sequence in 21..=120 {
-        assert!(
-            matches!(state.next("client"), Some((_, Event::Change(v, Delivery::Delta, _))) if v.sequence == sequence)
-        );
-    }
-    state.stop("client", target).unwrap();
-    assert!(!state.needs_snapshot(target, Some(&version(119))).unwrap());
-    state
-        .reserve("client", target, target)
-        .and_then(|()| {
-            state
-                .activate(target, Some(&version(119)))
-                .inspect_err(|_| {
-                    let _ = state.stop("client", target);
-                })
-        })
-        .unwrap();
-    assert!(matches!(state.next("client"), Some((_, Event::Change(v, _, _))) if v.sequence == 120));
 }
 
 #[test]
@@ -1042,17 +797,9 @@ fn test_terminal開始_登録後の出力でsnapshotが消えても現在状態�
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state
-                .activate(
-                    target,
-                    Some(&Version {
-                        epoch: "old".into(),
-                        sequence: 0,
-                    }),
-                )
-                .inspect_err(|_| {
-                    let _ = state.stop("client", target);
-                })
+            state.activate(target).inspect_err(|_| {
+                let _ = state.stop("client", target);
+            })
         })
         .unwrap();
 
@@ -1082,7 +829,7 @@ fn test_terminal開始_snapshot未確定の差分対象を登録してから作�
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -1112,7 +859,7 @@ async fn test_定期印_変更の配信で周期の起点をずらさない() {
         let mut state = runtime.state.lock();
         state
             .reserve("client", "target", "target")
-            .and_then(|()| state.activate("target", None))
+            .and_then(|()| state.activate("target"))
     }
     .unwrap();
     let mut stream = Box::pin(runtime.stream("client".into(), (), |_, _| {}));
@@ -1153,7 +900,7 @@ fn test_差分購読_零単位の要素も一単位として数える() {
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -1202,7 +949,7 @@ fn test_差分購読_量の超過と作り直しは現在状態を要求する()
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -1241,50 +988,6 @@ fn test_差分購読_量の超過と作り直しは現在状態を要求する()
 }
 
 #[test]
-fn test_差分再開_同じ出力番号の変更を再送し出力は重複させない() {
-    // Given
-    let mut state = registry();
-    let target = "terminal:3:pty";
-    let version = |sequence| Version {
-        epoch: "runtime".into(),
-        sequence,
-    };
-    state.register_delta(target, version(0), 100_000).unwrap();
-    state
-        .publish_delta(target, version(1), 10, 10, true)
-        .unwrap();
-    state
-        .publish_delta(target, version(1), 20, 0, false)
-        .unwrap();
-    state
-        .publish_delta(target, version(1), 30, 0, false)
-        .unwrap();
-    state
-        .publish_delta(target, version(2), 40, 10, true)
-        .unwrap();
-    // When
-    state
-        .reserve("client", target, target)
-        .and_then(|()| {
-            state.activate(target, Some(&version(1))).inspect_err(|_| {
-                let _ = state.stop("client", target);
-            })
-        })
-        .unwrap();
-    // Then
-    for (sequence, expected) in [(1, 20), (1, 30), (2, 40)] {
-        assert!(
-            matches!(state.next("client"), Some((_, Event::Change(v, Delivery::Delta, value))) if v.sequence == sequence && *value == expected)
-        );
-    }
-    assert!(matches!(state.next("client"), Some((_, Event::Bookmark(v))) if v.sequence == 2));
-    assert!(state.next("client").is_none());
-    state.bookmark("client");
-    assert!(matches!(state.next("client"), Some((_, Event::Bookmark(v))) if v.sequence == 2));
-    assert!(state.next("client").is_none());
-}
-
-#[test]
 fn test_差分再開_同番号の変更の履歴が欠けたら現在状態を要求する() {
     // Given
     let mut state = registry();
@@ -1320,7 +1023,7 @@ fn test_差分購読_出力欠落後の同番号変更だけで再開せずsnaps
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -1357,7 +1060,7 @@ fn test_差分復元要求_同じ対象の全購読を現在状態から再開�
         state
             .reserve(client, client, target)
             .and_then(|()| {
-                state.activate(client, None).inspect_err(|_| {
+                state.activate(client).inspect_err(|_| {
                     let _ = state.stop(client, client);
                 })
             })
@@ -1406,7 +1109,7 @@ fn test_購読対象削除_差分履歴を解放し購読は明示停止まで�
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -1474,7 +1177,7 @@ fn test_購読対象再作成_送り待ちが無い購読と溢れた購読も�
         state
             .reserve("client", target, target)
             .and_then(|()| {
-                state.activate(target, None).inspect_err(|_| {
+                state.activate(target).inspect_err(|_| {
                     let _ = state.stop("client", target);
                 })
             })
@@ -1555,7 +1258,7 @@ fn test_差分対象再作成_旧世代の送り待ちを新世代snapshotより
     state
         .reserve("client", target, target)
         .and_then(|()| {
-            state.activate(target, None).inspect_err(|_| {
+            state.activate(target).inspect_err(|_| {
                 let _ = state.stop("client", target);
             })
         })
@@ -1622,7 +1325,7 @@ fn test_差分の番号判定_重複を捨て同版を積み古い非更新で�
     state
         .reserve("client", "delta", "delta")
         .and_then(|()| {
-            state.activate("delta", None).inspect_err(|_| {
+            state.activate("delta").inspect_err(|_| {
                 let _ = state.stop("client", "delta");
             })
         })
@@ -1660,7 +1363,7 @@ fn test_差分の番号判定_重複を捨て同版を積み古い非更新で�
 }
 
 #[test]
-fn test_対象単位の停止_他の開始途中の状態と差分履歴を保持する() {
+fn test_対象単位の停止_他の開始途中の状態を保持する() {
     // Given
     let mut state = Subscriptions::new("boot".into());
     state
@@ -1676,7 +1379,7 @@ fn test_対象単位の停止_他の開始途中の状態と差分履歴を保�
     state
         .reserve("client", "delta", "delta")
         .and_then(|()| {
-            state.activate("delta", None).inspect_err(|_| {
+            state.activate("delta").inspect_err(|_| {
                 let _ = state.stop("client", "delta");
             })
         })
@@ -1698,31 +1401,12 @@ fn test_対象単位の停止_他の開始途中の状態と差分履歴を保�
     // Then
     assert!(state
         .reserve("client", "starting", "starting")
-        .and_then(|()| state.activate("starting", None).inspect_err(|_| {
+        .and_then(|()| state.activate("starting").inspect_err(|_| {
             let _ = state.stop("client", "starting");
         }))
         .is_ok());
-    assert!(!state.awaiting_snapshot("client", "delta"));
-    assert!(state
-        .reserve("client", "delta", "delta")
-        .and_then(|()| state
-            .activate(
-                "delta",
-                Some(&Version {
-                    epoch: version.epoch,
-                    sequence: 0
-                })
-            )
-            .inspect_err(|_| {
-                let _ = state.stop("client", "delta");
-            }))
-        .is_ok());
     assert!(
         matches!(state.next("client"), Some((target, Event::Snapshot(_, _))) if target == "starting")
-    );
-    assert!(!state.awaiting_snapshot("client", "delta"));
-    assert!(
-        matches!(state.next("client"), Some((target, Event::Change(_, Delivery::Delta, _))) if target == "delta")
     );
 }
 
@@ -1743,7 +1427,7 @@ async fn assert_unregister_epoch(registered: bool, matching: bool, subscribed: b
                 if subscribed {
                     state.open("client".into())?;
                     state.reserve("client", "target", "target").and_then(|()| {
-                        state.activate("target", None).inspect_err(|_| {
+                        state.activate("target").inspect_err(|_| {
                             let _ = state.stop("client", "target");
                         })
                     })?;
@@ -1796,7 +1480,7 @@ fn test_購読識別子_全clientで重複を拒み停止と切断後は再利�
     state
         .reserve("client", "x", "workspaces")
         .and_then(|()| {
-            state.activate("x", None).inspect_err(|_| {
+            state.activate("x").inspect_err(|_| {
                 let _ = state.stop("client", "x");
             })
         })
@@ -1804,7 +1488,7 @@ fn test_購読識別子_全clientで重複を拒み停止と切断後は再利�
     state
         .reserve("client", "y", "workspaces")
         .and_then(|()| {
-            state.activate("y", None).inspect_err(|_| {
+            state.activate("y").inspect_err(|_| {
                 let _ = state.stop("client", "y");
             })
         })
@@ -1832,7 +1516,7 @@ fn test_購読識別子_全clientで重複を拒み停止と切断後は再利�
     state
         .reserve("other", "x", "providers")
         .and_then(|()| {
-            state.activate("x", None).inspect_err(|_| {
+            state.activate("x").inspect_err(|_| {
                 let _ = state.stop("other", "x");
             })
         })
@@ -1841,7 +1525,7 @@ fn test_購読識別子_全clientで重複を拒み停止と切断後は再利�
     state
         .reserve("client", "x", "providers")
         .and_then(|()| {
-            state.activate("x", None).inspect_err(|_| {
+            state.activate("x").inspect_err(|_| {
                 let _ = state.stop("client", "x");
             })
         })
@@ -1907,7 +1591,7 @@ fn test_差分配信_同じclientの二つの識別子へ送り片方の停止�
         state
             .reserve("client", id, "terminal")
             .and_then(|()| {
-                state.activate(id, None).inspect_err(|_| {
+                state.activate(id).inspect_err(|_| {
                     let _ = state.stop("client", id);
                 })
             })

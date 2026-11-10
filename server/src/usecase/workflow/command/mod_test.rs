@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) mod tests {
     use super::super::*;
-    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinitionContent, WorkflowError};
+    use crate::domain::workflow::{WorkflowDefinitionContent, WorkflowError};
     use crate::usecase::workflow::control_plane::{
         WorkflowControlPlaneCommit, WorkflowControlPlaneGateway,
     };
@@ -216,7 +216,6 @@ pub(crate) mod tests {
                 workflow_name: "wf".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
-                created_from: ExecutionOrigin::DesktopUi,
             })
             .await
             .unwrap();
@@ -242,7 +241,6 @@ pub(crate) mod tests {
                 workflow_name: "bad name!".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
-                created_from: ExecutionOrigin::DesktopUi,
             })
             .await
             .is_err());

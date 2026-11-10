@@ -7,7 +7,7 @@ use crate::domain::workflow::entities::workflow_execution::RuntimeNodeExecution;
 use crate::domain::workflow::services::projection as workflow_projection;
 #[cfg(any(test, feature = "test-support"))]
 use crate::domain::workflow::{
-    ExecutionOrigin, NodeHistoryEntry, RuntimeArtifact, TokenUsage, WorkflowDefinitionContent,
+    NodeHistoryEntry, RuntimeArtifact, TokenUsage, WorkflowDefinitionContent,
 };
 
 use crate::domain::workflow::RuntimeExecutionState;
@@ -21,7 +21,6 @@ pub struct RuntimeCommitSnapshot {
     pub worktree_path: String,
     pub repository_root: Option<String>,
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) created_from: ExecutionOrigin,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) request: String,
     #[cfg(any(test, feature = "test-support"))]
@@ -58,7 +57,6 @@ impl RuntimeCommitSnapshot {
             worktree_path: execution.worktree_path.clone(),
             repository_root: execution.repository_root.clone(),
             #[cfg(any(test, feature = "test-support"))]
-            created_from: execution.created_from,
             #[cfg(any(test, feature = "test-support"))]
             request: execution.request.clone().unwrap_or_default(),
             #[cfg(any(test, feature = "test-support"))]
@@ -100,7 +98,6 @@ pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
         execution_id: state.execution_id,
         workflow_name: state.workflow_name,
         worktree_path: state.worktree_path,
-        created_from: state.created_from,
         request: state.request,
         error_reason: state.error_reason,
         state: state.state,

@@ -77,13 +77,7 @@ impl WorkflowStartExecutionGateway for WorkflowRuntimeCommandGateway {
     ) -> Result<String, WorkflowError> {
         let workflow = super::mapper::domain_workflow_to_schema(&command.workflow)?;
         self.driver
-            .start_resolved_workflow(
-                &self.app,
-                workflow,
-                command.worktree_path,
-                command.request,
-                command.created_from,
-            )
+            .start_resolved_workflow(&self.app, workflow, command.worktree_path, command.request)
             .await
             .map_err(workflow_runtime_error_to_workflow_error)
     }

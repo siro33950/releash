@@ -489,7 +489,6 @@ pub fn derive_read_model(tree: &FoldedTree) -> ExecutionTreeReadModel {
         workflow_name: aggregate.workflow_name.clone(),
         status: fields.status,
         current_node: fields.current_node,
-        created_from: aggregate.created_from,
         worktree_path: aggregate.worktree_path.clone(),
         started_at: aggregate.started_at,
         updated_at: aggregate.updated_at,
@@ -607,7 +606,6 @@ fn restore_aggregate(
         workspace_identity: root.workspace_identity.clone(),
         repository_root: root.repository_root.clone(),
         launched_as: root.launched_as,
-        created_from: root.created_from,
         started_at,
         updated_at: started_at,
         request: (!root.request.is_empty()).then(|| root.request.clone()),
@@ -687,7 +685,6 @@ pub(super) fn apply_record(
                 aggregate.derive_session_settlement(id, timestamp)
             }
         }
-        NodeFact::SubmitRejected(_) => Ok(()),
         NodeFact::StopReceived(fact) => {
             if fact.result_summary.is_some() || fact.token_usage.is_some() {
                 let _ = aggregate.record_pending_result(
@@ -797,7 +794,6 @@ pub(super) fn restore_artifact_scope(
         workspace_identity: root.workspace_identity.clone(),
         repository_root: root.repository_root.clone(),
         launched_as: root.launched_as,
-        created_from: root.created_from,
         started_at: timestamp_of(first),
         ..ExecutionTreeRestore::default()
     });
@@ -880,7 +876,6 @@ pub struct SessionFactsView {
     pub exited: bool,
     /// 後続の restore が無い archive_requested。
     pub archived: bool,
-    pub last_exit_abnormal: bool,
     pub activity: AgentSessionActivity,
 }
 
@@ -995,28 +990,6 @@ impl SessionFactsFold {
     fn view(&self) -> SessionFactsView {
         let mut view = self.view.clone();
         view.exited |= self.exited.is_some();
-        view.last_exit_abnormal = self.exited.as_ref().is_some_and(|fact| fact.is_abnormal());
         view
     }
-}
-
-pub fn derive_tree_archive(
-    records: &[NodeFactRecord],
-) -> Option<crate::domain::workflow::ExecutionTreeArchiveRecord> {
-    records
-        .iter()
-        .rev()
-        .filter(|record| record.meta.parent_id.is_none())
-        .find_map(|record| match &record.fact {
-            NodeFact::ArchiveRequested(fact) => {
-                Some(Some(crate::domain::workflow::ExecutionTreeArchiveRecord {
-                    execution_id: record.meta.tree_id.clone(),
-                    archived_at: fact.archived_at,
-                    archive_reason: fact.reason.clone(),
-                }))
-            }
-            NodeFact::RestoreRequested => Some(None),
-            _ => None,
-        })
-        .flatten()
 }

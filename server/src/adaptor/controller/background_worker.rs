@@ -38,7 +38,6 @@ pub(crate) fn run() -> i32 {
     );
     let scanner = crate::adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
         repository,
-        Arc::new(super::wiring::build_code_usecase_with_gateways(app_config)),
         repository_config,
     );
     match crate::adaptor::gateway::shared::background_worker::serve(&scanner) {

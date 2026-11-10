@@ -32,7 +32,6 @@ use releashd::test_support::integration::sessions::AgentSessionRepository;
 use releashd::test_support::integration::sessions::AgentSessionRepositoryError;
 use releashd::test_support::integration::workflow::seed_workflow_session_facts;
 use releashd::test_support::integration::workflow::AgentSessionActivity;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
 use releashd::test_support::integration::workflow::NodeFact;
 use releashd::test_support::integration::workflow::NodeKindName;
@@ -129,7 +128,6 @@ pub async fn test_agent_session_repository_単独session作成をnode_eventsへ�
     assert_eq!(root.workspace_identity, "/repo/.worktrees/feature");
     assert_eq!(root.worktree_path, "/repo/.worktrees/feature");
     assert_eq!(root.launched_as, ExecutionTreeLaunch::Session);
-    assert_eq!(root.created_from, ExecutionOrigin::DesktopUi);
     let session = root
         .definition
         .as_ref()
@@ -874,7 +872,6 @@ pub async fn test_agent_session_repository_provider紐付けと状態遷移を�
         Some("provider://transcript/1")
     );
     assert_eq!(loaded.session().lifecycle(), AgentSessionLifecycle::Paused);
-    assert!(!loaded.session().last_exit_abnormal());
 }
 
 #[tokio::test]
@@ -925,8 +922,7 @@ pub async fn test_agent_session_repository_openかつprovider_session確定済�
                 repository.save(saved, "pause-session").await.unwrap();
             }
             "archived-session" => {
-                saved.session_mut().archive().unwrap();
-                repository.save(saved, "archive-session").await.unwrap();
+                archive_session(&store, saved.session().id()).await;
             }
             _ => {}
         }
@@ -1117,7 +1113,6 @@ pub async fn test_agent_session_repository_異常exitをfailure付きprocess_exi
         .unwrap()
         .unwrap();
     assert_eq!(loaded.session().lifecycle(), AgentSessionLifecycle::Paused);
-    assert!(loaded.session().last_exit_abnormal());
 }
 
 #[tokio::test]
@@ -1212,15 +1207,11 @@ pub async fn test_agent_session_repository_restore後の指示待ちを事実か
     saved
         .session_mut()
         .observe_activity(AgentSessionActivity::Working);
-    let mut saved = repository
+    let saved = repository
         .save(saved, "working-before-archive")
         .await
         .unwrap();
-    saved.session_mut().archive().unwrap();
-    repository
-        .save(saved, "archive-working-session")
-        .await
-        .unwrap();
+    archive_session(&store, saved.session().id()).await;
 
     let records = releashd::test_support::integration::workflow::read_tree_records(
         &store,
@@ -1285,17 +1276,15 @@ pub async fn test_agent_session_repository_resumeとarchiveとrestoreを行と�
             releashd::test_support::integration::sessions::AgentSessionRecoveryResult::Succeeded,
         )
         .unwrap();
-    let mut saved = repository.save(saved, "resume-request-1").await.unwrap();
+    let _saved = repository.save(saved, "resume-request-1").await.unwrap();
     let resumed = repository
         .find("agent-session-flow")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(resumed.session().lifecycle(), AgentSessionLifecycle::Open);
-    assert!(!resumed.session().last_exit_abnormal());
 
-    saved.session_mut().archive().unwrap();
-    repository.save(saved, "archive-request-1").await.unwrap();
+    archive_session(&store, "agent-session-flow").await;
     let archived = repository
         .find("agent-session-flow")
         .await
@@ -1426,13 +1415,17 @@ pub async fn test_agent_session_repository削除で木の行を物理削除しpr
         .session_mut()
         .associate_provider_session("provider-session-1", None)
         .unwrap();
-    let mut first = repository.save(first, "associate-request-1").await.unwrap();
+    let first = repository.save(first, "associate-request-1").await.unwrap();
     assert!(repository
         .is_owned(ProviderKind::Claude, "provider-session-1")
         .await
         .unwrap());
-    first.session_mut().archive().unwrap();
-    let first = repository.save(first, "archive-request-1").await.unwrap();
+    archive_session(&store, first.session().id()).await;
+    let first = repository
+        .find(first.session().id())
+        .await
+        .unwrap()
+        .unwrap();
     let authorization = first.session().authorize_delete().unwrap();
 
     repository
@@ -1502,14 +1495,15 @@ pub async fn test_agent_session_repository削除失敗時に木とprovider所有
         .session_mut()
         .associate_provider_session("provider-session-atomic-delete", None)
         .unwrap();
-    let mut session = repository
+    let session = repository
         .save(session, "associate-atomic-delete")
         .await
         .unwrap();
-    session.session_mut().archive().unwrap();
+    archive_session(&store, session.session().id()).await;
     let session = repository
-        .save(session, "archive-atomic-delete")
+        .find(session.session().id())
         .await
+        .unwrap()
         .unwrap();
     let authorization = session.session().authorize_delete().unwrap();
     store.fault_injector().arm_fail_before_commit();
@@ -2111,7 +2105,6 @@ pub async fn test_エージェントセッション読取_idで一件の表示�
     assert_eq!(detail.lifecycle, AgentSessionLifecycleDto::Open);
     assert_eq!(detail.provider_session_id, None);
     assert_eq!(detail.transcript_ref, None);
-    assert!(!detail.last_exit_abnormal);
     assert!(detail.operations.can_archive);
     assert!(!detail.operations.can_restore);
     assert!(!detail.operations.can_delete);
@@ -2138,7 +2131,6 @@ pub async fn test_agent_session_repository_workflow子sessionの事実は元node
                 repository_root: None,
                 workspace_identity: "/repo".to_string(),
                 worktree_path: "/repo".to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
                 workflow_name: "workflow".to_string(),
                 definition: Some(
@@ -2308,4 +2300,23 @@ pub async fn test_review文脈読取_書き込み側storeを保持したままse
     );
     assert!(missing.is_none());
     assert!(repository.find("agent-session-1").await.unwrap().is_some());
+}
+
+async fn archive_session(store: &Arc<LocalEventStore>, session_id: &str) {
+    let records =
+        releashd::test_support::integration::workflow::read_tree_records(store, session_id)
+            .await
+            .unwrap();
+    releashd::test_support::integration::workflow::append_single_fact(
+        store,
+        &records[0].meta,
+        &NodeFact::ArchiveRequested(
+            releashd::test_support::integration::workflow::ArchiveRequestedFact {
+                archived_at: 1.0,
+            },
+        ),
+        1_000,
+    )
+    .await
+    .unwrap();
 }

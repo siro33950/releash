@@ -4,7 +4,6 @@
 use crate::adaptor::gateway::shared::git_operation;
 use git2::{ErrorCode, Repository, StatusOptions};
 use std::path::Path;
-use tokio::process::Command;
 
 use crate::domain::code::{CodeError, StagingRepository};
 
@@ -133,47 +132,6 @@ pub fn git_unstage(repo_path: &str, paths: Vec<String>) -> Result<(), CodeError>
     Ok(())
 }
 
-pub async fn git_stage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
-    apply_patch(repo_path, patch, false).await
-}
-
-pub async fn git_unstage_hunk(repo_path: &str, patch: &str) -> Result<(), CodeError> {
-    apply_patch(repo_path, patch, true).await
-}
-
-async fn apply_patch(repo_path: &str, patch: &str, reverse: bool) -> Result<(), CodeError> {
-    let repo = git_operation::run(|| Repository::open(repo_path))?;
-    let _lock =
-        crate::infrastructure::file_lock::acquire_async(&repo.path().join("releash-index.lock"))
-            .await?;
-    #[cfg(any(test, feature = "test-support"))]
-    let program = crate::adaptor::gateway::code::test_helpers::git_program();
-    #[cfg(not(any(test, feature = "test-support")))]
-    let program = "git";
-    let mut command = Command::new(program);
-    command.args(["apply", "--cached"]).current_dir(repo_path);
-    if reverse {
-        command.arg("--reverse");
-    }
-    let output = crate::infrastructure::process::output::output(command, patch.as_bytes().to_vec())
-        .await
-        .map_err(|error| match error {
-            crate::infrastructure::process::output::ProcessError::Io(error) => {
-                CodeError::from(error)
-            }
-            crate::infrastructure::process::output::ProcessError::Stopped(error) => {
-                CodeError::from(error)
-            }
-        })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(CodeError::Rule(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
-    }
-}
-
 /// `StagingRepository` の git2 / git CLI 実装。
 pub struct StagingGateway;
 
@@ -185,11 +143,5 @@ impl StagingRepository for StagingGateway {
     }
     fn unstage(&self, repo_path: &str, paths: Vec<String>) -> Result<(), CodeError> {
         git_unstage(repo_path, paths)
-    }
-    async fn stage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
-        git_stage_hunk(repo_path, patch).await
-    }
-    async fn unstage_hunk(&self, repo_path: &str, patch: &str) -> Result<(), CodeError> {
-        git_unstage_hunk(repo_path, patch).await
     }
 }

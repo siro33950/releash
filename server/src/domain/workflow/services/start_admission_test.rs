@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
+use crate::domain::workflow::{ExecutionStatus, TokenUsage};
 
 fn candidate(path: &str, status: ExecutionStatus) -> WorkflowExecutionSummary {
     WorkflowExecutionSummary {
@@ -8,7 +8,6 @@ fn candidate(path: &str, status: ExecutionStatus) -> WorkflowExecutionSummary {
         worktree_path: path.into(),
         status,
         current_node: None,
-        created_from: ExecutionOrigin::Cli,
         started_at: 1.0,
         updated_at: 1.0,
         completed_at: None,

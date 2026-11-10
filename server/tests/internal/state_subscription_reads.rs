@@ -31,7 +31,6 @@ async fn start_read(
     usecase: &releashd::test_support::integration::subscriptions::StateSubscriptionUsecase,
     client: &str,
     target: &str,
-    cursor: Option<(&str, u64)>,
 ) -> Result<(), releashd::test_support::integration::subscriptions::StateReadError> {
     let target =
         releashd::test_support::integration::subscriptions::SubscriptionTarget::parse(target)
@@ -40,7 +39,7 @@ async fn start_read(
             )?;
     usecase
         .deps()
-        .start_subscription(client, &target, &format!("{client}:{target}"), cursor)
+        .start_subscription(client, &target, &format!("{client}:{target}"))
         .await
 }
 use futures_util::StreamExt;
@@ -68,8 +67,6 @@ use releashd::test_support::integration::sessions::AgentSessionQueryService;
 use releashd::test_support::integration::sessions::AgentSessionReadUsecase;
 use releashd::test_support::integration::sessions::AgentSessionTreeLocationDto;
 use releashd::test_support::integration::sessions::ProviderAvailabilityUsecase;
-use releashd::test_support::integration::subscriptions::StateChangeSource;
-use releashd::test_support::integration::subscriptions::StateReadFailure;
 use releashd::test_support::integration::subscriptions::StateSubscriptionEvent;
 use releashd::test_support::integration::subscriptions::StateSubscriptionRead;
 use releashd::test_support::integration::subscriptions::StateSubscriptionUsecase;
@@ -275,7 +272,6 @@ impl Fixture {
             Arc::new(RepositoryStateRepositoryGateway::new(repository.clone())),
             Arc::new(DefaultRepositoryScanner::new(
                 repository.clone(),
-                Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
                 repository_config.clone(),
             )),
             publisher.clone(),
@@ -366,7 +362,6 @@ impl Fixture {
             daemon: releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
                 releashd::test_support::integration::daemon::serving(),
             ),
-            repositories,
             repository,
             repository_config,
             workflow,
@@ -464,18 +459,12 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     let fixture = Fixture::new();
     let r = &fixture.reads;
     let p = &fixture.path;
-    let branch = r.repository.get_current_branch(p).unwrap();
-    r.repository_config
-        .set_branch_base_override(p, "feature", Some(&branch))
-        .unwrap();
+    let branch = releashd::test_support::integration::repository::get_current_branch(p).unwrap();
     let workspace = releashd::test_support::integration::platform::WorkspaceState {
         version: 1,
         panes: None,
         tabs: Some(
-            releashd::test_support::integration::platform::WorkspaceTabsState {
-                editors: vec![],
-                active_editor_path: None,
-            },
+            releashd::test_support::integration::platform::WorkspaceTabsState { editors: vec![] },
         ),
         layout: Some(
             releashd::test_support::integration::platform::WorkspaceLayoutState {
@@ -484,8 +473,6 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
                 left_nav_collapsed: true,
                 right_collapsed: false,
                 right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
             },
         ),
     };
@@ -498,31 +485,14 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     .await
     .unwrap();
     r.workspaces.refresh().await;
-    let (tree, selected) = r
-        .workflow
-        .workspace_tree_selection(p, "missing")
-        .await
-        .unwrap();
     let cases = vec![
-        (
-            T::RepositoryPaths,
-            StateValue::RepositoryPaths(vec![p.clone()]),
-        ),
         (
             T::Workspaces,
             StateValue::Workspaces(r.workspaces.read().await.unwrap()),
         ),
         (
-            T::Selection(p.clone(), "missing".into()),
-            StateValue::Selection(tree, selected),
-        ),
-        (
             T::NodeDetail(p.clone(), "missing".into()),
             StateValue::NodeDetail(None),
-        ),
-        (
-            T::AgentSession("missing-session".into()),
-            StateValue::AgentSession(None),
         ),
         (
             T::SessionHistory(p.clone(), 120),
@@ -553,18 +523,6 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
             ]),
         ),
         (
-            T::BranchBase(p.clone(), "feature".into()),
-            StateValue::BranchBase(Some(branch.clone())),
-        ),
-        (
-            T::BranchStatus(p.clone()),
-            StateValue::BranchStatus(r.repository.list_branches_with_worktree(p).unwrap()),
-        ),
-        (
-            T::CurrentBranch(p.clone()),
-            StateValue::CurrentBranch(branch),
-        ),
-        (
             T::Issues(p.clone()),
             StateValue::Issues(
                 releashd::test_support::integration::platform::Fetched::ready(
@@ -577,14 +535,6 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
                     },
                 ),
             ),
-        ),
-        (
-            T::Worktrees(p.clone()),
-            StateValue::Worktrees(r.repository.list_worktrees(p).unwrap()),
-        ),
-        (
-            T::StartupRepository,
-            StateValue::StartupRepository(r.repository.startup_worktree().unwrap()),
         ),
         (
             T::WorkspaceState("repo".into(), p.clone()),
@@ -604,22 +554,10 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
             StateValue::Workflow(r.workflow.get_workflow("fixture").unwrap()),
         ),
         (
-            T::WorkflowSource("fixture".into()),
-            StateValue::WorkflowSource(r.workflow.get_workflow_source("fixture").unwrap()),
-        ),
-        (
             T::Facets(FacetKind::Instruction),
             StateValue::Facets(
                 r.workflow
                     .list_facet_summaries(FacetKind::Instruction)
-                    .unwrap(),
-            ),
-        ),
-        (
-            T::Facet(FacetKind::Instruction, "fixture-instruction".into()),
-            StateValue::Facet(
-                r.workflow
-                    .get_facet(FacetKind::Instruction, "fixture-instruction")
                     .unwrap(),
             ),
         ),
@@ -645,10 +583,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     for (target, value, expected) in actual {
         assert_eq!(value, expected, "{target}");
     }
-    assert_eq!(
-        *fixture.sessions.calls.lock(),
-        ["missing-session".to_string(), format!("{p}:120")]
-    );
+    assert_eq!(*fixture.sessions.calls.lock(), [format!("{p}:120")]);
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -682,7 +617,7 @@ pub async fn test_設定購読_初期値と保存後の値を既存のproto内�
             stream.next().await,
             Some(StateSubscriptionEvent::Ready)
         ));
-        start_read(&fixture.subscriptions, target, target, None)
+        start_read(&fixture.subscriptions, target, target)
             .await
             .unwrap();
 
@@ -833,53 +768,13 @@ pub async fn test_状態読取_存在しない定義を空の詳細として配�
 }
 
 #[tokio::test]
-pub async fn test_状態読取_facet不在を失敗として返す() {
-    // Given
-    let fixture = Fixture::new();
-    // When
-    let error = fixture
-        .reads
-        .read(&SubscriptionTarget::Facet(
-            FacetKind::Instruction,
-            "missing-facet".into(),
-        ))
-        .await
-        .unwrap_err();
-    // Then
-    assert!(matches!(error.source, StateReadFailure::Workflow(_)));
-}
-
-#[tokio::test]
-pub async fn test_状態読取_current_branchの失敗を返す() {
-    // Given
-    let fixture = Fixture::new();
-    let expected = fixture
-        .reads
-        .repository
-        .get_current_branch("/missing/repository")
-        .unwrap_err();
-    // When
-    let error = fixture
-        .reads
-        .read(&SubscriptionTarget::CurrentBranch(
-            "/missing/repository".into(),
-        ))
-        .await
-        .unwrap_err();
-    // Then
-    assert!(
-        matches!(error.source, StateReadFailure::Repository(actual) if format!("{actual:?}") == format!("{expected:?}"))
-    );
-}
-
-#[tokio::test]
 pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ購読へ変更を配信する() {
     // Given
     let fixture = Fixture::new();
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
-    start_read(&fixture.subscriptions, "client", &target, None)
+    start_read(&fixture.subscriptions, "client", &target)
         .await
         .unwrap();
     assert!(
@@ -926,280 +821,6 @@ pub async fn test_issue手動更新_有効なcacheを無視し30秒前に同じ�
     ));
     assert!(before.elapsed() < CacheTtl::EXTERNAL_INFORMATION.duration());
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 2);
-}
-
-#[tokio::test]
-pub async fn test_終了済み実行木の選択_初期購読でツリーを配信する() {
-    // Given
-    use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
-    use releashd::test_support::integration::subscriptions::Event;
-
-    use releashd::test_support::integration::workflow::PassthroughManagedWorktreeGateway;
-    let fixture = Fixture::new();
-    let mut archive = archive_fixture();
-    let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
-    let id = archive
-        .host
-        .start_resolved_workflow(
-            &archive.app,
-            workflow,
-            fixture.path.clone(),
-            None,
-            releashd::test_support::integration::workflow::ExecutionOrigin::Cli,
-        )
-        .await
-        .unwrap();
-    archive
-        .runtime
-        .abort_execution(
-            releashd::test_support::integration::workflow::AbortExecutionCommand {
-                execution_id: id.clone(),
-                expected_node_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let mut reads = fixture.reads.clone();
-    reads.workflow = Arc::new(
-        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
-            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-            archive.directory.path(),
-            Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
-            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            releashd::test_support::integration::workspace::ExecutionReads::new(
-                archive.store.clone(),
-            ),
-            None,
-            None,
-        )
-        .0,
-    );
-    let subscriptions =
-        fixture
-            .subscriptions
-            .with_reads(Arc::new(reads), None, vec![], String::new());
-    archive.runtime = archive.runtime.with_state_publisher(subscriptions.clone());
-    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
-    stream.next().await;
-    let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
-    // When
-    start_read(&subscriptions, "client", &target, None)
-        .await
-        .unwrap();
-    let event = stream.next().await;
-    // Then
-    let Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) = event else {
-        panic!("initial snapshot")
-    };
-    let Some(releashd::test_support::integration::wire::state_payload::Value::Selection(initial)) =
-        &match value.as_ref() {
-            releashd::test_support::integration::subscriptions::PublishedState::Value(value) => {
-                value
-            }
-            _ => panic!("selection"),
-        }
-        .value
-    else {
-        panic!("selection")
-    };
-    assert!(!initial
-        .snapshot
-        .as_ref()
-        .unwrap()
-        .nodes
-        .as_ref()
-        .unwrap()
-        .items
-        .is_empty());
-}
-
-#[tokio::test]
-pub async fn test_終了済み実行木のarchive_取り直しなしで空のツリーを配信する() {
-    // Given
-
-    let fixture = Fixture::new();
-    let mut archive = archive_fixture();
-    let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
-    let id = archive
-        .host
-        .start_resolved_workflow(
-            &archive.app,
-            workflow,
-            fixture.path.clone(),
-            None,
-            releashd::test_support::integration::workflow::ExecutionOrigin::Cli,
-        )
-        .await
-        .unwrap();
-    archive
-        .runtime
-        .abort_execution(
-            releashd::test_support::integration::workflow::AbortExecutionCommand {
-                execution_id: id.clone(),
-                expected_node_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let mut reads = fixture.reads.clone();
-    reads.workflow = Arc::new(
-        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
-            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-            archive.directory.path(),
-            Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
-            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            releashd::test_support::integration::workspace::ExecutionReads::new(
-                archive.store.clone(),
-            ),
-            None,
-            None,
-        )
-        .0,
-    );
-    let subscriptions =
-        fixture
-            .subscriptions
-            .with_reads(Arc::new(reads), None, vec![], String::new());
-    archive.runtime = archive.runtime.with_state_publisher(subscriptions.clone());
-    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
-    stream.next().await;
-    let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
-    start_read(&subscriptions, "client", &target, None)
-        .await
-        .unwrap();
-    stream.next().await.unwrap();
-    stream.next().await.unwrap();
-    // When
-    archive
-        .runtime
-        .archive_execution_tree(&id, "manual")
-        .await
-        .unwrap();
-    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-        .await
-        .unwrap();
-    // Then
-    let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
-        panic!("changed tree")
-    };
-    assert_eq!(received, format!("client:{target}"));
-    let Some(releashd::test_support::integration::wire::state_payload::Value::Selection(selection)) =
-        &match value.as_ref() {
-            releashd::test_support::integration::subscriptions::PublishedState::Value(value) => {
-                value
-            }
-            _ => panic!("selection"),
-        }
-        .value
-    else {
-        panic!("selection")
-    };
-    assert!(selection
-        .snapshot
-        .as_ref()
-        .unwrap()
-        .nodes
-        .as_ref()
-        .unwrap()
-        .items
-        .is_empty());
-}
-
-#[tokio::test]
-pub async fn test_終了済み実行木のrestore_取り直しなしでツリーを配信する() {
-    // Given
-
-    let fixture = Fixture::new();
-    let mut archive = archive_fixture();
-    let workflow = serde_saphyr::from_str("name: archive\ndescription: test\nnodes:\n  main: {session: {provider: codex, facets: {instruction: policy-confirmation}}}").unwrap();
-    let id = archive
-        .host
-        .start_resolved_workflow(
-            &archive.app,
-            workflow,
-            fixture.path.clone(),
-            None,
-            releashd::test_support::integration::workflow::ExecutionOrigin::Cli,
-        )
-        .await
-        .unwrap();
-    archive
-        .runtime
-        .abort_execution(
-            releashd::test_support::integration::workflow::AbortExecutionCommand {
-                execution_id: id.clone(),
-                expected_node_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let mut reads = fixture.reads.clone();
-    reads.workflow = Arc::new(
-        releashd::test_support::integration::platform::build_workflow_services_with_gateways(
-            Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-            archive.directory.path(),
-            Arc::new(PassthroughManagedWorktreeGateway),
-            Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
-            Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
-            releashd::test_support::integration::workspace::ExecutionReads::new(
-                archive.store.clone(),
-            ),
-            None,
-            None,
-        )
-        .0,
-    );
-    let subscriptions =
-        fixture
-            .subscriptions
-            .with_reads(Arc::new(reads), None, vec![], String::new());
-    archive.runtime = archive.runtime.with_state_publisher(subscriptions.clone());
-    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
-    stream.next().await;
-    let target = SubscriptionTarget::Selection(fixture.path.clone(), "selected".into()).to_string();
-    start_read(&subscriptions, "client", &target, None)
-        .await
-        .unwrap();
-    stream.next().await.unwrap();
-    stream.next().await.unwrap();
-    archive
-        .runtime
-        .archive_execution_tree(&id, "manual")
-        .await
-        .unwrap();
-    stream.next().await.unwrap();
-    // When
-    archive.runtime.restore_execution_tree(&id).await.unwrap();
-    let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-        .await
-        .unwrap();
-    // Then
-    let Some(StateSubscriptionEvent::Item(received, Event::Change(_, _, value))) = event else {
-        panic!("changed tree")
-    };
-    assert_eq!(received, format!("client:{target}"));
-    let Some(releashd::test_support::integration::wire::state_payload::Value::Selection(selection)) =
-        &match value.as_ref() {
-            releashd::test_support::integration::subscriptions::PublishedState::Value(value) => {
-                value
-            }
-            _ => panic!("selection"),
-        }
-        .value
-    else {
-        panic!("selection")
-    };
-    assert!(!selection
-        .snapshot
-        .as_ref()
-        .unwrap()
-        .nodes
-        .as_ref()
-        .unwrap()
-        .items
-        .is_empty());
 }
 
 #[tokio::test]
@@ -1254,7 +875,6 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
     reads.workflow = Arc::new(
         releashd::test_support::integration::platform::build_workflow_services_with_gateways(
             failures.clone(),
-            archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
@@ -1276,7 +896,7 @@ pub async fn test_sessionタブ購読_背景処理の注意状態の発生と解
     let target = SubscriptionTarget::SessionTab(item.id);
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
-    start_read(&subscriptions, "client", &target.to_string(), None)
+    start_read(&subscriptions, "client", &target.to_string())
         .await
         .unwrap();
     let initial = reads.read(&target).await.unwrap();
@@ -1354,7 +974,6 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
     reads.workflow = Arc::new(
         releashd::test_support::integration::platform::build_workflow_services_with_gateways(
             failures.clone(),
-            _directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
@@ -1374,7 +993,7 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
     let target = SubscriptionTarget::SessionTab(item.id);
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
-    start_read(&subscriptions, "client", &target.to_string(), None)
+    start_read(&subscriptions, "client", &target.to_string())
         .await
         .unwrap();
     let initial = reads.read(&target).await.unwrap();
@@ -1409,7 +1028,17 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
             assert!(
                 matches!(&expected, StateValue::SessionTab { node: Some(node), .. } if node.0.status_classification.as_public_str() == expected_classification)
             );
-            let list = reads.workflow.workspace_tree(&fixture.path).await.unwrap();
+            let list = reads
+                .workflow
+                .retained_workspace_trees(&[reads
+                    .workflow
+                    .resolve_worktree_path(&fixture.path)
+                    .unwrap()])
+                .await
+                .pop()
+                .unwrap()
+                .value
+                .unwrap();
             let listed = list
                 .nodes()
                 .iter()
@@ -1436,147 +1065,6 @@ pub async fn test_sessionタブ購読_子の背景失敗の発生と解消を親
 }
 
 #[tokio::test]
-pub async fn test_agent_session購読_状態変更通知から再読取して同じ購読へ配信する() {
-    // Given
-    let fixture = Fixture::new();
-    let item = AgentSessionItemDto {
-        id: "session".into(),
-        workspace_identity: fixture.path.clone(),
-        worktree_path: fixture.path.clone(),
-        workspace_worktree_path: fixture.path.clone(),
-        provider: AgentSessionProviderDto::Codex,
-        tree_location: AgentSessionTreeLocationDto {
-            tree_id: "tree".into(),
-            node_execution_id: "node".into(),
-        },
-        lifecycle: AgentSessionLifecycleDto::Open,
-        provider_session_id: None,
-        transcript_ref: None,
-        operations: AgentSessionOperationsDto {
-            can_archive: true,
-            can_restore: false,
-            can_delete: false,
-        },
-        last_exit_abnormal: false,
-        terminal_presence: Some("live".into()),
-    };
-    *fixture.sessions.item.lock() = Some(item.clone());
-    let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
-    stream.next().await;
-    let target = SubscriptionTarget::AgentSession(item.id.clone()).to_string();
-    start_read(&fixture.subscriptions, "client", &target, None)
-        .await
-        .unwrap();
-    let expected = (item.clone(), AgentSessionAvailability::Open);
-    assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(id, Event::Snapshot(_, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(Some(expected))))
-    );
-    stream.next().await;
-    // When / Then
-    for lifecycle in [
-        Some(AgentSessionLifecycleDto::Paused),
-        Some(AgentSessionLifecycleDto::Archived),
-        Some(AgentSessionLifecycleDto::Open),
-        None,
-    ] {
-        let next = lifecycle.map(|lifecycle| AgentSessionItemDto {
-            lifecycle,
-            operations: AgentSessionOperationsDto {
-                can_archive: lifecycle != AgentSessionLifecycleDto::Archived,
-                can_restore: lifecycle == AgentSessionLifecycleDto::Archived,
-                can_delete: lifecycle == AgentSessionLifecycleDto::Archived,
-            },
-            ..item.clone()
-        });
-        let expected = next.clone().map(|value| {
-            let availability = if value.lifecycle == AgentSessionLifecycleDto::Archived {
-                AgentSessionAvailability::Archived
-            } else {
-                AgentSessionAvailability::Open
-            };
-            (value, availability)
-        });
-        let before = fixture.sessions.calls.lock().len();
-        *fixture.sessions.item.lock() = next.clone();
-        fixture
-            .subscriptions
-            .notify(StateChangeSource::Worktree(fixture.path.clone()));
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-            .await
-            .unwrap();
-        assert!(
-            matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, releashd::test_support::integration::subscriptions::Delivery::Full, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, StateValue::AgentSession(expected)))
-        );
-        assert_eq!(fixture.sessions.calls.lock().len(), before + 1);
-        assert!(fixture
-            .sessions
-            .calls
-            .lock()
-            .iter()
-            .all(|id| id == "session"));
-    }
-}
-
-#[tokio::test]
-pub async fn test_状態読取_review対象をworktreeとcomment置き場から読み取る() {
-    use releashd::test_support::integration::platform::ReviewFileViewDto;
-    use releashd::test_support::integration::review::ReviewBase;
-    use releashd::test_support::integration::review::ReviewSection;
-
-    // Given
-    let fixture = Fixture::new();
-    let r = &fixture.reads;
-    let p = &fixture.path;
-    let git = git2::Repository::open(p).unwrap();
-    crate::test_support_git::add_and_commit(&git, "review.txt", "before\n", "tracked");
-    std::fs::write(std::path::Path::new(p).join("review.txt"), "after\n").unwrap();
-    // When
-    let snapshot = r
-        .read(&T::ReviewSnapshot(p.clone(), ReviewBase::Head))
-        .await
-        .unwrap();
-    let view = r
-        .read(&T::ReviewFileView(
-            p.clone(),
-            "review.txt".into(),
-            ReviewSection::Changes,
-            ReviewBase::Head,
-        ))
-        .await
-        .unwrap();
-    let threads = r
-        .read(&T::ReviewThreads("repository".into()))
-        .await
-        .unwrap();
-    // Then
-    assert!(
-        matches!(&snapshot, StateValue::ReviewSnapshot(value) if value.changed_files.iter().any(|file| file.path == "review.txt")),
-        "{snapshot:?}"
-    );
-    assert!(
-        matches!(&view, StateValue::ReviewFileView(ReviewFileViewDto::TextDiff(text)) if text.original == "before\n" && text.modified == "after\n"),
-        "{view:?}"
-    );
-    assert_eq!(threads, StateValue::ReviewThreads(vec![]));
-    assert_eq!(
-        r.review_comments_dir(),
-        releashd::test_support::integration::platform::state_dir(&r.data_dir)
-            .to_string_lossy()
-            .into_owned()
-    );
-    let error = r
-        .read(&T::ReviewFileView(
-            p.clone(),
-            "missing.txt".into(),
-            ReviewSection::Changes,
-            ReviewBase::Head,
-        ))
-        .await
-        .unwrap_err();
-    assert!(matches!(error.source, StateReadFailure::Code(_)));
-}
-
-#[tokio::test]
 pub async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ届ける() {
     // Given
 
@@ -1584,7 +1072,7 @@ pub async fn test_issue手動更新失敗_最後の一覧と失敗を購読へ�
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
-    start_read(&fixture.subscriptions, "client", &target, None)
+    start_read(&fixture.subscriptions, "client", &target)
         .await
         .unwrap();
     stream.next().await.unwrap();
@@ -1614,7 +1102,7 @@ pub async fn test_issue手動更新失敗_回復時に新しい一覧を届け�
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
     stream.next().await;
     let target = SubscriptionTarget::Issues(fixture.path.clone()).to_string();
-    start_read(&fixture.subscriptions, "client", &target, None)
+    start_read(&fixture.subscriptions, "client", &target)
         .await
         .unwrap();
     stream.next().await.unwrap();
@@ -1671,18 +1159,13 @@ pub async fn test_workspace購読の値_reactが配置を省略して保存し�
     let state = WorkspaceState {
         panes: Some(panes),
         version: 1,
-        tabs: Some(WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        }),
+        tabs: Some(WorkspaceTabsState { editors: vec![] }),
         layout: Some(WorkspaceLayoutState {
             center_tab: "agent".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
             right_collapsed: false,
             right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
         }),
     };
     save_workspace_state(
@@ -1745,7 +1228,6 @@ pub async fn test_sessionタブ購読_idだけでavailabilityと操作可否を�
             can_restore: false,
             can_delete: false,
         },
-        last_exit_abnormal: false,
         terminal_presence: Some("live".into()),
     };
     *fixture.sessions.item.lock() = Some(item.clone());
@@ -1875,9 +1357,8 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         .await
         .unwrap();
     use releashd::test_support::integration::workflow::{
-        append_single_fact, ExecutionOrigin, ExecutionTreeLaunch, NodeDefinition, NodeFact,
-        NodeFactMeta, NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact,
-        WorkflowDefinitionContent,
+        append_single_fact, ExecutionTreeLaunch, NodeDefinition, NodeFact, NodeFactMeta,
+        NodeKindName, SessionAttachedFact, StartedFact, TreeRootFact, WorkflowDefinitionContent,
     };
     let child_tree = SqliteWorkspaceTreeRepository::new(
         archive.store.clone(),
@@ -1924,7 +1405,6 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
                     repository_root: None,
                     workspace_identity: fixture.path.clone(),
                     worktree_path: fixture.path.clone(),
-                    created_from: ExecutionOrigin::Cli,
                     request: String::new(),
                     workflow_name: "main".into(),
                     definition: Some(WorkflowDefinitionContent {
@@ -2000,7 +1480,6 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
         version: 1,
         tabs: Some(WorkspaceTabsState {
             editors: Vec::new(),
-            active_editor_path: None,
         }),
         layout: Some(WorkspaceLayoutState {
             center_tab: "agent".into(),
@@ -2008,15 +1487,12 @@ pub async fn test_保存済み会話タブの購読_旧参照を解決し一部�
             left_nav_collapsed: false,
             right_collapsed: false,
             right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
         }),
     };
     let mut reads = fixture.reads.clone();
     reads.workflow = Arc::new(
         releashd::test_support::integration::platform::build_workflow_services_with_gateways(
             Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-            archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
@@ -2185,72 +1661,6 @@ async fn test_状態読取_builtinと同名の利用者ファイルをbuiltinで
 }
 
 #[tokio::test]
-async fn test_builtin解決失敗_workflows購読と無関係な定義の保存複製を継続する() {
-    use releashd::test_support::integration::{subscriptions::payload, wire};
-    // Given
-    let fixture = Fixture::new();
-    let dir = &fixture.reads.workflows_dir;
-    std::fs::create_dir_all(dir.join("policies")).unwrap();
-    std::fs::write(dir.join("policies/coding.md"), "Use {{ missing }}").unwrap();
-    // When
-    let workflows = payload(
-        &fixture
-            .reads
-            .read(&SubscriptionTarget::Workflows)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let saved = fixture
-        .reads
-        .workflow
-        .save_workflow_source_with_diagnostics(
-            "name: independent\ndescription: Independent\nnodes:\n  main: {command: 'true'}\n",
-            None,
-        )
-        .unwrap();
-    fixture
-        .reads
-        .workflow
-        .duplicate_workflow("independent", "independent-copy")
-        .unwrap();
-    let updated = payload(
-        &fixture
-            .reads
-            .read(&SubscriptionTarget::Workflows)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    // Then
-    let Some(wire::state_payload::Value::Workflows(workflows)) = workflows.value else {
-        panic!("workflows payload");
-    };
-    let builtin = workflows
-        .items
-        .iter()
-        .find(|row| row.name.as_deref() == Some("02_implement-existing-spec"))
-        .unwrap();
-    assert_eq!(builtin.builtin, Some(true));
-    assert!(builtin.read_error.as_ref().unwrap().contains("missing"));
-    assert!(workflows
-        .items
-        .iter()
-        .any(|row| row.name.as_deref() == Some("fixture") && row.read_error.is_none()));
-    assert_eq!(saved.file_stem(), "independent");
-    let Some(wire::state_payload::Value::Workflows(updated)) = updated.value else {
-        panic!("workflows payload");
-    };
-    for name in ["independent", "independent-copy"] {
-        assert!(updated
-            .items
-            .iter()
-            .any(|row| row.name.as_deref() == Some(name) && row.read_error.is_none()));
-        assert!(dir.join(format!("{name}.yml")).is_file());
-    }
-}
-
-#[tokio::test]
 async fn test_workspace状態購読_sessionタブ追加を設定未保存のまま配信する() {
     use releashd::test_support::integration::{
         platform::{save_workspace_state, WorkspaceState},
@@ -2262,7 +1672,7 @@ async fn test_workspace状態購読_sessionタブ追加を設定未保存のま�
     let target = T::WorkspaceState(fixture.path.clone(), fixture.path.clone());
     let mut stream = Box::pin(fixture.subscriptions.open("client".into()).unwrap());
     stream.next().await.unwrap();
-    start_read(&fixture.subscriptions, "client", &target.to_string(), None)
+    start_read(&fixture.subscriptions, "client", &target.to_string())
         .await
         .unwrap();
     stream.next().await.unwrap();
@@ -2356,7 +1766,6 @@ async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_li
     reads.workflow = Arc::new(
         releashd::test_support::integration::platform::build_workflow_services_with_gateways(
             failures.clone(),
-            archive.directory.path(),
             Arc::new(PassthroughManagedWorktreeGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorSettingsGateway),
             Arc::new(releashd::test_support::integration::workflow::NoopEditorLauncherGateway),
@@ -2378,7 +1787,7 @@ async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_li
     let target = SubscriptionTarget::ExecutionOverview;
     let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
     stream.next().await;
-    start_read(&subscriptions, "client", &target.to_string(), None)
+    start_read(&subscriptions, "client", &target.to_string())
         .await
         .unwrap();
     let initial = reads.read(&target).await.unwrap();

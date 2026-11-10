@@ -50,15 +50,15 @@ async fn test_review文脈_sessionの書き手とworkspaceを解決し閉じたs
         Author::provider_agent("codex".into(), Some("session".into()))
     );
     // When
-    repository
-        .stored
-        .lock()
-        .unwrap()
-        .as_mut()
-        .unwrap()
-        .session_mut()
-        .archive()
-        .unwrap();
+    crate::domain::agent_session::test_helpers::archive_derived(
+        repository
+            .stored
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .session_mut(),
+    );
     // Then
     assert!(context.session_for_read("session").await.unwrap().is_some());
     assert!(matches!(

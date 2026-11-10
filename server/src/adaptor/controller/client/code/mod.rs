@@ -7,11 +7,6 @@
 pub(crate) mod shared;
 pub(crate) use shared::register_shared;
 
-pub(crate) mod diff;
-pub(crate) mod hunk;
-pub(crate) mod language;
-pub(crate) mod markdown;
-pub(crate) mod review;
 pub(crate) mod staging;
 
 use crate::adaptor::presenter::error::AppError;

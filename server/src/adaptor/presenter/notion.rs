@@ -57,15 +57,6 @@ impl Default for PropertyMappingView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct NotionLabelOptionView {
-    pub property_name: String,
-    pub property_type: String,
-    pub options: Vec<String>,
-    #[serde(default)]
-    pub option_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct NotionTaskPageView {
     pub tasks: Vec<NotionTaskView>,
     pub has_more: bool,
@@ -125,17 +116,6 @@ impl From<notion_domain::NotionTask> for NotionTaskView {
             branch_name: task.branch_name,
             created_at: task.created_at,
             last_edited_at: task.last_edited_at,
-        }
-    }
-}
-
-impl From<notion_domain::NotionLabelOption> for NotionLabelOptionView {
-    fn from(option: notion_domain::NotionLabelOption) -> Self {
-        Self {
-            property_name: option.property_name,
-            property_type: option.property_type,
-            options: option.options,
-            option_ids: option.option_ids,
         }
     }
 }

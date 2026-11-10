@@ -97,18 +97,6 @@ pub struct WorkspaceCommandResultDto {
 }
 
 impl WorkflowUsecase {
-    /// worktree の実行木。要対応の失敗を反映した集約を返す。
-    pub async fn workspace_tree(
-        &self,
-        worktree_path: &str,
-    ) -> Result<WorkspaceTree, WorkflowError> {
-        let identity = WorkspaceIdentity::new(self.resolve_worktree_path(worktree_path)?);
-        self.load_workspace_trees(&[identity])
-            .await
-            .pop()
-            .expect("one tree per workspace")
-    }
-
     async fn load_workspace_trees(
         &self,
         identities: &[WorkspaceIdentity],
@@ -227,17 +215,6 @@ impl WorkflowUsecase {
         self.workspace_query.node_artifact(node_execution_id).await
     }
 
-    /// 実行木と、選択している Node が画面に出す木にあるか。
-    pub async fn workspace_tree_selection(
-        &self,
-        worktree_path: &str,
-        selected_node_id: &str,
-    ) -> Result<(WorkspaceTree, bool), WorkflowError> {
-        let tree = self.workspace_tree(worktree_path).await?;
-        let selected = tree.visible().contains(selected_node_id);
-        Ok((tree, selected))
-    }
-
     pub(crate) async fn archive_workspace_workflow_execution(
         &self,
         runtime: &super::WorkflowRuntimeUsecase,
@@ -246,7 +223,7 @@ impl WorkflowUsecase {
     ) -> Result<(), WorkflowError> {
         self.authorize_archive_target(worktree_path, execution_id)
             .await?;
-        runtime.archive_execution_tree(execution_id, "manual").await
+        runtime.archive_execution_tree(execution_id).await
     }
 
     pub(crate) async fn restore_workspace_workflow_execution(

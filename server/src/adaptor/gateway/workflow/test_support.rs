@@ -23,9 +23,9 @@ pub async fn seed_workflow_session_facts(
     seed: WorkflowSessionFactSeed<'_>,
 ) -> Result<(), String> {
     use crate::domain::workflow::{
-        ChildEntry, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeDefinition,
-        NodeFact, NodeFactMeta, NodeKind, NodeKindName, SequenceSpec, SessionAttachedFact,
-        SessionSpec, StartedFact, TreeRootFact, WorkflowDefinitionContent,
+        ChildEntry, ExecutionParentRef, ExecutionTreeLaunch, NodeDefinition, NodeFact,
+        NodeFactMeta, NodeKind, NodeKindName, SequenceSpec, SessionAttachedFact, SessionSpec,
+        StartedFact, TreeRootFact, WorkflowDefinitionContent,
     };
 
     if !super::fact_log::read_tree_records(store, seed.workflow_execution_id)
@@ -97,7 +97,6 @@ pub async fn seed_workflow_session_facts(
                 .as_str()
                 .to_string(),
                 worktree_path: seed.worktree_path.to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
                 request: seed.request.to_string(),
                 workflow_name: definition.name.clone(),
                 definition: Some(definition),
@@ -192,7 +191,6 @@ fn synthesized_metadata_events(execution: &WorkflowExecutionMetadata) -> Vec<Wor
             execution_id: execution.execution_id.clone(),
             workflow_name: execution.workflow_name.clone(),
             worktree_path: execution.worktree_path.clone(),
-            created_from: execution.created_from,
             request: String::new(),
             definition,
             timestamp: execution.started_at,
@@ -274,7 +272,7 @@ pub async fn seed_unavailable_definition(
     }
     let root = serde_json::json!({"root": {
         "workspaceIdentity": workspace, "worktreePath": workspace,
-        "createdFrom": "desktop_ui", "request": "work", "launchedAs": "workflow",
+        "request": "work", "launchedAs": "workflow",
         "definition": definition
     }});
     store

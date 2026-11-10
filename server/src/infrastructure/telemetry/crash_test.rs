@@ -126,36 +126,6 @@ fn report_error_emits_when_gate_is_enabled_and_scrubs_attributes() {
 }
 
 #[test]
-fn report_frontend_error_emits_scrubbed_values() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset_for_tests();
-    let (provider, exporter) = install_test_exporter(true, true);
-
-    report_frontend_error(
-        "react_error token=abc",
-        "fetch failed ws://localhost/socket?api_key=abc",
-        Some("component at /Users/me/project/App.tsx password=hunter2"),
-    );
-    provider.force_flush().unwrap();
-
-    let logs = exporter.get_emitted_logs().unwrap();
-    assert_eq!(logs.len(), 1);
-    assert_eq!(
-        attr(&logs[0].record, "exception.type").as_deref(),
-        Some("react_error token=[redacted]")
-    );
-    assert_eq!(
-        attr(&logs[0].record, "exception.message").as_deref(),
-        Some("fetch failed [redacted-url]")
-    );
-    assert_eq!(
-        attr(&logs[0].record, "exception.stacktrace").as_deref(),
-        Some("component at [path] password=[redacted]")
-    );
-    reset_for_tests();
-}
-
-#[test]
 fn report_error_skips_when_gate_is_disabled() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_for_tests();

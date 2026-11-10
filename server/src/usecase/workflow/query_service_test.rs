@@ -4,7 +4,7 @@ pub(crate) mod tests {
     use super::super::*;
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, FacetRefs, NodeCompletion, NodeDefinition, NodeExecution,
+        ExecutionStatus, FacetRefs, NodeCompletion, NodeDefinition, NodeExecution,
         NodeExecutionStatus, NodeKind, NodeKindName, SessionSpec, TokenUsage,
     };
     use std::collections::HashMap;
@@ -17,9 +17,6 @@ pub(crate) mod tests {
     }
 
     impl crate::domain::workflow::WorkflowDefinitionRepository for FakeDefinitionRepository {
-        fn list_names(&self) -> Result<Vec<String>, WorkflowError> {
-            Ok(vec![self.workflow.name.clone()])
-        }
         fn get(
             &self,
             name: &str,
@@ -31,7 +28,6 @@ pub(crate) mod tests {
                 return Err(WorkflowError::NotFound(name.into()));
             }
             Ok(crate::domain::workflow::WorkflowDefinition::restore(
-                name.into(),
                 "/workflows".into(),
                 crate::domain::workflow::WorkflowSource::File {
                     path: "/workflows/wf.lua".into(),
@@ -39,19 +35,6 @@ pub(crate) mod tests {
                 self.format,
                 Ok(self.workflow.clone()),
             ))
-        }
-        fn save(
-            &self,
-            _: crate::domain::workflow::WorkflowDefinition,
-            _: Option<&str>,
-        ) -> Result<(), WorkflowError> {
-            unreachable!()
-        }
-        fn delete(
-            &self,
-            _: &crate::domain::workflow::WorkflowDefinition,
-        ) -> Result<(), WorkflowError> {
-            unreachable!()
         }
         fn find(
             &self,
@@ -62,37 +45,7 @@ pub(crate) mod tests {
                 Some(result) => result.map(Some),
             }
         }
-        fn save_source(
-            &self,
-            _: &crate::domain::workflow::WorkflowDefinition,
-            _: &str,
-            _: Option<&str>,
-        ) -> Result<(), WorkflowError> {
-            unreachable!()
-        }
     }
-
-    struct FakeDefinitionSourceGateway {
-        workflow_source: Option<String>,
-    }
-
-    impl WorkflowDefinitionSourceService for FakeDefinitionSourceGateway {
-        fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
-            Ok(self.workflow_source.clone())
-        }
-
-        fn parse(
-            &self,
-            _source: &str,
-        ) -> Result<
-            crate::domain::workflow::WorkflowDefinition,
-            crate::domain::workflow::WorkflowSourceSaveError,
-        > {
-            unreachable!()
-        }
-    }
-
-    use crate::usecase::workflow::test_helpers::FakeFacetRepository;
 
     #[derive(Default)]
     struct FakeExecutionProjectionRepository {
@@ -155,10 +108,6 @@ pub(crate) mod tests {
                 format,
                 read_error,
             }),
-            Arc::new(FakeDefinitionSourceGateway {
-                workflow_source: None,
-            }),
-            Arc::new(FakeFacetRepository::default()),
             Arc::new(FakeEventRepository::default()),
             Arc::new(FakeExecutionProjectionRepository::default()),
         )
@@ -208,7 +157,6 @@ pub(crate) mod tests {
         service: WorkflowQueryService,
         events: Arc<FakeEventRepository>,
         projections: Arc<FakeExecutionProjectionRepository>,
-        facets: Arc<FakeFacetRepository>,
     }
 
     impl Fixture {
@@ -218,24 +166,14 @@ pub(crate) mod tests {
                 format: crate::domain::workflow::WorkflowSourceFormat::Yaml,
                 read_error: None,
             });
-            let definition_sources = Arc::new(FakeDefinitionSourceGateway {
-                workflow_source: None,
-            });
-            let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let projections = Arc::new(FakeExecutionProjectionRepository::default());
-            let service = WorkflowQueryService::new(
-                definitions,
-                definition_sources,
-                facets.clone(),
-                events.clone(),
-                projections.clone(),
-            );
+            let service =
+                WorkflowQueryService::new(definitions, events.clone(), projections.clone());
             Self {
                 service,
                 events,
                 projections,
-                facets,
             }
         }
     }
@@ -267,7 +205,6 @@ pub(crate) mod tests {
             workflow_name: "wf".to_string(),
             status: ExecutionStatus::Running,
             current_node: Some("review".to_string()),
-            created_from: ExecutionOrigin::DesktopUi,
             worktree_path: "/repo".to_string(),
             started_at: 1.0,
             updated_at: 1.0,
@@ -340,11 +277,10 @@ pub(crate) mod tests {
         assert_eq!(result.content(), Ok(&workflow()));
         assert_eq!(fixture.service.get_workflow("missing").unwrap(), None);
         assert!(fixture.service.get_workflow("bad name!").is_err());
-        assert!(fixture.service.get_workflow_source("bad name!").is_err());
     }
 
     #[tokio::test]
-    async fn event_and_facet_queries_validate_execution_ids_and_delegate() {
+    async fn event_queries_validate_execution_ids_and_delegate() {
         // Given
         let fixture = Fixture::new();
         fixture
@@ -356,10 +292,6 @@ pub(crate) mod tests {
                 payload: serde_json::json!({}),
             })
             .unwrap();
-        fixture.facets.facets.lock().unwrap().insert(
-            (FacetKind::Instruction, "implement".to_string()),
-            "instruction body".to_string(),
-        );
 
         // When
         let events = fixture
@@ -368,15 +300,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let invalid_execution = fixture.service.read_events("not-a-uuid").await.unwrap_err();
-        let facet = fixture
-            .service
-            .get_facet(FacetKind::Instruction, "implement")
-            .unwrap();
 
         // Then
         assert_eq!(events.len(), 1);
         assert!(matches!(invalid_execution, WorkflowError::Validation(_)));
-        assert_eq!(facet.content(), "instruction body");
     }
 
     #[tokio::test]

@@ -112,10 +112,9 @@ pub mod integration;
 #[cfg(feature = "test-support")]
 pub mod agent_session_tui_acceptance {
     pub use crate::agent_session_tui_acceptance::{
-        drain_and_close_store, AcceptanceAgentSession, AcceptanceAgentSessionLifecycle,
-        AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome, AcceptanceHistoryCandidate,
-        AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
-        AgentSessionTuiAcceptanceHost,
+        drain_and_close_store, AcceptanceAgentSession, AcceptanceAgentSessionAvailability,
+        AcceptanceAgentSessionTreeLocation, AcceptanceHistoryCandidate, AcceptanceHookWarning,
+        AcceptanceProvider, AgentSessionTuiAcceptanceConfig, AgentSessionTuiAcceptanceHost,
     };
 }
 
@@ -123,9 +122,8 @@ pub mod agent_session_tui_acceptance {
 pub mod client_api_acceptance {
     pub use crate::client_api_acceptance::{
         connect_client, read_current_branch, read_state, request_client, rpc, Branch,
-        ClientApiAcceptanceHost, ClientEndpoint, ClientRecoveryAcceptanceHost, ClientRecoveryState,
-        DiagnosticReport, DiagnosticSpan, DiagnosticStage, GitError, GitGateway, GitService,
-        NativeClient, Severity,
+        ClientApiAcceptanceHost, ClientEndpoint, DiagnosticReport, DiagnosticSpan, DiagnosticStage,
+        GitError, GitGateway, GitService, NativeClient, Severity,
     };
 }
 

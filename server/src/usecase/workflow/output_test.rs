@@ -6,13 +6,13 @@ pub(crate) mod tests {
     };
     use crate::usecase::workflow::ports::WorkflowEventDraft;
     use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
-    use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
+
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use crate::usecase::workflow::test_helpers::FakeDefinitionRepository as NoopDefinitionRepository;
 
-    use crate::usecase::workflow::test_helpers::{FakeEventRepository, FakeFacetRepository};
+    use crate::usecase::workflow::test_helpers::FakeEventRepository;
 
     struct NoopExecutionProjectionRepository;
 
@@ -42,12 +42,9 @@ pub(crate) mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let query = WorkflowQueryService::new(
                 Arc::new(NoopDefinitionRepository::default()),
-                Arc::new(NoopDefinitionSourceGateway),
-                facets.clone(),
                 events.clone(),
                 Arc::new(NoopExecutionProjectionRepository),
             );
@@ -103,7 +100,7 @@ pub(crate) mod tests {
                     "tree": "workflow",
                     "workflowName": definition.name.clone(),
                     "worktreePath": "/repo",
-                    "createdFrom": "cli",
+
                     "request": "",
                     "definition": serde_json::to_value(&definition).unwrap(),
                 },

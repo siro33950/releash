@@ -17,7 +17,7 @@ fn test_実行木一覧購読_引数なしで往復し余計な引数を拒否�
 #[test]
 fn test_購読対象_区切り文字と日本語を含む引数が往復する() {
     // Given
-    let target = SubscriptionTarget::BranchBase("/作業:repo".into(), "feat/test".into());
+    let target = SubscriptionTarget::Branches("/作業:repo".into(), Some("feat/test".into()));
     // When
     let parsed = SubscriptionTarget::parse(&target.to_string());
     // Then
@@ -47,15 +47,15 @@ fn test_購読対象_構造化入力を検証し対象名との変換を所有�
     // Given
     let args = ["/作業:repo", "feat/test"];
     // When
-    let target = SubscriptionTarget::from_parts("branch-base", &args).unwrap();
+    let target = SubscriptionTarget::from_parts("branches", &args).unwrap();
     // Then
     assert_eq!(
         target,
-        SubscriptionTarget::BranchBase(args[0].into(), args[1].into())
+        SubscriptionTarget::Branches(args[0].into(), Some(args[1].into()))
     );
     assert_eq!(
         target.parts(),
-        ("branch-base", args.map(String::from).to_vec())
+        ("branches", args.map(String::from).to_vec())
     );
     assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
     for (name, args) in [
@@ -74,52 +74,6 @@ fn test_購読対象_構造化入力を検証し対象名との変換を所有�
 }
 
 #[test]
-fn test_review購読対象_baseとsectionを検証して往復する() {
-    // Given
-    let targets = [
-        SubscriptionTarget::ReviewSnapshot("/作業:repo".into(), ReviewBase::BranchBase),
-        SubscriptionTarget::ReviewFileView(
-            "/repo".into(),
-            "src/a.rs".into(),
-            ReviewSection::Staged,
-            ReviewBase::Head,
-        ),
-        SubscriptionTarget::ReviewThreads("/repo".into()),
-    ];
-    // When / Then
-    for target in targets {
-        assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
-    }
-    assert_eq!(
-        SubscriptionTarget::from_parts("review-file-view", &["/repo", "a.rs", "changes", "head"])
-            .unwrap()
-            .parts(),
-        (
-            "review-file-view",
-            vec![
-                "/repo".into(),
-                "a.rs".into(),
-                "changes".into(),
-                "head".into()
-            ]
-        )
-    );
-    for (name, args) in [
-        ("review-snapshot", vec!["/repo", "main"]),
-        ("review-snapshot", vec!["/repo"]),
-        ("review-file-view", vec!["/repo", "a.rs", "all", "head"]),
-        ("review-file-view", vec!["/repo", "a.rs", "changes"]),
-        ("review-threads", vec![]),
-        ("review-threads", vec![""]),
-    ] {
-        assert!(
-            SubscriptionTarget::from_parts(name, &args).is_err(),
-            "{name} {args:?}"
-        );
-    }
-}
-
-#[test]
 fn test_automation購読対象_facet種別を検証して往復する() {
     use crate::domain::workflow::FacetKind;
     // Given / When / Then
@@ -131,19 +85,9 @@ fn test_automation購読対象_facet種別を検証して往復する() {
             SubscriptionTarget::Workflow("dev".into()),
         ),
         (
-            "workflow-source",
-            vec!["dev"],
-            SubscriptionTarget::WorkflowSource("dev".into()),
-        ),
-        (
             "facets",
             vec!["policy"],
             SubscriptionTarget::Facets(FacetKind::Policy),
-        ),
-        (
-            "facet",
-            vec!["instruction", "review:guide"],
-            SubscriptionTarget::Facet(FacetKind::Instruction, "review:guide".into()),
         ),
         ("diagnostics", vec![], SubscriptionTarget::Diagnostics),
     ] {

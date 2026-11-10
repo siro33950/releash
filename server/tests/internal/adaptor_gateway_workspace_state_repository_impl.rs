@@ -1,4 +1,3 @@
-use releashd::test_support::integration::platform::repository_impl_state_file as state_file;
 use releashd::test_support::integration::platform::WorkspaceLayoutState;
 use releashd::test_support::integration::platform::WorkspaceState;
 use releashd::test_support::integration::platform::WorkspaceTabEntry;
@@ -21,7 +20,6 @@ fn make_state() -> WorkspaceState {
                     name: "lib.rs".to_string(),
                 },
             ],
-            active_editor_path: Some("src/main.rs".to_string()),
         }),
         layout: Some(WorkspaceLayoutState {
             center_tab: "editor".to_string(),
@@ -29,8 +27,6 @@ fn make_state() -> WorkspaceState {
             left_nav_collapsed: false,
             right_collapsed: false,
             right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
         }),
     }
 }
@@ -59,38 +55,6 @@ async fn test_workspace状態保存_設定未保存のsession配置を再起動�
     assert!(actual.tabs.is_none());
     assert!(actual.layout.is_none());
     assert_eq!(actual, state);
-}
-
-#[tokio::test]
-pub async fn test_表示状態読取_破損を未保存と区別する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        directory.path().into(),
-    );
-    let path = state_file(directory.path(), "broken");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "broken json").unwrap();
-    // When
-    let result = store.migrate_legacy(&[], &["/repo/broken".into()]).await;
-    // Then
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-pub async fn test_表示状態読取_io失敗を未保存と区別する() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        directory.path().into(),
-    );
-    let path = state_file(directory.path(), "broken");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::create_dir(&path).unwrap();
-    // When
-    let result = store.migrate_legacy(&[], &["/repo/broken".into()]).await;
-    // Then
-    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -250,38 +214,6 @@ pub async fn test_表示状態保存_正常に読めた後に破損したファ�
 }
 
 #[tokio::test]
-pub async fn test_表示状態保存_通常ファイルでない保存先を拒む() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        directory.path().into(),
-    );
-    let path = state_file(directory.path(), "wt");
-    std::fs::create_dir_all(&path).unwrap();
-    // When
-    let result = store.migrate_legacy(&[], &["/repo/wt".into()]).await;
-    // Then
-    assert!(!result.is_ok());
-}
-
-#[tokio::test]
-pub async fn test_表示状態保存_壊れた保存ファイルを変更せず拒む() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        directory.path().into(),
-    );
-    let path = state_file(directory.path(), "wt");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "broken").unwrap();
-    // When
-    let result = store.migrate_legacy(&[], &["/repo/wt".into()]).await;
-    // Then
-    assert!(result.is_err());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "broken");
-}
-
-#[tokio::test]
 pub async fn test_repositoryグループ_独立して保存し新しいstoreで復元する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
@@ -369,10 +301,6 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
         dir.path().to_path_buf(),
     );
     // Then
-    assert_ne!(
-        state_file(dir.path(), "/repo/a/b"),
-        state_file(dir.path(), "/repo/a_b")
-    );
     assert!(
         load(&restored, "/repo/a/b", "/repo/a/b")
             .await
@@ -395,105 +323,6 @@ pub async fn test_worktree表示状態_絶対pathの区切りとunderscoreが衝
     );
 }
 
-#[tokio::test]
-pub async fn test_worktree表示状態_絶対pathの旧保存を読み新しい保存を優先する() {
-    // Given
-    let dir = TempDir::new().unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        dir.path().to_path_buf(),
-    );
-    write_legacy_state(dir.path(), "/repo/wt", &legacy_state());
-    store
-        .migrate_legacy(&[], &["/repo/wt".into()])
-        .await
-        .unwrap();
-    // When / Then
-    assert!(load(&store, "/repo/wt", "/repo/wt")
-        .await
-        .unwrap()
-        .is_some());
-    let mut next = make_state();
-    next.layout.as_mut().unwrap().left_nav_collapsed = true;
-    let pending_state = next;
-    releashd::test_support::integration::platform::save_workspace_state(
-        &store,
-        None,
-        "/repo/wt",
-        pending_state,
-    )
-    .await
-    .unwrap();
-    assert!(
-        load(&store, "/repo/wt", "/repo/wt")
-            .await
-            .unwrap()
-            .unwrap()
-            .layout
-            .as_ref()
-            .unwrap()
-            .left_nav_collapsed
-    );
-    corrupt_latest_event(dir.path());
-    assert!(load(&store, "/repo/wt", "/repo/wt").await.is_err());
-}
-
-#[tokio::test]
-async fn test_pane保存_異なるworktreeの分割と全タブを新storeで復元する() {
-    // Given
-    let dir = TempDir::new().unwrap();
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    let mut expected = Vec::new();
-    for (name, axis, ratio) in [("/repo/a", "horizontal", 0.3), ("/repo/b", "vertical", 0.7)] {
-        let mut json = serde_json::json!({
-            "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
-            "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": false, "rightCollapsed": false, "rightBottomCollapsed": false}
-        });
-        json["panes"] = serde_json::json!({
-            "kind":"split", "id":"root", "axis":axis, "ratio":ratio,
-            "first":{"kind":"pane", "id":"a", "tabs":[{"id":"terminal", "kind":"terminal"}], "active_tab":"terminal"},
-            "second":{"kind":"pane", "id":"b", "tabs":[{"id":"workflow", "kind":"workflow"},{"id":"file", "kind":"file", "file_path":"src/file.rs", "file_mode":"diff", "file_base":"branch-base"}], "active_tab":"file"}
-        });
-        let file = state_file(dir.path(), name);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, serde_json::to_vec(&json).unwrap()).unwrap();
-    }
-    store
-        .migrate_legacy(&[], &["/repo/a".into(), "/repo/b".into()])
-        .await
-        .unwrap();
-    for name in ["/repo/a", "/repo/b"] {
-        let state = load(&store, name, "/repo").await.unwrap().unwrap();
-        assert!(state.panes.is_some());
-        let pending_state = state.clone();
-        releashd::test_support::integration::platform::save_workspace_state(
-            &store,
-            None,
-            name,
-            pending_state,
-        )
-        .await
-        .unwrap();
-        expected.push((name, state));
-    }
-    // When
-    drop(store);
-    let restarted =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // Then
-    for (name, state) in expected {
-        assert_eq!(load(&restarted, name, "/repo").await.unwrap(), Some(state));
-    }
-}
-
-fn legacy_state() -> serde_json::Value {
-    serde_json::json!({"version":1,"tabs":{"editors":[],"activeEditorPath":null},"layout":{"centerTab":"agent","activeView":"git","leftNavCollapsed":false,"rightCollapsed":false,"rightBottomCollapsed":false}})
-}
-fn write_legacy_state(directory: &std::path::Path, name: &str, state: &serde_json::Value) {
-    let path = state_file(directory, name);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, serde_json::to_vec(state).unwrap()).unwrap();
-}
 fn event_connection(directory: &std::path::Path) -> rusqlite::Connection {
     rusqlite::Connection::open(directory.join("local-event-store.sqlite3")).unwrap()
 }
@@ -513,219 +342,6 @@ fn event_payload(directory: &std::path::Path) -> Vec<u8> {
 }
 fn corrupt_latest_event(directory: &std::path::Path) {
     event_connection(directory).execute("UPDATE events SET payload = ?1 WHERE global_sequence = (SELECT max(global_sequence) FROM events)", [b"broken".as_slice()]).unwrap();
-}
-
-#[tokio::test]
-async fn test_旧表示状態_一意な名前だけ取り込み曖昧と不在の名前は使わない() {
-    // Given
-    let dir = TempDir::new().unwrap();
-    for name in ["unique", "a", "missing"] {
-        write_legacy_state(dir.path(), name, &legacy_state());
-    }
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    let paths = vec![
-        "/repo-worktrees/unique".into(),
-        "/repo-worktrees/feature/a".into(),
-        "/repo-worktrees/bugfix/a".into(),
-    ];
-    // When
-    store.migrate_legacy(&[], &paths).await.unwrap();
-    // Then
-    assert!(load(&store, &paths[0], &paths[0]).await.unwrap().is_some());
-    for path in &paths[1..] {
-        assert!(load(&store, path, path).await.unwrap().is_none());
-    }
-    assert!(load(&store, "missing", "/repo").await.unwrap().is_none());
-    assert_eq!(event_count(dir.path()), 1);
-    store.migrate_legacy(&[], &paths).await.unwrap();
-    assert_eq!(event_count(dir.path()), 1);
-    assert!(dir.path().join("workspace_state/a.json").exists());
-    assert!(dir.path().join("workspace_state/missing.json").exists());
-    assert!(dir
-        .path()
-        .join("workspace_state.migrated/unique.json")
-        .exists());
-}
-
-#[tokio::test]
-async fn test_旧表示状態_絶対pathを名前より優先し最新の事実を上書きしない() {
-    // Given
-    let dir = TempDir::new().unwrap();
-    let mut state = legacy_state();
-    write_legacy_state(dir.path(), "unique", &state);
-    state["layout"]["leftNavCollapsed"] = serde_json::json!(true);
-    write_legacy_state(dir.path(), "/repo/unique", &state);
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // When
-    store
-        .migrate_legacy(&[], &["/repo/unique".into()])
-        .await
-        .unwrap();
-    // Then
-    assert!(
-        load(&store, "/repo/unique", "/repo/unique")
-            .await
-            .unwrap()
-            .unwrap()
-            .layout
-            .as_ref()
-            .unwrap()
-            .left_nav_collapsed
-    );
-    let mut next = make_state();
-    next.layout.as_mut().unwrap().left_nav_collapsed = false;
-    let pending_state = next;
-    releashd::test_support::integration::platform::save_workspace_state(
-        &store,
-        None,
-        "/repo/unique",
-        pending_state,
-    )
-    .await
-    .unwrap();
-    write_legacy_state(dir.path(), "/repo/unique", &state);
-    store
-        .migrate_legacy(&[], &["/repo/unique".into()])
-        .await
-        .unwrap();
-    assert!(
-        !load(&store, "/repo/unique", "/repo/unique")
-            .await
-            .unwrap()
-            .unwrap()
-            .layout
-            .as_ref()
-            .unwrap()
-            .left_nav_collapsed
-    );
-    assert_eq!(event_count(dir.path()), 2);
-}
-
-#[tokio::test]
-async fn test_旧repositoryグループ_取り込んだ折りたたみを再起動後に復元する() {
-    // Given
-    use sha2::Digest;
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("repository_group_state");
-    std::fs::create_dir_all(&path).unwrap();
-    for (repo, collapsed) in [("/repo/a", true), ("/repo/b", false)] {
-        let key = hex::encode(sha2::Sha256::digest(repo.as_bytes()));
-        std::fs::write(path.join(format!("{key}.json")), collapsed.to_string()).unwrap();
-    }
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // When
-    store
-        .migrate_legacy(&["/repo/a".into(), "/repo/b".into()], &[])
-        .await
-        .unwrap();
-    store
-        .save_repository_group(
-            "/repo/a",
-            false,
-            store.read_repository_group("/repo/a").await.unwrap().0,
-        )
-        .await
-        .unwrap();
-    drop(store);
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // Then
-    assert!(!store.load_repository_group("/repo/a").await.unwrap());
-    assert!(!store.load_repository_group("/repo/b").await.unwrap());
-    assert_eq!(event_count(dir.path()), 3);
-}
-
-#[tokio::test]
-async fn test_旧表示状態の移行_途中失敗後に再実行しても取り込み済みの事実を増やさない() {
-    // Given
-    use sha2::Digest;
-    let dir = TempDir::new().unwrap();
-    write_legacy_state(dir.path(), "unique", &legacy_state());
-    let group = dir.path().join("repository_group_state");
-    std::fs::create_dir_all(&group).unwrap();
-    let key = hex::encode(sha2::Sha256::digest(b"/repo"));
-    let file = group.join(format!("{key}.json"));
-    std::fs::write(&file, "broken").unwrap();
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // When
-    assert!(store
-        .migrate_legacy(&["/repo".into()], &["/repo/unique".into()])
-        .await
-        .is_err());
-    assert_eq!(event_count(dir.path()), 1);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "broken");
-    std::fs::write(file, "true").unwrap();
-    store
-        .migrate_legacy(&["/repo".into()], &["/repo/unique".into()])
-        .await
-        .unwrap();
-    // Then
-    assert!(store.load_repository_group("/repo").await.unwrap());
-    assert!(load(&store, "/repo/unique", "/repo/unique")
-        .await
-        .unwrap()
-        .is_some());
-    assert_eq!(event_count(dir.path()), 2);
-}
-
-#[tokio::test]
-async fn test_旧表示状態_名前がhashキーのprefixと同じでも絶対pathの状態を優先する() {
-    // Given
-    let dir = TempDir::new().unwrap();
-    let name = "worktree-feature";
-    let path = format!("/repo/{name}");
-    let mut state = legacy_state();
-    write_legacy_state(dir.path(), name, &state);
-    state["layout"]["leftNavCollapsed"] = serde_json::json!(true);
-    write_legacy_state(dir.path(), &path, &state);
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // When
-    store
-        .migrate_legacy(&[], std::slice::from_ref(&path))
-        .await
-        .unwrap();
-    // Then
-    assert!(
-        load(&store, &path, &path)
-            .await
-            .unwrap()
-            .unwrap()
-            .layout
-            .as_ref()
-            .unwrap()
-            .left_nav_collapsed
-    );
-    assert_eq!(event_count(dir.path()), 1);
-}
-
-#[tokio::test]
-async fn test_旧表示状態_曖昧な絶対path旧形式と名前を別pathへ取り込まない() {
-    // Given
-    let dir = TempDir::new().unwrap();
-    for name in ["_repo_a_b", "_repo_target"] {
-        write_legacy_state(dir.path(), name, &legacy_state());
-    }
-    let paths = vec![
-        "/repo/a/b".into(),
-        "/repo/a_b".into(),
-        "/one/_repo_target".into(),
-        "/two/_repo_target".into(),
-        "/repo/target".into(),
-    ];
-    let store =
-        releashd::test_support::integration::platform::workspace_state_store(dir.path().into());
-    // When
-    store.migrate_legacy(&[], &paths).await.unwrap();
-    // Then
-    for path in &paths {
-        assert!(load(&store, path, path).await.unwrap().is_none());
-    }
-    assert_eq!(event_count(dir.path()), 0);
 }
 
 #[tokio::test]
@@ -810,7 +426,6 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
     let mut react = make_state();
     react.layout.as_mut().unwrap().left_nav_collapsed = true;
     react.tabs.as_mut().unwrap().editors.clear();
-    react.tabs.as_mut().unwrap().active_editor_path = None;
     // When
     save_workspace_state(&store, None, key, react.clone())
         .await
@@ -837,43 +452,6 @@ async fn test_配置の交互保存_reactの省略後もswiftの分割とタブ�
         load(&restarted, key, key).await.unwrap().unwrap().panes,
         changed.panes
     );
-}
-
-#[tokio::test]
-async fn test_旧状態移行_破損した対象を残して同じディレクトリの正常な対象を取り込む() {
-    // Given
-    let directory = tempfile::tempdir().unwrap();
-    write_legacy_state(directory.path(), "healthy", &legacy_state());
-    let broken = state_file(directory.path(), "broken");
-    std::fs::write(&broken, "broken").unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        directory.path().into(),
-    );
-    // When
-    assert!(store
-        .migrate_legacy(&[], &["/repo/healthy".into(), "/repo/broken".into()])
-        .await
-        .is_err());
-    // Then
-    assert!(load(&store, "/repo/healthy", "/repo/healthy")
-        .await
-        .unwrap()
-        .is_some());
-    assert_eq!(std::fs::read_to_string(&broken).unwrap(), "broken");
-    assert!(directory
-        .path()
-        .join("workspace_state.migrated/healthy.json")
-        .exists());
-    std::fs::write(&broken, serde_json::to_vec(&legacy_state()).unwrap()).unwrap();
-    store
-        .migrate_legacy(&[], &["/repo/healthy".into(), "/repo/broken".into()])
-        .await
-        .unwrap();
-    assert!(load(&store, "/repo/broken", "/repo/broken")
-        .await
-        .unwrap()
-        .is_some());
-    assert_eq!(event_count(directory.path()), 2);
 }
 
 #[tokio::test]
@@ -936,48 +514,6 @@ async fn test_ui状態の無効化_走査後に更新された状態を消さず
         .await
         .is_err());
     assert_eq!(event_count(directory.path()), 2);
-}
-
-#[tokio::test]
-async fn test_旧状態の再取り込み_移行先があれば元jsonと空directoryを除去し事実を増やさない() {
-    use sha2::Digest;
-    // Given
-    let directory = TempDir::new().unwrap();
-    let store = releashd::test_support::integration::platform::workspace_state_store(
-        directory.path().into(),
-    );
-    let group_name = hex::encode(sha2::Sha256::digest(b"/repo"));
-    let group = directory.path().join("repository_group_state");
-    std::fs::create_dir(&group).unwrap();
-    std::fs::write(group.join(format!("{group_name}.json")), "true").unwrap();
-    write_legacy_state(directory.path(), "wt", &legacy_state());
-    store
-        .migrate_legacy(&["/repo".into()], &["/repo/wt".into()])
-        .await
-        .unwrap();
-    let count = event_count(directory.path());
-    let first_state = store.read("/repo/wt").await.unwrap();
-    let migrated_group = directory
-        .path()
-        .join("repository_group_state.migrated")
-        .join(format!("{group_name}.json"));
-    // When
-    std::fs::create_dir(&group).unwrap();
-    std::fs::write(group.join(format!("{group_name}.json")), "false").unwrap();
-    let mut next = legacy_state();
-    next["layout"]["leftNavCollapsed"] = serde_json::json!(true);
-    write_legacy_state(directory.path(), "wt", &next);
-    store
-        .migrate_legacy(&["/repo".into()], &["/repo/wt".into()])
-        .await
-        .unwrap();
-    // Then
-    assert!(!group.exists());
-    assert!(!directory.path().join("workspace_state").exists());
-    assert_eq!(event_count(directory.path()), count);
-    assert_eq!(store.read("/repo/wt").await.unwrap(), first_state);
-    assert!(store.load_repository_group("/repo").await.unwrap());
-    assert_eq!(std::fs::read_to_string(migrated_group).unwrap(), "true");
 }
 
 #[tokio::test]
@@ -1053,10 +589,7 @@ async fn test_ui状態の並行保存_groupは再読取で後続を反映しwork
             Arc::new(RetryLimiter::new()),
         ))
         .unwrap();
-        let store = Arc::new(WorkspaceStateStore::with_store(
-            dir.path().into(),
-            events.clone(),
-        ));
+        let store = Arc::new(WorkspaceStateStore::with_store(events.clone()));
         let stall = events.fault_injector().arm_node_event_append_stall();
         let append = events.append_node_event(blocking_fact(), None);
         tokio::pin!(append);
@@ -1092,7 +625,7 @@ async fn test_ui状態の並行保存_groupは再読取で後続を反映しwork
         first.await.unwrap().unwrap();
         let second = second.await.unwrap();
         drop(store);
-        let restored = WorkspaceStateStore::with_store(dir.path().into(), events.clone());
+        let restored = WorkspaceStateStore::with_store(events.clone());
         // Then
         if group {
             second.unwrap();
@@ -1130,10 +663,7 @@ async fn test_ui状態保存_handler破棄後も受理済みjobが完了する�
         Arc::new(RetryLimiter::new()),
     ))
     .unwrap();
-    let store = Arc::new(WorkspaceStateStore::with_store(
-        dir.path().into(),
-        events.clone(),
-    ));
+    let store = Arc::new(WorkspaceStateStore::with_store(events.clone()));
     let stall = events.fault_injector().arm_node_event_append_stall();
     let append = events.append_node_event(blocking_fact(), None);
     tokio::pin!(append);
@@ -1318,7 +848,6 @@ async fn test_表示状態load_相対pathとroot外の絶対pathで消失した�
             name: path.clone(),
         })
         .collect();
-    state.tabs.as_mut().unwrap().active_editor_path = Some(entries[0].clone());
     let store = releashd::test_support::integration::platform::workspace_state_store(
         directory.path().into(),
     );

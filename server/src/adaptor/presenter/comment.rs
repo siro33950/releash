@@ -84,17 +84,6 @@ impl TryFrom<domain::ReviewHistoryEntry>
                     summary,
                     at,
                 }),
-                domain::ReviewHistoryEntry::ThreadDeleted {
-                    id,
-                    thread_id,
-                    actor: author,
-                    at,
-                } => Entry::ThreadDeleted(wire::ReviewHistoryThreadDeletedDto {
-                    id,
-                    thread_id,
-                    actor: Some(actor(author)?),
-                    at,
-                }),
             }),
         })
     }

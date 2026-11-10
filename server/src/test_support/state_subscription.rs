@@ -159,15 +159,6 @@ pub fn same(
 }
 
 #[cfg(test)]
-pub(crate) fn payload(
-    value: &crate::usecase::state_subscription::StateValue,
-) -> Result<crate::adaptor::presenter::state_subscription::PublishedState, connectrpc::ConnectError>
-{
-    crate::adaptor::presenter::state_subscription_wire::payload(value)
-        .map(crate::adaptor::presenter::state_subscription::PublishedState::from)
-}
-
-#[cfg(test)]
 pub(crate) fn terminal_item(
     value: &crate::adaptor::presenter::state_subscription::PublishedState,
 ) -> &crate::adaptor::presenter::client::terminal_event::Item {
@@ -195,7 +186,7 @@ impl StateSubscriptionUsecase {
         let presenter = Arc::new(StateSubscriptionPresenter::new());
         let paths = Arc::new(parking_lot::RwLock::new(paths));
         let mut usecase = Self::new_with_output(presenter, timer);
-        usecase.reads = Some(Arc::new(TestRepositoryPathsReads(paths.clone())));
+        usecase.reads = Some(Arc::new(TestStateReads(paths.clone())));
         usecase.test_repository_paths = Some(paths);
         usecase
     }
@@ -229,10 +220,10 @@ impl StateSubscriptionUsecase {
     }
 }
 
-struct TestRepositoryPathsReads(Arc<parking_lot::RwLock<Vec<String>>>);
+struct TestStateReads(Arc<parking_lot::RwLock<Vec<String>>>);
 
 #[async_trait::async_trait]
-impl crate::usecase::state_subscription::StateSubscriptionRead for TestRepositoryPathsReads {
+impl crate::usecase::state_subscription::StateSubscriptionRead for TestStateReads {
     async fn read(
         &self,
         target: &crate::usecase::state_subscription::SubscriptionTarget,
@@ -241,9 +232,9 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for TestRepositor
         crate::usecase::state_subscription::StateReadError,
     > {
         match target {
-            crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths => Ok(
-                crate::usecase::state_subscription::StateValue::RepositoryPaths(
-                    self.0.read().clone(),
+            crate::usecase::state_subscription::SubscriptionTarget::TerminalStartupCommand => Ok(
+                crate::usecase::state_subscription::StateValue::TerminalStartupCommand(
+                    self.0.read().join("\n"),
                 ),
             ),
             _ => Err(

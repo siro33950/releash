@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::local_event::WorkflowExecutionMetadataRecord;
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
+use crate::domain::workflow::{ExecutionStatus, TokenUsage};
 use crate::domain::workspace_tree::{
     WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
 };
@@ -26,7 +26,6 @@ fn node() -> WorkspaceTreeNode {
         node_execution_id: None,
         node_name: None,
         attempt: Some(1),
-        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,
@@ -126,7 +125,6 @@ fn execution_summary_rejects_non_finite_timestamp() {
         status: ExecutionStatus::Running,
         worktree_path: "/repo".to_string(),
         current_node: None,
-        created_from: ExecutionOrigin::DesktopUi,
         started_at_bits: f64::NAN.to_bits(),
         updated_at_bits: 1.0f64.to_bits(),
         completed_at_bits: None,

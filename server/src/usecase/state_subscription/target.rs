@@ -1,38 +1,28 @@
-use crate::domain::code::{ReviewBase, ReviewSection};
+use crate::domain::code::ReviewBase;
+
 use crate::domain::workflow::FacetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SubscriptionTarget {
     DaemonInfo,
     Terminal(crate::domain::terminal_surface::TerminalSurfaceOwner),
-    RepositoryPaths,
     Workspaces,
     /// 全 worktree の実行木の一覧と集約状態。
     ExecutionOverview,
-    Selection(String, String),
     NodeDetail(String, String),
-    AgentSession(String),
     SessionTab(String),
     SessionHistory(String, usize),
     Providers,
     Branches(String, Option<String>),
-    BranchBase(String, String),
-    BranchStatus(String),
     AvailableBranches(String),
-    CurrentBranch(String),
     Issues(String),
     FilteredIssues(String, crate::domain::git_host::IssueFilter),
     NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
-    NotionLabelOptions(String),
-    Worktrees(String),
-    StartupRepository,
     WorkspaceState(String, String),
     RepositoryGroupState(String),
     Directory(String, String),
     FileTab(String, String, ReviewBase),
     FileThreads(String, String),
-    ReviewSnapshot(String, ReviewBase),
-    ReviewFileView(String, String, ReviewSection, ReviewBase),
     ReviewThreads(String),
     WorkflowExecution(String),
     WorkflowOutput(String, String),
@@ -43,9 +33,7 @@ pub enum SubscriptionTarget {
     ReviewSessionThreadHistory(String, String),
     Workflows,
     Workflow(String),
-    WorkflowSource(String),
     Facets(FacetKind),
-    Facet(FacetKind, String),
     Diagnostics,
     DesktopSettings,
     NotionConfig(String),
@@ -100,15 +88,9 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(WatchRequirement::Git)
                 .collect(),
-            Self::Branches(path, _)
-            | Self::BranchBase(path, _)
-            | Self::BranchStatus(path)
-            | Self::AvailableBranches(path)
-            | Self::CurrentBranch(path)
-            | Self::Worktrees(path)
-            | Self::ReviewSnapshot(path, _)
-            | Self::ReviewFileView(path, _, _, _)
-            | Self::ReleashBase(path) => vec![WatchRequirement::Git(path.clone())],
+            Self::Branches(path, _) | Self::AvailableBranches(path) | Self::ReleashBase(path) => {
+                vec![WatchRequirement::Git(path.clone())]
+            }
             Self::SessionHistory(_, _) => history_paths
                 .iter()
                 .cloned()
@@ -123,15 +105,12 @@ impl SubscriptionTarget {
                 review_comments_dir.into(),
                 StateChangeSource::ReviewComments(None),
             )],
-            Self::Workflows
-            | Self::Workflow(_)
-            | Self::WorkflowSource(_)
-            | Self::Facets(_)
-            | Self::Facet(_, _)
-            | Self::Diagnostics => vec![WatchRequirement::Files(
-                workflows_dir.to_string(),
-                StateChangeSource::WorkflowDefinitions,
-            )],
+            Self::Workflows | Self::Workflow(_) | Self::Facets(_) | Self::Diagnostics => {
+                vec![WatchRequirement::Files(
+                    workflows_dir.to_string(),
+                    StateChangeSource::WorkflowDefinitions,
+                )]
+            }
             Self::ProviderHookHealth => vec![WatchRequirement::Files(
                 hook_health_markers.to_string(),
                 StateChangeSource::ProviderHookHealth,
@@ -143,11 +122,7 @@ impl SubscriptionTarget {
     pub fn external_information(&self) -> bool {
         matches!(
             self,
-            Self::Workspaces
-                | Self::Issues(_)
-                | Self::FilteredIssues(..)
-                | Self::NotionTasks(..)
-                | Self::NotionLabelOptions(_)
+            Self::Workspaces | Self::Issues(_) | Self::FilteredIssues(..) | Self::NotionTasks(..)
         )
     }
 }
@@ -191,25 +166,18 @@ impl SubscriptionTarget {
                 matches!(self, Self::RepositoryGroupState(p) if p == path)
             }
             C::Daemon => matches!(self, Self::DaemonInfo),
-            C::Repositories => matches!(self, Self::RepositoryPaths | Self::Workspaces),
+            C::Repositories => matches!(self, Self::Workspaces),
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
                 Self::Branches(p, _)
-                | Self::BranchBase(p, _)
-                | Self::BranchStatus(p)
                 | Self::AvailableBranches(p)
-                | Self::CurrentBranch(p)
-                | Self::Worktrees(p)
                 | Self::Directory(p, _)
                 | Self::FileTab(p, _, _)
-                | Self::ReviewSnapshot(p, _)
-                | Self::ReviewFileView(p, _, _, _)
                 | Self::ReleashBase(p) => paths.contains(p),
                 _ => false,
             },
             C::Worktree(path) => match self {
                 Self::Workspaces
-                | Self::AgentSession(_)
                 | Self::SessionTab(_)
                 | Self::Workflows
                 | Self::WorkflowExecution(_)
@@ -217,7 +185,6 @@ impl SubscriptionTarget {
                 | Self::NodeArtifact(_) => true,
                 Self::Directory(p, _)
                 | Self::FileTab(p, _, _)
-                | Self::Selection(p, _)
                 | Self::NodeDetail(p, _)
                 | Self::SessionHistory(p, _) => p == path,
                 _ => false,
@@ -242,16 +209,10 @@ impl SubscriptionTarget {
             }
             C::WorkflowDefinitions => matches!(
                 self,
-                Self::Workflows
-                    | Self::Workflow(_)
-                    | Self::WorkflowSource(_)
-                    | Self::Facets(_)
-                    | Self::Facet(_, _)
-                    | Self::Diagnostics
+                Self::Workflows | Self::Workflow(_) | Self::Facets(_) | Self::Diagnostics
             ),
             C::NotionConfig(path) => match self {
                 Self::NotionTasks(request) => request.path == *path,
-                Self::NotionLabelOptions(p) => p == path,
                 _ => false,
             },
             C::AppConfig => matches!(

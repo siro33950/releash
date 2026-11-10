@@ -3,7 +3,7 @@ pub(crate) use conversions::{etag, session_selection, stream_version};
 pub(crate) mod descriptor;
 pub(crate) mod errors;
 mod workspace;
-pub(crate) use workspace::{branch_status, selection};
+pub(crate) use workspace::branch_status;
 pub(crate) fn value<T, U: TryFrom<T>>(value: T) -> Result<U, CommandFailure>
 where
     U::Error: std::fmt::Display,
@@ -67,12 +67,10 @@ pub fn from_value(value: impl ClientValue) -> Result<Json, String> {
 }
 
 fn terminal_status(
-    session_key: String,
     state: crate::adaptor::presenter::terminal::TerminalShellStateV1,
     sequence: u64,
 ) -> TerminalStatus {
     TerminalStatus {
-        session_key,
         cwd: state.cwd,
         has_foreground_process: state.has_foreground_process,
         sequence,
@@ -85,20 +83,11 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
         use terminal_event::Item as Wire;
         Self {
             item: Some(match value {
-                Item::Status {
-                    session_key,
-                    state,
-                    sequence,
-                } => Wire::Status(terminal_status(session_key, state, sequence)),
+                Item::Status { state, sequence } => Wire::Status(terminal_status(state, sequence)),
                 Item::Snapshot { surface } => Wire::Snapshot(TerminalSnapshot {
-                    status: surface.shell_state.map(|state| {
-                        terminal_status(
-                            surface.session_key.clone(),
-                            state,
-                            surface.terminal_surface.sequence,
-                        )
-                    }),
-                    session_key: surface.session_key,
+                    status: surface
+                        .shell_state
+                        .map(|state| terminal_status(state, surface.terminal_surface.sequence)),
                     processed_report_units:
                         crate::infrastructure::terminal::output_flow_control::OUTPUT_REPORT_UNITS
                             as u32,
@@ -109,35 +98,25 @@ impl From<crate::adaptor::presenter::terminal::TerminalSurfaceStreamItemV1> for 
                     is_exited: surface.is_exited,
                     exit_code: surface.exit_code,
                 }),
-                Item::Output {
-                    session_key,
-                    data,
-                    sequence,
-                } => Wire::Output(TerminalOutput {
-                    session_key,
+                Item::Output { data, sequence } => Wire::Output(TerminalOutput {
                     data: data.to_string(),
                     sequence,
                 }),
                 Item::Resize {
-                    session_key,
                     cols,
                     rows,
                     sequence,
                 } => Wire::Resize(TerminalResize {
-                    session_key,
                     cols: cols.into(),
                     rows: rows.into(),
                     sequence,
                 }),
                 Item::Exit {
                     state,
-                    session_key,
                     exit_code,
                     sequence,
                 } => Wire::Exit(TerminalExit {
-                    status: state
-                        .map(|state| terminal_status(session_key.clone(), state, sequence)),
-                    session_key,
+                    status: state.map(|state| terminal_status(state, sequence)),
                     exit_code,
                     sequence,
                 }),

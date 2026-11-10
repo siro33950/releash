@@ -255,7 +255,6 @@ fn standalone_session_title(tree_id: &str, records: &[NodeFactRecord]) -> String
         status: model.status,
         worktree_path: model.worktree_path,
         current_node: model.current_node,
-        created_from: model.created_from,
         started_at_bits: model.started_at.to_bits(),
         updated_at_bits: model.updated_at.to_bits(),
         completed_at_bits: model.completed_at.map(f64::to_bits),

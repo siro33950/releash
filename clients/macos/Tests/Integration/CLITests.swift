@@ -45,7 +45,7 @@ final class CLITests: XCTestCase {
           "running": count > 1, "compatibility": "compatible", "discovery_file": file.path,
         ])
       })
-    let discovery = try await cli.discover(startIfMissing: true)
+    let (discovery, _) = try await cli.discoverWithStatus(startIfMissing: true)
     XCTAssertEqual(discovery.token, "operator")
     let recorded = await calls.values
     XCTAssertEqual(

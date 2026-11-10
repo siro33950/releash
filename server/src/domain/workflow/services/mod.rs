@@ -11,7 +11,6 @@ pub mod reference;
 pub mod routing;
 pub mod secret_masker;
 pub mod start_admission;
-pub mod template_preview;
 pub mod transition;
 pub mod validation;
 

@@ -128,7 +128,6 @@ pub struct FailureRecord {
     pub active: bool,
     pub requires_attention: bool,
     pub count: u64,
-    pub first_observed_ms: u64,
     pub last_observed_ms: u64,
 }
 

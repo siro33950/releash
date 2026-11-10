@@ -157,49 +157,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn issue_1372_nonlegacy_gc_keeps_live_workspace_data_and_collects_deleted_workspace_data() {
+    pub fn issue_1372_gc_keeps_live_review_comments_and_collects_deleted_workspace_data() {
         let app_data = tempfile::tempdir().expect("app data");
         let repo = tempfile::tempdir().expect("repo");
         git2::Repository::init(repo.path()).expect("init repo");
         let root = app_data.path();
-        let live_name = repo
-            .path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("repo name");
-        let live_workspace_key =
-            releashd::test_support::integration::platform::storage_key(live_name);
         let live_review_key = releashd::test_support::integration::platform::worktree_storage_key(
             repo.path().to_string_lossy().as_ref(),
         );
-        let workspace_state = root.join("workspace_state.migrated");
         let review_comments = root.join("review-comments");
-        std::fs::create_dir_all(&workspace_state).expect("workspace state");
         std::fs::create_dir_all(&review_comments).expect("review comments");
-        let live_workspace = workspace_state.join(format!("{live_workspace_key}.json"));
-        let live_path = repo
-            .path()
-            .canonicalize()
-            .expect("canonical repo")
-            .to_string_lossy()
-            .into_owned();
-        let live_absolute_workspace = workspace_state.join(format!(
-            "{}.json",
-            releashd::test_support::integration::platform::storage_key(&live_path)
-        ));
-        let live_legacy_absolute_workspace =
-            workspace_state.join(format!("{}.json", live_path.replace(['/', '\\'], "_")));
-        let stale_workspace = workspace_state.join("deleted-workspace.json");
         let live_review = review_comments.join(format!("{live_review_key}.events.json"));
         let stale_review = review_comments.join("deleted-workspace.events.json");
-        for path in [
-            &live_workspace,
-            &live_absolute_workspace,
-            &live_legacy_absolute_workspace,
-            &stale_workspace,
-            &live_review,
-            &stale_review,
-        ] {
+        for path in [&live_review, &stale_review] {
             std::fs::write(path, b"{}").expect("fixture");
         }
 
@@ -212,20 +182,16 @@ pub(crate) mod tests {
         apply_canonical_runtime_owners(&mut request, CanonicalRuntimeOwners::default());
         let report = run_startup_gc(request, &file_system);
 
-        assert!(live_workspace.exists());
-        assert!(live_absolute_workspace.exists());
-        assert!(live_legacy_absolute_workspace.exists());
         assert!(live_review.exists());
-        assert!(!stale_workspace.exists());
         assert!(!stale_review.exists());
         assert_eq!(
             report.report.categories[&GcCategory::DeletedWorkspace].deleted,
-            2
+            1
         );
     }
 
     #[test]
-    pub fn issue_1372_cache_boundary_and_legacy_comment_cleanup_remain_active() {
+    pub fn issue_1372_cache_boundary_remains_active() {
         let app_data = tempfile::tempdir().expect("app data");
         let root = app_data.path();
         let exact_boundary = root.join("lsp/exact-boundary");
@@ -233,11 +199,6 @@ pub(crate) mod tests {
         std::fs::create_dir_all(exact_boundary.parent().expect("lsp parent")).expect("lsp");
         std::fs::write(&exact_boundary, b"keep").expect("boundary cache");
         std::fs::write(&expired, b"delete").expect("expired cache");
-        for name in ["comments", "diff-comments", "threads"] {
-            let path = root.join(name);
-            std::fs::create_dir(&path).expect("legacy comment root");
-            std::fs::write(path.join("record"), b"legacy").expect("legacy comment");
-        }
         let current_review = root.join("review-comments/current.events.json");
         std::fs::create_dir_all(current_review.parent().expect("review parent")).expect("review");
         std::fs::write(&current_review, b"[]").expect("current review");
@@ -260,63 +221,10 @@ pub(crate) mod tests {
 
         assert!(exact_boundary.exists(), "exactly seven days is retained");
         assert!(!expired.exists(), "older than seven days is collected");
-        for name in ["comments", "diff-comments", "threads"] {
-            assert!(!root.join(name).exists());
-        }
         assert!(current_review.exists());
         assert_eq!(
             report.report.categories[&GcCategory::RegenerableCache].deleted,
             1
         );
-        assert_eq!(
-            report.report.categories[&GcCategory::LegacyComments].deleted,
-            3
-        );
-    }
-
-    #[test]
-    pub fn test_worktree配置のgc_repositoryが未解決ならhash形式を保護し回復後は削除済みだけ回収する(
-    ) {
-        // Given
-        let app_data = tempfile::tempdir().unwrap();
-        let parent = tempfile::tempdir().unwrap();
-        let repo = parent.path().canonicalize().unwrap().join("repo");
-        let directory = app_data.path().join("workspace_state.migrated");
-        std::fs::create_dir_all(&directory).unwrap();
-        let key =
-            releashd::test_support::integration::platform::storage_key(repo.to_str().unwrap());
-        let missing_key = releashd::test_support::integration::platform::storage_key(
-            repo.join("deleted").to_str().unwrap(),
-        );
-        let live = directory.join(format!("{key}.json"));
-        let deleted = directory.join(format!("{missing_key}.json"));
-        let legacy = directory.join(format!(
-            "{}.json",
-            repo.to_string_lossy().replace(['/', '\\'], "_")
-        ));
-        for path in [&live, &deleted, &legacy] {
-            std::fs::write(path, "{}").unwrap();
-        }
-        let repos: SharedRepoPaths = Arc::new(RwLock::new(vec![repo.to_str().unwrap().into()]));
-        let filesystem = StdGcFileSystem::default();
-        // When
-        let mut request =
-            build_startup_gc_request(app_data.path().to_path_buf(), repos.clone(), &filesystem);
-        apply_canonical_runtime_owners(&mut request, CanonicalRuntimeOwners::default());
-        run_startup_gc(request, &filesystem);
-        // Then
-        assert!(live.exists());
-        assert!(deleted.exists());
-        assert!(legacy.exists());
-        // When
-        git2::Repository::init(&repo).unwrap();
-        let mut request =
-            build_startup_gc_request(app_data.path().to_path_buf(), repos, &filesystem);
-        apply_canonical_runtime_owners(&mut request, CanonicalRuntimeOwners::default());
-        run_startup_gc(request, &filesystem);
-        // Then
-        assert!(live.exists());
-        assert!(legacy.exists());
-        assert!(!deleted.exists());
     }
 }

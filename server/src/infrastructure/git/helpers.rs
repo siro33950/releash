@@ -1,7 +1,6 @@
 //! git2 を直接扱う共通プリミティブ（neutral な infrastructure 層）。
 //!
-//! repository ドメインの各 gateway 実装に加え、未移行の code ドメイン
-//! （`git/diff.rs`・`git/branch_diff.rs`）からも参照される。code ドメイン →
+//! repository ドメインの各 gateway 実装に加え、code ドメインの gateway からも参照される。code ドメイン →
 //! adaptor/gateway の逆方向依存を避けるため、最下層の infrastructure に配置する。
 //!
 //! ここに置くのは git2 の単純な問い合わせに閉じたプリミティブのみ。複数情報源を

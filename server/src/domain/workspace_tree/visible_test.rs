@@ -31,7 +31,6 @@ fn node(id: &str, parent_id: Option<&str>, kind: WorkspaceNodeKind) -> Workspace
         node_execution_id: leaf_or_branch.then(|| format!("{id}-exec")),
         node_name: leaf_or_branch.then(|| id.to_string()),
         attempt: leaf_or_branch.then_some(1),
-        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: Vec::new(),
         is_retry_history: false,
@@ -77,7 +76,6 @@ fn archived(mut execution: WorkspaceExecution, archived_at: f64) -> WorkspaceExe
     execution.archive = Some(ExecutionTreeArchiveRecord {
         execution_id: execution.execution_id.clone(),
         archived_at,
-        archive_reason: "manual".to_string(),
     });
     execution
 }
@@ -173,56 +171,6 @@ fn test_画面に出す木_実行を代表する節は実行の識別子と題�
     );
 }
 
-#[test]
-fn test_画面に出す木_archive済みの実行を除き残りから既定の選択先を決める() {
-    // Given: archive 済みの実行と、実行中の実行
-    let mut nodes = workflow_nodes("exec-a");
-    nodes.extend(workflow_nodes("exec-b"));
-    let tree = tree(
-        nodes,
-        vec![
-            archived(execution("exec-a", ExecutionTreeLaunch::Workflow), 5.0),
-            execution("exec-b", ExecutionTreeLaunch::Workflow),
-        ],
-    );
-
-    // When
-    let visible = tree.visible();
-
-    // Then
-    assert_eq!(
-        visible
-            .roots()
-            .iter()
-            .map(|root| root.id())
-            .collect::<Vec<_>>(),
-        vec!["exec-b"]
-    );
-    assert_eq!(
-        visible.preferred_node_id().as_deref(),
-        Some("exec-b-review")
-    );
-    assert!(!visible.contains("exec-a-review"));
-}
-
-#[test]
-fn test_画面に出す木_選択先は葉と過去の試行だけを含み合成子自身は含まない() {
-    // Given
-    let tree = tree(
-        workflow_nodes("exec-a"),
-        vec![execution("exec-a", ExecutionTreeLaunch::Workflow)],
-    );
-
-    // When
-    let visible = tree.visible();
-
-    // Then
-    assert!(visible.contains("exec-a-review"));
-    assert!(visible.contains("exec-a-fix-1"));
-    assert!(!visible.contains("exec-a"));
-    assert!(!visible.contains("missing"));
-}
-
 fn session_execution(
     session_id: &str,
     archive: bool,
@@ -240,7 +188,6 @@ fn session_execution(
     if archive {
         session.restore_derived_lifecycle(
             crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
-            false,
             AgentSessionActivity::default(),
         );
     }

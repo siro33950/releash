@@ -27,20 +27,9 @@ impl<'de> Deserialize<'de> for LocalApiDiscovery {
         let descriptor = crate::descriptor::pool()
             .get_message_by_name("releash.client.v1.LocalApiDiscovery")
             .expect("discovery descriptor");
-        let json = serde_json::Value::deserialize(deserializer)?;
-        let has_daemon = json.get("daemon_id").is_some() || json.get("daemonId").is_some();
-        let daemon = descriptor.get_field_by_name("daemon_id").unwrap();
-        let mut message = prost_reflect::DynamicMessage::deserialize(descriptor, json)
-            .map_err(serde::de::Error::custom)?;
-        if !has_daemon {
-            let legacy = message
-                .get_field_by_name("instance_id")
-                .unwrap()
-                .into_owned();
-            message.set_field(&daemon, legacy);
-        }
-        message.clear_field_by_name("instance_id");
-        message.transcode_to().map_err(serde::de::Error::custom)
+        prost_reflect::DynamicMessage::deserialize(descriptor, deserializer)?
+            .transcode_to()
+            .map_err(serde::de::Error::custom)
     }
 }
 

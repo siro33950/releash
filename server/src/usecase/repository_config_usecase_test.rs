@@ -74,24 +74,6 @@ fn value(base: Option<&str>) -> RepositoryConfig {
 }
 
 #[test]
-fn test_ベース設定読取_repositoryから取得したentityを使い通知しない() {
-    // Given
-    let config = Arc::new(Config::new(value(Some("develop"))));
-    let usecase = config.usecase();
-    // When
-    let base = usecase.get_releash_base("/repo").unwrap();
-    let branch_base = usecase.get_branch_base("/repo", "feature").unwrap();
-    config.saved.lock().set_base_branch(None);
-    let automatic = usecase.get_releash_base("/repo").unwrap();
-    // Then
-    assert_eq!(base.as_deref(), Some("develop"));
-    assert_eq!(branch_base.as_deref(), Some("release"));
-    assert_eq!(automatic, None);
-    assert_eq!(*config.calls.lock(), vec![("load", false); 3]);
-    assert_eq!(config.changes.lock().try_recv(), Err(TryRecvError::Empty));
-}
-
-#[test]
 fn test_ベース設定保存_排他中に読み変更して保存し解除後に通知する() {
     for base in [Some("release"), None] {
         // Given
@@ -138,44 +120,6 @@ fn test_ベース設定保存_読み取りまたは保存に失敗したら保�
 }
 
 #[test]
-fn test_ブランチ個別設定_保存と削除をgitへ渡し成功時だけ通知する() {
-    for (base, fail) in [(Some("main"), false), (None, false), (Some("main"), true)] {
-        // Given
-        let git = Arc::new(FakeRepo {
-            fail_cleanup: fail,
-            ..Default::default()
-        });
-        let config = Arc::new(Config {
-            git: git.clone(),
-            ..Config::new(value(Some("develop")))
-        });
-        // When
-        let result = config
-            .usecase()
-            .set_branch_base_override("/repo", "feature", base);
-        // Then
-        assert!(config.calls.lock().is_empty());
-        if fail {
-            assert!(
-                matches!(result, Err(UsecaseError::Repository(GitError::External(message))) if message == "cleanup failed")
-            );
-            assert!(git.set_branch_base_override_calls.lock().is_empty());
-        } else {
-            result.unwrap();
-            assert_eq!(
-                *git.set_branch_base_override_calls.lock(),
-                vec![("feature".into(), base.map(str::to_owned))]
-            );
-            assert_eq!(
-                config.changes.lock().try_recv().unwrap(),
-                StateChangeSource::Repository(vec!["/repo".into()])
-            );
-        }
-        assert_eq!(config.changes.lock().try_recv(), Err(TryRecvError::Empty));
-    }
-}
-
-#[test]
 fn test_ベース設定整理_entityを読み現存しないブランチの個別指定だけ削除する() {
     for (existing, removed) in [
         (vec!["alive".into(), "other".into()], vec!["stale".into()]),
@@ -213,33 +157,6 @@ fn test_ベース設定整理_entityを読み現存しないブランチの個�
         );
         assert_eq!(config.changes.lock().try_recv(), Err(TryRecvError::Empty));
     }
-}
-
-#[test]
-fn test_ベース設定読取と整理_読み取り失敗を伝播しgitを呼ばない() {
-    // Given
-    let config = Arc::new(Config {
-        failure: Some("load"),
-        ..Config::new(value(Some("develop")))
-    });
-    let usecase = config.usecase();
-    // When
-    let results = [
-        usecase.get_releash_base("/repo"),
-        usecase.get_branch_base("/repo", "feature"),
-        usecase
-            .prune_stale_branch_bases("/repo", &[])
-            .map(|()| None),
-    ];
-    // Then
-    for result in results {
-        assert!(
-            matches!(result, Err(UsecaseError::AppConfig(AppConfigError::InvalidInput(message))) if message == "load failed")
-        );
-    }
-    assert_eq!(*config.calls.lock(), vec![("load", false); 3]);
-    assert!(config.git.removed_branch_base_overrides.lock().is_empty());
-    assert_eq!(config.changes.lock().try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]

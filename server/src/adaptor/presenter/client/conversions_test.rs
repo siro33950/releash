@@ -197,10 +197,7 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
         version: 1,
         panes: None,
         tabs: Some(
-            crate::domain::workspace_state::value_objects::WorkspaceTabsState {
-                editors: vec![],
-                active_editor_path: None,
-            },
+            crate::domain::workspace_state::value_objects::WorkspaceTabsState { editors: vec![] },
         ),
         layout: Some(
             crate::domain::workspace_state::value_objects::WorkspaceLayoutState {
@@ -209,8 +206,6 @@ fn test_pane転送_分割と全タブを往復して欠落と未知の種類を�
                 left_nav_collapsed: true,
                 right_collapsed: false,
                 right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
             },
         ),
     };
@@ -382,7 +377,6 @@ fn test_session詳細の転送_ドメインの状態と操作可否を既存の�
         node_execution_id: Some("visit".into()),
         node_name: Some("review".into()),
         attempt: Some(2),
-        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: vec!["previous".into()],
         is_retry_history: false,
@@ -404,31 +398,20 @@ fn test_session詳細の転送_ドメインの状態と操作可否を既存の�
         worktree: None,
         dynamic_fanout: false,
     };
-    for (signals, submit, stop, waiting) in [
-        (S::Pending, false, false, None),
-        (S::SubmitReceived, true, false, Some("stop")),
-        (S::StopReceived, false, true, Some("submit")),
-        (S::Ready, true, true, None),
-    ] {
-        let mut node = node.clone();
-        node.completion_signals = signals;
+    {
         // When
         let message = wire::WorkspaceNodeDetailDto::try_from((node, true)).unwrap();
         let actual =
             wire::from_message("releash.client.v1.WorkspaceNodeDetailDto", &message).unwrap();
         // Then
-        let mut expected = serde_json::json!({
+        let expected = serde_json::json!({
             "id": "node", "title": "Review", "classification": "attention", "status": "waiting",
             "processPresence": "confirmed_absent", "nodeExecutionId": "visit", "nodeName": "review",
             "model": "test-model", "pastAttempts": [], "executionId": "execution", "canAbort": true,
-            "submitReceived": submit, "stopReceived": stop,
             "hasArtifact": true, "errorReason": "needs attention", "updatedAt": 124.0,
             "capabilities": {"canRename": true, "canApprove": true, "canRetry": false, "canResumeSession": true},
             "content": {"kind": "session", "sessionId": "session"}
         });
-        if let Some(waiting) = waiting {
-            expected["waitingFor"] = waiting.into();
-        }
         assert_eq!(actual, expected);
     }
 }
@@ -436,73 +419,6 @@ fn test_session詳細の転送_ドメインの状態と操作可否を既存の�
 mod workflow_definition {
     use super::*;
     use crate::domain::workflow as domain;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn test_述語の定義dto_全ての参照と論理構造と遷移先を保持する() {
-        // Given
-        for on in [
-            serde_json::json!("passed"),
-            serde_json::json!({"and": ["passed", "details.passed"]}),
-            serde_json::json!({"or": ["passed", "clean"]}),
-            serde_json::json!({"and": ["passed", {"or": ["clean", "skipped"]}]}),
-        ] {
-            let source =
-                include_str!("../../gateway/workflow/fixtures/valid/predicate-routing.yml")
-                    .replace("{and: [passed, {or: [clean, skipped]}]}", &on.to_string());
-            let definition: domain::WorkflowDefinitionContent =
-                serde_saphyr::from_str(&source).unwrap();
-            // When
-            let value = workflow_json(&definition, domain::WorkflowSourceFormat::Yaml);
-            // Then
-            let main = value["nodes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|node| node["name"] == "main")
-                .unwrap();
-            assert_eq!(
-                main["sequence"]["children"][0]["rules"][0],
-                serde_json::json!({"type": "when", "on": on, "then": "done", "next": "fix"})
-            );
-        }
-    }
-
-    #[test]
-    fn test_辺の定義dto_switchとloopguardとnextの意味を保持する() {
-        // Given
-        let rules = [
-            (
-                domain::Rule::Switch {
-                    on: "verdict".into(),
-                    cases: BTreeMap::from([("SHIP".into(), "done".into())]),
-                    next: Some("fix".into()),
-                },
-                serde_json::json!({"type": "switch", "on": "verdict", "cases": {"SHIP": "done"}, "next": "fix"}),
-            ),
-            (
-                domain::Rule::LoopGuard {
-                    max_iterations: 3,
-                    on_exhausted: "fix".into(),
-                },
-                serde_json::json!({"type": "loop_guard", "max_iterations": 3, "on_exhausted": "fix"}),
-            ),
-            (
-                domain::Rule::Next("done".into()),
-                serde_json::json!({"type": "next", "next": "done"}),
-            ),
-        ];
-        for (rule, expected) in rules {
-            // When
-            let value = wire::from_message(
-                "releash.client.v1.RuleDto",
-                &wire::RuleDto::try_from(rule).unwrap(),
-            )
-            .unwrap();
-            // Then
-            assert_eq!(value, expected);
-        }
-    }
 
     #[test]
     fn test_completion表示dto_承認要求はmapで示し要求なしは省略する() {
@@ -599,13 +515,6 @@ nodes:
                 "description": "desc",
                 "builtin": false,
                 "sourceFormat": "yaml",
-                "schemas": {
-                    "plan": {
-                        "type": "object",
-                        "properties": {"passed": {"type": "boolean"}},
-                        "required": ["passed"]
-                    }
-                },
                 "nodes": [{
                     "name": "node",
                     "kind": "session",
@@ -680,48 +589,6 @@ nodes:
     }
 
     #[test]
-    fn workflow_to_dto_preserves_loop_guard() {
-        let definition = domain::WorkflowDefinitionContent {
-            name: "wf".to_string(),
-            description: String::new(),
-            nodes: vec![
-                domain::NodeDefinition {
-                    name: "main".to_string(),
-                    kind: domain::NodeKind::Sequence(domain::SequenceSpec {
-                        entry: None,
-                        children: vec![domain::ChildEntry {
-                            name: "fix".to_string(),
-                            inputs: Vec::new(),
-                            rules: Some(vec![domain::Rule::LoopGuard {
-                                max_iterations: 2,
-                                on_exhausted: "done".to_string(),
-                            }]),
-                        }],
-                    }),
-                    ..Default::default()
-                },
-                domain::NodeDefinition {
-                    name: "fix".to_string(),
-                    ..Default::default()
-                },
-            ],
-            entry: "main".to_string(),
-            ..Default::default()
-        };
-
-        let value = workflow_json(&definition, domain::WorkflowSourceFormat::Yaml);
-
-        assert_eq!(
-            value["nodes"][0]["sequence"]["children"][0]["rules"][0],
-            serde_json::json!({
-                "type": "loop_guard",
-                "max_iterations": 2,
-                "on_exhausted": "done"
-            })
-        );
-    }
-
-    #[test]
     fn fanout_spec_dto_serializes_child_and_items_sources() {
         let literal = domain::FanoutSpec {
             children: vec![domain::ChildEntry {
@@ -777,7 +644,6 @@ nodes:
         format: domain::WorkflowSourceFormat,
     ) -> serde_json::Value {
         let definition = domain::WorkflowDefinition::restore(
-            content.name.clone(),
             "/workflows".into(),
             domain::WorkflowSource::File {
                 path: "/workflows/wf.yml".into(),

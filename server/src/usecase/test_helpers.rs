@@ -129,7 +129,6 @@ impl GitService for FakeRepo {
     fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
         Ok(RepositoryStatusScan {
             status: Vec::new(),
-            diff_stats: Vec::new(),
             dirty_count: 0,
         })
     }
@@ -328,12 +327,11 @@ pub async fn start_read(
     usecase: &StateSubscriptionUsecase,
     client: &str,
     raw: &str,
-    cursor: Option<(&str, u64)>,
 ) -> Result<(), StateReadError> {
     let target = SubscriptionTarget::parse(raw).map_err(StateReadError::from_error)?;
     usecase
         .deps()
-        .start_subscription(client, &target, &format!("{client}:{raw}"), cursor)
+        .start_subscription(client, &target, &format!("{client}:{raw}"))
         .await
 }
 pub async fn stop_read(
@@ -467,9 +465,6 @@ pub(crate) mod state_subscription {
         async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(match target {
-                SubscriptionTarget::RepositoryPaths => {
-                    StateValue::RepositoryPaths(vec!["/repo".into()])
-                }
                 _ => StateValue::NodeDetail(None),
             })
         }
@@ -533,7 +528,7 @@ pub(crate) mod state_subscription {
             if self.fail_read.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(StateReadError::from_error(SubscriptionError::UnknownTarget));
             }
-            Ok(StateValue::RepositoryPaths(vec!["/repo".into()]))
+            Ok(StateValue::TerminalStartupCommand("/repo".into()))
         }
         async fn refresh_external(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
             if self.fail_refresh.load(std::sync::atomic::Ordering::SeqCst) {
@@ -658,7 +653,6 @@ pub(crate) mod retry {
                     active: true,
                     requires_attention,
                     count: 1,
-                    first_observed_ms: 0,
                     last_observed_ms: 0,
                 });
             }

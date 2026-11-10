@@ -22,9 +22,6 @@ impl WorkflowEvent {
             | Self::NodeFailed { execution_id, .. }
             | Self::ApprovalRequested { execution_id, .. }
             | Self::ApprovalResolved { execution_id, .. }
-            | Self::ContractViolated { execution_id, .. }
-            | Self::StallObserved { execution_id, .. }
-            | Self::StallCleared { execution_id, .. }
             | Self::ExecutionCompleted { execution_id, .. }
             | Self::ExecutionAborted { execution_id, .. } => execution_id,
         }
@@ -45,9 +42,6 @@ impl WorkflowEvent {
             | Self::NodeFailed { timestamp, .. }
             | Self::ApprovalRequested { timestamp, .. }
             | Self::ApprovalResolved { timestamp, .. }
-            | Self::ContractViolated { timestamp, .. }
-            | Self::StallObserved { timestamp, .. }
-            | Self::StallCleared { timestamp, .. }
             | Self::ExecutionCompleted { timestamp, .. }
             | Self::ExecutionAborted { timestamp, .. } => *timestamp,
         }

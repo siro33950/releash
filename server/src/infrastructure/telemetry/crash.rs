@@ -23,19 +23,10 @@ pub(crate) fn set_crash_reporting_enabled(enabled: bool) {
 }
 
 #[cfg(test)]
-pub fn crash_reporting_enabled() -> bool {
-    CRASH_REPORTING_ENABLED.load(Ordering::Relaxed)
-}
-
-#[cfg(test)]
 pub fn reset_for_tests() {
     CRASH_REPORTING_ENABLED.store(true, Ordering::Relaxed);
     OTLP_CONFIGURED.store(false, Ordering::Relaxed);
     *LOGGER_PROVIDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
-pub(crate) fn report_frontend_error(error_type: &str, message: &str, stack: Option<&str>) {
-    report_error("frontend", error_type, message, stack);
 }
 
 pub fn report_error(source: &str, error_type: &str, message: &str, stack: Option<&str>) {

@@ -90,7 +90,6 @@ pub(crate) mod tests {
             workflow_name: "review".to_string(),
             status: workflow::ExecutionStatus::Running,
             current_node: Some("review".to_string()),
-            created_from: workflow::ExecutionOrigin::Cli,
             worktree_path: "/repo".to_string(),
             started_at: 1.0,
             updated_at: 2.0,
@@ -141,71 +140,6 @@ pub(crate) mod tests {
         assert_eq!(value["displayCommand"], "printf '[REDACTED]'");
         assert!(value.get("display_command").is_none());
     }
-}
-
-#[test]
-fn test_定義保存結果_成功時はファイル識別名を返す() {
-    use super::*;
-    use crate::adaptor::presenter::client::save_workflow_source_result_dto::Variant;
-    // Given
-    let definition = workflow::WorkflowDefinition::restore(
-        "file-stem".into(),
-        "/workflows".into(),
-        workflow::WorkflowSource::File {
-            path: "/workflows/file-stem.yml".into(),
-        },
-        workflow::WorkflowSourceFormat::Yaml,
-        Ok(workflow::WorkflowDefinitionContent {
-            name: "declared-name".into(),
-            ..Default::default()
-        }),
-    );
-    // When
-    let result = save_workflow_source_result(Ok(definition)).unwrap();
-    // Then
-    let Some(Variant::Success(result)) = result.variant else {
-        panic!("success")
-    };
-    assert_eq!(result.ok, Some(true));
-    assert_eq!(result.name.as_deref(), Some("file-stem"));
-}
-
-#[test]
-fn test_定義保存結果_診断と業務失敗を転送する() {
-    use super::*;
-    use crate::adaptor::presenter::client::save_workflow_source_result_dto::Variant;
-    use crate::adaptor::presenter::connect::ConnectFailure;
-    use workflow::value_objects::diagnostic::{DiagnosticItem, DiagnosticStage, Severity};
-    // Given
-    let items = vec![DiagnosticItem::new(
-        "WFS001",
-        Severity::Error,
-        DiagnosticStage::ParseShape,
-        None,
-        "invalid",
-    )];
-    // When
-    let result = save_workflow_source_result(Err(workflow::WorkflowSourceSaveError::Diagnostics(
-        items.clone(),
-    )))
-    .unwrap();
-    // Then
-    let Some(Variant::Diagnostics(result)) = result.variant else {
-        panic!("diagnostics")
-    };
-    assert_eq!(result.ok, Some(false));
-    assert_eq!(result.error.as_deref(), Some("workflow_diagnostics"));
-    assert_eq!(result.diagnostics, Some(items.try_into().unwrap()));
-    let error = workflow::WorkflowError::validation("invalid name");
-    let result = save_workflow_source_result(Err(workflow::WorkflowSourceSaveError::Workflow(
-        error.clone(),
-    )))
-    .unwrap_err();
-    assert_eq!(result.to_string(), error.to_string());
-    assert_eq!(
-        result.connect_code(),
-        connectrpc::ErrorCode::InvalidArgument
-    );
 }
 
 #[test]

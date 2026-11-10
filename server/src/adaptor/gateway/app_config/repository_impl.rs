@@ -55,31 +55,6 @@ impl AppConfig {
         *config = next;
         Ok(result)
     }
-
-    pub fn read_legacy_server_token(&self) -> Result<Option<String>, AppConfigError> {
-        let content = match fs::read_to_string(&self.config_path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(AppConfigError::Technical(TechnicalFailure {
-                    nature: TechnicalFailureNature::Other,
-                    message: format!("設定ファイル読み込み失敗: {error}"),
-                }))
-            }
-        };
-        let legacy = toml::from_str::<toml::Value>(&content).map_err(|_| {
-            AppConfigError::Technical(TechnicalFailure {
-                nature: TechnicalFailureNature::Other,
-                message: "秘匿対象の旧設定のパース失敗".to_string(),
-            })
-        })?;
-        Ok(legacy
-            .get("server")
-            .and_then(|server| server.get("token"))
-            .and_then(toml::Value::as_str)
-            .filter(|token| token.len() >= 8)
-            .map(str::to_string))
-    }
 }
 
 impl AppConfigRepository for AppConfig {
@@ -158,10 +133,6 @@ impl ConfigSecretRepository for AppConfig {
             if notion.api_token.len() >= 8 {
                 values.push(notion.api_token);
             }
-        }
-        match self.read_legacy_server_token() {
-            Ok(token) => values.extend(token),
-            Err(error) => log::warn!("{error}"),
         }
         Ok(values)
     }
@@ -325,41 +296,15 @@ pub fn read_config_if_exists(path: &Path) -> Result<Option<ReleashConfig>, Strin
     Ok(Some(config))
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-struct LegacyConfigProbe {
-    telemetry_enabled: Option<bool>,
-    #[serde(default)]
-    telemetry: LegacyTelemetryProbe,
-}
-
-#[derive(Debug, Default, serde::Deserialize)]
-struct LegacyTelemetryProbe {
-    performance_telemetry: Option<bool>,
-}
-
 pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
-    let mut needs_write = !path.exists();
-    let config = if path.exists() {
+    if path.exists() {
         let content =
             fs::read_to_string(path).map_err(|e| format!("設定ファイル読み込み失敗: {e}"))?;
-        let mut config = toml::from_str::<ReleashConfig>(&content)
-            .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?;
-        let probe = toml::from_str::<LegacyConfigProbe>(&content)
-            .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?;
-        if probe.telemetry.performance_telemetry.is_none() && probe.telemetry_enabled == Some(false)
-        {
-            config.telemetry.performance_telemetry = false;
-            needs_write = true;
-        }
-        config
-    } else {
-        ReleashConfig::default()
-    };
-
-    if needs_write {
-        write_config(path, &config)?;
+        return toml::from_str::<ReleashConfig>(&content)
+            .map_err(|e| format!("設定ファイルのパース失敗: {e}"));
     }
-
+    let config = ReleashConfig::default();
+    write_config(path, &config)?;
     Ok(config)
 }
 

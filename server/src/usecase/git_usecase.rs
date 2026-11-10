@@ -43,28 +43,6 @@ pub struct GitUsecase {
 }
 
 impl GitUsecase {
-    pub fn startup_worktree(
-        &self,
-    ) -> Result<Option<crate::usecase::repository_dto::StartupWorktree>, UsecaseError> {
-        let Some(root) = self.find_main_repo_path(&self.get_cwd()?)? else {
-            return Ok(None);
-        };
-        let mut worktrees = self.list_worktrees(&root)?;
-        if worktrees.len() != 1 {
-            return Ok(None);
-        }
-        let worktree = worktrees.remove(0);
-        let repository_name = std::path::Path::new(&root)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or(root);
-        Ok(Some(crate::usecase::repository_dto::StartupWorktree {
-            path: worktree.path,
-            branch: worktree.branch,
-            repository_name,
-        }))
-    }
-
     pub fn with_state_publisher(
         mut self,
         publisher: crate::usecase::state_subscription::StateSubscriptionUsecase,
@@ -109,10 +87,6 @@ impl GitUsecase {
         Ok(self.git.list_branches(repo_path)?)
     }
 
-    pub fn get_current_branch(&self, repo_path: &str) -> Result<String, UsecaseError> {
-        Ok(self.git.current(repo_path)?)
-    }
-
     // ── branch（書き込み） ──
 
     pub fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), UsecaseError> {
@@ -135,23 +109,6 @@ impl GitUsecase {
 
     pub fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, UsecaseError> {
         Ok(self.git.find_main_repo_path(path)?)
-    }
-
-    pub fn list_worktrees(&self, repo_path: &str) -> Result<Vec<WorktreeEntryDto>, UsecaseError> {
-        let repository_root = self.git.main_repo_path(repo_path)?;
-        let worktrees = self.git.list_worktrees(repo_path)?;
-        let mut entries = Vec::with_capacity(worktrees.len());
-        for wt in worktrees {
-            entries.push(WorktreeEntryDto {
-                name: wt.name,
-                path: to_canonical_forward_slash(&wt.path),
-                branch: wt.branch,
-                is_main: wt.is_main,
-                is_locked: wt.is_locked,
-            });
-        }
-        entries.retain(|entry| !is_isolated(&repository_root, &entry.path, &entry.branch));
-        Ok(entries)
     }
 
     /// Workspaces に並べる worktree。隔離 worktree は含めず、main を先頭にブランチ名順で返す。

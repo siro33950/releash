@@ -171,12 +171,6 @@ enum StoredReviewEvent {
         summary: String,
         at: f64,
     },
-    ThreadDeleted {
-        event_id: String,
-        thread_id: String,
-        actor: StoredReviewActor,
-        at: f64,
-    },
 }
 
 impl StoredReviewEvent {
@@ -184,8 +178,7 @@ impl StoredReviewEvent {
         match self {
             Self::ThreadCreated { thread_id, .. }
             | Self::CommentAppended { thread_id, .. }
-            | Self::ThreadResolved { thread_id, .. }
-            | Self::ThreadDeleted { thread_id, .. } => thread_id,
+            | Self::ThreadResolved { thread_id, .. } => thread_id,
         }
     }
 }
@@ -240,17 +233,6 @@ impl From<&ReviewEvent> for StoredReviewEvent {
                 summary: summary.clone(),
                 at: *at,
             },
-            ReviewEvent::ThreadDeleted {
-                event_id,
-                thread_id,
-                actor,
-                at,
-            } => Self::ThreadDeleted {
-                event_id: event_id.clone(),
-                thread_id: thread_id.clone(),
-                actor: StoredReviewActor::from(actor),
-                at: *at,
-            },
         }
     }
 }
@@ -303,17 +285,6 @@ impl From<StoredReviewEvent> for ReviewEvent {
                 actor: actor.into(),
                 outcome,
                 summary,
-                at,
-            },
-            StoredReviewEvent::ThreadDeleted {
-                event_id,
-                thread_id,
-                actor,
-                at,
-            } => Self::ThreadDeleted {
-                event_id,
-                thread_id,
-                actor: actor.into(),
                 at,
             },
         }

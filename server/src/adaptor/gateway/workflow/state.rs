@@ -23,7 +23,6 @@ pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
         execution_id: state.execution_id,
         workflow_name: state.workflow_name,
         worktree_path: state.worktree_path,
-        created_from: state.created_from,
         request: state.request,
         error_reason: state.error_reason,
         state: runtime_execution_state_to_domain(&state.state),

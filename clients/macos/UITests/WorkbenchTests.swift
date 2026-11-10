@@ -32,21 +32,15 @@ final class WorkbenchTests: XCTestCase {
     try await fixture.startServer()
     let repository = try await fixture.repository("relaunch-repository")
     let (client, headers) = try fixture.client()
-    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
-    definition.source = """
+    try fixture.writeWorkflow(
+      "e2e-relaunch",
+      """
       name: e2e-relaunch
       description: E2E fixture
       nodes:
         main:
           command: sleep 3600
-      """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
-      .get()
-    guard case .success = saved.variant else {
-      throw NSError(
-        domain: "E2E", code: 3,
-        userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
-    }
+      """)
     var request = Releash_Client_V1_StartWorkflowRequest()
     request.workflowName = "e2e-relaunch"
     request.worktreePath = repository.path
@@ -122,21 +116,15 @@ final class WorkbenchTests: XCTestCase {
   @MainActor func testRepositoriesContainWorktreeCards() async throws {
     try await fixture.startServer()
     let (client, headers) = try fixture.client()
-    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
-    definition.source = """
+    try fixture.writeWorkflow(
+      "e2e-running",
+      """
       name: e2e-running
       description: E2E fixture
       nodes:
         main:
           command: sleep 3600
-      """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
-      .get()
-    guard case .success = saved.variant else {
-      throw NSError(
-        domain: "E2E", code: 3,
-        userInfo: [NSLocalizedDescriptionKey: String(describing: saved.variant)])
-    }
+      """)
     _ = try await fixture.repository(
       "first-repository", worktrees: ["feature-one"],
       workflows: ["e2e-running"], threads: ["worktree card context"])
@@ -455,7 +443,7 @@ extension WorkbenchTests {
         }),
         let root = worktree.snapshot.nodes.items.first(where: {
           if case .node(let node) = $0.variant {
-            return node.sessionCapabilities.sessionRef == selection.agentSessionID
+            return node.id == selection.nodeID
           }
           return false
         }), case .node(let node) = root.variant
@@ -492,20 +480,15 @@ extension WorkbenchTests {
     try await fixture.startServer()
     let repository = try await fixture.repository("command-tab-repository")
     let (client, headers) = try fixture.client()
-    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
-    definition.source = """
+    try fixture.writeWorkflow(
+      "command-tab-e2e",
+      """
       name: command-tab-e2e
       description: Command tab regression
       nodes:
         main:
           command: printf command-tab-output
-      """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
-      .get()
-    guard case .success = saved.variant else {
-      XCTFail("Workflowを保存できません")
-      return
-    }
+      """)
     var start = Releash_Client_V1_StartWorkflowRequest()
     start.workflowName = "command-tab-e2e"
     start.worktreePath = repository.path
@@ -550,14 +533,10 @@ extension WorkbenchTests {
       return true
     }
     let (client, headers) = try fixture.client()
-    var instruction = Releash_Client_V1_SaveFacetRequest()
-    instruction.kind = "instruction"
-    instruction.key = "node-tree-e2e"
-    instruction.isNew = true
-    instruction.content = "Observe this workflow."
-    _ = try await client.saveFacet(request: instruction, headers: headers).result.get()
-    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
-    definition.source = """
+    try fixture.writeFacet("instructions", "node-tree-e2e", "Observe this workflow.")
+    try fixture.writeWorkflow(
+      "node-tree-e2e",
+      """
       name: node-tree-e2e
       description: Node tree regression
       nodes:
@@ -569,13 +548,7 @@ extension WorkbenchTests {
           session:
             provider: claude
             facets: {instruction: node-tree-e2e}
-      """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
-      .get()
-    guard case .success = saved.variant else {
-      XCTFail("Workflowを保存できません: \(saved)")
-      return
-    }
+      """)
     var request = Releash_Client_V1_StartWorkflowRequest()
     request.workflowName = "node-tree-e2e"
     request.worktreePath = path

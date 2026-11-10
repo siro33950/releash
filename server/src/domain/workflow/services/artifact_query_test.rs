@@ -1,8 +1,8 @@
 use super::*;
 use crate::domain::workflow::{
-    ApprovalGrantedFact, ArtifactProducedFact, ExecutionOrigin, ExecutionParentRef,
-    ExecutionTreeLaunch, NodeFactMeta, ProcessExitedFact, StartedFact, StopReceivedFact,
-    SubmitReceivedFact, WorkflowDefinitionContent,
+    ApprovalGrantedFact, ArtifactProducedFact, ExecutionParentRef, ExecutionTreeLaunch,
+    NodeFactMeta, ProcessExitedFact, StartedFact, StopReceivedFact, SubmitReceivedFact,
+    WorkflowDefinitionContent,
 };
 
 struct Log {
@@ -20,7 +20,6 @@ impl Log {
                 repository_root: Some("/repo".into()),
                 workspace_identity: "/repo".into(),
                 worktree_path: "/repo".into(),
-                created_from: ExecutionOrigin::Cli,
                 request: String::new(),
                 workflow_name: definition.name.clone(),
                 definition: Some(definition),

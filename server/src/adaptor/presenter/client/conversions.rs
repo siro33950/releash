@@ -11,17 +11,6 @@ fn req<T>(value: Option<T>, name: &str) -> Result<T, String> {
     value.ok_or_else(|| format!("Missing {name}"))
 }
 
-impl TryFrom<crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse>
-    for wire::AgentSessionArchiveResponse
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse,
-    ) -> Result<Self, String> {
-        Ok(Self { value: Some(match value { crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse::Archived => wire::agent_session_archive_response::Value::Archived as i32, crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse::AlreadyArchived => wire::agent_session_archive_response::Value::AlreadyArchived as i32 }) })
-    }
-}
-
 impl TryFrom<crate::usecase::agent_session::AgentSessionHistoryCandidateDto>
     for wire::AgentSessionHistoryCandidateDto
 {
@@ -33,7 +22,6 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionHistoryCandidateDto>
             provider: Some(cv(value.provider)?),
             provider_session_id: Some(cv(value.provider_session_id)?),
             label: Some(cv(value.label)?),
-            updated_at_ms: Some(cv(value.updated_at_ms)?),
         })
     }
 }
@@ -62,36 +50,9 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionItemDto> for wire::Agent
             workspace_worktree_path: Some(cv(value.workspace_worktree_path)?),
             provider: Some(cv(value.provider)?),
             tree_location: Some(cv(value.tree_location)?),
-            lifecycle: Some(cv(value.lifecycle)?),
             provider_session_id: value.provider_session_id.map(cv).transpose()?,
-            transcript_ref: value.transcript_ref.map(cv).transpose()?,
             operations: Some(cv(value.operations)?),
-            last_exit_abnormal: Some(cv(value.last_exit_abnormal)?),
-            terminal_presence: value.terminal_presence,
             availability: None,
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::agent_session::AgentSessionLifecycleDto>
-    for wire::AgentSessionLifecycleDto
-{
-    type Error = String;
-    fn try_from(
-        value: crate::usecase::agent_session::AgentSessionLifecycleDto,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::usecase::agent_session::AgentSessionLifecycleDto::Open => {
-                    wire::agent_session_lifecycle_dto::Value::Open as i32
-                }
-                crate::usecase::agent_session::AgentSessionLifecycleDto::Paused => {
-                    wire::agent_session_lifecycle_dto::Value::Paused as i32
-                }
-                crate::usecase::agent_session::AgentSessionLifecycleDto::Archived => {
-                    wire::agent_session_lifecycle_dto::Value::Archived as i32
-                }
-            }),
         })
     }
 }
@@ -105,7 +66,6 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionOperationsDto>
     ) -> Result<Self, String> {
         Ok(Self {
             can_archive: Some(cv(value.can_archive)?),
-            can_restore: Some(cv(value.can_restore)?),
             can_delete: Some(cv(value.can_delete)?),
         })
     }
@@ -160,18 +120,6 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::ApprovalTargetView>
     }
 }
 
-impl TryFrom<wire::ApproveWorkflowNodeArgs> for crate::usecase::workflow::command::ApprovalCommand {
-    type Error = String;
-    fn try_from(value: wire::ApproveWorkflowNodeArgs) -> Result<Self, String> {
-        Ok(Self {
-            execution_id: cv(req(value.execution_id, "executionId")?)?,
-            node_name: cv(req(value.node_name, "nodeName")?)?,
-            node_execution_id: value.node_execution_id.map(cv).transpose()?,
-            comment: value.comment.map(cv).transpose()?,
-        })
-    }
-}
-
 impl TryFrom<crate::adaptor::presenter::workflow_wire::ArtifactView> for wire::ArtifactView {
     type Error = String;
     fn try_from(
@@ -191,23 +139,6 @@ impl TryFrom<crate::usecase::repository_dto::BranchDto> for wire::BranchDto {
     fn try_from(value: crate::usecase::repository_dto::BranchDto) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
-            is_remote: Some(cv(value.is_remote)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::ChangeGroupDto> for wire::ChangeGroupDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::ChangeGroupDto) -> Result<Self, String> {
-        Ok(Self {
-            group_index: Some(cv(value.group_index)?),
-            group_id: Some(cv(value.group_id)?),
-            hunk_index: Some(cv(value.hunk_index)?),
-            new_start: Some(cv(value.new_start)?),
-            new_end: Some(cv(value.new_end)?),
-            line_offset_start: Some(cv(value.line_offset_start)?),
-            line_offset_end: Some(cv(value.line_offset_end)?),
-            is_staged: value.is_staged.map(cv).transpose()?,
         })
     }
 }
@@ -217,8 +148,6 @@ impl TryFrom<crate::domain::workflow::ChildEntry> for wire::ChildEntryDto {
     fn try_from(value: crate::domain::workflow::ChildEntry) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
-            inputs: Some(cv(value.inputs)?),
-            rules: value.rules.map(cv).transpose()?,
         })
     }
 }
@@ -345,80 +274,6 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticSummary>
     }
 }
 
-impl TryFrom<wire::DiffFileEntryInput> for crate::adaptor::presenter::code::DiffFileEntryInput {
-    type Error = String;
-    fn try_from(value: wire::DiffFileEntryInput) -> Result<Self, String> {
-        Ok(Self {
-            path: cv(req(value.path, "path")?)?,
-            status: cv(req(value.status, "status")?)?,
-            additions: cv(req(value.additions, "additions")?)?,
-            deletions: cv(req(value.deletions, "deletions")?)?,
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::DiffRangeDto> for wire::DiffRangeDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::DiffRangeDto) -> Result<Self, String> {
-        Ok(Self {
-            start_line: Some(cv(value.start_line)?),
-            end_line: Some(cv(value.end_line)?),
-            kind: Some(cv(value.kind)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::DiffRangeKindDto> for wire::DiffRangeKindDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::DiffRangeKindDto) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::usecase::code_dto::DiffRangeKindDto::Added => {
-                    wire::diff_range_kind_dto::Value::Added as i32
-                }
-                crate::usecase::code_dto::DiffRangeKindDto::Modified => {
-                    wire::diff_range_kind_dto::Value::Modified as i32
-                }
-                crate::usecase::code_dto::DiffRangeKindDto::Deleted => {
-                    wire::diff_range_kind_dto::Value::Deleted as i32
-                }
-            }),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::DiffTreeNodeDto> for wire::DiffTreeNodeDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::DiffTreeNodeDto) -> Result<Self, String> {
-        Ok(Self {
-            id: Some(cv(value.id)?),
-            name: Some(cv(value.name)?),
-            path: Some(cv(value.path)?),
-            node_type: Some(cv(value.node_type)?),
-            status: value.status.map(cv).transpose()?,
-            additions: value.additions.map(cv).transpose()?,
-            deletions: value.deletions.map(cv).transpose()?,
-            children: Some(cv(value.children)?),
-        })
-    }
-}
-
-impl TryFrom<wire::DiffTreeNodeInput> for crate::adaptor::presenter::code::DiffTreeNodeInput {
-    type Error = String;
-    fn try_from(value: wire::DiffTreeNodeInput) -> Result<Self, String> {
-        Ok(Self {
-            id: cv(req(value.id, "id")?)?,
-            name: cv(req(value.name, "name")?)?,
-            path: cv(req(value.path, "path")?)?,
-            node_type: cv(req(value.node_type, "node_type")?)?,
-            status: value.status.map(cv).transpose()?,
-            additions: value.additions.map(cv).transpose()?,
-            deletions: value.deletions.map(cv).transpose()?,
-            children: cv(req(value.children, "children")?)?,
-        })
-    }
-}
-
 impl TryFrom<crate::usecase::external_editor::dto::EditorInfoDto> for wire::EditorInfoDto {
     type Error = String;
     fn try_from(
@@ -427,32 +282,6 @@ impl TryFrom<crate::usecase::external_editor::dto::EditorInfoDto> for wire::Edit
         Ok(Self {
             name: Some(cv(value.name)?),
             path: Some(cv(value.path)?),
-        })
-    }
-}
-
-impl TryFrom<crate::adaptor::presenter::workflow_wire::ExecutionOriginView>
-    for wire::ExecutionOriginView
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::workflow_wire::ExecutionOriginView,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::DesktopUi => {
-                    wire::execution_origin_view::Value::DesktopUi as i32
-                }
-                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::Cli => {
-                    wire::execution_origin_view::Value::Cli as i32
-                }
-                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::Agent => {
-                    wire::execution_origin_view::Value::Agent as i32
-                }
-                crate::adaptor::presenter::workflow_wire::ExecutionOriginView::Api => {
-                    wire::execution_origin_view::Value::Api as i32
-                }
-            }),
         })
     }
 }
@@ -554,122 +383,14 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::FanoutView> for wire::Fan
     }
 }
 
-impl TryFrom<crate::usecase::repository_dto::FileDiffStatDto> for wire::FileDiffStatDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::repository_dto::FileDiffStatDto) -> Result<Self, String> {
-        Ok(Self {
-            path: Some(cv(value.path)?),
-            index_additions: Some(cv(value.index_additions)?),
-            index_deletions: Some(cv(value.index_deletions)?),
-            wt_additions: Some(cv(value.wt_additions)?),
-            wt_deletions: Some(cv(value.wt_deletions)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::FileNavigationResultDto> for wire::FileNavigationResultDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::FileNavigationResultDto) -> Result<Self, String> {
-        Ok(Self {
-            current_index: Some(cv(value.current_index)?),
-            total: Some(cv(value.total)?),
-            prev_file: value.prev_file.map(cv).transpose()?,
-            next_file: value.next_file.map(cv).transpose()?,
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::repository_dto::FileStatusDto> for wire::FileStatusDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::repository_dto::FileStatusDto) -> Result<Self, String> {
-        Ok(Self {
-            path: Some(cv(value.path)?),
-            index_status: Some(cv(value.index_status)?),
-            worktree_status: Some(cv(value.worktree_status)?),
-        })
-    }
-}
-
 impl TryFrom<crate::adaptor::presenter::terminal::GetOrSpawnTerminalV1>
     for wire::GetOrSpawnTerminalV1
 {
     type Error = String;
     fn try_from(
-        value: crate::adaptor::presenter::terminal::GetOrSpawnTerminalV1,
+        _: crate::adaptor::presenter::terminal::GetOrSpawnTerminalV1,
     ) -> Result<Self, String> {
-        Ok(Self {
-            session_key: Some(cv(value.session_key)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::HiddenRangeDto> for wire::HiddenRangeDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::HiddenRangeDto) -> Result<Self, String> {
-        Ok(Self {
-            start_line: Some(cv(value.start_line)?),
-            end_line: Some(cv(value.end_line)?),
-            hidden_count: Some(cv(value.hidden_count)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::HunkDto> for wire::HunkDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::HunkDto) -> Result<Self, String> {
-        Ok(Self {
-            index: Some(cv(value.index)?),
-            hunk_id: Some(cv(value.hunk_id)?),
-            old_start: Some(cv(value.old_start)?),
-            old_lines: Some(cv(value.old_lines)?),
-            new_start: Some(cv(value.new_start)?),
-            new_lines: Some(cv(value.new_lines)?),
-            lines: Some(cv(value.lines)?),
-        })
-    }
-}
-
-impl TryFrom<wire::HunkInput> for crate::adaptor::presenter::code::HunkInput {
-    type Error = String;
-    fn try_from(value: wire::HunkInput) -> Result<Self, String> {
-        Ok(Self {
-            index: cv(req(value.index, "index")?)?,
-            hunk_id: value.hunk_id.map(cv).transpose()?.unwrap_or_default(),
-            old_start: cv(req(value.old_start, "oldStart")?)?,
-            old_lines: cv(req(value.old_lines, "oldLines")?)?,
-            new_start: cv(req(value.new_start, "newStart")?)?,
-            new_lines: cv(req(value.new_lines, "newLines")?)?,
-            lines: cv(req(value.lines, "lines")?)?,
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::InlineChunkDto> for wire::InlineChunkDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::InlineChunkDto) -> Result<Self, String> {
-        Ok(Self {
-            content: Some(cv(value.content)?),
-            kind: Some(cv(value.kind)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::InlineChunkKindDto> for wire::InlineChunkKindDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::InlineChunkKindDto) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::usecase::code_dto::InlineChunkKindDto::Unchanged => {
-                    wire::inline_chunk_kind_dto::Value::Unchanged as i32
-                }
-                crate::usecase::code_dto::InlineChunkKindDto::Added => {
-                    wire::inline_chunk_kind_dto::Value::Added as i32
-                }
-                crate::usecase::code_dto::InlineChunkKindDto::Removed => {
-                    wire::inline_chunk_kind_dto::Value::Removed as i32
-                }
-            }),
-        })
+        Ok(Self {})
     }
 }
 
@@ -696,9 +417,7 @@ impl TryFrom<crate::usecase::git_host::dto::IssueInfoDto> for wire::IssueInfoDto
             created_at: Some(cv(value.created_at)?),
             updated_at: Some(cv(value.updated_at)?),
             labels: Some(cv(value.labels)?),
-            assignees: Some(cv(value.assignees)?),
             body: Some(cv(value.body)?),
-            milestone: value.milestone.map(cv).transpose()?,
         })
     }
 }
@@ -708,7 +427,6 @@ impl TryFrom<crate::usecase::git_host::dto::IssueLabelDto> for wire::IssueLabelD
     fn try_from(value: crate::usecase::git_host::dto::IssueLabelDto) -> Result<Self, String> {
         Ok(Self {
             name: Some(cv(value.name)?),
-            color: Some(cv(value.color)?),
         })
     }
 }
@@ -750,31 +468,6 @@ impl TryFrom<wire::LabelPropertyView> for crate::adaptor::presenter::notion::Lab
         Ok(Self {
             name: cv(req(value.name, "name")?)?,
             property_type: cv(req(value.property_type, "property_type")?)?,
-        })
-    }
-}
-
-impl TryFrom<wire::MarkdownDiffSideInput>
-    for crate::adaptor::presenter::code::MarkdownDiffSideInput
-{
-    type Error = String;
-    fn try_from(value: wire::MarkdownDiffSideInput) -> Result<Self, String> {
-        Ok(
-            match wire::markdown_diff_side_input::Value::try_from(req(value.value, "value")?)
-                .map_err(|_| "Invalid MarkdownDiffSideInput")?
-            {
-                wire::markdown_diff_side_input::Value::Modified => Self::Modified,
-                wire::markdown_diff_side_input::Value::Original => Self::Original,
-            },
-        )
-    }
-}
-
-impl TryFrom<crate::usecase::git_host::dto::MilestoneDto> for wire::MilestoneDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::git_host::dto::MilestoneDto) -> Result<Self, String> {
-        Ok(Self {
-            title: Some(cv(value.title)?),
         })
     }
 }
@@ -986,22 +679,6 @@ impl TryFrom<crate::adaptor::presenter::notion::NotionConfigStatusView>
     }
 }
 
-impl TryFrom<crate::adaptor::presenter::notion::NotionLabelOptionView>
-    for wire::NotionLabelOptionView
-{
-    type Error = String;
-    fn try_from(
-        value: crate::adaptor::presenter::notion::NotionLabelOptionView,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            property_name: Some(cv(value.property_name)?),
-            property_type: Some(cv(value.property_type)?),
-            options: Some(cv(value.options)?),
-            option_ids: Some(cv(value.option_ids)?),
-        })
-    }
-}
-
 impl TryFrom<crate::adaptor::presenter::notion::NotionPropertyInfoView>
     for wire::NotionPropertyInfoView
 {
@@ -1054,7 +731,6 @@ impl TryFrom<crate::adaptor::presenter::notion::NotionTaskView> for wire::Notion
             labels: Some(cv(value.labels)?),
             branch_name: Some(cv(value.branch_name)?),
             created_at: Some(cv(value.created_at)?),
-            last_edited_at: Some(cv(value.last_edited_at)?),
         })
     }
 }
@@ -1141,7 +817,6 @@ impl TryFrom<crate::adaptor::presenter::agent_session::ProviderAvailabilityItemR
             display_name: Some(cv(value.display_name)?),
             default_executable: Some(cv(value.default_executable)?),
             configured_executable: value.configured_executable.map(cv).transpose()?,
-            configuration_revision: Some(value.configuration_revision),
             effective_executable: Some(cv(value.effective_executable)?),
             available: Some(cv(value.available)?),
             resolved_executable: value.resolved_executable.map(cv).transpose()?,
@@ -1183,7 +858,6 @@ impl TryFrom<crate::adaptor::presenter::agent_session::ProviderHookHealthWarning
     ) -> Result<Self, String> {
         Ok(Self {
             provider: Some(cv(value.provider)?),
-            launch_id: Some(cv(value.launch_id)?),
             reason: Some(cv(value.reason)?),
         })
     }
@@ -1233,9 +907,6 @@ impl TryFrom<crate::usecase::code_dto::ReviewBinaryDto> for wire::ReviewBinaryDt
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewBinaryDto) -> Result<Self, String> {
         Ok(Self {
-            version: Some(cv(value.version)?),
-            stale: Some(cv(value.stale)?),
-            file_id: Some(cv(value.file_id)?),
             path: Some(cv(value.path)?),
             original_size: value.original_size.map(cv).transpose()?,
             modified_size: value.modified_size.map(cv).transpose()?,
@@ -1256,37 +927,6 @@ impl TryFrom<crate::domain::comment::Comment> for wire::ReviewCommentDto {
     }
 }
 
-impl TryFrom<crate::usecase::code_dto::ReviewFallbackDto> for wire::ReviewFallbackDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::ReviewFallbackDto) -> Result<Self, String> {
-        Ok(Self {
-            version: Some(cv(value.version)?),
-            stale: Some(cv(value.stale)?),
-            file_id: Some(cv(value.file_id)?),
-            path: Some(cv(value.path)?),
-            reason: Some(cv(value.reason)?),
-            total_lines: value.total_lines.map(cv).transpose()?,
-            size_bytes: value.size_bytes.map(cv).transpose()?,
-            hunk_count: value.hunk_count.map(cv).transpose()?,
-            limited: Some(cv(value.limited)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::ReviewFileEntryDto> for wire::ReviewFileEntryDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::ReviewFileEntryDto) -> Result<Self, String> {
-        Ok(Self {
-            file_id: Some(cv(value.file_id)?),
-            path: Some(cv(value.path)?),
-            index_status: Some(cv(value.index_status)?),
-            worktree_status: Some(cv(value.worktree_status)?),
-            additions: Some(cv(value.additions)?),
-            deletions: Some(cv(value.deletions)?),
-        })
-    }
-}
-
 impl TryFrom<crate::usecase::code_dto::ReviewFileViewDto> for wire::ReviewFileViewDto {
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewFileViewDto) -> Result<Self, String> {
@@ -1301,25 +941,7 @@ impl TryFrom<crate::usecase::code_dto::ReviewFileViewDto> for wire::ReviewFileVi
                 crate::usecase::code_dto::ReviewFileViewDto::Binary(value) => {
                     wire::review_file_view_dto::Variant::Binary(cv(value)?)
                 }
-                crate::usecase::code_dto::ReviewFileViewDto::Fallback(value) => {
-                    wire::review_file_view_dto::Variant::Fallback(cv(value)?)
-                }
             }),
-        })
-    }
-}
-
-impl TryFrom<wire::ReviewGroupActionInput>
-    for crate::adaptor::presenter::code::ReviewGroupActionInput
-{
-    type Error = String;
-    fn try_from(value: wire::ReviewGroupActionInput) -> Result<Self, String> {
-        Ok(Self {
-            worktree_path: cv(req(value.worktree_path, "worktreePath")?)?,
-            path: cv(req(value.path, "path")?)?,
-            section: cv(req(value.section, "section")?)?,
-            base: cv(req(value.base, "base")?)?,
-            group_id: cv(req(value.group_id, "groupId")?)?,
         })
     }
 }
@@ -1328,35 +950,9 @@ impl TryFrom<crate::usecase::code_dto::ReviewImageDto> for wire::ReviewImageDto 
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewImageDto) -> Result<Self, String> {
         Ok(Self {
-            version: Some(cv(value.version)?),
-            stale: Some(cv(value.stale)?),
-            file_id: Some(cv(value.file_id)?),
             path: Some(cv(value.path)?),
             original_url: value.original_url.map(cv).transpose()?,
             modified_url: value.modified_url.map(cv).transpose()?,
-            mime: Some(cv(value.mime)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::ReviewLimitReasonDto> for wire::ReviewLimitReasonDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::ReviewLimitReasonDto) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::usecase::code_dto::ReviewLimitReasonDto::FileSize => {
-                    wire::review_limit_reason_dto::Value::FileSize as i32
-                }
-                crate::usecase::code_dto::ReviewLimitReasonDto::LineCount => {
-                    wire::review_limit_reason_dto::Value::LineCount as i32
-                }
-                crate::usecase::code_dto::ReviewLimitReasonDto::HunkCount => {
-                    wire::review_limit_reason_dto::Value::HunkCount as i32
-                }
-                crate::usecase::code_dto::ReviewLimitReasonDto::Tokenization => {
-                    wire::review_limit_reason_dto::Value::Tokenization as i32
-                }
-            }),
         })
     }
 }
@@ -1369,27 +965,6 @@ impl TryFrom<crate::domain::comment::Resolve> for wire::ReviewResolveInfoDto {
             outcome: Some(cv(value.outcome)?),
             summary: Some(cv(value.summary)?),
             resolved_at: Some(cv(value.resolved_at)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::ReviewSnapshotDto> for wire::ReviewSnapshotDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::ReviewSnapshotDto) -> Result<Self, String> {
-        Ok(Self {
-            version: Some(cv(value.version)?),
-            stale: Some(cv(value.stale)?),
-            loading: Some(cv(value.loading)?),
-            base: Some(cv(value.base)?),
-            files: Some(cv(value.files)?),
-            staged_files: Some(cv(value.staged_files)?),
-            changed_files: Some(cv(value.changed_files)?),
-            diff_stats: Some(cv(value.diff_stats)?),
-            tree: Some(cv(value.tree)?),
-            staged_tree: Some(cv(value.staged_tree)?),
-            changes_tree: Some(cv(value.changes_tree)?),
-            staged_file_count: Some(cv(value.staged_file_count)?),
-            changes_file_count: Some(cv(value.changes_file_count)?),
         })
     }
 }
@@ -1437,17 +1012,10 @@ impl TryFrom<crate::usecase::code_dto::ReviewTextDiffDto> for wire::ReviewTextDi
     type Error = String;
     fn try_from(value: crate::usecase::code_dto::ReviewTextDiffDto) -> Result<Self, String> {
         Ok(Self {
-            version: Some(cv(value.version)?),
-            stale: Some(cv(value.stale)?),
-            file_id: Some(cv(value.file_id)?),
             path: Some(cv(value.path)?),
             original: Some(cv(value.original)?),
             modified: Some(cv(value.modified)?),
             source: Some(cv(value.source)?),
-            hunks: Some(cv(value.hunks)?),
-            change_groups: Some(cv(value.change_groups)?),
-            limited: Some(cv(value.limited)?),
-            total_lines: Some(cv(value.total_lines)?),
         })
     }
 }
@@ -1520,42 +1088,6 @@ impl TryFrom<wire::ReviewThreadStateDto> for crate::domain::comment::State {
                 wire::review_thread_state_dto::Value::Resolved => Self::Resolved,
             },
         )
-    }
-}
-
-impl TryFrom<crate::domain::workflow::Rule> for wire::RuleDto {
-    type Error = String;
-    fn try_from(value: crate::domain::workflow::Rule) -> Result<Self, String> {
-        Ok(Self {
-            variant: Some(match value {
-                crate::domain::workflow::Rule::When { on, then, next } => {
-                    wire::rule_dto::Variant::When(wire::RuleDtoWhen {
-                        on: Some(cv(on)?),
-                        then: Some(cv(then)?),
-                        next: Some(cv(next)?),
-                    })
-                }
-                crate::domain::workflow::Rule::Switch { on, cases, next } => {
-                    wire::rule_dto::Variant::Switch(wire::RuleDtoSwitch {
-                        on: Some(cv(on)?),
-                        cases: Some(cv(cases)?),
-                        next: next.map(cv).transpose()?,
-                    })
-                }
-                crate::domain::workflow::Rule::LoopGuard {
-                    max_iterations,
-                    on_exhausted,
-                } => wire::rule_dto::Variant::LoopGuard(wire::RuleDtoLoopGuard {
-                    max_iterations: Some(cv(max_iterations)?),
-                    on_exhausted: Some(cv(on_exhausted)?),
-                }),
-                crate::domain::workflow::Rule::Next(next) => {
-                    wire::rule_dto::Variant::Next(wire::RuleDtoNext {
-                        next: Some(cv(next)?),
-                    })
-                }
-            }),
-        })
     }
 }
 
@@ -1632,39 +1164,6 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::Severity> for wire::Sever
     }
 }
 
-impl TryFrom<crate::usecase::code_dto::SplitRowDto> for wire::SplitRowDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::SplitRowDto) -> Result<Self, String> {
-        Ok(Self {
-            left: value.left.map(cv).transpose()?,
-            right: value.right.map(cv).transpose()?,
-            kind: Some(cv(value.kind)?),
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::code_dto::SplitRowKindDto> for wire::SplitRowKindDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::SplitRowKindDto) -> Result<Self, String> {
-        Ok(Self {
-            value: Some(match value {
-                crate::usecase::code_dto::SplitRowKindDto::Unchanged => {
-                    wire::split_row_kind_dto::Value::Unchanged as i32
-                }
-                crate::usecase::code_dto::SplitRowKindDto::Added => {
-                    wire::split_row_kind_dto::Value::Added as i32
-                }
-                crate::usecase::code_dto::SplitRowKindDto::Removed => {
-                    wire::split_row_kind_dto::Value::Removed as i32
-                }
-                crate::usecase::code_dto::SplitRowKindDto::Modified => {
-                    wire::split_row_kind_dto::Value::Modified as i32
-                }
-            }),
-        })
-    }
-}
-
 impl TryFrom<wire::TerminalSurfaceOwnerV1>
     for crate::adaptor::presenter::terminal::TerminalSurfaceOwnerV1
 {
@@ -1704,18 +1203,6 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::TokenUsageView> for wire:
     }
 }
 
-impl TryFrom<crate::usecase::code_dto::VisibleBlockDto> for wire::VisibleBlockDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::code_dto::VisibleBlockDto) -> Result<Self, String> {
-        Ok(Self {
-            start_line: Some(cv(value.start_line)?),
-            end_line: Some(cv(value.end_line)?),
-            content: Some(cv(value.content)?),
-            deleted_content: value.deleted_content.map(cv).transpose()?,
-        })
-    }
-}
-
 impl TryFrom<crate::domain::workflow::WorkflowDefinition> for wire::WorkflowDto {
     type Error = String;
     fn try_from(value: crate::domain::workflow::WorkflowDefinition) -> Result<Self, String> {
@@ -1725,7 +1212,6 @@ impl TryFrom<crate::domain::workflow::WorkflowDefinition> for wire::WorkflowDto 
             description: Some(cv(content.description.clone())?),
             builtin: Some(cv(value.source().is_builtin())?),
             source_format: Some(cv(value.format())?),
-            schemas: Some(cv(content.schemas.iter().map(|(name, schema)| (name.clone(), crate::domain::workflow::services::contract_schema::schema_def_to_json_value(schema))).collect::<std::collections::BTreeMap<_, _>>())?),
             nodes: Some(cv(content.nodes.clone())?),
         })
     }
@@ -1744,7 +1230,6 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::WorkflowExecutionView>
             status: Some(cv(value.status)?),
             current_node: value.current_node.map(cv).transpose()?,
             worktree_path: Some(cv(value.worktree_path)?),
-            created_from: Some(cv(value.created_from)?),
             started_at: Some(cv(value.started_at)?),
             updated_at: Some(cv(value.updated_at)?),
             completed_at: value.completed_at.map(cv).transpose()?,
@@ -1904,10 +1389,6 @@ impl TryFrom<crate::domain::workspace_state::value_objects::WorkspaceLayoutState
             left_nav_collapsed: Some(cv(value.left_nav_collapsed)?),
             right_collapsed: Some(cv(value.right_collapsed)?),
             right_bottom_collapsed: Some(cv(value.right_bottom_collapsed)?),
-            right_bottom_active_tab: value.right_bottom_active_tab.map(cv).transpose()?,
-            selected_diff_file: value.selected_diff_file.map(cv).transpose()?,
-            review_collapsed: None,
-            diff_only_mode: None,
         })
     }
 }
@@ -1923,8 +1404,6 @@ impl TryFrom<wire::WorkspaceLayoutStateDto>
             left_nav_collapsed: cv(req(value.left_nav_collapsed, "leftNavCollapsed")?)?,
             right_collapsed: cv(req(value.right_collapsed, "rightCollapsed")?)?,
             right_bottom_collapsed: cv(req(value.right_bottom_collapsed, "rightBottomCollapsed")?)?,
-            right_bottom_active_tab: value.right_bottom_active_tab.map(cv).transpose()?,
-            selected_diff_file: value.selected_diff_file.map(cv).transpose()?,
         })
     }
 }
@@ -1980,16 +1459,8 @@ impl TryFrom<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>
     fn try_from(
         (node, can_abort): (crate::domain::workspace_tree::WorkspaceTreeNode, bool),
     ) -> Result<Self, String> {
-        use crate::domain::workflow::NodeCompletionSignalState as S;
         let updated_at = node.updated_at();
         let error_reason = node.failure_reason();
-        let submit_received = matches!(node.completion_signals, S::SubmitReceived | S::Ready);
-        let stop_received = matches!(node.completion_signals, S::StopReceived | S::Ready);
-        let waiting_for = match node.completion_signals {
-            S::SubmitReceived => Some("stop".to_string()),
-            S::StopReceived => Some("submit".to_string()),
-            S::Pending | S::Ready => None,
-        };
         Ok(Self {
             id: Some(node.id),
             title: Some(node.title),
@@ -2006,9 +1477,6 @@ impl TryFrom<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>
                 branch: Some(worktree.branch),
                 path: Some(worktree.path),
             }),
-            submit_received: Some(submit_received),
-            stop_received: Some(stop_received),
-            waiting_for: waiting_for.map(cv).transpose()?,
             has_artifact: Some(node.has_artifact),
             error_reason,
             updated_at: Some(updated_at),
@@ -2049,9 +1517,6 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeDetailDto> for wire::Workspa
             id: Some(cv(value.id)?),
             title: Some(cv(value.title)?),
             status: Some(cv(value.status)?),
-            submit_received: Some(cv(value.submit_received)?),
-            stop_received: Some(cv(value.stop_received)?),
-            waiting_for: value.waiting_for.map(cv).transpose()?,
             has_artifact: Some(cv(value.has_artifact)?),
             error_reason: value.error_reason.map(cv).transpose()?,
             capabilities: Some(cv(value.capabilities)?),
@@ -2175,7 +1640,6 @@ impl TryFrom<crate::domain::workspace_state::value_objects::WorkspaceTabsState>
     ) -> Result<Self, String> {
         Ok(Self {
             editors: Some(cv(value.editors)?),
-            active_editor_path: value.active_editor_path.map(cv).transpose()?,
         })
     }
 }
@@ -2187,20 +1651,6 @@ impl TryFrom<wire::WorkspaceTabsStateDto>
     fn try_from(value: wire::WorkspaceTabsStateDto) -> Result<Self, String> {
         Ok(Self {
             editors: cv(req(value.editors, "editors")?)?,
-            active_editor_path: value.active_editor_path.map(cv).transpose()?,
-        })
-    }
-}
-
-impl TryFrom<crate::usecase::repository_dto::WorktreeEntryDto> for wire::WorktreeEntryDto {
-    type Error = String;
-    fn try_from(value: crate::usecase::repository_dto::WorktreeEntryDto) -> Result<Self, String> {
-        Ok(Self {
-            name: Some(cv(value.name)?),
-            path: Some(cv(value.path)?),
-            branch: Some(cv(value.branch)?),
-            is_main: Some(cv(value.is_main)?),
-            is_locked: Some(cv(value.is_locked)?),
         })
     }
 }

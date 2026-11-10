@@ -63,24 +63,17 @@ pub(crate) type StateSubscriptionOutputRef = Arc<dyn StateSubscriptionOutput>;
 #[derive(Clone)]
 pub struct StateChange {
     source: StateChangeSource,
-    skip: Option<SubscriptionTarget>,
-}
-
-pub struct PendingChange {
-    completed: std::sync::mpsc::Sender<()>,
 }
 
 pub struct ReadWorker {
     pub usecase: StateSubscriptionUsecase,
     pub target: SubscriptionTarget,
     pub changes: tokio::sync::broadcast::Receiver<StateChange>,
-    pub waiting_changes: tokio::sync::mpsc::UnboundedReceiver<PendingChange>,
     pub cancelled: tokio::sync::oneshot::Receiver<()>,
 }
 
 pub(crate) enum ReadSignal {
     Change(StateChange),
-    Waiting(PendingChange),
     Periodic,
     Lagged,
 }
@@ -101,14 +94,6 @@ impl Drop for ReadStartPermit<'_> {
 pub struct StateSubscriptionUsecase {
     publisher: StateSubscriptionOutputRef,
     changes: tokio::sync::broadcast::Sender<StateChange>,
-    waiting_workers: Arc<
-        Mutex<
-            std::collections::HashMap<
-                SubscriptionTarget,
-                tokio::sync::mpsc::UnboundedSender<PendingChange>,
-            >,
-        >,
-    >,
     #[cfg(any(test, feature = "test-support"))]
     test_changes: tokio::sync::broadcast::Sender<StateChangeSource>,
     clients: Arc<
@@ -143,7 +128,6 @@ impl StateSubscriptionUsecase {
         Self {
             publisher,
             changes: tokio::sync::broadcast::channel(64).0,
-            waiting_workers: Default::default(),
             #[cfg(any(test, feature = "test-support"))]
             test_changes: tokio::sync::broadcast::channel(64).0,
             clients: Default::default(),
@@ -247,10 +231,6 @@ impl StateSubscriptionUsecase {
         if workers.contains_key(target) {
             return Ok(());
         }
-        let (waiting_sender, waiting_changes) = tokio::sync::mpsc::unbounded_channel();
-        self.waiting_workers
-            .lock()
-            .insert(target.clone(), waiting_sender);
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
         workers.insert(target.clone(), cancel);
         if self
@@ -259,13 +239,11 @@ impl StateSubscriptionUsecase {
                 usecase: self.clone(),
                 target: target.clone(),
                 changes,
-                waiting_changes,
                 cancelled,
             })
             .is_err()
         {
             workers.remove(target);
-            self.waiting_workers.lock().remove(target);
             drop(workers);
             let _ = self.stop(client, target);
             return Err(convert(SubscriptionError::StreamEnded));
@@ -278,21 +256,18 @@ impl StateSubscriptionUsecase {
         target: &SubscriptionTarget,
         signal: ReadSignal,
         changes: &mut tokio::sync::broadcast::Receiver<StateChange>,
-        waiting: &mut tokio::sync::mpsc::UnboundedReceiver<PendingChange>,
     ) {
         if !self.is_active(target) {
             return;
         }
         let mut refresh_external = false;
-        let mut completed = Vec::new();
         match signal {
             ReadSignal::Change(change) => {
-                if change.skip.as_ref() == Some(target) || !target.affected_by(&change.source) {
+                if !target.affected_by(&change.source) {
                     return;
                 }
                 refresh_external = adds_external_information(target, &change.source);
             }
-            ReadSignal::Waiting(change) => completed.push(change.completed),
             ReadSignal::Periodic => {
                 let requirements = self.required_watches(target, None);
                 let watch_failed = requirements
@@ -315,9 +290,6 @@ impl StateSubscriptionUsecase {
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }
         }
-        while let Ok(change) = waiting.try_recv() {
-            completed.push(change.completed);
-        }
         let reads = self.reads.as_ref().expect("subscription reads");
         let refresh = if refresh_external {
             reads.refresh_external(target).await
@@ -333,9 +305,6 @@ impl StateSubscriptionUsecase {
         let publication = self.publish_read(target, result, false);
         if let Err(error) = publication {
             log::error!("State publication failed: {error}");
-        }
-        for completed in completed {
-            let _ = completed.send(());
         }
     }
 
@@ -462,8 +431,6 @@ impl StateSubscriptionUsecase {
             if active.contains(target) {
                 true
             } else {
-                self.waiting_workers.lock().remove(target);
-
                 self.release_inactive(target);
                 false
             }
@@ -666,26 +633,9 @@ impl StateSubscriptionUsecase {
     }
 
     pub fn notify(&self, source: StateChangeSource) {
-        self.send_change(source, None);
-    }
-
-    pub(crate) fn notify_and_wait(&self, source: StateChangeSource, target: &SubscriptionTarget) {
-        let worker = self.waiting_workers.lock().get(target).cloned();
-        if let Some(worker) = worker {
-            let (completed, receiver) = std::sync::mpsc::channel();
-            self.send_change(source, Some(target.clone()));
-            if worker.send(PendingChange { completed }).is_ok() {
-                let _ = receiver.recv();
-            }
-        } else {
-            self.send_change(source, None);
-        }
-    }
-
-    fn send_change(&self, source: StateChangeSource, skip: Option<SubscriptionTarget>) {
         #[cfg(any(test, feature = "test-support"))]
         let _ = self.test_changes.send(source.clone());
-        let _ = self.changes.send(StateChange { source, skip });
+        let _ = self.changes.send(StateChange { source });
     }
 
     #[cfg(any(test, feature = "test-support"))]

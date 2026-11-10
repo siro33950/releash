@@ -1,5 +1,4 @@
 use super::{NodeExecution, TokenUsage};
-use crate::domain::workflow::error::WorkflowError;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,37 +32,6 @@ impl ExecutionStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionOrigin {
-    DesktopUi,
-    Cli,
-    Agent,
-    Api,
-}
-
-impl ExecutionOrigin {
-    pub fn as_public_value(self) -> &'static str {
-        match self {
-            Self::DesktopUi => "desktop_ui",
-            Self::Cli => "cli",
-            Self::Agent => "agent",
-            Self::Api => "api",
-        }
-    }
-
-    pub fn from_public_value(value: &str) -> Result<Self, WorkflowError> {
-        match value {
-            "desktop_ui" | "desktop-ui" => Ok(Self::DesktopUi),
-            "cli" => Ok(Self::Cli),
-            "agent" => Ok(Self::Agent),
-            "api" => Ok(Self::Api),
-            other => Err(WorkflowError::validation(format!(
-                "unknown created_from value: {other}"
-            ))),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Artifact {
     pub node_name: String,
@@ -93,7 +61,6 @@ pub struct ExecutionTree {
     pub workflow_name: String,
     pub status: ExecutionStatus,
     pub current_node: Option<String>,
-    pub created_from: ExecutionOrigin,
     pub worktree_path: String,
     pub started_at: f64,
     pub updated_at: f64,

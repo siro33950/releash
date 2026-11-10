@@ -6,24 +6,16 @@ use crate::domain::workspace_state::services::filter_missing_files;
 use crate::domain::workspace_state::{
     WorkspaceState, WorkspaceStateError, WorkspaceStateKey, WorkspaceStateRepository,
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 pub struct WorkspaceStateStore {
-    app_data_dir: PathBuf,
     store: Arc<LocalEventStore>,
 }
 impl WorkspaceStateStore {
-    pub fn with_store(app_data_dir: PathBuf, store: Arc<LocalEventStore>) -> Self {
-        Self {
-            app_data_dir,
-            store,
-        }
+    pub fn with_store(store: Arc<LocalEventStore>) -> Self {
+        Self { store }
     }
-}
-#[cfg(any(test, feature = "test-support"))]
-fn state_dir(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("workspace_state")
 }
 pub(crate) const ABSOLUTE_STATE_KEY_PREFIX: &str = "worktree-";
 pub(crate) fn state_key_from_hash(hash: &str) -> WorkspaceStateKey {
@@ -39,27 +31,9 @@ pub fn storage_key(key: &str) -> String {
         key.replace(['/', '\\'], "_")
     }
 }
-#[cfg(any(test, feature = "test-support"))]
-pub fn state_file(app_data_dir: &Path, key: &str) -> PathBuf {
-    state_dir(app_data_dir).join(format!("{}.json", storage_key(key)))
-}
-pub(super) fn repository_group_key(path: &str) -> String {
-    use sha2::Digest;
-    hex::encode(sha2::Sha256::digest(
-        crate::domain::git::normalize_repo_path(path).as_bytes(),
-    ))
-}
 
 #[async_trait::async_trait]
 impl WorkspaceStateRepository for WorkspaceStateStore {
-    async fn migrate_legacy(
-        &self,
-        repositories: &[String],
-        worktrees: &[String],
-    ) -> Result<(), WorkspaceStateError> {
-        super::legacy_import::migrate(&self.app_data_dir, &self.store, repositories, worktrees)
-            .await
-    }
     async fn load_repository_group(&self, path: &str) -> Result<bool, WorkspaceStateError> {
         Ok(self.read_repository_group(path).await?.1)
     }

@@ -309,7 +309,6 @@ fn test_cli_発見したサーバへ接続できない場合はunavailableで終
         daemon_id: "fixture".into(),
         pid,
         process_started_at: releash::discovery::process_start_time(pid).unwrap(),
-        ..Default::default()
     };
     std::fs::write(
         directory.path().join("client-api.json"),
@@ -610,9 +609,6 @@ fn test_cli_workflow_status_三状態の既存jsonを表示する() {
                             }),
                             current_node: Some("main".into()),
                             worktree_path: Some("/workspace".into()),
-                            created_from: Some(wire::ExecutionOriginView {
-                                value: Some(wire::execution_origin_view::Value::Cli as i32),
-                            }),
                             started_at: Some(10.0),
                             updated_at: Some(11.0),
                             completed_at: if status == "running" {
@@ -654,7 +650,7 @@ fn test_cli_workflow_status_三状態の既存jsonを表示する() {
         );
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
-            serde_json::json!({"id":"execution","workflowName":"fixture","status":status,"currentNode":"main","worktreePath":"/workspace","createdFrom":"cli","startedAt":10.0,"updatedAt":11.0,"completedAt":if status == "running" { None } else { Some(12.0) },"errorReason":if status == "aborted" { Some("aborted reason") } else { None },"totalTokenUsage":{"inputTokens":7,"outputTokens":9},"nodeExecutions":[],"artifacts":[],"fanouts":[],"approvalTarget":null})
+            serde_json::json!({"id":"execution","workflowName":"fixture","status":status,"currentNode":"main","worktreePath":"/workspace","startedAt":10.0,"updatedAt":11.0,"completedAt":if status == "running" { None } else { Some(12.0) },"errorReason":if status == "aborted" { Some("aborted reason") } else { None },"totalTokenUsage":{"inputTokens":7,"outputTokens":9},"nodeExecutions":[],"artifacts":[],"fanouts":[],"approvalTarget":null})
         );
         assert_eq!(server.finish().len(), 3);
     }
@@ -782,11 +778,9 @@ fn test_hook_到達不能と拒否と上限超過はstderrへ失敗を出しexit
             (
                 200,
                 wire::ReceiveProviderSignalResponse {
-                    result: Some(wire::receive_provider_signal_response::Result::Rejected(
-                        wire::ReceiveProviderSignalRejected {
-                            reason: "binding_expired".into(),
-                        },
-                    )),
+                    rejected: Some(wire::ReceiveProviderSignalRejected {
+                        reason: "binding_expired".into(),
+                    }),
                 }
                 .encode_to_vec(),
             )
@@ -801,7 +795,6 @@ fn test_hook_到達不能と拒否と上限超過はstderrへ失敗を出しexit
                 daemon_id: "fixture".into(),
                 pid,
                 process_started_at: releash::discovery::process_start_time(pid).unwrap(),
-                ..Default::default()
             };
             std::fs::write(
                 missing.path().join("client-api.json"),
@@ -977,7 +970,6 @@ fn test_cli_古い発見ファイルではstatusが未起動で既存操作はun
         daemon_id: "old".into(),
         pid: std::process::id(),
         process_started_at: 1,
-        ..Default::default()
     };
     for pid in [None, Some(std::process::id()), Some(u32::MAX)] {
         if let Some(pid) = pid {
@@ -1114,7 +1106,6 @@ fn test_cli_開始時刻の欠落と既定値は未起動ではなく不正な�
         daemon_id: "daemon".into(),
         pid: std::process::id(),
         process_started_at: releash::discovery::process_start_time(std::process::id()).unwrap(),
-        ..Default::default()
     };
     for started_at in [None, Some(serde_json::json!(0))] {
         let mut json = serde_json::to_value(&discovery).unwrap();

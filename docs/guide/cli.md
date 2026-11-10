@@ -145,7 +145,6 @@ output_tokens: <数>
 | `status` | `running` / `completed` / `aborted` |
 | `currentNode` | 現在の node 名、または `null` |
 | `worktreePath` | 実行対象の worktree path |
-| `createdFrom` | `desktop_ui` / `cli` / `agent` / `api` |
 | `startedAt` / `updatedAt` / `completedAt` | 時刻（`completedAt` は未完了なら `null`） |
 | `errorReason` | 失敗理由、または `null` |
 | `totalTokenUsage` | `{ "inputTokens", "outputTokens" }` |
@@ -342,7 +341,6 @@ releash review history <THREAD_ID> --session-id <SESSION_ID> [--json]
 | `thread_created` | `id`、`threadId`、`commentId`、`actor`、`target`、`content`、`at` |
 | `comment_appended` | `id`、`threadId`、`commentId`、`actor`、`content`、`at` |
 | `thread_resolved` | `id`、`threadId`、`actor`、`outcome`、`summary`、`at` |
-| `thread_deleted` | `id`、`threadId`、`actor`、`at` |
 
 `actor` と `target` の形は [Thread の JSON](#thread-の-json) と同じです。
 

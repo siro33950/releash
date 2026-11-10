@@ -45,12 +45,8 @@ async fn start_state_subscription<'a>(
         &request.args.iter().map(String::as_str).collect::<Vec<_>>(),
     )
     .map_err(crate::adaptor::presenter::connect::classified_error)?;
-    let version = request.version.map(|v| (v.epoch, v.sequence));
-    let cursor = version
-        .as_ref()
-        .map(|(epoch, sequence)| (epoch.as_str(), *sequence));
     self.subscriptions()?
-        .start_subscription(&request.client_id, &target, &request.subscription_id, cursor)
+        .start_subscription(&request.client_id, &target, &request.subscription_id)
         .await
         .map_err(crate::adaptor::presenter::connect::classified_error)?;
     connectrpc::Response::ok(rpc::Unit::default())

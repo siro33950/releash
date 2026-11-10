@@ -1,30 +1,24 @@
 use std::sync::Arc;
 
 use crate::domain::git::Worktree;
-use crate::usecase::code_usecase::CodeUsecase;
 use crate::usecase::git_usecase::GitUsecase;
-use crate::usecase::repository_dto::{FileDiffStatDto, FileStatusDto};
-use crate::usecase::repository_state::scanner::{
-    changes_diff_tree_entries, diff_tree_entries, staged_diff_tree_entries, RepositoryScanner,
-};
+use crate::usecase::repository_dto::FileStatusDto;
+use crate::usecase::repository_state::scanner::RepositoryScanner;
 use crate::usecase::repository_state::snapshot::RepositorySnapshotParts;
 use crate::usecase::repository_state::RepositoryStateError;
 
 pub struct DefaultRepositoryScanner {
     repository: Arc<GitUsecase>,
-    code: Arc<CodeUsecase>,
     repository_config: Arc<crate::usecase::repository_config_usecase::RepositoryConfigUsecase>,
 }
 
 impl DefaultRepositoryScanner {
     pub fn new(
         repository: Arc<GitUsecase>,
-        code: Arc<CodeUsecase>,
         repository_config: Arc<crate::usecase::repository_config_usecase::RepositoryConfigUsecase>,
     ) -> Self {
         Self {
             repository,
-            code,
             repository_config,
         }
     }
@@ -51,25 +45,9 @@ impl RepositoryScanner for DefaultRepositoryScanner {
         let status_scan = self.repository.get_repository_status_scan(repo_path)?;
         let dirty_count = status_scan.dirty_count;
         let status: Vec<FileStatusDto> = status_scan.status.into_iter().map(Into::into).collect();
-        let diff_stats: Vec<FileDiffStatDto> =
-            status_scan.diff_stats.into_iter().map(Into::into).collect();
-        let diff_file_tree = self
-            .code
-            .build_diff_file_tree(diff_tree_entries(&status, &diff_stats));
-        let staged_diff_file_tree = self
-            .code
-            .build_diff_file_tree(staged_diff_tree_entries(&status, &diff_stats));
-        let changes_diff_file_tree = self
-            .code
-            .build_diff_file_tree(changes_diff_tree_entries(&status, &diff_stats));
-
         Ok(RepositorySnapshotParts {
             status,
-            diff_stats,
             dirty_count,
-            diff_file_tree,
-            staged_diff_file_tree,
-            changes_diff_file_tree,
         })
     }
 

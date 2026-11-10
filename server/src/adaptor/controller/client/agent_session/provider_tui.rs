@@ -4,9 +4,8 @@ use crate::adaptor::presenter::provider_tui::{
 };
 use std::sync::Arc;
 
-use crate::adaptor::presenter::agent_session::AgentSessionArchiveResponse;
 use crate::adaptor::presenter::error::AppError;
-use crate::domain::agent_session::aggregates::AgentSessionArchiveOutcome;
+
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::WorkspaceIdentity;
 use crate::infrastructure::platform::path_aliases::{alias_name_for_profile, BuildProfile};
@@ -176,18 +175,6 @@ pub(crate) async fn restore_agent_session_shared(
         .map_err(lifecycle_error)
 }
 
-pub(crate) async fn archive_agent_session_shared(
-    lifecycle: &Arc<AgentSessionLifecycleUsecase>,
-    agent_session_id: String,
-    caller_request_id: String,
-) -> Result<AgentSessionArchiveResponse, AppError> {
-    lifecycle
-        .archive(&agent_session_id, &caller_request_id)
-        .await
-        .map(Into::into)
-        .map_err(lifecycle_error)
-}
-
 pub(crate) async fn delete_agent_session_shared(
     lifecycle: &Arc<AgentSessionLifecycleUsecase>,
     agent_session_id: String,
@@ -197,15 +184,6 @@ pub(crate) async fn delete_agent_session_shared(
         .delete(&agent_session_id, &caller_request_id)
         .await
         .map_err(lifecycle_error)
-}
-
-impl From<AgentSessionArchiveOutcome> for AgentSessionArchiveResponse {
-    fn from(value: AgentSessionArchiveOutcome) -> Self {
-        match value {
-            AgentSessionArchiveOutcome::Archived => Self::Archived,
-            AgentSessionArchiveOutcome::AlreadyArchived => Self::AlreadyArchived,
-        }
-    }
 }
 
 #[cfg(test)]

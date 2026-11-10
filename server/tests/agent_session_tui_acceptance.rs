@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use agent_tui_fixture::{fixture_process_shell_command, FixtureLifecycleCommand, FixturePlan};
 use releashd::test_support::agent_session_tui_acceptance::{
-    AcceptanceAgentSessionLifecycle, AcceptanceAgentSessionTreeLocation, AcceptanceArchiveOutcome,
-    AcceptanceHookWarning, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
+    AcceptanceAgentSessionAvailability, AcceptanceAgentSessionTreeLocation, AcceptanceHookWarning,
+    AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
     AgentSessionTuiAcceptanceHost as AgentSessionTuiAcceptanceComposition,
 };
 use releashd::test_support::terminal_surface::{
@@ -210,15 +210,14 @@ impl AgentSessionTuiAcceptanceHost {
         Option<releashd::test_support::agent_session_tui_acceptance::AcceptanceAgentSession>,
         String,
     > {
-        let target = format!(
-            "agent-session:{}:{agent_session_id}",
-            agent_session_id.len()
-        );
-        match releashd::test_support::client_api_acceptance::read_state(&self.client, &target).await
-        {
-            Ok(value) => serde_json::from_value(value).map_err(|e| e.to_string()),
-            Err(error) if error.code == connectrpc::ErrorCode::NotFound => Ok(None),
-            Err(error) => Err(error.to_string()),
+        let target = format!("session-tab:{}:{agent_session_id}", agent_session_id.len());
+        let mut tab =
+            releashd::test_support::client_api_acceptance::read_state(&self.client, &target)
+                .await
+                .map_err(|error| error.to_string())?;
+        match tab.get_mut("session").map(serde_json::Value::take) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(session) => serde_json::from_value(session).map_err(|e| e.to_string()),
         }
     }
 
@@ -266,18 +265,14 @@ impl AgentSessionTuiAcceptanceHost {
         Ok(selection.agent_session_id)
     }
 
-    async fn archive(
-        &self,
-        agent_session_id: &str,
-        caller_request_id: &str,
-    ) -> Result<AcceptanceArchiveOutcome, String> {
-        self.invoke(
-            "archive_agent_session",
-            serde_json::json!({
-                "agentSessionId": agent_session_id,
-                "callerRequestId": caller_request_id,
-            }),
-        )
+    async fn archive(&self, agent_session_id: &str) -> Result<(), String> {
+        let session = self
+            .get(agent_session_id)
+            .await?
+            .ok_or_else(|| "agent session not found".to_string())?;
+        self.composition
+            .archive_execution_tree(&session.tree_location.tree_id)
+            .await
     }
 
     async fn restore(
@@ -310,15 +305,15 @@ impl AgentSessionTuiAcceptanceHost {
         )
     }
 
-    async fn wait_until_lifecycle(
+    async fn wait_until_availability(
         &self,
         agent_session_id: &str,
-        expected: AcceptanceAgentSessionLifecycle,
+        expected: AcceptanceAgentSessionAvailability,
     ) -> Result<(), String> {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if self.get(agent_session_id).await.is_ok_and(|session| {
-                    session.is_some_and(|session| session.lifecycle == expected)
+                    session.is_some_and(|session| session.availability == expected)
                 }) {
                     return;
                 }
@@ -832,21 +827,18 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
         )
         .await;
 
+        host.archive(&session_id).await.unwrap();
         assert_eq!(
-            host.archive(&session_id, "archive").await.unwrap(),
-            AcceptanceArchiveOutcome::Archived
-        );
-        assert_eq!(
-            host.get(&session_id).await.unwrap().unwrap().lifecycle,
-            AcceptanceAgentSessionLifecycle::Archived
+            host.get(&session_id).await.unwrap().unwrap().availability,
+            AcceptanceAgentSessionAvailability::Archived
         );
         assert_eq!(
             host.restore(&session_id, 24, 80, "restore").await.unwrap(),
             session_id
         );
         assert_eq!(
-            host.get(&session_id).await.unwrap().unwrap().lifecycle,
-            AcceptanceAgentSessionLifecycle::Paused
+            host.get(&session_id).await.unwrap().unwrap().availability,
+            AcceptanceAgentSessionAvailability::Paused
         );
         assert!(host.terminal().get(terminal_owner.clone()).is_err());
         host.resume_session_node(&session_id).await.unwrap();
@@ -857,10 +849,7 @@ async fn test_atui_030_provider選択からarchive_restore_deleteまで旧messag
                 .unwrap()
                 .is_exited
         );
-        assert_eq!(
-            host.archive(&session_id, "archive-again").await.unwrap(),
-            AcceptanceArchiveOutcome::Archived
-        );
+        host.archive(&session_id).await.unwrap();
         host.delete(&session_id, "delete").await.unwrap();
         assert!(host.get(&session_id).await.unwrap().is_none());
         assert!(host.terminal().get(terminal_owner).is_err());
@@ -988,8 +977,8 @@ async fn test_atui_030_subagentを無視し複数turnのstop後もagent_session�
     }
 
     assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Open
+        host.get(&session_id).await.unwrap().unwrap().availability,
+        AcceptanceAgentSessionAvailability::Open
     );
     assert!(
         !host
@@ -1062,8 +1051,8 @@ async fn test_atui_030_hook配送失敗でもhealthを記録せずprocessと後�
     );
     assert!(host.hook_health_marker_contents().unwrap().is_empty());
     assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Open
+        host.get(&session_id).await.unwrap().unwrap().availability,
+        AcceptanceAgentSessionAvailability::Open
     );
     assert!(
         !host
@@ -1236,12 +1225,12 @@ async fn test_atui_030_process終了はprovider_idの有無に応じてpausedま
     host.wait_until_exited("workspace-1", &paused)
         .await
         .unwrap();
-    host.wait_until_lifecycle(&paused, AcceptanceAgentSessionLifecycle::Paused)
+    host.wait_until_availability(&paused, AcceptanceAgentSessionAvailability::Paused)
         .await
         .unwrap();
     assert_eq!(
-        host.get(&paused).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Paused
+        host.get(&paused).await.unwrap().unwrap().availability,
+        AcceptanceAgentSessionAvailability::Paused
     );
     host.resume_session_node(&paused).await.unwrap();
 
@@ -1340,10 +1329,7 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     // When
     .await;
     // Then
-    assert_eq!(
-        host.archive(&deleted, "deleted-archive").await.unwrap(),
-        AcceptanceArchiveOutcome::Archived
-    );
+    host.archive(&deleted).await.unwrap();
     host.delete(&deleted, "deleted-delete").await.unwrap();
 
     let candidates = host.list_history(&workspace, 10).await.unwrap();
@@ -1355,7 +1341,6 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     assert!(candidates.iter().any(|candidate| {
         candidate.provider == AcceptanceProvider::Codex
             && candidate.provider_session_id == "codex-history"
-            && candidate.updated_at_ms == 20_000
     }));
 
     let resumed_claude = host
@@ -1373,8 +1358,8 @@ async fn test_atui_030_provider履歴はmetadataだけを列挙し新しいsessi
     assert_ne!(resumed_claude, deleted);
     let resumed_claude = host.get(&resumed_claude).await.unwrap().unwrap();
     assert_eq!(
-        resumed_claude.lifecycle,
-        AcceptanceAgentSessionLifecycle::Open
+        resumed_claude.availability,
+        AcceptanceAgentSessionAvailability::Open
     );
     assert_eq!(
         resumed_claude.provider_session_id.as_deref(),
@@ -1427,15 +1412,10 @@ async fn test_atui_030_provider_id不明でも確認なしで停止してarchive
     let terminal_owner = owner("workspace-1", &session_id);
 
     assert!(host.delete(&session_id, "open-delete").await.is_err());
+    host.archive(&session_id).await.unwrap();
     assert_eq!(
-        host.archive(&session_id, "unknown-id-archive")
-            .await
-            .unwrap(),
-        AcceptanceArchiveOutcome::Archived
-    );
-    assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Archived
+        host.get(&session_id).await.unwrap().unwrap().availability,
+        AcceptanceAgentSessionAvailability::Archived
     );
     assert!(host.terminal().get(terminal_owner.clone()).is_err());
 
@@ -1478,12 +1458,7 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
         "restore-failure-provider-id",
     )
     .await;
-    assert_eq!(
-        host.archive(&session_id, "restore-failure-archive")
-            .await
-            .unwrap(),
-        AcceptanceArchiveOutcome::Archived
-    );
+    host.archive(&session_id).await.unwrap();
     std::fs::remove_file(root.path().join("bin/claude-fixture")).unwrap();
 
     assert_eq!(
@@ -1495,8 +1470,8 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
     assert!(host.terminal().get(terminal_owner).is_err());
     assert!(host.resume_session_node(&session_id).await.is_err());
     assert_eq!(
-        host.get(&session_id).await.unwrap().unwrap().lifecycle,
-        AcceptanceAgentSessionLifecycle::Paused
+        host.get(&session_id).await.unwrap().unwrap().availability,
+        AcceptanceAgentSessionAvailability::Paused
     );
     host.shutdown().await.unwrap();
 }

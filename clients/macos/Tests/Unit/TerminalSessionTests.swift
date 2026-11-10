@@ -555,16 +555,16 @@ extension TerminalSessionTests {
   {
     // Given
     let http = TestHTTPClient()
-    var session = Releash_Client_V1_AgentSessionItemDto()
-    session.id = "deleted"
-    http.state.withLock { $0.sessions["deleted"] = session }
+    var tab = Releash_Client_V1_SessionTabSnapshot()
+    tab.session.id = "deleted"
+    http.state.withLock { $0.sessionTabs["deleted"] = tab }
     let model = try await testModel(http)
     var receivedSession = false
     var receivedDeletion = false
-    let subscription = model.subscribe("agent-session", ["deleted"]) { payload in
-      if case .agentSession(let value) = payload.value {
-        receivedSession = value.hasValue
-        receivedDeletion = !value.hasValue
+    let subscription = model.subscribe("session-tab", ["deleted"]) { payload in
+      if case .sessionTab(let value) = payload.value {
+        receivedSession = value.hasSession
+        receivedDeletion = !value.hasSession
       }
     }
     let terminal = model.terminal(path: "/repo", id: "deleted", agent: true)
@@ -572,7 +572,7 @@ extension TerminalSessionTests {
     let previous = try XCTUnwrap(
       model.terminalAttachment(path: "/repo", id: "deleted", agent: true))
     let stream = http.state.withLock { state in
-      state.sessions.removeValue(forKey: "deleted")
+      state.sessionTabs.removeValue(forKey: "deleted")
       state.failedMethod = "OpenAgentSession"
       var repo = Releash_Client_V1_WorkspaceRepositoryList()
       repo.path = "/recovered"

@@ -35,13 +35,6 @@ fn hook_health_reason(reason: ProviderLifecycleUnavailableReason) -> &'static st
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AgentSessionArchiveResponse {
-    Archived,
-    AlreadyArchived,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ProviderHookHealthProviderResponse {
     Claude,

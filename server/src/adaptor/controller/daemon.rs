@@ -16,7 +16,6 @@ fn client_priority_level(path: &str) -> Option<&'static str> {
         "StartWorkflow"
         | "AbortWorkflow"
         | "ApproveWorkspaceNode"
-        | "ApproveWorkflowNode"
         | "RetryWorkspaceNode"
         | "ResumeWorkspaceSessionNode"
         | "WorkflowSubmitOutput"
@@ -84,7 +83,6 @@ pub struct Daemon {
     exit: tokio::sync::mpsc::Receiver<i32>,
     daemon: usecase::daemon::DaemonUsecase,
     _startup_lock: Option<std::fs::File>,
-    _legacy_writer_lock: Option<std::fs::File>,
 }
 
 impl Daemon {
@@ -137,7 +135,6 @@ async fn fail_startup(
 
 pub async fn compose(
     data_dir: PathBuf,
-    legacy_data_dir: Option<PathBuf>,
     #[cfg(any(target_os = "macos", target_os = "linux"))] provider_initial_search_path: Result<
         std::ffi::OsString,
         infrastructure::process::search_path::LoginShellPathError,
@@ -169,33 +166,6 @@ pub async fn compose(
     let failure_store = Arc::new(adaptor::gateway::failure_records::FailureRecordStore::default());
     infrastructure::telemetry::metrics::set_startup_origin(std::time::Instant::now());
     let (exit_sender, exit_receiver) = tokio::sync::mpsc::channel(1);
-    // 旧既定の保存先のデータは、store を開く前に新既定の保存先へ移す
-    let home = domain::daemon::data_home::DataHome {
-        current: data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone()),
-        legacy: legacy_data_dir,
-    };
-    let legacy_startup_lock = match home.legacy.as_deref() {
-        Some(legacy) => match adaptor::gateway::daemon::acquire_startup_lock(legacy) {
-            Ok(lock) => Some(lock),
-            Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
-        },
-        None => None,
-    };
-    let legacy_writer_lock = match home.legacy.as_deref() {
-        Some(legacy) => match adaptor::gateway::daemon::acquire_legacy_writer_lock(legacy) {
-            Ok(lock) => Some(lock),
-            Err(kind) => return Err(fail_startup(&daemon, kind).await.into()),
-        },
-        None => None,
-    };
-    let relocation = usecase::data_home::DataHomeRelocationUsecase::new(Arc::new(
-        adaptor::gateway::data_home::LocalDataHomeStore,
-    ));
-    if let Err(error) = relocation.run(&home) {
-        eprintln!("{error:?}");
-        return Err(fail_startup(&daemon, error.into()).await.into());
-    }
-    drop(legacy_startup_lock);
     // 保存先とアプリの場所が変わっても、CLI の wrapper が新しいパスを指すように毎回書き直す
     if let Err(error) =
         infrastructure::platform::path_aliases::PathAliases::from_runtime(data_dir.clone())
@@ -299,7 +269,6 @@ pub async fn compose(
         Arc::new(parking_lot::RwLock::new(Vec::new()));
     let workspace_state_store = Arc::new(
         adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
-            data_dir.clone(),
             local_event_store.clone(),
         ),
     );
@@ -456,8 +425,6 @@ pub async fn compose(
     ));
 
     repo_paths_usecase.initialize_from_cwd(&git_usecase)?;
-    let repositories = shared_repo_paths.read().clone();
-    migrate_legacy_workspace_states(&workspace_state_store, &repositories, &git_usecase).await;
 
     let code_usecase =
         Arc::new(adaptor::controller::wiring::build_code_usecase_with_gateways(app_config.clone()));
@@ -468,7 +435,6 @@ pub async fn compose(
     let repository_scanner = Arc::new(
         adaptor::gateway::repository::scanner::DefaultRepositoryScanner::new(
             git_usecase.clone(),
-            code_usecase.clone(),
             repository_config_usecase.clone(),
         ),
     );
@@ -521,7 +487,6 @@ pub async fn compose(
     let (workflow_usecase, workspace_query_service) =
         adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
             failure_store.clone(),
-            data_dir.clone(),
             git_usecase.clone(),
             config_repository.clone(),
             execution_reads.clone(),
@@ -605,12 +570,6 @@ pub async fn compose(
     );
     provider_execution_tree_stops.bind(workflow_runtime_usecase.clone());
     started_execution_tree_registrations.bind(workflow_runtime_usecase.clone());
-    migrate_legacy_execution_archives(
-        &data_dir,
-        local_event_store.clone(),
-        &workflow_runtime_usecase,
-    )
-    .await?;
 
     let review_comments_dir = adaptor::gateway::comment::state_dir(&data_dir);
     adaptor::controller::wiring::spawn_startup_app_data_gc(
@@ -689,12 +648,6 @@ pub async fn compose(
                 usecase::state_subscription::WorkspaceStateReads {
                     daemon: daemon.clone(),
                     usage: provider_usage.clone(),
-                    repositories: dependencies
-                        .app_state
-                        .as_ref()
-                        .unwrap()
-                        .repo_paths_usecase
-                        .clone(),
                     repository: git_usecase.clone(),
                     repository_config: repository_config_usecase.clone(),
                     workflow: workflow_usecase.clone(),
@@ -783,7 +736,6 @@ pub async fn compose(
 
     Ok(Daemon {
         _startup_lock: Some(startup_lock),
-        _legacy_writer_lock: legacy_writer_lock,
         server: local_api.clone(),
         shutdown: Arc::new(
             adaptor::gateway::application_lifecycle::DaemonShutdownGateway {
@@ -797,44 +749,6 @@ pub async fn compose(
         exit: exit_receiver,
         daemon,
     })
-}
-
-pub async fn migrate_legacy_workspace_states(
-    store: &adaptor::gateway::workspace_state::WorkspaceStateStore,
-    repositories: &[String],
-    repository: &usecase::git_usecase::GitUsecase,
-) {
-    crate::common::telemetry::observe_result_async(
-        usecase::workspace_state::usecase::migrate_workspace_states(
-            store,
-            repositories,
-            repository,
-        ),
-        |result, _| {
-            for (path, error) in &result.unresolved_repositories {
-                log::warn!(
-                    "Workspace state migration deferred for unresolved repository {path}: {error}"
-                );
-            }
-            if let Err(error) = &result.migration {
-                log::warn!("UI state migration deferred; daemon startup continues: {error}");
-            }
-        },
-    )
-    .await;
-}
-
-pub async fn migrate_legacy_execution_archives(
-    data_dir: &std::path::Path,
-    store: Arc<adaptor::gateway::local_event_store::LocalEventStore>,
-    runtime: &usecase::workflow::WorkflowRuntimeUsecase,
-) -> Result<(), String> {
-    let repository =
-        adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(store, data_dir);
-    runtime
-        .migrate_execution_archives(&repository)
-        .await
-        .map_err(|error| format!("execution archive migration failed: {error}"))
 }
 
 #[cfg(test)]
@@ -851,7 +765,6 @@ impl Daemon {
     ) -> Self {
         Self {
             _startup_lock: None,
-            _legacy_writer_lock: None,
             shutdown,
             server,
             exit,

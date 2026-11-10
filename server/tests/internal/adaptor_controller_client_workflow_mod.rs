@@ -1,6 +1,6 @@
 pub(crate) mod tests {
     use releashd::test_support::integration::workflow::{
-        ExecutionOrigin, FacetFileQueryService, FacetQueryService, NodeKindName, WorkflowEvent,
+        FacetFileQueryService, FacetQueryService, NodeKindName, WorkflowEvent,
     };
 
     use std::str::FromStr;
@@ -20,7 +20,6 @@ pub(crate) mod tests {
 
     use releashd::test_support::integration::workflow::SessionSpec;
 
-    use std::path::Path;
     use tempfile::TempDir;
 
     pub(crate) struct WorkflowTestDependencies {
@@ -196,54 +195,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub fn duplicate_workflow_normal_case() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let instructions = dir.join("instructions");
-        std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(
-            instructions.join("review-acceptance.md"),
-            "Review the change.",
-        )
-        .unwrap();
-        let wf = make_test_workflow("source-wf");
-        super::seed_workflow(dir, &wf).unwrap();
-
-        // When
-        let usecase = workflow_usecase(dir);
-        usecase
-            .duplicate_workflow("source-wf", "copied-wf")
-            .unwrap();
-        // Then
-        use releashd::test_support::integration::workflow::{
-            WorkflowDefinitionFileRepository, WorkflowDefinitionRepository,
-        };
-        assert!(dir.join("copied-wf.yml").exists());
-        let copied = WorkflowDefinitionFileRepository::new(dir, dir)
-            .get("copied-wf")
-            .unwrap();
-        let content = copied.content().unwrap();
-        assert_eq!(content.name, "copied-wf");
-        assert_eq!(content.description, wf.description);
-        assert_eq!(content.nodes, wf.nodes);
-    }
-
-    #[test]
-    pub fn duplicate_workflow_rejects_existing_custom_name() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        std::fs::create_dir_all(dir.join("instructions")).unwrap();
-        std::fs::write(dir.join("instructions/review-acceptance.md"), "Review.").unwrap();
-        let wf = make_test_workflow("existing-wf");
-        super::seed_workflow(dir, &wf).unwrap();
-
-        // When
-        let result = workflow_usecase(dir).duplicate_workflow("existing-wf", "existing-wf");
-        // Then
-        assert!(result.unwrap_err().to_string().contains("既に存在します"));
-    }
-
-    #[test]
     pub fn duplicate_facet_normal_case() {
         let tmp = TempDir::new().unwrap();
         let base_dir = tmp.path();
@@ -384,129 +335,6 @@ pub(crate) mod tests {
 
     // ---- save_workflow create/update/rename logic ----
 
-    fn save_workflow(
-        dir: &Path,
-        workflow: &WorkflowDefinitionYaml,
-        original_name: Option<&str>,
-    ) -> Result<(), String> {
-        workflow_usecase(dir)
-            .save_workflow_source_with_diagnostics(
-                &serde_saphyr::to_string(workflow).unwrap(),
-                original_name,
-            )
-            .map(|_| ())
-            .map_err(|error| format!("{error:?}"))
-    }
-
-    fn workflow_usecase(
-        dir: &Path,
-    ) -> releashd::test_support::integration::workflow::WorkflowUsecase {
-        std::fs::create_dir_all(dir.join("instructions")).unwrap();
-        std::fs::write(
-            dir.join("instructions/review-acceptance.md"),
-            "Review the change.",
-        )
-        .unwrap();
-        let store = releashd::test_support::integration::persistence::LocalEventStore::open(
-            releashd::test_support::integration::persistence::LocalEventStoreConfig::production(
-                dir.to_path_buf(),
-                Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-            ),
-        )
-        .unwrap();
-        releashd::test_support::integration::platform::workflow_services(
-            store,
-            dir,
-            Some(dir.to_path_buf()),
-        )
-    }
-
-    #[test]
-    pub fn save_workflow_existing_same_name_update_succeeds() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let instructions = dir.join("instructions");
-        std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::write(
-            instructions.join("review-acceptance.md"),
-            "Review the change.",
-        )
-        .unwrap();
-
-        let wf = make_test_workflow("my-wf");
-        super::seed_workflow(dir, &wf).unwrap();
-
-        // Update same workflow (original_name = Some("my-wf"), name = "my-wf")
-        let mut updated = make_test_workflow("my-wf");
-        updated.description = "updated desc".to_string();
-        let result = save_workflow(dir, &updated, Some("my-wf"));
-        assert!(
-            result.is_ok(),
-            "Expected same-name update to succeed, got: {result:?}"
-        );
-
-        let loaded = releashd::test_support::integration::workflow::load_workflow(
-            &dir.join("my-wf.yml"),
-            dir,
-        )
-        .unwrap();
-        assert_eq!(loaded.description, "updated desc");
-    }
-
-    #[test]
-    pub fn save_workflow_new_creation_succeeds() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let wf = make_test_workflow("brand-new");
-        let result = save_workflow(dir, &wf, None);
-        assert!(result.is_ok());
-        assert!(dir.join("brand-new.yml").exists());
-    }
-
-    #[test]
-    pub fn save_workflow_new_creation_rejects_duplicate() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let wf = make_test_workflow("dup-wf");
-        super::seed_workflow(dir, &wf).unwrap();
-
-        let result = save_workflow(dir, &wf, None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("既に存在します"));
-    }
-
-    #[test]
-    pub fn save_workflow_rename_succeeds_and_removes_old_file() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let wf = make_test_workflow("old-name");
-        super::seed_workflow(dir, &wf).unwrap();
-
-        let mut renamed = make_test_workflow("new-name");
-        renamed.description = "renamed".to_string();
-        let result = save_workflow(dir, &renamed, Some("old-name"));
-        assert!(result.is_ok());
-        assert!(!dir.join("old-name.yml").exists());
-        assert!(dir.join("new-name.yml").exists());
-    }
-
-    #[test]
-    pub fn save_workflow_rename_rejects_existing_target() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        super::seed_workflow(dir, &make_test_workflow("wf-a")).unwrap();
-        super::seed_workflow(dir, &make_test_workflow("wf-b")).unwrap();
-
-        let renamed = make_test_workflow("wf-b");
-        let result = save_workflow(dir, &renamed, Some("wf-a"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("既に存在します"));
-    }
-
     // ---- [05] read-only Execution 観測 API: ClientService 境界の直接テスト ----
 
     pub(crate) fn make_read_only_app() -> (
@@ -574,7 +402,6 @@ pub(crate) mod tests {
         let repository_scanner = Arc::new(
             releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
                 git_usecase.clone(),
-                code_usecase.clone(),
                 Arc::new(
                     releashd::test_support::integration::settings::repository_config_usecase(),
                 ),
@@ -619,7 +446,6 @@ pub(crate) mod tests {
         let (workflow_usecase, _) =
             releashd::test_support::integration::platform::build_workflow_services_with_repository_worktrees(
                 Arc::new(releashd::test_support::integration::platform::FailureRecordStore::default()),
-                data_dir.clone(),
                 git_usecase.clone(),
                 config_repository.clone(),
                 releashd::test_support::integration::workspace::ExecutionReads::new(local_event_store.clone()),
@@ -772,7 +598,6 @@ pub(crate) mod tests {
                     execution_id: execution_id.clone(),
                     workflow_name: "adapter-boundary".to_string(),
                     worktree_path: worktree_path.clone(),
-                    created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
                     definition: make_test_workflow("adapter-boundary"),
                     timestamp: 500.0,
@@ -843,51 +668,6 @@ async fn test_定義フォルダrpc_登録したhandlerがusecaseを呼びフォ
 }
 
 #[tokio::test]
-async fn test_workflow保存rpc_entityの名前と診断と業務エラーを転送する() {
-    use releashd::test_support::integration::{client_protocol::wire, transport, workflow};
-    // Given
-    let (app, data_dir, _store) = tests::make_read_only_app();
-    let mut dispatch = transport::ClientCommandDispatch::new(app.client.daemon.clone());
-    workflow::register_shared(&mut dispatch, &app.client);
-    let save = |source: &str, original_name| {
-        wire::command_request::Command::SaveWorkflowSource(wire::SaveWorkflowSourceRequest {
-            source: Some(source.into()),
-            original_name,
-        })
-    };
-    // When
-    let success = dispatch
-        .dispatch(save(
-            "name: rpc-saved\ndescription: saved\nnodes:\n  main: {command: 'true'}\n",
-            None,
-        ))
-        .await
-        .unwrap();
-    let diagnostic = dispatch.dispatch(save("name: [", None)).await.unwrap();
-    let rejected = dispatch
-        .dispatch(save(
-            "name: rpc-saved\ndescription: duplicate\nnodes:\n  main: {command: 'true'}\n",
-            None,
-        ))
-        .await;
-    // Then
-    let wire::command_result::Command::SaveWorkflowSource(success) = success else {
-        panic!("save result");
-    };
-    assert!(
-        matches!(success.variant, Some(wire::save_workflow_source_result_dto::Variant::Success(value)) if value.ok == Some(true) && value.name.as_deref() == Some("rpc-saved"))
-    );
-    assert!(data_dir.join("workflows/rpc-saved.yml").exists());
-    let wire::command_result::Command::SaveWorkflowSource(diagnostic) = diagnostic else {
-        panic!("diagnostics result");
-    };
-    assert!(
-        matches!(diagnostic.variant, Some(wire::save_workflow_source_result_dto::Variant::Diagnostics(value)) if value.ok == Some(false) && !value.diagnostics.as_ref().unwrap().items.is_empty())
-    );
-    assert!(rejected.is_err());
-}
-
-#[tokio::test]
 async fn test_facet編集rpc_正規名だけをdomainの種類へ変換する() {
     use releashd::test_support::integration::{client_protocol::wire, transport, workflow};
     // Given
@@ -912,14 +692,4 @@ async fn test_facet編集rpc_正規名だけをdomainの種類へ変換する() 
             assert!(result.is_err());
         }
     }
-}
-
-fn seed_workflow(
-    dir: &std::path::Path,
-    workflow: &releashd::test_support::integration::workflow::WorkflowDefinitionContent,
-) -> std::io::Result<()> {
-    std::fs::write(
-        dir.join(format!("{}.yml", workflow.name)),
-        serde_saphyr::to_string(workflow).unwrap(),
-    )
 }

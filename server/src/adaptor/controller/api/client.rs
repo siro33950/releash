@@ -239,12 +239,11 @@ impl StateSubscriptionDeps {
         client: &str,
         target: &crate::usecase::state_subscription::SubscriptionTarget,
         id: &str,
-        cursor: Option<(&str, u64)>,
     ) -> Result<(), crate::usecase::state_subscription::StateReadError> {
         use crate::usecase::state_subscription::{StateReadError, SubscriptionTarget};
         let delivery = self
             .presenter
-            .reserve_delivery(client, id, &target.to_string(), cursor)
+            .reserve_delivery(client, id, &target.to_string())
             .map_err(StateReadError::from_error)?;
         match target {
             SubscriptionTarget::Terminal(_) => {

@@ -89,7 +89,7 @@ CI と同じコマンドを使う。PR・main push の検証は `.github/workflo
 - 実装変更では、変更に関係する検証と必須チェックを行う。テスト追加の必須／柔軟は `docs/architecture/TEST.md` に従う。
 - 必須チェックが成功した後は、新たな変更・失敗・未解決の懸念がない限り再実行しない。
 - 実行できないチェックは理由と未検証範囲を報告し、成功扱いにしない。
-- lint が失敗した場合は、今回の変更に起因する問題を対象ファイルに限定して修正する。既存の問題は別途報告し、`pnpm lint:fix` による一括修正で範囲外の変更を混ぜない。
+- lint が失敗した場合は、今回の変更に起因する問題を対象ファイルに限定して修正する。既存の問題は別途報告する。
 
 ツールはリポジトリ直下の `mise.toml` から導入する。
 Rust は `rust-toolchain.toml`、Xcode は `clients/macos/.xcode-version`、XcodeGen と protoc plugin は `clients/macos/BuildTools` の SwiftPM に従う。

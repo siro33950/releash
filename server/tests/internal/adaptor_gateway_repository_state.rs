@@ -38,11 +38,7 @@ pub fn watcher_callbacks_only_invalidate_until_worker_commit() {
     state.commit_snapshot(
         RepositorySnapshotParts {
             status: Vec::new(),
-            diff_stats: Vec::new(),
             dirty_count: 0,
-            diff_file_tree: Vec::new(),
-            staged_diff_file_tree: Vec::new(),
-            changes_diff_file_tree: Vec::new(),
         },
         state.requested_generation(),
     );
@@ -149,7 +145,7 @@ pub async fn test_workspace一覧_別表記の隔離worktreeを除外し削除�
                 .unwrap(),
         );
         let entries = repository
-            .list_worktrees(repo_path.to_str().unwrap())
+            .list_working_worktrees(repo_path.to_str().unwrap())
             .unwrap();
         // Then
         assert!(!rows
@@ -208,7 +204,7 @@ pub fn test_workspace一覧_別表記で作成したworktreeの選択パスが�
     let created = repository
         .create_worktree(repo_path, "feature", true, None)
         .unwrap();
-    let entries = repository.list_worktrees(repo_path).unwrap();
+    let entries = repository.list_working_worktrees(repo_path).unwrap();
     let root = gateway.main_repo_path(repo_path).unwrap();
     let worktrees = repository.list_working_worktrees(repo_path).unwrap();
 
@@ -234,7 +230,6 @@ pub async fn test_repository走査の期限切れ_旧走査を回収して同じ
     let scanner = Arc::new(
         releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
             Arc::new(releashd::test_support::integration::platform::build_repository_usecase()),
-            Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
             Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
         ),
     );

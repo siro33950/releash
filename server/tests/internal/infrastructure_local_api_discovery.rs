@@ -1,7 +1,6 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use releashd::test_support::integration::transport::lookup_process_start_time;
 use releashd::test_support::integration::transport::process_start_time;
 use releashd::test_support::integration::transport::LocalApiDiscovery;
 use releashd::test_support::integration::transport::LocalApiDiscoveryFile;
@@ -13,22 +12,16 @@ pub fn test_process開始時刻参照_現在processの生値を返す() {
     let pid = std::process::id();
 
     // When
-    let result = lookup_process_start_time(pid);
+    let result = process_start_time(pid);
 
     // Then
-    assert!(result.process_list_available);
-    assert!(result.start_time.is_some_and(|start_time| start_time != 0));
-    assert_eq!(process_start_time(pid), result.start_time);
+    assert!(result.is_some_and(|start_time| start_time != 0));
 }
 
 #[test]
-pub fn test_process開始時刻参照_対象不在でもprocess一覧の参照結果を返す() {
-    // Given / When
-    let result = lookup_process_start_time(u32::MAX);
-
-    // Then
-    assert!(result.process_list_available);
-    assert_eq!(result.start_time, None);
+pub fn test_process開始時刻参照_対象不在ではnoneを返す() {
+    // Given / When / Then
+    assert_eq!(process_start_time(u32::MAX), None);
 }
 
 #[test]

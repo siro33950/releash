@@ -46,7 +46,6 @@ final class TestHTTPClient: HTTPClientInterface {
     var terminalReplay = ""
     var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
-    var sessions: [String: Releash_Client_V1_AgentSessionItemDto] = [:]
     var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
     var reviewThreads: [String: Releash_Client_V1_ListReviewThreadDto] = [:]
     var history = Releash_Client_V1_AgentSessionHistoryPageDto()
@@ -148,11 +147,6 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.sessionTab = state.sessionTabs[subscription.args[0]] ?? .init()
           } else if subscription.target == "review-threads" {
             payload.reviewThreads = state.reviewThreads[subscription.args[0]] ?? .init()
-          } else if subscription.target == "agent-session" {
-            payload.agentSession = .init()
-            if let value = state.sessions[subscription.args[0]] {
-              payload.agentSession.value = value
-            }
           } else if subscription.target == "session-history" {
             payload.sessionHistory = state.history
           } else if subscription.target == "workspaces" {
@@ -338,8 +332,6 @@ final class TestHTTPClient: HTTPClientInterface {
       case .facets(let value):
         if let kind = args?.first { state.facets[kind] = value }
       case .diagnostics(let value): state.diagnostics = value
-      case .agentSession(let value):
-        if value.hasValue { state.sessions[value.value.id] = value.value }
       case .nodeDetail(let value):
         if value.hasValue { state.nodeDetails[value.value.id] = value.value }
       case .sessionTab(let value):

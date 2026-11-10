@@ -75,7 +75,6 @@ impl FailureRecordStore {
                 active: true,
                 requires_attention,
                 count: 1,
-                first_observed_ms: now_ms,
                 last_observed_ms: now_ms,
             }
         };

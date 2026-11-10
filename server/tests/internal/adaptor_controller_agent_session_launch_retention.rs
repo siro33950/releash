@@ -55,7 +55,6 @@ pub async fn test_workflow起動保持_偽の期限通知だけでactivated記�
     }));
     let workspace_states = Arc::new(
         releashd::test_support::integration::platform::WorkspaceStateStore::with_store(
-            directory.path().into(),
             store.clone(),
         ),
     );

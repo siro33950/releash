@@ -82,7 +82,7 @@ async fn test_引数なし起動_独自data_dirではアプリ起動を要求せ
         dir.path(),
         &data_dir::DataDir {
             path: dir.path().to_owned(),
-            legacy: None,
+            default: false,
         },
         &executable,
         |app| {
@@ -102,15 +102,15 @@ async fn test_引数なし起動_独自data_dirではアプリ起動を要求せ
 }
 
 #[tokio::test]
-async fn test_引数なし起動_既定と旧既定ではアプリを開く() {
+async fn test_引数なし起動_既定ではアプリを開く() {
     // Given
     let root = tempfile::tempdir().unwrap();
     let resolved = data_dir::DataDir {
         path: root.path().join("current"),
-        legacy: Some(root.path().join("legacy")),
+        default: true,
     };
     let executable = root.path().join("Releash.app/Contents/MacOS/releash");
-    for dir in [&resolved.path, resolved.legacy.as_ref().unwrap()] {
+    for dir in [&resolved.path] {
         std::fs::create_dir_all(dir).unwrap();
         let mut opened = false;
         // When
@@ -132,7 +132,7 @@ async fn test_引数なし起動_アプリを開く失敗を返す() {
     let root = tempfile::tempdir().unwrap();
     let resolved = data_dir::DataDir {
         path: root.path().to_owned(),
-        legacy: Some(root.path().join("legacy")),
+        default: true,
     };
     // When
     let result = launch_started(
@@ -152,7 +152,7 @@ async fn test_引数なし起動_bundle外では状態だけを返す() {
     let root = tempfile::tempdir().unwrap();
     let resolved = data_dir::DataDir {
         path: root.path().to_owned(),
-        legacy: None,
+        default: false,
     };
     // When
     let output = launch_started(root.path(), &resolved, &root.path().join("releash"), |_| {

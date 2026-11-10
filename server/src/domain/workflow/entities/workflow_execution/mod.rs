@@ -23,9 +23,9 @@ use crate::domain::workflow::services::{
     reference as workflow_reference, routing as workflow_routing, transition as workflow_transition,
 };
 use crate::domain::workflow::value_objects::{
-    ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeCompletionSignal,
-    NodeCompletionSignalState, NodeDefinition, NodeHistoryEntry, NodeKindName, RuntimeArtifact,
-    RuntimeExecutionState, TokenUsage, WorkflowDefinitionContent,
+    ExecutionParentRef, ExecutionTreeLaunch, NodeCompletionSignal, NodeCompletionSignalState,
+    NodeDefinition, NodeHistoryEntry, NodeKindName, RuntimeArtifact, RuntimeExecutionState,
+    TokenUsage, WorkflowDefinitionContent,
 };
 use crate::domain::workflow::WorkflowEvent;
 
@@ -95,19 +95,6 @@ pub enum FanoutChildRuntimeState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowDefaults;
-
-/// A non-terminal stall observation retained by the execution aggregate.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeStallObservation {
-    pub session_id: String,
-    pub node_name: String,
-    pub attempt: u32,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-    pub observed_at: f64,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewlyTerminalSession {
@@ -347,7 +334,6 @@ pub struct ExecutionTreeRestore {
     pub workspace_identity: String,
     pub repository_root: Option<String>,
     pub launched_as: ExecutionTreeLaunch,
-    pub created_from: ExecutionOrigin,
     pub error_reason: Option<String>,
     pub started_at: f64,
     pub updated_at: f64,
@@ -355,7 +341,6 @@ pub struct ExecutionTreeRestore {
     pub scopes: Vec<ScopeRuntime>,
     pub node_executions: Vec<RuntimeNodeExecution>,
     pub request: Option<String>,
-    pub current_stall_observations: Vec<NodeStallObservation>,
 }
 
 impl Default for ExecutionTreeRestore {
@@ -370,7 +355,6 @@ impl Default for ExecutionTreeRestore {
             workspace_identity: String::new(),
             repository_root: None,
             launched_as: ExecutionTreeLaunch::Workflow,
-            created_from: ExecutionOrigin::DesktopUi,
             error_reason: None,
             started_at: 0.0,
             updated_at: 0.0,
@@ -378,7 +362,6 @@ impl Default for ExecutionTreeRestore {
             scopes: Vec::new(),
             node_executions: Vec::new(),
             request: None,
-            current_stall_observations: Vec::new(),
         }
     }
 }
@@ -626,7 +609,6 @@ pub struct ExecutionTreeView {
     pub workspace_identity: String,
     pub repository_root: Option<String>,
     pub launched_as: ExecutionTreeLaunch,
-    pub created_from: ExecutionOrigin,
     pub error_reason: Option<String>,
     pub started_at: f64,
     pub updated_at: f64,
@@ -638,7 +620,6 @@ pub struct ExecutionTreeView {
     /// 永続 snapshot ではなく、live transition または事実 replay から導出する。
     pub retry_predecessors: HashMap<String, String>,
     pub request: Option<String>,
-    pub current_stall_observations: Vec<NodeStallObservation>,
 }
 
 impl std::ops::Deref for ExecutionTree {
@@ -722,7 +703,6 @@ impl ExecutionTree {
                 workspace_identity: restore.workspace_identity,
                 repository_root: restore.repository_root,
                 launched_as: restore.launched_as,
-                created_from: restore.created_from,
                 error_reason: restore.error_reason,
                 started_at: restore.started_at,
                 updated_at: restore.updated_at,
@@ -731,7 +711,6 @@ impl ExecutionTree {
                 node_executions: restore.node_executions,
                 retry_predecessors: HashMap::new(),
                 request: restore.request,
-                current_stall_observations: restore.current_stall_observations,
             },
         }
     }
@@ -739,7 +718,6 @@ impl ExecutionTree {
     pub fn archive(
         &mut self,
         archived_at: f64,
-        reason: &str,
     ) -> Result<Option<crate::domain::workflow::NodeFact>, crate::domain::workflow::WorkflowError>
     {
         if !self.is_finished() {
@@ -750,10 +728,7 @@ impl ExecutionTree {
         if self.archive.is_some() {
             return Ok(None);
         }
-        let fact = crate::domain::workflow::ArchiveRequestedFact {
-            archived_at,
-            reason: reason.into(),
-        };
+        let fact = crate::domain::workflow::ArchiveRequestedFact { archived_at };
         self.archive = Some(fact.clone());
         Ok(Some(crate::domain::workflow::NodeFact::ArchiveRequested(
             fact,
@@ -779,7 +754,6 @@ impl ExecutionTree {
             |archive| crate::domain::workflow::ExecutionTreeArchiveRecord {
                 execution_id: self.id.clone(),
                 archived_at: archive.archived_at,
-                archive_reason: archive.reason.clone(),
             },
         )
     }
@@ -1689,11 +1663,6 @@ impl ExecutionTree {
             token_usage: token_usage.clone(),
             timestamp,
         });
-        if !node.session_id.clone().unwrap_or_default().is_empty() {
-            if let Some(session_id) = node.session_id.as_deref() {
-                self.clear_stalls_for_session(session_id, timestamp);
-            }
-        }
         self.runtime.node_history.push(NodeHistoryEntry {
             node_name: node.node_name.clone(),
             completed_at: timestamp,
@@ -2531,7 +2500,6 @@ impl ExecutionTree {
         }
         let target_is_active = target.status.is_active();
         let target_node_name = target.node_name.clone();
-        let target_attempt = target.attempt;
         let parent_scope_id = target
             .parent
             .as_ref()
@@ -2566,11 +2534,6 @@ impl ExecutionTree {
         if !target_is_fanout_child {
             self.runtime.current_session_id = None;
         }
-        self.runtime
-            .current_stall_observations
-            .retain(|observation| {
-                observation.node_name != target_node_name || observation.attempt != target_attempt
-            });
         self.runtime.updated_at = timestamp;
         TransitionOutcome::Applied
     }
@@ -3550,20 +3513,7 @@ impl ExecutionTree {
         }
     }
 
-    pub fn clear_stalls_for_session(&mut self, session_id: &str, timestamp: f64) -> bool {
-        let before = self.runtime.current_stall_observations.len();
-        self.runtime
-            .current_stall_observations
-            .retain(|observation| observation.session_id != session_id);
-        let changed = self.runtime.current_stall_observations.len() != before;
-        if changed {
-            self.runtime.updated_at = timestamp;
-        }
-        changed
-    }
-
-    pub fn clear_node_stalls(&mut self, timestamp: f64) {
-        self.runtime.current_stall_observations.clear();
+    pub fn touch(&mut self, timestamp: f64) {
         self.runtime.updated_at = timestamp;
     }
 

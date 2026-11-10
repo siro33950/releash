@@ -38,15 +38,6 @@ pub enum ExecutionStatusView {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionOriginView {
-    DesktopUi,
-    Cli,
-    Agent,
-    Api,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeKindView {
     Command,
@@ -161,7 +152,6 @@ pub struct WorkflowExecutionView {
     pub status: ExecutionStatusView,
     pub current_node: Option<String>,
     pub worktree_path: String,
-    pub created_from: ExecutionOriginView,
     pub started_at: f64,
     pub updated_at: f64,
     pub completed_at: Option<f64>,

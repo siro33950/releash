@@ -6,9 +6,9 @@ use crate::domain::workflow::entities::workflow_execution::{
 use crate::domain::workflow::services::test_helpers::session_attached as attached;
 use crate::domain::workflow::{
     AgentActivityObservedFact, AgentSessionActivity, ApprovalGrantedFact, ArtifactProducedFact,
-    ChildEntry, CommandSpec, ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec,
-    NodeCompletion, NodeCompletionSignal, NodeDefinition, NodeExecutionFailureKind, NodeFactMeta,
-    NodeKind, RuntimeExecutionState, RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact,
+    ChildEntry, CommandSpec, ExecutionParentRef, ExecutionTreeLaunch, FanoutSpec, NodeCompletion,
+    NodeCompletionSignal, NodeDefinition, NodeExecutionFailureKind, NodeFactMeta, NodeKind,
+    RuntimeExecutionState, RuntimeFailureObservedFact, SequenceSpec, SessionAttachedFact,
     SessionExecutionTreeRootFacts, StartedFact, StopReceivedFact, SubmitReceivedFact,
     WorkflowDefinitionContent,
 };
@@ -111,7 +111,6 @@ fn workflow_root(definition: WorkflowDefinitionContent) -> TreeRootFact {
         repository_root: None,
         workspace_identity: "/repo".to_string(),
         worktree_path: "/repo".to_string(),
-        created_from: ExecutionOrigin::Cli,
         request: "please work".to_string(),
         workflow_name: definition.name.clone(),
         definition: Some(definition),
@@ -738,7 +737,6 @@ mod standalone_session_tests {
         log.push(
             root_meta.clone(),
             NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                reason: "manual".into(),
                 archived_at: 0.0,
             }),
         );
@@ -757,7 +755,6 @@ mod standalone_session_tests {
         log.push(root_meta.clone(), exited(0));
         let normal = super::derive_session_facts(&log.records, "root-exec", "session-1");
         assert!(normal.exited);
-        assert!(!normal.last_exit_abnormal);
 
         log.push(root_meta.clone(), attached("session-1"));
         let reattached = super::derive_session_facts(&log.records, "root-exec", "session-1");
@@ -766,19 +763,6 @@ mod standalone_session_tests {
         log.push(root_meta.clone(), exited(1));
         let non_zero = super::derive_session_facts(&log.records, "root-exec", "session-1");
         assert!(non_zero.exited);
-        assert!(non_zero.last_exit_abnormal);
-
-        log.push(
-            root_meta,
-            NodeFact::ProcessExited(crate::domain::workflow::ProcessExitedFact {
-                failure_kind: None,
-                exit_code: Some(0),
-                result_summary: None,
-                failure_reason: Some("provider failure".to_string()),
-            }),
-        );
-        let failed = super::derive_session_facts(&log.records, "root-exec", "session-1");
-        assert!(failed.last_exit_abnormal);
     }
 
     #[test]
@@ -1015,7 +999,6 @@ mod session_display_name_fact_tests {
         for stop in [
             exited(0),
             NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                reason: "manual".into(),
                 archived_at: 0.0,
             }),
         ] {
@@ -1040,7 +1023,6 @@ mod session_display_name_fact_tests {
         for stop in [
             exited(0),
             NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                reason: "manual".into(),
                 archived_at: 0.0,
             }),
         ] {
@@ -1066,7 +1048,6 @@ mod session_display_name_fact_tests {
             (exited(0), attached("session-1")),
             (
                 NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                    reason: "manual".into(),
                     archived_at: 0.0,
                 }),
                 NodeFact::RestoreRequested,
@@ -2354,7 +2335,6 @@ fn test_終端事実_定義の変更や後続の事実に依存せず最初の�
         log.push(
             root_meta.clone(),
             NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-                reason: "manual".into(),
                 archived_at: 1.0,
             }),
         );
@@ -2989,7 +2969,6 @@ fn test_実行木archive_rootの事実で子sessionもarchiveされrestoreでは
     log.push(
         root.clone(),
         NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-            reason: "manual".into(),
             archived_at: 0.0,
         }),
     );
@@ -3087,7 +3066,6 @@ fn plan_sequence_log() -> FactLog {
     log.push(
         meta("main-exec", None, "main", NodeKindName::Sequence, 1),
         NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
-            reason: "manual".into(),
             archived_at: 20.0,
         }),
     );

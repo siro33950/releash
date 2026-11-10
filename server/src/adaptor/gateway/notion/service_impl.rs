@@ -1,10 +1,9 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::domain::app_config::value_objects::{NotionPropertyMapping, NotionRepoConfig};
 use crate::domain::notion::{
-    NotionApiGateway, NotionConfigStatus, NotionError, NotionLabelOption, NotionPropertyInfo,
-    NotionTaskPage, NotionTaskQuery, NotionValidationResult,
+    NotionApiGateway, NotionConfigStatus, NotionError, NotionPropertyInfo, NotionTaskPage,
+    NotionTaskQuery, NotionValidationResult,
 };
 
 use super::service_models::{
@@ -36,13 +35,6 @@ impl NotionApiGateway for NotionApiGatewayImpl {
         query: &NotionTaskQuery,
     ) -> Result<NotionTaskPage, NotionError> {
         query_tasks(config, query, &self.limiter).await
-    }
-
-    async fn fetch_label_options(
-        &self,
-        config: &NotionRepoConfig,
-    ) -> Result<Vec<NotionLabelOption>, NotionError> {
-        fetch_label_options(config).await
     }
 
     async fn validate(
@@ -294,141 +286,6 @@ where
     }
 }
 
-async fn fetch_label_options(
-    config: &NotionRepoConfig,
-) -> Result<Vec<NotionLabelOption>, NotionError> {
-    let client = build_client(&config.api_token)?;
-    let props = fetch_database_properties(&client, &config.database_id).await?;
-
-    let label_names: HashSet<&str> = config
-        .property_mapping
-        .labels
-        .iter()
-        .map(|label| label.name.as_str())
-        .collect();
-
-    let has_people = config
-        .property_mapping
-        .labels
-        .iter()
-        .any(|label| label.property_type == "people");
-
-    let workspace_users =
-        fetch_workspace_users_for_label_options(has_people, || fetch_workspace_users(&client))
-            .await?;
-
-    Ok(props
-        .into_iter()
-        .filter(|property| label_names.contains(property.name.as_str()))
-        .map(|property| {
-            let mapping_type = config
-                .property_mapping
-                .labels
-                .iter()
-                .find(|label| label.name == property.name)
-                .map(|label| label.property_type.as_str())
-                .unwrap_or("");
-
-            if mapping_type == "people" {
-                NotionLabelOption {
-                    property_name: property.name,
-                    property_type: "people".to_string(),
-                    options: workspace_users
-                        .iter()
-                        .map(|(_, name)| name.clone())
-                        .collect(),
-                    option_ids: workspace_users.iter().map(|(id, _)| id.clone()).collect(),
-                }
-            } else {
-                NotionLabelOption {
-                    property_name: property.name,
-                    property_type: property.property_type,
-                    options: property.options,
-                    option_ids: Vec::new(),
-                }
-            }
-        })
-        .collect())
-}
-
-async fn fetch_workspace_users_for_label_options<F, Fut>(
-    has_people: bool,
-    fetch_workspace_users: F,
-) -> Result<Vec<(String, String)>, NotionError>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<(String, String)>, NotionError>>,
-{
-    if has_people {
-        fetch_workspace_users().await
-    } else {
-        Ok(Vec::new())
-    }
-}
-
-async fn fetch_workspace_users(
-    client: &reqwest::Client,
-) -> Result<Vec<(String, String)>, NotionError> {
-    let mut users = Vec::new();
-    let mut next_cursor: Option<String> = None;
-
-    loop {
-        let mut url = format!("{NOTION_BASE_URL}/users?page_size=100");
-        if let Some(ref cursor) = next_cursor {
-            url.push_str(&format!("&start_cursor={cursor}"));
-        }
-
-        let resp = send(client.get(&url)).await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().unwrap_or_default();
-            return Err(NotionError::ApiError(format!("HTTP {status}: {body}")));
-        }
-
-        let json: serde_json::Value = resp
-            .json()
-            .map_err(|error| NotionError::ParseError(error.to_string()))?;
-
-        if let Some(results) = json.get("results").and_then(|results| results.as_array()) {
-            for user in results {
-                let user_type = user
-                    .get("type")
-                    .and_then(|user_type| user_type.as_str())
-                    .unwrap_or("");
-                if user_type != "person" {
-                    continue;
-                }
-                let id = user
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                let name = user
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default();
-                if !id.is_empty() && !name.is_empty() {
-                    users.push((id.to_string(), name.to_string()));
-                }
-            }
-        }
-
-        let has_more = json
-            .get("has_more")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        if !has_more {
-            break;
-        }
-        next_cursor = json
-            .get("next_cursor")
-            .and_then(|value| value.as_str())
-            .map(String::from);
-    }
-
-    Ok(users)
-}
-
 async fn fetch_data_source_properties(
     client: &reqwest::Client,
     data_source_id: &str,
@@ -447,29 +304,6 @@ async fn fetch_data_source_properties(
         .map_err(|error| NotionError::ParseError(error.to_string()))?;
 
     Ok(extract_properties_from_json(&json))
-}
-
-async fn fetch_database_properties(
-    client: &reqwest::Client,
-    database_id: &str,
-) -> Result<Vec<NotionPropertyInfo>, NotionError> {
-    let url = format!("{NOTION_BASE_URL}/databases/{database_id}");
-    let resp = send(client.get(&url)).await?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        return Err(NotionError::ApiError(format!("HTTP {status}: {body}")));
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .map_err(|error| NotionError::ParseError(error.to_string()))?;
-
-    validation_properties(&json, |id| async move {
-        fetch_data_source_properties(client, &id).await
-    })
-    .await
 }
 
 pub struct NotionResponse {

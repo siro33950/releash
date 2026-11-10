@@ -4,7 +4,7 @@ fn started_detail(nodes: Value) -> String {
     serde_json::json!({
         "root": {
             "workspaceIdentity": "/repo", "worktreePath": "/repo",
-            "createdFrom": "desktop_ui", "request": "", "launchedAs": "workflow",
+            "request": "", "launchedAs": "workflow",
             "workflowName": "example",
             "definition": { "name": "example", "description": "", "entry": "main", "nodes": nodes }
         }
@@ -64,7 +64,7 @@ fn test_保存定義_壊れたroot情報は定義の非互換と混同しない(
     // Given / When / Then
     assert!(definition_error("{").is_err());
     let detail = started_detail(serde_json::json!({"main": {"command": "true"}}))
-        .replace("desktop_ui", "unknown-origin");
+        .replace("\"launchedAs\":\"workflow\"", "\"launchedAs\":\"unknown\"");
     assert!(definition_error(&detail).is_err());
 }
 

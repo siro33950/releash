@@ -2,8 +2,6 @@ use super::*;
 
 fn hunk(old: u32, new: u32, lines: &[&str]) -> Hunk {
     Hunk {
-        index: 0,
-        hunk_id: "hunk".into(),
         old_start: old,
         old_lines: lines.iter().filter(|l| !l.starts_with('+')).count() as u32,
         new_start: new,

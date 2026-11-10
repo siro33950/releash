@@ -49,26 +49,21 @@ fn to_dynamic(descriptor: MessageDescriptor, value: Json) -> Result<DynamicMessa
     }
     let wrapper = label(descriptor.options(), "json_wrapper");
     let tag = label(descriptor.options(), "json_tag");
-    let content = label(descriptor.options(), "json_content");
     if descriptor.oneofs().any(|oneof| oneof.name() == "variant") && wrapper.is_empty() {
         for field in descriptor.fields() {
             let input = if flag(descriptor.options(), "json_untagged") {
                 Some(value.clone())
             } else if !tag.is_empty() && value[&tag].as_str() == Some(field.json_name()) {
-                if content.is_empty() {
-                    let mut fields = value.as_object().ok_or("Expected tagged object")?.clone();
-                    fields.remove(&tag);
-                    Some(
-                        if matches!(field.kind(), Kind::Message(ref d) if flag(d.options(), "json_unit"))
-                        {
-                            Json::Null
-                        } else {
-                            Json::Object(fields)
-                        },
-                    )
-                } else {
-                    Some(value[&content].clone())
-                }
+                let mut fields = value.as_object().ok_or("Expected tagged object")?.clone();
+                fields.remove(&tag);
+                Some(
+                    if matches!(field.kind(), Kind::Message(ref d) if flag(d.options(), "json_unit"))
+                    {
+                        Json::Null
+                    } else {
+                        Json::Object(fields)
+                    },
+                )
             } else {
                 None
             };
@@ -90,22 +85,10 @@ fn to_dynamic(descriptor: MessageDescriptor, value: Json) -> Result<DynamicMessa
     } else {
         value.as_object().ok_or("Expected object")?.clone()
     };
-    for field in descriptor
-        .fields()
-        .filter(|field| !flag(field.options(), "json_flatten"))
-        .chain(
-            descriptor
-                .fields()
-                .filter(|field| flag(field.options(), "json_flatten")),
-        )
-    {
-        let value = if flag(field.options(), "json_flatten") {
-            Some(Json::Object(std::mem::take(&mut fields)))
-        } else {
-            fields
-                .remove(field.json_name())
-                .or_else(|| fields.remove(field.name()))
-        };
+    for field in descriptor.fields() {
+        let value = fields
+            .remove(field.json_name())
+            .or_else(|| fields.remove(field.name()));
         match value {
             Some(Json::Null) if flag(field.options(), "json_nullable") => {}
             Some(value) => {
@@ -234,12 +217,7 @@ fn from_dynamic(value: &DynamicMessage) -> Result<Json, String> {
             return Ok(item);
         }
         let tag = label(descriptor.options(), "json_tag");
-        let content = label(descriptor.options(), "json_content");
-        let mut fields = if content.is_empty() {
-            item.as_object().cloned().unwrap_or_default()
-        } else {
-            Map::from_iter([(content, item)])
-        };
+        let mut fields = item.as_object().cloned().unwrap_or_default();
         fields.insert(tag, Json::String(field.json_name().into()));
         return Ok(Json::Object(fields));
     }
@@ -275,11 +253,7 @@ fn from_dynamic(value: &DynamicMessage) -> Result<Json, String> {
         {
             continue;
         }
-        if flag(field.options(), "json_flatten") {
-            fields.extend(item.as_object().ok_or("Expected flattened object")?.clone());
-        } else {
-            fields.insert(field.json_name().into(), item);
-        }
+        fields.insert(field.json_name().into(), item);
     }
     if !wrapper.is_empty() {
         return fields

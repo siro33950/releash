@@ -798,7 +798,7 @@ fn send_dispatch(
     )
     .unwrap();
     if archived {
-        session.archive().unwrap();
+        crate::domain::agent_session::test_helpers::archive_derived(&mut session);
     }
     let repository = Arc::new(FailingSaveRepository::new(session));
     if missing_session {

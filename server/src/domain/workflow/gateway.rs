@@ -35,21 +35,3 @@ pub trait NodeProcessReader: Send + Sync {
         session_id: Option<&str>,
     ) -> Result<crate::domain::workflow::NodeProcessPresence, crate::domain::workflow::WorkflowError>;
 }
-
-/// 定義のソースを読み取り、解釈した Entity を返すサービス。
-pub trait WorkflowDefinitionSourceService: Send + Sync {
-    /// 定義のソースを取得する。
-    fn get_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError>;
-    /// 入力された定義を解釈し、保存候補または診断を返す。
-    fn parse(
-        &self,
-        source: &str,
-    ) -> Result<crate::domain::workflow::WorkflowDefinition, WorkflowSourceSaveError>;
-}
-
-/// 定義の解釈または保存を受け付けられない理由。
-#[derive(Debug, Clone, PartialEq)]
-pub enum WorkflowSourceSaveError {
-    Diagnostics(Vec<crate::domain::workflow::value_objects::diagnostic::DiagnosticItem>),
-    Workflow(WorkflowError),
-}

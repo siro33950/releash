@@ -1,29 +1,6 @@
-use releashd::test_support::integration::code::binary_by_attributes;
-use releashd::test_support::integration::code::review_blob_at_branch_base;
-use releashd::test_support::integration::code::review_blob_at_ref;
-use releashd::test_support::integration::code::review_blob_staged;
-
-use crate::adaptor_gateway_repository_test_helpers::assert_stops_at_each_checkpoint;
 use crate::test_support_git::create_initial_commit;
 use crate::test_support_git::create_test_repo;
 
-#[test]
-pub fn test_ファイル参照_各操作の停止を欠損に変えず探索を終了する() {
-    // Given
-    let (_dir, repo) = create_test_repo();
-    create_initial_commit(&repo);
-    let oid =
-        crate::test_support_git::add_and_commit(&repo, "file", "one\ntwo\n", "file").to_string();
-    let file = repo.workdir().unwrap().join("file");
-    let file = file.to_str().unwrap();
-    // When / Then
-    assert_stops_at_each_checkpoint(|| review_blob_at_ref(file, "HEAD"));
-    assert_stops_at_each_checkpoint(|| review_blob_at_branch_base(file, Some(&oid)));
-    assert_stops_at_each_checkpoint(|| review_blob_staged(file));
-    assert_stops_at_each_checkpoint(|| binary_by_attributes(file));
-    let missing = repo.workdir().unwrap().join("deleted/child/file");
-    assert_stops_at_each_checkpoint(|| review_blob_at_ref(missing.to_str().unwrap(), "HEAD"));
-}
 pub(crate) mod file_content_gateway_tests {
     use super::*;
 
@@ -43,60 +20,6 @@ pub(crate) mod file_content_gateway_tests {
             .to_str()
             .unwrap()
             .to_string()
-    }
-
-    /// base ブランチの commit OID(hex) を返す（gateway は解決済み OID を受け取る契約）。
-    fn base_commit_oid(repo: &Repository) -> String {
-        repo.head()
-            .unwrap()
-            .peel_to_commit()
-            .unwrap()
-            .id()
-            .to_string()
-    }
-
-    #[test]
-    fn test_内容同一性_indexとmerge_baseではなく指定refの先端と作業ツリーを比べる() {
-        // Given
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        let first = add_and_commit(&repo, "file.bin", "AAA", "original");
-        let file = workdir_file(&repo, "file.bin");
-        std::fs::write(&file, "BBB").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new("file.bin")).unwrap();
-        index.write().unwrap();
-        std::fs::write(&file, "AAA").unwrap();
-        let gateway = FileContentGateway;
-        // When / Then
-        assert!(gateway
-            .review_working_tree_matches_ref(&file, "HEAD")
-            .unwrap());
-        assert_eq!(
-            gateway.review_staged_bytes(&file).unwrap(),
-            ReviewSideBytes::Present(b"BBB".to_vec())
-        );
-        // Given
-        let tip = add_and_commit(&repo, "file.bin", "BBB", "base-only change");
-        std::fs::write(&file, "AAA").unwrap();
-        // When / Then
-        assert!(gateway
-            .review_working_tree_matches_ref(&file, &first.to_string())
-            .unwrap());
-        assert!(!gateway
-            .review_working_tree_matches_ref(&file, &tip.to_string())
-            .unwrap());
-        std::fs::remove_file(&file).unwrap();
-        assert!(!gateway
-            .review_working_tree_matches_ref(&file, "HEAD")
-            .unwrap());
-        let missing = workdir_file(&repo, "absent.bin");
-        assert!(gateway
-            .review_working_tree_matches_ref(&missing, "HEAD")
-            .unwrap());
-        assert!(gateway
-            .review_working_tree_matches_ref(&missing, "missing-ref")
-            .is_err());
     }
 
     #[test]
@@ -160,50 +83,6 @@ pub(crate) mod file_content_gateway_tests {
             ReviewSideMetadata::Present {
                 size_bytes: 1_048_577
             }
-        );
-    }
-
-    #[test]
-    pub fn review_at_ref_reads_deleted_file_after_parent_directories_are_removed() {
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        std::fs::create_dir_all(repo.workdir().unwrap().join("src/nested")).unwrap();
-        add_and_commit(
-            &repo,
-            "src/nested/file.txt",
-            "original content\n",
-            "add nested file",
-        );
-        let base_oid = base_commit_oid(&repo);
-        std::fs::remove_dir_all(repo.workdir().unwrap().join("src")).unwrap();
-        let file_path = workdir_file(&repo, "src/nested/file.txt");
-
-        let gateway = FileContentGateway;
-        let metadata = gateway
-            .review_file_metadata_at_ref(&file_path, "HEAD")
-            .unwrap();
-        let bytes = gateway
-            .review_file_bytes_at_ref(&file_path, "HEAD")
-            .unwrap();
-        let base_metadata = gateway
-            .review_file_metadata_at_branch_base(&file_path, Some(&base_oid))
-            .unwrap();
-        let base_bytes = gateway
-            .review_file_bytes_at_branch_base(&file_path, Some(&base_oid))
-            .unwrap();
-
-        assert_eq!(metadata, ReviewSideMetadata::Present { size_bytes: 17 });
-        assert_eq!(
-            bytes,
-            ReviewSideBytes::Present(b"original content\n".to_vec())
-        );
-        assert_eq!(
-            base_metadata,
-            ReviewSideMetadata::Present { size_bytes: 17 }
-        );
-        assert_eq!(
-            base_bytes,
-            ReviewSideBytes::Present(b"original content\n".to_vec())
         );
     }
 

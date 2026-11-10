@@ -21,7 +21,6 @@ pub(crate) mod tests {
                         name: "lib.rs".to_string(),
                     },
                 ],
-                active_editor_path: Some("src/main.rs".to_string()),
             }),
             layout: Some(WorkspaceLayoutState {
                 center_tab: "editor".to_string(),
@@ -29,14 +28,12 @@ pub(crate) mod tests {
                 left_nav_collapsed: false,
                 right_collapsed: false,
                 right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: Some("src/deleted.rs".to_string()),
             }),
         }
     }
 
     #[test]
-    pub fn filters_deleted_files_and_falls_back_active_path() {
+    pub fn filters_deleted_files() {
         let dir = tempfile::TempDir::new().unwrap();
         let worktree = dir.path().join("worktree");
         std::fs::create_dir_all(worktree.join("src")).unwrap();
@@ -45,10 +42,5 @@ pub(crate) mod tests {
         let state = filter_missing_files(make_state(), |path| worktree.join(path).exists());
 
         assert_eq!(state.tabs.as_ref().unwrap().editors.len(), 1);
-        assert_eq!(
-            state.tabs.as_ref().unwrap().active_editor_path.as_deref(),
-            Some("src/lib.rs")
-        );
-        assert_eq!(state.layout.as_ref().unwrap().selected_diff_file, None);
     }
 }

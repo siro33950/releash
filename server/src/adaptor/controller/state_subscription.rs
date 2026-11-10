@@ -19,10 +19,6 @@ pub(crate) fn drive(ticks: Ticks) -> tokio::sync::mpsc::UnboundedSender<ReadWork
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => ReadSignal::Lagged,
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             },
-                            waiting = worker.waiting_changes.recv() => match waiting {
-                                Some(waiting) => ReadSignal::Waiting(waiting),
-                                None => break,
-                            },
                             tick = interval.next(), if !interval_ended => {
                                 if tick.is_none() {
                                     interval_ended = true;
@@ -33,12 +29,7 @@ pub(crate) fn drive(ticks: Ticks) -> tokio::sync::mpsc::UnboundedSender<ReadWork
                         };
                         worker
                             .usecase
-                            .refresh_read(
-                                &worker.target,
-                                signal,
-                                &mut worker.changes,
-                                &mut worker.waiting_changes,
-                            )
+                            .refresh_read(&worker.target, signal, &mut worker.changes)
                             .await;
                     }
                 };

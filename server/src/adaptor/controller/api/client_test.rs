@@ -550,10 +550,11 @@ mod restored_memory_tests {
             .deps()
             .start_subscription(
                 "deadline-test",
-                &crate::usecase::state_subscription::SubscriptionTarget::parse("repository-paths")
-                    .unwrap(),
-                &format!("{}:{}", "deadline-test", "repository-paths"),
-                None,
+                &crate::usecase::state_subscription::SubscriptionTarget::parse(
+                    "terminal-startup-command",
+                )
+                .unwrap(),
+                &format!("{}:{}", "deadline-test", "terminal-startup-command"),
             )
             .await
             .unwrap();
@@ -595,7 +596,7 @@ mod restored_memory_tests {
                 .header("content-type", "application/json")
                 .header("connect-protocol-version", "1")
                 .body(Body::from(
-                    r#"{"clientId":"limited","target":"repository-paths","subscriptionId":"limited-subscription"}"#,
+                    r#"{"clientId":"limited","target":"terminal-startup-command","subscriptionId":"limited-subscription"}"#,
                 ))
                 .unwrap()
             };
@@ -779,7 +780,7 @@ mod restored_memory_tests {
         let accepted = router
         .oneshot(unary_request(
             "StartStateSubscription",
-            r#"{"clientId":"limited","target":"repository-paths","subscriptionId":"limited-subscription"}"#,
+            r#"{"clientId":"limited","target":"terminal-startup-command","subscriptionId":"limited-subscription"}"#,
         ))
         .await
         .unwrap();
@@ -908,9 +909,8 @@ mod restored_memory_tests {
         // Given
         let (app, subscriptions) = notion_cancellation_fixture();
         let _stream = subscriptions.open_stream("client".into()).unwrap();
-        let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-        let mut blocker =
-            Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
+        let blocked = SubscriptionTarget::ReleashBase("/blocked".into());
+        let mut blocker = Box::pin(subscriptions.start_subscription("client", &blocked, "blocked"));
         assert!(futures_util::poll!(&mut blocker).is_pending());
         let mut call =
             Box::pin(app.oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A)));
@@ -938,9 +938,8 @@ mod restored_memory_tests {
             .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A))
             .await
             .unwrap();
-        let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-        let mut blocker =
-            Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
+        let blocked = SubscriptionTarget::ReleashBase("/blocked".into());
+        let mut blocker = Box::pin(subscriptions.start_subscription("client", &blocked, "blocked"));
         assert!(futures_util::poll!(&mut blocker).is_pending());
         let mut request = unary_request("StartStateSubscription", NOTION_REQUEST_B);
         request
@@ -984,9 +983,8 @@ mod restored_memory_tests {
             .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_B))
             .await
             .unwrap();
-        let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-        let mut blocker =
-            Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
+        let blocked = SubscriptionTarget::ReleashBase("/blocked".into());
+        let mut blocker = Box::pin(subscriptions.start_subscription("client", &blocked, "blocked"));
         assert!(futures_util::poll!(&mut blocker).is_pending());
         let call = Box::pin(
             app.clone()
@@ -1023,9 +1021,8 @@ mod restored_memory_tests {
             .oneshot(unary_request("StartStateSubscription", NOTION_REQUEST_A))
             .await
             .unwrap();
-        let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-        let mut blocker =
-            Box::pin(subscriptions.start_subscription("client", &blocked, "blocked", None));
+        let blocked = SubscriptionTarget::ReleashBase("/blocked".into());
+        let mut blocker = Box::pin(subscriptions.start_subscription("client", &blocked, "blocked"));
         assert!(futures_util::poll!(&mut blocker).is_pending());
         let target = SubscriptionTarget::from_parts(
             "notion-tasks",
@@ -1136,7 +1133,7 @@ mod restored_memory_tests {
         }
         let target = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
         subscriptions
-            .start_subscription("client", &target, "x", None)
+            .start_subscription("client", &target, "x")
             .await
             .unwrap();
         assert!(matches!(
@@ -1153,7 +1150,7 @@ mod restored_memory_tests {
             .await
             .unwrap();
         subscriptions
-            .start_subscription("other", &target, "x", None)
+            .start_subscription("other", &target, "x")
             .await
             .unwrap();
     }
@@ -1170,12 +1167,11 @@ mod restored_memory_tests {
         second.next().await.unwrap();
         let target = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
         subscriptions
-            .start_subscription("first", &target, "x", None)
+            .start_subscription("first", &target, "x")
             .await
             .unwrap();
-        let blocked = SubscriptionTarget::BranchBase("/blocked".into(), "main".into());
-        let mut blocker =
-            Box::pin(subscriptions.start_subscription("second", &blocked, "blocked", None));
+        let blocked = SubscriptionTarget::ReleashBase("/blocked".into());
+        let mut blocker = Box::pin(subscriptions.start_subscription("second", &blocked, "blocked"));
         assert!(poll!(&mut blocker).is_pending());
         // When
         let stop = subscriptions.stop_subscription("x");
@@ -1189,7 +1185,7 @@ mod restored_memory_tests {
             .is_none());
         let delivery = subscriptions
             .test_presenter()
-            .reserve_delivery("second", "x", &target.to_string(), None)
+            .reserve_delivery("second", "x", &target.to_string())
             .unwrap();
         drop(blocker);
         let (stopped, started) = tokio::join!(
@@ -1222,13 +1218,13 @@ mod restored_memory_tests {
         let _stream = subscriptions.open_stream("client".into()).unwrap();
         let target = SubscriptionTarget::from_parts("notion-tasks", &["/repo", "20"]).unwrap();
         subscriptions
-            .start_subscription("client", &target, "x", None)
+            .start_subscription("client", &target, "x")
             .await
             .unwrap();
         let (_, _, old) = subscriptions.test_presenter().delivery("x").unwrap();
         subscriptions.stop_subscription("x").await.unwrap();
         subscriptions
-            .start_subscription("client", &target, "x", None)
+            .start_subscription("client", &target, "x")
             .await
             .unwrap();
         // When
@@ -1386,13 +1382,13 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
     ));
     let payload = br#"{"hook_event_name":"SessionStart","session_id":"provider-session"}"#;
     for (bytes, token, capability, expected) in [
-        (payload.to_vec(), "hook", "capability", "applied"),
-        (payload.to_vec(), "hook", "capability", "duplicate"),
+        (payload.to_vec(), "hook", "capability", "accepted"),
+        (payload.to_vec(), "hook", "capability", "accepted"),
         (payload.to_vec(), "hook", "invalid", "rejected"),
-        (br#"{"hook_event_name":"SessionStart","session_id":"provider-session","agent_id":"subagent"}"#.to_vec(), "hook", "capability", "ignored"),
+        (br#"{"hook_event_name":"SessionStart","session_id":"provider-session","agent_id":"subagent"}"#.to_vec(), "hook", "capability", "accepted"),
         (b"{".to_vec(), "hook", "capability", "invalid_argument"),
         (br#"{"hook_event_name":"unknown","session_id":"provider-session"}"#.to_vec(), "hook", "capability", "invalid_argument"),
-        ({ let mut bytes = payload.to_vec(); bytes.resize(65_536, b' '); bytes }, "hook", "capability", "duplicate"),
+        ({ let mut bytes = payload.to_vec(); bytes.resize(65_536, b' '); bytes }, "hook", "capability", "accepted"),
         (vec![b' ';65_537], "hook", "capability", "invalid_argument"),
         (payload.to_vec(), "operator", "capability", "permission_denied"),
     ] {
@@ -1402,7 +1398,7 @@ async fn test_hookのconnect入口_生payloadを解釈し上限と権限と結�
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         if unsupported { assert_eq!(result["message"], "unsupported Provider lifecycle event: unknown"); }
-        assert!(result.get(expected).is_some() || result["code"] == expected, "{expected}: {result}");
+        assert!(if expected == "accepted" { result == serde_json::json!({}) } else { result.get(expected).is_some() || result["code"] == expected }, "{expected}: {result}");
     }
     assert!(ingress.0.lock().unwrap().is_empty());
     for method in [
@@ -1466,5 +1462,5 @@ async fn test_session開始通知_適用の応答を要求期限内に返す() {
         .await
         .unwrap();
     let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(result.get("applied").is_some(), "{result}");
+    assert_eq!(result, serde_json::json!({}));
 }

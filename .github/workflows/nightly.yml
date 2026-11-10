@@ -204,11 +204,6 @@ jobs:
         with:
           ref: ${{ needs.check.outputs.sha }}
           fetch-depth: 0
-      - uses: jdx/mise-action@v3
-      - uses: actions/cache@v6
-        with:
-          path: .nx/installation
-          key: nx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('nx.json', '.nx/nxw.js') }}
       - id: version
         uses: actions/github-script@v9
         env:
@@ -240,7 +235,6 @@ jobs:
         with:
           tag: ${{ steps.version.outputs.tag }}
           release-id: ${{ steps.version.outputs.release-id }}
-          tag-exists: ${{ steps.version.outputs.tag-exists }}
           sha: ${{ needs.check.outputs.sha }}
           nightly: 'true'
           token: ${{ github.token }}

@@ -115,7 +115,6 @@ fn test_カード集計_archive済みの実行木は行に含めない() {
         archive: Some(crate::domain::workflow::ExecutionTreeArchiveRecord {
             execution_id: id.into(),
             archived_at: 3.0,
-            archive_reason: "user".into(),
         }),
         session: None,
     }]);

@@ -6,7 +6,6 @@ use crate::adaptor::controller::api::ClientApiDeps;
 use crate::adaptor::controller::client::ClientCommandDispatch;
 use crate::adaptor::controller::terminal_surface_runtime::TerminalSurfaceRuntime;
 use crate::infrastructure::local_api::LocalApiServer;
-use crate::usecase::git_usecase::GitUsecase;
 
 pub use crate::adaptor::gateway::repository::git::GitGateway;
 pub use crate::adaptor::presenter::workflow_wire::{
@@ -29,10 +28,6 @@ pub struct ClientApiAcceptanceHost {
 impl ClientApiAcceptanceHost {
     pub fn start(data_dir: &Path, branch: Arc<dyn GitService>) -> Self {
         let work = crate::terminal_surface::initialize_background_work_for_acceptance();
-        use crate::adaptor::gateway::repository;
-        let operations = Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(
-            Arc::new(repository::worktree_operation::FileWorktreeOperationLocks::new(data_dir)),
-        ));
         let config_path = data_dir.join("releash.toml");
         let config =
             crate::adaptor::gateway::app_config::load_or_create_config(&config_path).unwrap();
@@ -40,13 +35,6 @@ impl ClientApiAcceptanceHost {
             config,
             config_path,
         ));
-        let repository = GitUsecase::new(
-            branch,
-            Arc::new(repository::util::RepoLocatorGateway),
-            Arc::new(repository::worktree_terminal::NoopWorktreeTerminalGateway),
-            operations.clone(),
-        );
-        let repository = Arc::new(repository);
         let state_presenter = Arc::new(
             crate::adaptor::presenter::state_subscription::StateSubscriptionPresenter::new(),
         );
@@ -58,7 +46,7 @@ impl ClientApiAcceptanceHost {
             })),
         )
         .with_reads(
-            Arc::new(AcceptanceStateReads(repository.clone())),
+            Arc::new(AcceptanceStateReads(branch.clone())),
             None,
             vec![],
             String::new(),
@@ -67,25 +55,27 @@ impl ClientApiAcceptanceHost {
             crate::adaptor::gateway::daemon::serving(),
         ));
         dispatch.register_domain(
-            &["get_language_from_path"],
+            &["add_repo_path"],
             Box::new(move |command| {
-                let repository = repository.clone();
+                let branch = branch.clone();
                 Box::pin(async move {
-                    let crate::adaptor::presenter::client::command_request::Command::GetLanguageFromPath(
+                    let crate::adaptor::presenter::client::command_request::Command::AddRepoPath(
                         args,
                     ) = command
                     else {
                         unreachable!()
                     };
-                    let path =
-                        crate::adaptor::controller::client::required(args.file_path, "filePath")?;
+                    let path = crate::adaptor::controller::client::required(args.path, "path")?;
                     let result =
                         crate::adaptor::controller::client::repository::run_blocking(move || {
-                            repository.get_current_branch(&path)
+                            branch
+                                .current(&path)
+                                .map(|_| true)
+                                .map_err(crate::usecase::repository_error::UsecaseError::from)
                         })
                         .await;
                     crate::adaptor::controller::client::outcome(result).map(
-                        crate::adaptor::presenter::client::command_result::Command::GetLanguageFromPath,
+                        crate::adaptor::presenter::client::command_result::Command::AddRepoPath,
                     )
                 })
             }),
@@ -196,97 +186,7 @@ pub async fn request_client(
     .1)
 }
 
-#[derive(Default, Debug, PartialEq)]
-pub struct ClientRecoveryState {
-    pub crash_reporting: bool,
-    pub mounted_xterms: u64,
-    pub effects: Vec<String>,
-}
-
-pub struct ClientRecoveryAcceptanceHost {
-    pub urls: Vec<String>,
-    pub state: Arc<std::sync::Mutex<ClientRecoveryState>>,
-    servers: Vec<tokio::task::JoinHandle<()>>,
-}
-
-impl ClientRecoveryAcceptanceHost {
-    pub async fn start() -> Self {
-        use crate::adaptor::presenter::client as wire;
-        let state = Arc::new(std::sync::Mutex::new(ClientRecoveryState::default()));
-        let mut dispatch = ClientCommandDispatch::new(crate::usecase::daemon::DaemonUsecase::new(
-            crate::adaptor::gateway::daemon::serving(),
-        ));
-        for names in [
-            &["update_crash_reporting"][..],
-            &["report_mounted_xterm_count"][..],
-        ] {
-            let target = state.clone();
-            dispatch.register_domain(
-                names,
-                Box::new(move |command| {
-                    let target = target.clone();
-                    Box::pin(async move {
-                        let mut state = target.lock().unwrap();
-                        Ok(match command {
-                            wire::command_request::Command::UpdateCrashReporting(args) => {
-                                let enabled = args.enabled.expect("enabled");
-                                state.crash_reporting = enabled;
-                                state.effects.push(format!("crash:{enabled}"));
-                                wire::command_result::Command::UpdateCrashReporting(wire::Unit {})
-                            }
-                            wire::command_request::Command::ReportMountedXtermCount(args) => {
-                                let count = args.count.expect("count");
-                                state.mounted_xterms = count;
-                                state.effects.push(format!("xterms:{count}"));
-                                wire::command_result::Command::ReportMountedXtermCount(
-                                    wire::Unit {},
-                                )
-                            }
-                            _ => unreachable!(),
-                        })
-                    })
-                }),
-            );
-        }
-        let dispatch = Arc::new(dispatch);
-        let mut urls = Vec::new();
-        let mut servers = Vec::new();
-        for _ in 0..2 {
-            let deps = ClientApiDeps::new(
-                dispatch.clone(),
-                crate::adaptor::controller::daemon::client_priority_interceptor(),
-            );
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            urls.push(format!("http://{}", listener.local_addr().unwrap()));
-            servers.push(tokio::spawn(async move {
-                axum::serve(
-                    listener,
-                    crate::adaptor::controller::api::client::router(
-                        Some(deps),
-                        crate::adaptor::controller::daemon::default_timeout(),
-                    ),
-                )
-                .await
-                .unwrap();
-            }));
-        }
-        Self {
-            urls,
-            state,
-            servers,
-        }
-    }
-}
-
-impl Drop for ClientRecoveryAcceptanceHost {
-    fn drop(&mut self) {
-        for server in &self.servers {
-            server.abort();
-        }
-    }
-}
-
-struct AcceptanceStateReads(Arc<GitUsecase>);
+struct AcceptanceStateReads(Arc<dyn GitService>);
 #[async_trait::async_trait]
 impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceStateReads {
     async fn read(
@@ -297,7 +197,7 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSta
         crate::usecase::state_subscription::StateReadError,
     > {
         use crate::usecase::state_subscription::{StateReadError, StateValue};
-        let crate::usecase::state_subscription::SubscriptionTarget::CurrentBranch(path) = target
+        let crate::usecase::state_subscription::SubscriptionTarget::ReleashBase(path) = target
         else {
             return Err(StateReadError {
                 source: crate::usecase::state_subscription::StateReadFailure::Workflow(Box::new(
@@ -307,14 +207,17 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSta
             });
         };
         let path = path.clone();
-        let repository = self.0.clone();
+        let branch = self.0.clone();
         tokio::task::spawn_blocking(move || {
-            repository
-                .get_current_branch(&path)
-                .map(StateValue::CurrentBranch)
-                .map_err(|error| StateReadError {
-                    message: error.to_string(),
-                    source: error.into(),
+            branch
+                .current(&path)
+                .map(|name| StateValue::ReleashBase(Some(name)))
+                .map_err(|error| {
+                    let error = crate::usecase::repository_error::UsecaseError::from(error);
+                    StateReadError {
+                        message: error.to_string(),
+                        source: error.into(),
+                    }
                 })
         })
         .await
@@ -330,11 +233,9 @@ pub async fn read_current_branch(
     args: serde_json::Value,
 ) -> Result<serde_json::Value, connectrpc::ConnectError> {
     let path = args["repoPath"].as_str().unwrap_or_default();
-    let target = crate::usecase::state_subscription::SubscriptionTarget::from_parts(
-        "current-branch",
-        &[path],
-    )
-    .map_err(crate::adaptor::presenter::connect::classified_error)?;
+    let target =
+        crate::usecase::state_subscription::SubscriptionTarget::from_parts("releash-base", &[path])
+            .map_err(crate::adaptor::presenter::connect::classified_error)?;
     read_state(client, &target.to_string()).await
 }
 
@@ -359,7 +260,6 @@ pub async fn read_state(
             subscription_id: client_id.clone(),
             target: name.into(),
             args: args.clone(),
-            version: None.into(),
             ..Default::default()
         })
         .await?;
@@ -392,11 +292,8 @@ pub async fn read_state(
         wire::state_payload::Value::WorkflowExecution(value) => {
             wire::from_message("releash.client.v1.NullableWorkflowExecutionView", &value)
         }
-        wire::state_payload::Value::CurrentBranch(value) => {
-            wire::from_message("releash.client.v1.ResultString", &value)
-        }
-        wire::state_payload::Value::AgentSession(value) => {
-            wire::from_message("releash.client.v1.NullableAgentSessionItemDto", &value)
+        wire::state_payload::Value::ReleashBase(value) => {
+            wire::from_message("releash.client.v1.Nullablestring", &value)
         }
         wire::state_payload::Value::Providers(value) => {
             wire::from_message("releash.client.v1.ListAgentSessionProviderDto", &value)
@@ -416,6 +313,9 @@ pub async fn read_state(
         }
         wire::state_payload::Value::DesktopSettings(value) => {
             wire::from_message("releash.client.v1.DesktopSettings", &value)
+        }
+        wire::state_payload::Value::SessionTab(value) => {
+            wire::from_message("releash.client.v1.SessionTabSnapshot", &value)
         }
         _ => panic!("Unsupported acceptance state"),
     };

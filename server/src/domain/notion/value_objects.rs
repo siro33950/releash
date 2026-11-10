@@ -9,14 +9,6 @@ pub struct NotionTaskQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotionLabelOption {
-    pub property_name: String,
-    pub property_type: String,
-    pub options: Vec<String>,
-    pub option_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotionTaskPage {
     pub tasks: Vec<NotionTask>,
     pub has_more: bool,

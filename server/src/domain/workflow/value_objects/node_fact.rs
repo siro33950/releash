@@ -7,9 +7,8 @@
 use crate::domain::provider_lifecycle::ProviderKind;
 
 use super::{
-    ContractViolationRecord, ExecutionOrigin, ExecutionParentRef, NodeCompletion, NodeDefinition,
-    NodeExecutionFailureKind, NodeKind, NodeKindName, SessionSpec, TokenUsage,
-    WorkflowDefinitionContent,
+    ExecutionParentRef, NodeCompletion, NodeDefinition, NodeExecutionFailureKind, NodeKind,
+    NodeKindName, SessionSpec, TokenUsage, WorkflowDefinitionContent,
 };
 
 #[cfg(test)]
@@ -64,7 +63,6 @@ pub enum NodeFact {
     /// 副作用: 親 Session が delegate child の結果の続行指示を受理した。
     SessionContinuationAdmitted(SessionContinuationAdmittedFact),
     /// 副作用: Contract 違反として Submit を拒否した。
-    SubmitRejected(SubmitRejectedFact),
     /// 外部入力: provider の Stop。
     StopReceived(StopReceivedFact),
     /// 外部入力の記録: Submit に添付された Artifact（参照と値のみ）。
@@ -87,7 +85,6 @@ pub enum NodeFact {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchiveRequestedFact {
-    pub reason: String,
     pub archived_at: f64,
 }
 
@@ -116,7 +113,6 @@ pub struct TreeRootFact {
     pub workspace_identity: String,
     /// 実行木が所属する worktree の正規化済みパス。
     pub worktree_path: String,
-    pub created_from: ExecutionOrigin,
     pub request: String,
     pub workflow_name: String,
     pub definition: Option<WorkflowDefinitionContent>,
@@ -133,7 +129,6 @@ impl TreeRootFact {
             repository_root: self.repository_root.clone(),
             workspace_identity: self.workspace_identity.clone(),
             worktree_path: self.worktree_path.clone(),
-            created_from: self.created_from,
             request: self.request.clone(),
             workflow_name: self.workflow_name.clone(),
             definition: None,
@@ -196,7 +191,6 @@ impl SessionExecutionTreeRootFacts {
                     repository_root,
                     workspace_identity,
                     worktree_path,
-                    created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
                     workflow_name: node_name.clone(),
                     definition: Some(WorkflowDefinitionContent {
@@ -326,13 +320,6 @@ pub struct ProviderSessionTitleObservedFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmitReceivedFact {
-    pub request_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubmitRejectedFact {
-    pub violations: Vec<ContractViolationRecord>,
-    pub repair_attempt: u32,
     pub request_id: Option<String>,
 }
 

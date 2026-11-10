@@ -203,7 +203,6 @@ where
         Ok(
             releashd::test_support::integration::repository::RepositoryStatusScan {
                 status: Vec::new(),
-                diff_stats: Vec::new(),
                 dirty_count: 0,
             },
         )
@@ -307,8 +306,8 @@ async fn test_connect_defaultの枠と待ち行列を超える要求を拒否す
     let mut pending = tokio::task::JoinSet::new();
     for _ in 0..92 {
         let client = fixture.client();
-        let args = json!({"filePath": fixture.repo.path().to_str().unwrap()});
-        pending.spawn(async move { request_client(&client, "get_language_from_path", args).await });
+        let args = json!({"path": fixture.repo.path().to_str().unwrap()});
+        pending.spawn(async move { request_client(&client, "add_repo_path", args).await });
     }
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), pending.join_next())
@@ -324,6 +323,6 @@ async fn test_connect_defaultの枠と待ち行列を超える要求を拒否す
         resume.send(()).unwrap();
     }
     while let Some(result) = pending.join_next().await {
-        assert_eq!(result.unwrap().unwrap(), "ws-branch");
+        assert_eq!(result.unwrap().unwrap(), true);
     }
 }

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::domain::workflow::services::fact_replay::fold_execution_tree;
-use crate::domain::workflow::value_objects::ContractViolationRecord;
 use crate::domain::workflow::ExecutionParentRef;
 
 use super::super::test_helpers::{node_started, started_event, TREE};
@@ -222,29 +221,6 @@ fn test_写像_合成子の成果と完了は行にならない() {
 }
 
 #[test]
-fn test_写像_contract違反はsubmit_rejectedになる() {
-    let events = vec![
-        node_started("s-exec", "a", NodeKindName::Session, None, 1.0),
-        WorkflowEvent::ContractViolated {
-            execution_id: TREE.to_string(),
-            node_execution_id: "s-exec".to_string(),
-            node_name: "a".to_string(),
-            violations: vec![ContractViolationRecord {
-                path: "$.x".to_string(),
-                reason: "missing".to_string(),
-            }],
-            repair_attempt: 1,
-            request_id: Some("req".to_string()),
-            timestamp: 2.0,
-        },
-    ];
-
-    let rows = fact_rows_for_events(&events, no_lookup, no_lookup).unwrap();
-    assert_eq!(rows[1].row.event_type, "submit_rejected");
-    assert!(rows[1].row.detail.contains("missing"));
-}
-
-#[test]
 fn test_写像_abortはrootのnodeに紐づくabort_requestedになる() {
     // Given: 既存の tree（root meta は root_lookup で解決される）
     let root_meta = FactRowMeta {
@@ -294,95 +270,6 @@ fn test_写像_バッチ外のnodeはmeta_lookupで補完される() {
 }
 
 #[test]
-fn test_終端復元_旧worktreeは同じnodeのattemptの欠落だけを補い終端後を無視する() {
-    // Given
-    let legacy = crate::domain::workflow::IsolatedWorktree {
-        branch: "old-branch".into(),
-        path: "/old-isolated".into(),
-    };
-    let current = crate::domain::workflow::IsolatedWorktree::for_attempt("/repo", "node", 1);
-    for (node_id, attempt, after_terminal, recorded, expected) in [
-        ("node", 1, false, None, Some(legacy.clone())),
-        ("other", 1, false, None, None),
-        ("node", 2, false, None, None),
-        ("node", 1, true, None, None),
-        ("node", 1, false, Some(current.clone()), Some(current)),
-    ] {
-        let started = NodeEventRow {
-            tree_id: TREE.into(),
-            seq: 1,
-            node_execution_id: "node".into(),
-            parent_id: None,
-            node_name: "main".into(),
-            kind: "session".into(),
-            attempt: 1,
-            event_type: "started".into(),
-            session_id: None,
-            detail: fact_codec::encode_detail(&NodeFact::Started(StartedFact {
-                worktree: recorded,
-                parent: None,
-                root: None,
-            }))
-            .unwrap(),
-            timestamp_ms: 1_000,
-        };
-        let worktree = NodeEventRow {
-            seq: if after_terminal { 4 } else { 2 },
-            node_execution_id: node_id.into(),
-            attempt,
-            event_type: "isolated_worktree_created".into(),
-            detail: serde_json::json!({
-                "repositoryRoot": "/repo", "worktreePath": legacy.path, "branch": legacy.branch,
-            })
-            .to_string(),
-            ..started.clone()
-        };
-        let terminal = NodeEventRow {
-            seq: 3,
-            event_type: "abort_requested".into(),
-            detail: "{}".into(),
-            ..started.clone()
-        };
-        let rows = if after_terminal {
-            vec![started, terminal, worktree]
-        } else {
-            vec![started, worktree, terminal]
-        };
-
-        // When
-        let records = records_from_tree_rows(&rows).unwrap();
-
-        // Then
-        let NodeFact::Started(started) = &records[0].fact else {
-            panic!("started")
-        };
-        assert_eq!(started.worktree, expected);
-        assert_eq!(records.len(), 2);
-    }
-}
-
-#[test]
-fn test_旧隔離事実の読取_破損payloadと未知の事実を拒否する() {
-    // Given
-    for (event_type, detail) in [
-        ("isolated_worktree_created", "{}"),
-        (
-            "isolated_worktree_created",
-            r#"{"repositoryRoot":1,"worktreePath":"/tmp","branch":"b"}"#,
-        ),
-        ("isolated_worktree_released", "null"),
-        ("isolated_worktree_lost", "[]"),
-        ("isolated_worktree_unknown", "{}"),
-    ] {
-        // When / Then
-        assert!(
-            decode_stored_fact(event_type, detail, 0).is_err(),
-            "{event_type}: {detail}"
-        );
-    }
-}
-
-#[test]
 fn test_終端復元_定義本文を入れ替えても名前と実行状態と公開属性が変わらない() {
     // Given
     let started = NodeEventRow {
@@ -415,7 +302,7 @@ fn test_終端復元_定義本文を入れ替えても名前と実行状態と�
             let mut started = started.clone();
             started.detail = serde_json::json!({"root": {
                 "repositoryRoot": "/repo", "workspaceIdentity": "/repo", "worktreePath": "/repo",
-                "createdFrom": "cli", "request": "please", "launchedAs": "workflow",
+                "request": "please", "launchedAs": "workflow",
                 "workflowName": "recorded-name", "definition": definition
             }})
             .to_string();

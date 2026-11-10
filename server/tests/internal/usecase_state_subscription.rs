@@ -26,17 +26,6 @@ impl releashd::test_support::integration::platform::NotionApiGateway for Reopeni
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ))
     }
-    async fn fetch_label_options(
-        &self,
-        _: &releashd::test_support::integration::settings::NotionRepoConfig,
-    ) -> Result<
-        Vec<releashd::test_support::integration::platform::NotionLabelOption>,
-        releashd::test_support::integration::platform::NotionError,
-    > {
-        Ok(reopening_labels(
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-        ))
-    }
     async fn validate(
         &self,
         _: &releashd::test_support::integration::settings::NotionRepoConfig,
@@ -64,19 +53,6 @@ fn reopening_page(
         has_more: false,
         next_cursor: None,
     }
-}
-
-fn reopening_labels(
-    sequence: usize,
-) -> Vec<releashd::test_support::integration::platform::NotionLabelOption> {
-    vec![
-        releashd::test_support::integration::platform::NotionLabelOption {
-            property_name: "Status".into(),
-            property_type: "select".into(),
-            options: vec![sequence.to_string()],
-            option_ids: vec![],
-        },
-    ]
 }
 
 struct ReopeningReads {
@@ -114,20 +90,16 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
     // Given
     let mut results = Vec::new();
     let mut cases = Vec::new();
-    for labels in [false, true] {
+    {
         let mut fixture = crate::state_subscription_reads::Fixture::new();
-        let target = if labels {
-            SubscriptionTarget::NotionLabelOptions(fixture.path.clone())
-        } else {
-            SubscriptionTarget::NotionTasks(
-                releashd::test_support::integration::platform::NotionTaskListRequest {
-                    path: fixture.path.clone(),
-                    count: 20,
-                    title: None,
-                    labels: Default::default(),
-                },
-            )
-        };
+        let target = SubscriptionTarget::NotionTasks(
+            releashd::test_support::integration::platform::NotionTaskListRequest {
+                path: fixture.path.clone(),
+                count: 20,
+                title: None,
+                labels: Default::default(),
+            },
+        );
         fixture.reads.notion = Arc::new(
             releashd::test_support::integration::platform::NotionUsecase::new(
                 fixture.config.clone(),
@@ -245,19 +217,6 @@ pub async fn test_notion購読_旧client終了中の新規開始は旧workerの�
                     releashd::test_support::integration::platform::Fetched::ready(reopening_page(
                         2,
                     )),
-                ),
-            ),
-            SubscriptionTarget::NotionLabelOptions(_) => (
-                StateValue::NotionLabelOptions(Default::default()),
-                StateValue::NotionLabelOptions(
-                    releashd::test_support::integration::platform::Fetched::ready(
-                        reopening_labels(1),
-                    ),
-                ),
-                StateValue::NotionLabelOptions(
-                    releashd::test_support::integration::platform::Fetched::ready(
-                        reopening_labels(2),
-                    ),
                 ),
             ),
             _ => unreachable!(),

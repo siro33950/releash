@@ -3,34 +3,22 @@ pub mod code {
     pub use crate::domain::code::services::directory::GitStatus;
     pub use crate::usecase::directory_query::DirectoryQuery;
 
-    pub use crate::adaptor::gateway::code::branch_diff::get_branch_diff_summary;
     pub use crate::adaptor::gateway::code::diff_compute::diff_buffers;
     pub use crate::adaptor::gateway::code::file_content::binary_by_attributes;
-    pub use crate::adaptor::gateway::code::file_content::review_blob_at_branch_base;
     pub use crate::adaptor::gateway::code::file_content::review_blob_at_ref;
-    pub use crate::adaptor::gateway::code::file_content::review_blob_staged;
     pub use crate::adaptor::gateway::code::file_content::FileContentGateway;
 
-    pub use crate::adaptor::gateway::code::resolve_merge_base_commit;
     pub use crate::adaptor::gateway::code::staging::git_stage;
-    pub use crate::adaptor::gateway::code::staging::git_stage_hunk;
     pub use crate::adaptor::gateway::code::staging::git_unstage;
-    pub use crate::adaptor::gateway::code::staging::git_unstage_hunk;
     pub use crate::adaptor::gateway::code::staging::StagingGateway;
     pub use crate::adaptor::gateway::code::test_helpers::set_git_program;
     pub use crate::domain::code::error::CodeError;
-    pub use crate::domain::code::services::hunk::assign_hunk_ids;
-    pub use crate::domain::code::services::hunk::compute_change_groups;
-    pub use crate::domain::code::services::hunk::generate_group_patch;
-    pub use crate::domain::code::value_objects::hunk::ChangeGroup;
     pub use crate::domain::code::value_objects::hunk::Hunk;
 }
 pub mod daemon {
     pub use crate::adaptor::controller::daemon::client_priority_interceptor;
     pub use crate::adaptor::controller::daemon::compose;
     pub use crate::adaptor::controller::daemon::default_timeout;
-    pub use crate::adaptor::controller::daemon::migrate_legacy_execution_archives;
-    pub use crate::adaptor::controller::daemon::migrate_legacy_workspace_states;
     pub use crate::adaptor::controller::daemon::shutdown_with_deadline;
     pub use crate::adaptor::controller::daemon::Daemon;
     pub use crate::adaptor::gateway::daemon::serving;
@@ -91,8 +79,6 @@ pub mod persistence {
     pub use crate::adaptor::gateway::local_event_store::reader::MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT;
     pub use crate::adaptor::gateway::local_event_store::reader::READER_POOL_SIZE;
     pub use crate::adaptor::gateway::local_event_store::reader::READ_QUEUE_MAX_DEPTH;
-    pub use crate::adaptor::gateway::local_event_store::schema::create_store_metadata;
-    pub use crate::adaptor::gateway::local_event_store::schema::evolve_schema;
     pub use crate::adaptor::gateway::local_event_store::schema::initialize_schema;
     pub use crate::adaptor::gateway::local_event_store::schema::require_foreign_key_integrity;
     pub use crate::adaptor::gateway::local_event_store::schema::require_index;
@@ -151,7 +137,7 @@ pub mod platform {
             ),
         )
         .unwrap();
-        crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(path, store)
+        crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(store)
     }
 
     pub use crate::acceptance_test_support::{workflow_read, workflow_services};
@@ -245,7 +231,6 @@ pub mod platform {
     pub use crate::adaptor::gateway::shared::git_operation::run as git_operation_run;
     pub use crate::adaptor::gateway::shared::git_operation::GitOperationError;
     pub use crate::adaptor::gateway::state_subscription_reads::StateSubscriptionReads;
-    pub use crate::adaptor::gateway::workspace_state::repository_impl::state_file as repository_impl_state_file;
     pub use crate::adaptor::gateway::workspace_state::repository_impl::storage_key;
     pub use crate::adaptor::gateway::workspace_state::repository_impl::WorkspaceStateStore;
 
@@ -319,7 +304,6 @@ pub mod platform {
     pub use crate::domain::local_event::query::LocalEventQueryResult;
     pub use crate::domain::notion::error::NotionError;
     pub use crate::domain::notion::gateway::NotionApiGateway;
-    pub use crate::domain::notion::value_objects::NotionLabelOption;
     pub use crate::domain::notion::value_objects::NotionTaskPage;
     pub use crate::domain::notion::value_objects::NotionTaskQuery;
     pub use crate::domain::notion::value_objects::NotionValidationResult;
@@ -408,7 +392,6 @@ pub mod platform {
     pub use crate::usecase::notion::usecase::NotionUsecase;
     pub use crate::usecase::provider_dto::AgentSessionProviderDto;
     pub use crate::usecase::repo_paths_usecase::RepoPathsUsecase;
-    pub use crate::usecase::repository_dto::FileDiffStatDto;
     pub use crate::usecase::repository_dto::FileStatusDto;
 
     pub use crate::usecase::repository_state::error::RepositoryStateError;
@@ -417,9 +400,6 @@ pub mod platform {
     pub use crate::usecase::git_usecase::WorktreeExecutionArchiver;
     pub use crate::usecase::repository_state::runtime::RepositoryStateWorkerRuntime;
     pub use crate::usecase::repository_state::runtime::WorktreePathNormalizer;
-    pub use crate::usecase::repository_state::scanner::changes_diff_tree_entries;
-    pub use crate::usecase::repository_state::scanner::diff_tree_entries;
-    pub use crate::usecase::repository_state::scanner::staged_diff_tree_entries;
     pub use crate::usecase::repository_state::scanner::RepositoryScanner;
     pub use crate::usecase::repository_state::service::RepositoryStateRepository;
     pub use crate::usecase::repository_state::service::RepositoryStateService;
@@ -545,7 +525,6 @@ pub mod repository {
     pub use crate::adaptor::gateway::repository::state::RepositoryStateRepositoryGateway;
     pub use crate::adaptor::gateway::repository::status::get_git_status;
     pub use crate::adaptor::gateway::repository::status::get_repository_status_scan;
-    pub use crate::adaptor::gateway::repository::status::get_status_diff_stats;
     pub use crate::adaptor::gateway::repository::status::reset_status_walk_count_for_tests;
     pub use crate::adaptor::gateway::repository::status::status_walk_count_for_tests;
     pub use crate::adaptor::gateway::repository::watch::resolve_file_watch_paths;
@@ -588,7 +567,6 @@ pub mod repository {
 }
 pub mod review {
     pub use crate::domain::code::value_objects::review::ReviewBase;
-    pub use crate::domain::code::value_objects::review::ReviewSection;
 }
 pub mod sessions {
     pub use crate::test_support::agent_session::test_sessions;
@@ -623,7 +601,6 @@ pub mod sessions {
     pub use crate::adaptor::gateway::agent_session::session_facts::SessionContextReadError;
     pub use crate::adaptor::gateway::agent_session::session_facts::SessionLocation;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSession;
-    pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionArchiveOutcome;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionAvailability;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionInitialInstructionOutcome;
     pub use crate::domain::agent_session::aggregates::agent_session::AgentSessionLifecycle;
@@ -830,11 +807,9 @@ pub mod transport {
     pub use crate::client_api_acceptance::request_client;
     pub use crate::client_api_acceptance::ClientEndpoint;
     pub use crate::infrastructure::local_api::client_token::BearerToken;
-    pub use crate::infrastructure::local_api::discovery::lookup_process_start_time;
     pub use crate::infrastructure::local_api::discovery::process_start_time;
     pub use crate::infrastructure::local_api::discovery::LocalApiDiscovery;
     pub use crate::infrastructure::local_api::discovery::LocalApiDiscoveryFile;
-    pub use crate::infrastructure::local_api::discovery::ProcessStartTimeLookup;
     pub use crate::infrastructure::local_api::server::test_binding;
     pub use crate::infrastructure::local_api::server::LocalApiServer;
     pub use crate::infrastructure::local_api::LocalApiServerError;
@@ -886,7 +861,6 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::builtin::list_builtin_workflows;
 
     pub use crate::adaptor::gateway::workflow::definition_repository::WorkflowDefinitionFileRepository;
-    pub use crate::adaptor::gateway::workflow::definition_repository::WorkflowDefinitionFileSourceGateway;
     pub use crate::adaptor::gateway::workflow::diagnostics::DiagnosticScope;
 
     pub use crate::adaptor::gateway::workflow::diagnostics::collect_all_facet_keys;
@@ -972,7 +946,6 @@ pub mod workflow {
     pub use crate::adaptor::gateway::workflow::startup_repository::StoredWorkflowStartupRepository;
     pub use crate::adaptor::gateway::workflow::storage::diagnose_workflow_file;
     pub use crate::adaptor::gateway::workflow::storage::load_workflow;
-    pub use crate::adaptor::gateway::workflow::storage::parse_workflow_source;
     pub use crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets;
     pub use crate::adaptor::gateway::workflow::storage::resolve_workflow_path;
     pub use crate::adaptor::gateway::workflow::storage::workflow_files;
@@ -1070,7 +1043,6 @@ pub mod workflow {
     pub use crate::domain::workflow::value_objects::definition::WorkflowSourceFormat;
     pub use crate::domain::workflow::value_objects::definition::WorktreeMode;
     pub use crate::domain::workflow::value_objects::execution::Artifact;
-    pub use crate::domain::workflow::value_objects::execution::ExecutionOrigin;
     pub use crate::domain::workflow::value_objects::execution::ExecutionStatus;
     pub use crate::domain::workflow::value_objects::execution::ExecutionTree;
     pub use crate::domain::workflow::value_objects::execution::Fanout;
@@ -1130,7 +1102,6 @@ pub mod workflow {
     pub use crate::usecase::workflow::diagnostic_dto::Severity;
     pub use crate::usecase::workflow::WorkflowUsecase;
 
-    pub use crate::domain::workflow::WorkflowDefinitionSourceService;
     pub use crate::usecase::workflow::node_startup::FailedNodeStart;
     pub use crate::usecase::workflow::output::WorkflowOutputUsecase;
     pub use crate::usecase::workflow::ports::ExecutionTreeProcessGateway;
@@ -1142,7 +1113,6 @@ pub mod workflow {
     pub use crate::usecase::workflow::ports::WorkflowExecutionProjectionRepository;
     pub use crate::usecase::workflow::ports::WorkflowRuntimeShutdownGateway;
     pub use crate::usecase::workflow::ports::WorkflowRuntimeStateGateway;
-    pub use crate::usecase::workflow::ports::WorkflowSourceSaveError;
     pub use crate::usecase::workflow::ports::WorkflowStartExecutionGateway;
     pub use crate::usecase::workflow::query_service::WorkflowGetOutputResult;
     pub use crate::usecase::workflow::query_service::WorkflowQueryService;
@@ -1238,6 +1208,7 @@ pub mod workspace {
 
 pub mod wire {
     pub use crate::adaptor::presenter::client::ReviewThreadDto;
+    pub use crate::adaptor::presenter::client::StartWorkflowRequest;
     pub fn from_message<M: prost::Message>(
         name: &str,
         message: &M,
@@ -1255,20 +1226,17 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::terminal_event;
     pub use crate::adaptor::presenter::client::terminal_surface_owner_v1;
     pub use crate::adaptor::presenter::client::AppendReviewCommentRequest;
-    pub use crate::adaptor::presenter::client::BuildDiffFileTreeRequest;
     pub use crate::adaptor::presenter::client::CommandError;
 
     pub use crate::adaptor::presenter::client::CommandRequest;
     pub use crate::adaptor::presenter::client::CommandResult;
     pub use crate::adaptor::presenter::client::CreateReviewThreadRequest;
-    pub use crate::adaptor::presenter::client::DeleteReviewThreadRequest;
-    pub use crate::adaptor::presenter::client::FetchIssuesRequest;
+    pub use crate::adaptor::presenter::client::CreateWorktreesRequest;
     pub use crate::adaptor::presenter::client::GetOrSpawnTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::GitCreateBranchRequest;
     pub use crate::adaptor::presenter::client::GitStageRequest;
     pub use crate::adaptor::presenter::client::GitUnstageRequest;
     pub use crate::adaptor::presenter::client::KillTerminalSurfaceRequest;
-    pub use crate::adaptor::presenter::client::ListDiffFileEntryInput;
     pub use crate::adaptor::presenter::client::Liststring;
     pub use crate::adaptor::presenter::client::RefreshWorkspacesRequest;
     pub use crate::adaptor::presenter::client::RenameWorkspaceSessionNodeRequest;
@@ -1291,7 +1259,6 @@ pub mod wire {
     pub use crate::adaptor::presenter::client::WritePathsToTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::WriteTerminalSurfaceRequest;
     pub use crate::adaptor::presenter::client::COMMAND_NAMES;
-    pub use crate::adaptor::presenter::client::{CreateWorktreeRequest, CreateWorktreesRequest};
 }
 
 pub mod fixtures {
@@ -1325,7 +1292,6 @@ pub mod fixtures {
 
     pub use crate::adaptor::gateway::local_event_store::test_helpers::scope as fixtures_adaptor_gateway_local_event_store_provider_lifecycle_codec_scope;
     pub use crate::domain::comment::test_helpers::agent as fixtures_domain_comment_mod_agent;
-    pub use crate::infrastructure::local_api::test_helpers::discovery as fixtures_infrastructure_local_api_client_discovery;
     pub use crate::usecase::terminal_surface::test_helpers::workspace_owner as fixtures_usecase_terminal_surface_spawn_usecase_workspace_owner;
     pub use crate::usecase::test_helpers::start_read as fixtures_infrastructure_state_subscription_start_read;
     pub use crate::usecase::test_helpers::stop_read as fixtures_infrastructure_state_subscription_stop_read;

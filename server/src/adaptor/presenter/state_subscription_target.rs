@@ -1,4 +1,5 @@
-use crate::domain::code::{ReviewBase, ReviewSection};
+use crate::domain::code::ReviewBase;
+
 use crate::domain::workflow::FacetKind;
 use crate::usecase::notion::usecase::NotionTaskListRequest;
 use crate::usecase::state_subscription::{SubscriptionError, SubscriptionTarget};
@@ -64,12 +65,9 @@ impl SubscriptionTarget {
                 .map_err(|_| SubscriptionError::InvalidId)
             }
             ("repository-group-state", [path]) => Ok(Self::RepositoryGroupState((*path).into())),
-            ("repository-paths", []) => Ok(Self::RepositoryPaths),
             ("workspaces", []) => Ok(Self::Workspaces),
-            ("selection", [path, id]) => Ok(Self::Selection((*path).into(), (*id).into())),
             ("node-detail", [path, id]) => Ok(Self::NodeDetail((*path).into(), (*id).into())),
             ("session-tab", [id]) => Ok(Self::SessionTab((*id).into())),
-            ("agent-session", [id]) => Ok(Self::AgentSession((*id).into())),
             ("session-history", [path, count]) => {
                 let parsed: usize = count.parse().map_err(|_| SubscriptionError::InvalidId)?;
                 if parsed == 0 || parsed.to_string() != *count {
@@ -82,10 +80,7 @@ impl SubscriptionTarget {
             ("branches", [path, excluded]) => {
                 Ok(Self::Branches((*path).into(), Some((*excluded).into())))
             }
-            ("branch-base", [path, name]) => Ok(Self::BranchBase((*path).into(), (*name).into())),
             ("available-branches", [path]) => Ok(Self::AvailableBranches((*path).into())),
-            ("branch-status", [path]) => Ok(Self::BranchStatus((*path).into())),
-            ("current-branch", [path]) => Ok(Self::CurrentBranch((*path).into())),
             ("issues", [path]) => Ok(Self::Issues((*path).into())),
             ("issues", [path, filters @ ..]) => {
                 let mut filter = crate::domain::git_host::IssueFilter::default();
@@ -106,12 +101,9 @@ impl SubscriptionTarget {
                 filter.labels.dedup();
                 Ok(Self::FilteredIssues((*path).into(), filter))
             }
-            ("notion-label-options", [path]) => Ok(Self::NotionLabelOptions((*path).into())),
             ("notion-tasks", [path, count, filters @ ..]) => {
                 parse_notion_tasks(path, count, filters)
             }
-            ("worktrees", [path]) => Ok(Self::Worktrees((*path).into())),
-            ("startup-repository", []) => Ok(Self::StartupRepository),
             ("workspace-state", [name, path]) => {
                 Ok(Self::WorkspaceState((*name).into(), (*path).into()))
             }
@@ -121,16 +113,6 @@ impl SubscriptionTarget {
             ("file-tab", [path, file, base]) => Ok(Self::FileTab(
                 (*path).into(),
                 (*file).into(),
-                ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
-            )),
-            ("review-snapshot", [path, base]) => Ok(Self::ReviewSnapshot(
-                (*path).into(),
-                ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
-            )),
-            ("review-file-view", [path, file, section, base]) => Ok(Self::ReviewFileView(
-                (*path).into(),
-                (*file).into(),
-                ReviewSection::parse(section).map_err(|_| SubscriptionError::InvalidId)?,
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
             )),
             ("file-threads", [path, file]) => Ok(Self::FileThreads((*path).into(), (*file).into())),
@@ -156,9 +138,7 @@ impl SubscriptionTarget {
             ),
             ("workflows", []) => Ok(Self::Workflows),
             ("workflow", [name]) => Ok(Self::Workflow((*name).into())),
-            ("workflow-source", [name]) => Ok(Self::WorkflowSource((*name).into())),
             ("facets", [kind]) => Ok(Self::Facets(facet_kind(kind)?)),
-            ("facet", [kind, key]) => Ok(Self::Facet(facet_kind(kind)?, (*key).into())),
             ("diagnostics", []) => Ok(Self::Diagnostics),
             ("desktop-settings", []) => Ok(Self::DesktopSettings),
             ("notion-config", [path]) => Ok(Self::NotionConfig((*path).into())),
@@ -200,12 +180,9 @@ impl SubscriptionTarget {
                 ),
             },
             Self::RepositoryGroupState(path) => ("repository-group-state", vec![path.clone()]),
-            Self::RepositoryPaths => ("repository-paths", vec![]),
             Self::Workspaces => ("workspaces", vec![]),
-            Self::Selection(p, id) => ("selection", vec![p.clone(), id.clone()]),
             Self::NodeDetail(p, id) => ("node-detail", vec![p.clone(), id.clone()]),
             Self::SessionTab(id) => ("session-tab", vec![id.clone()]),
-            Self::AgentSession(id) => ("agent-session", vec![id.clone()]),
             Self::SessionHistory(p, count) => {
                 ("session-history", vec![p.clone(), count.to_string()])
             }
@@ -216,10 +193,7 @@ impl SubscriptionTarget {
                     .chain(excluded.iter().cloned())
                     .collect(),
             ),
-            Self::BranchBase(p, n) => ("branch-base", vec![p.clone(), n.clone()]),
             Self::AvailableBranches(p) => ("available-branches", vec![p.clone()]),
-            Self::BranchStatus(p) => ("branch-status", vec![p.clone()]),
-            Self::CurrentBranch(p) => ("current-branch", vec![p.clone()]),
             Self::Issues(p) => ("issues", vec![p.clone()]),
             Self::FilteredIssues(p, filter) => {
                 let mut args = vec![p.clone()];
@@ -232,27 +206,12 @@ impl SubscriptionTarget {
                 );
                 ("issues", args)
             }
-            Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
             Self::NotionTasks(request) => format_notion_tasks(request),
-            Self::Worktrees(p) => ("worktrees", vec![p.clone()]),
-            Self::StartupRepository => ("startup-repository", vec![]),
             Self::WorkspaceState(n, p) => ("workspace-state", vec![n.clone(), p.clone()]),
             Self::Directory(p, directory) => ("directory", vec![p.clone(), directory.clone()]),
             Self::FileTab(p, file, base) => (
                 "file-tab",
                 vec![p.clone(), file.clone(), base.as_str().into()],
-            ),
-            Self::ReviewSnapshot(p, base) => {
-                ("review-snapshot", vec![p.clone(), base.as_str().into()])
-            }
-            Self::ReviewFileView(p, file, section, base) => (
-                "review-file-view",
-                vec![
-                    p.clone(),
-                    file.clone(),
-                    section.as_str().into(),
-                    base.as_str().into(),
-                ],
             ),
             Self::FileThreads(p, file) => ("file-threads", vec![p.clone(), file.clone()]),
             Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
@@ -275,9 +234,7 @@ impl SubscriptionTarget {
             ),
             Self::Workflows => ("workflows", vec![]),
             Self::Workflow(name) => ("workflow", vec![name.clone()]),
-            Self::WorkflowSource(name) => ("workflow-source", vec![name.clone()]),
             Self::Facets(kind) => ("facets", vec![facet_kind_name(*kind).into()]),
-            Self::Facet(kind, key) => ("facet", vec![facet_kind_name(*kind).into(), key.clone()]),
             Self::Diagnostics => ("diagnostics", vec![]),
             Self::DesktopSettings => ("desktop-settings", vec![]),
             Self::NotionConfig(p) => ("notion-config", vec![p.clone()]),

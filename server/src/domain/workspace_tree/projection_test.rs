@@ -167,8 +167,8 @@ pub(crate) mod tests {
         RuntimeNodeExecution, RuntimeNodeExecutionStatus,
     };
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, NodeCompletionSignalState, NodeDefinition, NodeKindName,
-        TokenUsage, WorkflowDefinitionContent,
+        ExecutionStatus, NodeCompletionSignalState, NodeDefinition, NodeKindName, TokenUsage,
+        WorkflowDefinitionContent,
     };
     use crate::domain::workspace_tree::{
         WorkspaceCommandResult, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
@@ -213,7 +213,6 @@ pub(crate) mod tests {
             status: ExecutionStatus::Running,
             worktree_path: "/repo".to_string(),
             current_node: Some("test".to_string()),
-            created_from: ExecutionOrigin::DesktopUi,
             started_at_bits: 1.0f64.to_bits(),
             updated_at_bits: 10.0f64.to_bits(),
             completed_at_bits: None,

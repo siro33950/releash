@@ -35,26 +35,6 @@ impl Store {
 }
 #[async_trait::async_trait]
 impl WorkspaceStateRepository for Store {
-    async fn migrate_legacy(
-        &self,
-        repositories: &[String],
-        worktrees: &[String],
-    ) -> Result<(), WorkspaceStateError> {
-        self.calls
-            .lock()
-            .push(format!("migration:{repositories:?}:{worktrees:?}"));
-        if self.fail {
-            Err(WorkspaceStateError::Technical(
-                crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: "failed".into(),
-                },
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     async fn load_repository_group(&self, _: &str) -> Result<bool, WorkspaceStateError> {
         Ok(false)
     }
@@ -212,18 +192,13 @@ async fn test_表示状態保存_保存成功後だけ対象名を通知する()
         let state = WorkspaceState {
             panes: None,
             version: 1,
-            tabs: Some(WorkspaceTabsState {
-                editors: vec![],
-                active_editor_path: None,
-            }),
+            tabs: Some(WorkspaceTabsState { editors: vec![] }),
             layout: Some(WorkspaceLayoutState {
                 center_tab: "editor".into(),
                 active_view: "git".into(),
                 left_nav_collapsed: false,
                 right_collapsed: false,
                 right_bottom_collapsed: false,
-                right_bottom_active_tab: None,
-                selected_diff_file: None,
             }),
         };
         // When
@@ -274,18 +249,13 @@ async fn test_表示状態保存_読取失敗ならsetとsaveを呼ばない() {
     let state = WorkspaceState {
         panes: None,
         version: 1,
-        tabs: Some(WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        }),
+        tabs: Some(WorkspaceTabsState { editors: vec![] }),
         layout: Some(WorkspaceLayoutState {
             center_tab: "editor".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
             right_collapsed: false,
             right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
         }),
     };
     // When
@@ -371,18 +341,13 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
             WorkspaceState {
                 panes: Some(panes),
                 version: 1,
-                tabs: Some(WorkspaceTabsState {
-                    editors: vec![],
-                    active_editor_path: None,
-                }),
+                tabs: Some(WorkspaceTabsState { editors: vec![] }),
                 layout: Some(WorkspaceLayoutState {
                     center_tab: "editor".into(),
                     active_view: "git".into(),
                     left_nav_collapsed: false,
                     right_collapsed: false,
                     right_bottom_collapsed: false,
-                    right_bottom_active_tab: None,
-                    selected_diff_file: None,
                 }),
             },
             crate::domain::local_event::StreamVersion::zero(),
@@ -391,66 +356,6 @@ async fn test_表示状態保存_不正なpane配置は保存前に拒否する(
     // Then
     assert!(result.is_err());
     assert!(store.calls.lock().is_empty());
-}
-
-#[tokio::test]
-async fn test_旧表示状態の移行_登録repositoryを列挙し未解決なら名前の解決を見送る() {
-    for fail in [false, true] {
-        for unresolved in [false, true] {
-            // Given
-            let store = Store {
-                fail,
-                readable: true,
-                missing_files: Vec::new(),
-                conflict: false,
-                conflicts_remaining: Default::default(),
-                reads: Default::default(),
-                conflict_returned: Default::default(),
-                save_failure: None,
-                retry_previous: None,
-                previous: None,
-                saved: Default::default(),
-                calls: Default::default(),
-            };
-            let fake = std::sync::Arc::new(crate::usecase::test_helpers::FakeRepo {
-                fail_list_worktrees: unresolved,
-                worktrees: vec![crate::domain::git::Worktree {
-                    name: "a".into(),
-                    path: "/repo/a".into(),
-                    branch: "a".into(),
-                    is_main: false,
-                    is_locked: false,
-                    is_merged: false,
-                }],
-                ..Default::default()
-            });
-            let repository = crate::usecase::test_helpers::usecase(fake.clone());
-            // When
-            let result = migrate_workspace_states(&store, &["/repo".into()], &repository).await;
-            // Then
-            assert_eq!(result.migration.is_err(), fail);
-            assert_eq!(
-                result.unresolved_repositories.len(),
-                usize::from(unresolved)
-            );
-            if unresolved {
-                assert_eq!(result.unresolved_repositories[0].0, "/repo");
-                assert_eq!(
-                    result.unresolved_repositories[0].1.to_string(),
-                    "worktrees unavailable"
-                );
-            }
-            assert_eq!(*fake.listed_worktree_paths.lock(), ["/repo"]);
-            assert_eq!(
-                *store.calls.lock(),
-                [if unresolved {
-                    "migration:[\"/repo\"]:[]"
-                } else {
-                    "migration:[\"/repo\"]:[\"/repo/a\"]"
-                }]
-            );
-        }
-    }
 }
 
 fn state_with_panes() -> WorkspaceState {
@@ -464,18 +369,13 @@ fn state_with_panes() -> WorkspaceState {
             .unwrap(),
         ),
         version: 1,
-        tabs: Some(WorkspaceTabsState {
-            editors: vec![],
-            active_editor_path: None,
-        }),
+        tabs: Some(WorkspaceTabsState { editors: vec![] }),
         layout: Some(WorkspaceLayoutState {
             center_tab: "editor".into(),
             active_view: "git".into(),
             left_nav_collapsed: false,
             right_collapsed: false,
             right_bottom_collapsed: false,
-            right_bottom_active_tab: None,
-            selected_diff_file: None,
         }),
     }
 }
@@ -870,7 +770,12 @@ async fn test_配置復元_参照置換を保存してから返却値だけの�
         .sessions
         .insert("resolved".into(), "agent".into());
     let mut original = legacy_state();
-    original.layout.as_mut().unwrap().selected_diff_file = Some("missing".into());
+    original.tabs = Some(crate::domain::workspace_state::value_objects::WorkspaceTabsState {
+        editors: vec![crate::domain::workspace_state::value_objects::workspace_tabs_state::WorkspaceTabEntry {
+            path: "missing".into(),
+            name: "missing".into(),
+        }],
+    });
     let store = Store {
         readable: true,
         previous: Some(original),
@@ -885,17 +790,9 @@ async fn test_配置復元_参照置換を保存してから返却値だけの�
     assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     let saved = store.saved.lock();
     assert_eq!(saved.len(), 1);
-    assert_eq!(
-        saved[0]
-            .layout
-            .as_ref()
-            .unwrap()
-            .selected_diff_file
-            .as_deref(),
-        Some("missing")
-    );
+    assert_eq!(saved[0].tabs.as_ref().unwrap().editors[0].path, "missing");
     let actual = actual.unwrap();
-    assert!(actual.layout.as_ref().unwrap().selected_diff_file.is_none());
+    assert!(actual.tabs.as_ref().unwrap().editors.is_empty());
     assert_eq!(actual.panes, saved[0].panes);
 }
 

@@ -12,7 +12,7 @@ mod vocabulary_tests {
     use super::*;
 
     #[test]
-    fn test_事実語彙_event_typeが19種の固定文字列である() {
+    fn test_事実語彙_event_typeが固定文字列である() {
         // Given: 全21 variant
         let facts: Vec<NodeFact> = vec![
             NodeFact::Started(StartedFact {
@@ -52,11 +52,6 @@ mod vocabulary_tests {
                 title: "Fix the flaky test".to_string(),
             }),
             NodeFact::SubmitReceived(SubmitReceivedFact { request_id: None }),
-            NodeFact::SubmitRejected(SubmitRejectedFact {
-                violations: vec![],
-                repair_attempt: 1,
-                request_id: None,
-            }),
             NodeFact::StopReceived(StopReceivedFact {
                 result_summary: None,
                 token_usage: None,
@@ -78,7 +73,6 @@ mod vocabulary_tests {
             NodeFact::ExecutionCompleted,
             NodeFact::AbortRequested(Default::default()),
             NodeFact::ArchiveRequested(ArchiveRequestedFact {
-                reason: "manual".into(),
                 archived_at: 12.345678,
             }),
             NodeFact::RestoreRequested,
@@ -98,7 +92,6 @@ mod vocabulary_tests {
                 "session_node_renamed",
                 "provider_session_title_observed",
                 "submit_received",
-                "submit_rejected",
                 "stop_received",
                 "artifact_produced",
                 "approval_granted",
@@ -241,7 +234,6 @@ mod detail_round_trip_tests {
                 repository_root: None,
                 workspace_identity: "/repo".to_string(),
                 worktree_path: "/repo".to_string(),
-                created_from: ExecutionOrigin::Cli,
                 request: "please review".to_string(),
                 workflow_name: "review".to_string(),
                 definition: Some(WorkflowDefinitionContent {
@@ -383,19 +375,6 @@ mod detail_round_trip_tests {
         });
         assert_eq!(round_trip(fact.clone()), fact);
     }
-
-    #[test]
-    fn test_submit_rejected_違反内容が往復する() {
-        let fact = NodeFact::SubmitRejected(SubmitRejectedFact {
-            violations: vec![ContractViolationRecord {
-                path: "$.result".to_string(),
-                reason: "missing".to_string(),
-            }],
-            repair_attempt: 2,
-            request_id: Some("req-1".to_string()),
-        });
-        assert_eq!(round_trip(fact.clone()), fact);
-    }
 }
 
 #[test]
@@ -455,45 +434,20 @@ fn test_終端事実_abort理由と旧形式の空detailを往復する() {
 }
 
 #[test]
-fn test_archive事実codec_旧形式を境界で補い理由と精密な時刻を往復する() {
-    // Given / When
-    let legacy = crate::adaptor::gateway::workflow::fact_log::decode_stored_fact(
-        "archive_requested",
-        "{}",
-        42125,
-    )
-    .unwrap()
-    .unwrap();
-    // Then
+fn test_archive事実codec_精密な時刻を往復する() {
+    let fact = NodeFact::ArchiveRequested(ArchiveRequestedFact {
+        archived_at: 12.345678,
+    });
+    let detail = fact_codec::encode_detail(&fact).unwrap();
     assert_eq!(
-        legacy,
-        NodeFact::ArchiveRequested(ArchiveRequestedFact {
-            reason: "manual".into(),
-            archived_at: 42.125
-        })
+        serde_json::from_str::<serde_json::Value>(&detail).unwrap(),
+        serde_json::json!({ "archivedAt": 12.345678 })
     );
-    for reason in ["manual", "worktree_removed"] {
-        let fact = NodeFact::ArchiveRequested(ArchiveRequestedFact {
-            reason: reason.into(),
-            archived_at: 12.345678,
-        });
-        let detail = fact_codec::encode_detail(&fact).unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&detail).unwrap(),
-            serde_json::json!({ "reason": reason, "archivedAt": 12.345678 })
-        );
-        assert_eq!(
-            fact_codec::decode("archive_requested", &detail).unwrap(),
-            fact
-        );
-    }
-    for invalid in [
-        "null",
-        "[]",
-        "invalid",
-        "{\"reason\":false}",
-        "{\"archivedAt\":\"bad\"}",
-    ] {
+    assert_eq!(
+        fact_codec::decode("archive_requested", &detail).unwrap(),
+        fact
+    );
+    for invalid in ["null", "[]", "invalid", "{}", "{\"archivedAt\":\"bad\"}"] {
         assert!(fact_codec::decode("archive_requested", invalid).is_err());
     }
 }

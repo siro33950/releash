@@ -3,7 +3,6 @@ pub(crate) mod runtime;
 pub(crate) mod scanner;
 pub(crate) mod service;
 pub(crate) mod snapshot;
-pub(crate) mod status_membership;
 pub(crate) mod worker;
 pub(crate) mod worktree;
 

@@ -14,14 +14,3 @@ pub(crate) async fn set_releash_base_shared(
 // ClientService の呼び出し名は外部契約のため `set_branch_base` のまま据え置く。
 // 内部の usecase / domain trait は per-branch override を書く責務を明示する
 // `set_branch_base_override` へリネーム済み。
-
-pub(crate) async fn set_branch_base_shared(
-    state: &AppState,
-    repo_path: String,
-    branch_name: String,
-    base: Option<String>,
-) -> Result<(), AppError> {
-    let uc = state.repository_config_usecase.clone();
-    run_blocking(move || uc.set_branch_base_override(&repo_path, &branch_name, base.as_deref()))
-        .await
-}

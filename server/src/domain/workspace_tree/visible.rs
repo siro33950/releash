@@ -134,36 +134,6 @@ impl<'a> WorkspaceVisibleTree<'a> {
             })
             .collect()
     }
-
-    /// 選択先にできる節が、画面に出す木にあるか。
-    pub(crate) fn contains(&'a self, node_id: &str) -> bool {
-        contains(&self.roots(), node_id)
-    }
-
-    /// 既定の選択先。実行中か待ちの葉を優先する。
-    pub(crate) fn preferred_node_id(&self) -> Option<String> {
-        self.tree.preferred_node_id(&self.hidden).map(|node_id| {
-            self.roots
-                .get(node_id.as_str())
-                .map_or(node_id.clone(), |root| root.public_id().to_string())
-        })
-    }
-}
-
-fn contains(items: &[WorkspaceVisibleNode<'_>], node_id: &str) -> bool {
-    items.iter().any(|item| match item.node.kind {
-        WorkspaceNodeKind::Sequence | WorkspaceNodeKind::Fanout => {
-            contains(&item.children(), node_id)
-        }
-        _ => {
-            item.id() == node_id
-                || contains(&item.children(), node_id)
-                || item
-                    .past_attempts()
-                    .iter()
-                    .any(|past| past.id() == node_id || contains(&past.children(), node_id))
-        }
-    })
 }
 
 impl<'a> WorkspaceVisibleNode<'a> {

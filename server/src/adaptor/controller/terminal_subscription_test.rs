@@ -91,7 +91,7 @@ async fn assert_stopped(close: bool) {
         )
         .unwrap();
     let delivery = presenter
-        .reserve_delivery("client", "input", &target.to_string(), None)
+        .reserve_delivery("client", "input", &target.to_string())
         .unwrap();
     usecase
         .start_subscription("client", &target, "input", &delivery)

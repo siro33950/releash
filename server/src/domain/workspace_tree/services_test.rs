@@ -31,7 +31,6 @@ pub(crate) mod tests {
             node_execution_id: None,
             node_name: None,
             attempt: None,
-            execution_parent: None,
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,

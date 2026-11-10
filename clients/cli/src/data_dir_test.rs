@@ -18,7 +18,7 @@ fn test_data_dir解決_明示指定と環境変数と既定の優先順() {
     let default = default_data_dir_for_profile(BuildProfile::current())
         .map(|path| DataDir {
             path,
-            legacy: legacy_data_dir_for_profile(BuildProfile::current()),
+            default: true,
         })
         .ok_or_else(|| "OS data directory is unavailable".to_string());
 
@@ -28,14 +28,14 @@ fn test_data_dir解決_明示指定と環境変数と既定の優先順() {
         resolve_data_dir(Some(explicit.clone())),
         Ok(DataDir {
             path: explicit,
-            legacy: None
+            default: false
         })
     );
     assert_eq!(
         resolve_data_dir(None),
         Ok(DataDir {
             path: environment,
-            legacy: None
+            default: false
         })
     );
     std::env::set_var("RELEASH_DATA_DIR", "");
@@ -45,21 +45,7 @@ fn test_data_dir解決_明示指定と環境変数と既定の優先順() {
 }
 
 #[test]
-fn test_旧保存先_ビルド種別ごとのos保存先を返す() {
-    // Given / When / Then
-    for (profile, name) in [
-        (BuildProfile::Production, "com.releash.app"),
-        (BuildProfile::Development, "com.releash.app.dev"),
-    ] {
-        assert_eq!(
-            legacy_data_dir_for_profile(profile),
-            dirs::data_dir().map(|base| base.join(name))
-        );
-    }
-}
-
-#[test]
-fn test_明示保存先_既定と同じパスでも旧保存先を持たない() {
+fn test_明示保存先_既定と同じパスでも既定扱いにしない() {
     // Given
     let paths = [
         PathBuf::from("custom"),
@@ -70,6 +56,6 @@ fn test_明示保存先_既定と同じパスでも旧保存先を持たない()
         let actual = DataDir::explicit(path.clone());
         // Then
         assert_eq!(actual.path, path);
-        assert_eq!(actual.legacy, None);
+        assert!(!actual.default);
     }
 }

@@ -48,16 +48,6 @@ impl RepositoryConfigUsecase {
         Ok(config.base_branch().map(str::to_owned))
     }
 
-    /// 保存された設定から、指定したブランチのベースを返す。
-    pub fn get_branch_base(
-        &self,
-        repo_path: &str,
-        branch_name: &str,
-    ) -> Result<Option<String>, UsecaseError> {
-        let config = self.repository_config.load(repo_path)?;
-        Ok(config.resolve_base_branch(branch_name).map(str::to_owned))
-    }
-
     /// repository の base branch の変更を保存する。
     pub fn set_releash_base(
         &self,
@@ -69,19 +59,6 @@ impl RepositoryConfigUsecase {
         config.set_base_branch(base);
         self.repository_config.save(config)?;
         drop(guard);
-        self.notify_repository_changed(repo_path);
-        Ok(())
-    }
-
-    /// ブランチ個別のベース指定を保存する。None は指定を削除する。
-    pub fn set_branch_base_override(
-        &self,
-        repo_path: &str,
-        branch_name: &str,
-        base: Option<&str>,
-    ) -> Result<(), UsecaseError> {
-        self.git
-            .set_branch_base_override(repo_path, branch_name, base)?;
         self.notify_repository_changed(repo_path);
         Ok(())
     }

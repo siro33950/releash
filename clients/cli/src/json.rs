@@ -41,12 +41,7 @@ fn from_dynamic(value: &DynamicMessage) -> Result<Json, String> {
             return Ok(item);
         }
         let tag = label(descriptor.options(), "json_tag");
-        let content = label(descriptor.options(), "json_content");
-        let mut fields = if content.is_empty() {
-            item.as_object().cloned().unwrap_or_default()
-        } else {
-            Map::from_iter([(content, item)])
-        };
+        let mut fields = item.as_object().cloned().unwrap_or_default();
         fields.insert(tag, Json::String(field.json_name().into()));
         return Ok(Json::Object(fields));
     }
@@ -82,11 +77,7 @@ fn from_dynamic(value: &DynamicMessage) -> Result<Json, String> {
         {
             continue;
         }
-        if flag(field.options(), "json_flatten") {
-            fields.extend(item.as_object().ok_or("Expected flattened object")?.clone());
-        } else {
-            fields.insert(field.json_name().into(), item);
-        }
+        fields.insert(field.json_name().into(), item);
     }
     if !wrapper.is_empty() {
         return fields

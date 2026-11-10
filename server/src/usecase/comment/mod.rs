@@ -6,11 +6,10 @@ pub use session::SessionReviewUsecase;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::domain::agent_session::services::AgentSessionService;
 use crate::domain::comment::{
-    apply_filter, ensure_can_delete, ensure_thread_open, project_thread, project_threads,
-    validate_content, validate_filter, Author, Error, ReviewEvent, ReviewHistoryEntry,
-    ReviewThreadFilter, Target, Thread,
+    apply_filter, ensure_thread_open, project_thread, project_threads, validate_content,
+    validate_filter, Author, Error, ReviewEvent, ReviewHistoryEntry, ReviewThreadFilter, Target,
+    Thread,
 };
 
 pub type ReviewEventMutation<'a> =
@@ -214,49 +213,6 @@ impl ReviewCommentUsecase {
         let thread = find_thread(worktree_name, thread_id, &events)?;
         self.notify_changed(worktree_name);
         Ok(thread)
-    }
-
-    pub fn delete_thread(
-        &self,
-        app_data_dir: &Path,
-        worktree_name: &str,
-        actor: Author,
-        thread_id: &str,
-    ) -> Result<(), Error> {
-        ensure_can_delete(&actor)?;
-        let clock = Arc::clone(&self.clock);
-        let id_generator = Arc::clone(&self.id_generator);
-        let thread_id_for_event = thread_id.to_string();
-        self.store.mutate(
-            app_data_dir,
-            worktree_name,
-            Box::new(move |events| {
-                find_thread(worktree_name, &thread_id_for_event, events)?;
-                Ok(vec![ReviewEvent::ThreadDeleted {
-                    event_id: id_generator.event_id(),
-                    thread_id: thread_id_for_event,
-                    actor,
-                    at: clock.now(),
-                }])
-            }),
-        )?;
-        self.notify_changed(worktree_name);
-        Ok(())
-    }
-
-    /// 指定した Thread を引き渡す文面を、Session へ送る指示と同じ形式で返す。
-    pub fn build_handoff(
-        &self,
-        app_data_dir: &Path,
-        worktree_name: &str,
-        thread_id: &str,
-        releash_alias: &str,
-    ) -> Result<String, Error> {
-        let thread = self.get_thread(app_data_dir, worktree_name, thread_id)?;
-        Ok(AgentSessionService::handoff_prompt(
-            vec![thread],
-            releash_alias,
-        ))
     }
 
     fn history_events(

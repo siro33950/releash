@@ -73,49 +73,6 @@ impl WorkspaceTree {
         &self.nodes
     }
 
-    pub fn preferred_node_id(&self, hidden: &HashSet<String>) -> Option<String> {
-        let mut children = BTreeMap::<Option<&str>, Vec<&WorkspaceTreeNode>>::new();
-        for node in &self.nodes {
-            if !node.is_internal_rule_record() && !node.is_retry_history {
-                children
-                    .entry(node.parent_id.as_deref())
-                    .or_default()
-                    .push(node);
-            }
-        }
-        for siblings in children.values_mut() {
-            siblings.sort_by_key(|node| (node.sibling_order, node.id.as_str()));
-        }
-        fn collect<'a>(
-            parent: Option<&str>,
-            children: &BTreeMap<Option<&str>, Vec<&'a WorkspaceTreeNode>>,
-            hidden: &HashSet<String>,
-            leaves: &mut Vec<&'a WorkspaceTreeNode>,
-        ) {
-            for node in children.get(&parent).into_iter().flatten() {
-                if hidden.contains(&node.id) {
-                    continue;
-                }
-                collect(Some(&node.id), children, hidden, leaves);
-                if node.is_leaf() {
-                    leaves.push(node);
-                }
-            }
-        }
-        let mut leaves = Vec::new();
-        collect(None, &children, hidden, &mut leaves);
-        leaves
-            .iter()
-            .find(|node| {
-                matches!(
-                    node.status,
-                    WorkspaceNodeStatus::Running | WorkspaceNodeStatus::Waiting
-                )
-            })
-            .or_else(|| leaves.first())
-            .map(|node| node.id.clone())
-    }
-
     pub fn session_node(&self, session_id: &str) -> Option<&WorkspaceTreeNode> {
         self.nodes
             .iter()
@@ -294,7 +251,6 @@ impl WorkspaceTree {
             node_execution_id: None,
             node_name: None,
             attempt: None,
-            execution_parent: None,
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,
@@ -341,7 +297,6 @@ impl WorkspaceTree {
                 node_execution_id: None,
                 node_name: None,
                 attempt: None,
-                execution_parent: None,
                 retry_predecessor_id: None,
                 past_attempt_ids: Vec::new(),
                 is_retry_history: false,
@@ -461,7 +416,6 @@ impl WorkspaceTree {
             node_execution_id: Some(node_execution_id),
             node_name: Some(node_name),
             attempt: Some(attempt),
-            execution_parent: parent,
             retry_predecessor_id: None,
             past_attempt_ids: Vec::new(),
             is_retry_history: false,

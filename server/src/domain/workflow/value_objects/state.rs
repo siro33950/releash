@@ -4,7 +4,6 @@ use std::collections::HashMap;
 #[cfg(any(test, feature = "test-support"))]
 use super::definition::WorkflowDefinitionContent;
 #[cfg(any(test, feature = "test-support"))]
-use super::execution::ExecutionOrigin;
 #[cfg(any(test, feature = "test-support"))]
 use super::node_execution::NodeExecution;
 use super::runtime_projection::{NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_RUNNING};
@@ -44,7 +43,6 @@ pub struct WorkflowRuntimeSnapshot {
     pub execution_id: String,
     pub workflow_name: String,
     pub worktree_path: String,
-    pub created_from: ExecutionOrigin,
     pub request: String,
     pub error_reason: Option<String>,
     pub state: RuntimeExecutionState,

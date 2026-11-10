@@ -1,31 +1,6 @@
 #[cfg(test)]
 use crate::domain::workflow::WorkflowError;
 
-#[cfg(test)]
-use crate::domain::workflow::WorkflowDefinitionSourceService;
-
-#[cfg(test)]
-pub(crate) struct NoopDefinitionSourceGateway;
-
-#[cfg(test)]
-impl WorkflowDefinitionSourceService for NoopDefinitionSourceGateway {
-    fn get_source(&self, _file_stem: &str) -> Result<Option<String>, WorkflowError> {
-        Ok(None)
-    }
-
-    fn parse(
-        &self,
-        _source: &str,
-    ) -> Result<
-        crate::domain::workflow::WorkflowDefinition,
-        crate::domain::workflow::WorkflowSourceSaveError,
-    > {
-        Err(crate::domain::workflow::WorkflowSourceSaveError::Workflow(
-            WorkflowError::external("not used"),
-        ))
-    }
-}
-
 pub struct NoopEditorSettingsGateway;
 impl crate::domain::external_editor::EditorSettingsGateway for NoopEditorSettingsGateway {
     fn selected_editor(&self) -> Result<String, crate::domain::external_editor::EditorError> {

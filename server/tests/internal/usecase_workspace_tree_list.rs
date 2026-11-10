@@ -130,9 +130,8 @@ impl Fixture {
             Arc::new(
                 releashd::test_support::integration::repository::DefaultRepositoryScanner::new(
                     repository.clone(),
-                    Arc::new(releashd::test_support::integration::platform::build_code_usecase()),
-Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
-),
+                    Arc::new(releashd::test_support::integration::settings::repository_config_usecase()),
+                ),
             ),
             subscriptions.clone(),
             Arc::new(NoopRepositoryStateWatcher),
@@ -274,7 +273,7 @@ pub async fn test_一覧の読み取り_走査後にworktreeと変更の数と�
     assert_eq!(rows[1].dirty_count.value, Some(0));
     for row in rows {
         assert!(!row.deleting);
-        assert!(row.open_pull_request.is_none());
+        assert!(row.state_pull_request.is_none());
         assert!(row.tree.error.is_none());
         assert!(row.tree.value.as_ref().unwrap().nodes().is_empty());
     }
@@ -316,7 +315,7 @@ pub async fn test_手動更新_走査済みの値を保持しpr取得完了ま�
     // Then
     assert_eq!(rows(&scanned).len(), 2);
     assert_eq!(rows(&scanned)[1].worktree.branch, "feature");
-    assert!(rows(&scanned)[1].open_pull_request.is_none());
+    assert!(rows(&scanned)[1].state_pull_request.is_none());
 }
 
 #[tokio::test]
@@ -362,7 +361,7 @@ pub async fn test_手動更新_pr取得後に前の一覧へprを反映する() 
     let list = fixture.usecase.read().await.unwrap();
     // Then
     assert_eq!(
-        rows(&list)[1].open_pull_request,
+        rows(&list)[1].state_pull_request,
         Some(PrInfo {
             number: 42,
             url: "https://example.test/pull/42".into(),
@@ -456,11 +455,7 @@ pub async fn test_watch_paths_一覧とrootの読み取り失敗をrepositoryに
         fn scan(&self, _: &str) -> Result<RepositorySnapshotParts, RepositoryStateError> {
             Ok(RepositorySnapshotParts {
                 status: vec![],
-                diff_stats: vec![],
                 dirty_count: 0,
-                diff_file_tree: vec![],
-                staged_diff_file_tree: vec![],
-                changes_diff_file_tree: vec![],
             })
         }
         async fn scan_async(

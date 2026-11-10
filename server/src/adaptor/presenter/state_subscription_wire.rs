@@ -1,7 +1,7 @@
 use crate::adaptor::presenter::client as wire;
 use crate::adaptor::presenter::connect_wire::{rpc, to_rpc};
 use crate::adaptor::presenter::state_subscription::{PublishedState, StateSubscriptionEvent};
-use crate::infrastructure::state_subscription::{Delivery, Event};
+use crate::infrastructure::state_subscription::Event;
 use crate::usecase::state_subscription::StateValue;
 
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
@@ -24,25 +24,17 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value)
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::Selection(tree, selected) => wire::state_payload::Value::Selection(
-                crate::adaptor::presenter::client::selection(tree, *selected).map_err(|e| crate::adaptor::presenter::error::AppError::new(e).into())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
             StateValue::NodeDetail(value) => wire::state_payload::Value::NodeDetail(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::SessionTab { session, node } => {
-                let session: wire::NullableAgentSessionItemDto = crate::adaptor::presenter::client::value(session.clone())
+                let session: Option<wire::AgentSessionItemDto> = session.clone().map(crate::adaptor::presenter::client::value).transpose()
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
                 let node: Option<wire::WorkspaceNodeDetailDto> = node.as_deref().cloned().map(crate::adaptor::presenter::client::value).transpose()
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
-                wire::state_payload::Value::SessionTab(wire::SessionTabSnapshot { session: session.value, node: node.map(Box::new) })
+                wire::state_payload::Value::SessionTab(wire::SessionTabSnapshot { session, node: node.map(Box::new) })
             },
-            StateValue::AgentSession(value) => wire::state_payload::Value::AgentSession(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
             StateValue::SessionHistory(value) => wire::state_payload::Value::SessionHistory(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -55,16 +47,8 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::BranchBase(value) => wire::state_payload::Value::BranchBase(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
             StateValue::BranchStatus(value) => wire::state_payload::Value::BranchStatus(
                 Ok::<_, crate::adaptor::presenter::client::CommandFailure>(crate::adaptor::presenter::client::branch_status(value.as_slice()))
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
-            StateValue::CurrentBranch(value) => wire::state_payload::Value::CurrentBranch(
-                crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
             StateValue::Issues(value) => wire::state_payload::Value::Issues(wire::IssuesSnapshot {
@@ -78,17 +62,6 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::NotionTasks(value) => wire::state_payload::Value::NotionTasks(wire::NotionTasksSnapshot {
                 page: value.value.clone().map(crate::adaptor::presenter::notion::NotionTaskPageView::from).map(crate::adaptor::presenter::client::value).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
                 read_error: value.error.as_ref().map(notion_read_failure),
-            }),
-            StateValue::NotionLabelOptions(value) => wire::state_payload::Value::NotionLabelOptions(wire::NotionLabelOptionsSnapshot {
-                options: value.value.as_ref().map(|options| crate::adaptor::presenter::client::value(options.iter().cloned().map(crate::adaptor::presenter::notion::NotionLabelOptionView::from).collect::<Vec<_>>())).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
-                read_error: value.error.as_ref().map(notion_read_failure),
-            }),
-            StateValue::Worktrees(value) => wire::state_payload::Value::Worktrees(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
-            StateValue::StartupRepository(value) => wire::state_payload::Value::StartupRepository(wire::NullableStartupWorktree {
-                value: value.as_ref().map(|value| wire::StartupWorktree { path: Some(value.path.clone()), branch: Some(value.branch.clone()), repository_name: Some(value.repository_name.clone()) })
             }),
             StateValue::WorkspaceState(version, value, failures, _) => {
                 let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
@@ -117,16 +90,8 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 patch: value.patch.clone(),
                 initial_mode: value.initial_mode.as_str().into(),
             }),
-            StateValue::ReviewSnapshot(value) => wire::state_payload::Value::ReviewSnapshot(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
-            StateValue::ReviewFileView(value) => wire::state_payload::Value::ReviewFileView(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
-            StateValue::FileThreads(threads, count) => wire::state_payload::Value::FileThreads(wire::FileThreadsSnapshot {
-                threads: Some(crate::adaptor::presenter::client::value(threads.clone()).map_err(crate::adaptor::presenter::connect::command_error)?), unresolved_count: *count,
+            StateValue::FileThreads(threads) => wire::state_payload::Value::FileThreads(wire::FileThreadsSnapshot {
+                threads: Some(crate::adaptor::presenter::client::value(threads.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
             }),
             StateValue::ReviewThreads(value) => wire::state_payload::Value::ReviewThreads(
                 crate::adaptor::presenter::client::value(value.clone())
@@ -149,12 +114,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             }),
             StateValue::Workflows(value) => wire::state_payload::Value::Workflows(crate::adaptor::presenter::client::value(value.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
             StateValue::Workflow(value) => wire::state_payload::Value::Workflow(wire::NullableWorkflowDto { value: value.as_ref().filter(|definition| definition.content().is_ok()).map(|definition| crate::adaptor::presenter::client::value(definition.clone())).transpose().map_err(crate::adaptor::presenter::connect::command_error)? }),
-            StateValue::WorkflowSource(value) => wire::state_payload::Value::WorkflowSource(
-                crate::adaptor::presenter::client::value(value.clone())
-                    .map_err(crate::adaptor::presenter::connect::command_error)?,
-            ),
             StateValue::Facets(value) => wire::state_payload::Value::Facets(crate::adaptor::presenter::client::value(value.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
-            StateValue::Facet(value) => wire::state_payload::Value::Facet(crate::adaptor::presenter::client::value(value.content().to_string()).map_err(crate::adaptor::presenter::connect::command_error)?),
             StateValue::Diagnostics(value) => wire::state_payload::Value::Diagnostics(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -217,11 +177,6 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 })
             }
 
-            StateValue::RepositoryPaths(paths) => {
-                wire::state_payload::Value::RepositoryPaths(wire::Liststring {
-                    items: paths.clone(),
-                })
-            }
         }),
     })
 }
@@ -296,10 +251,6 @@ fn notion_read_failure(
     wire::NotionReadFailure {
         code: error.connect_code().grpc_code() as i32,
         message: error.to_string(),
-        config_missing: Some(matches!(
-            error,
-            crate::usecase::notion::error::NotionUsecaseError::ConfigNotFound
-        )),
     }
 }
 
@@ -308,37 +259,28 @@ pub(crate) fn event(
 ) -> Result<rpc::StateSubscriptionEvent, connectrpc::ConnectError> {
     let event = &event;
     use wire::state_subscription_event::Event as WireEvent;
-    let (subscription_id, version, event) = match event {
-        StateSubscriptionEvent::Ready => (String::new(), None, WireEvent::Ready(wire::Unit {})),
-        StateSubscriptionEvent::Bookmark => {
-            (String::new(), None, WireEvent::Bookmark(wire::Unit {}))
-        }
+    let (subscription_id, event) = match event {
+        StateSubscriptionEvent::Ready => (String::new(), WireEvent::Ready(wire::Unit {})),
+        StateSubscriptionEvent::Bookmark => (String::new(), WireEvent::Bookmark(wire::Unit {})),
         StateSubscriptionEvent::Item(target, event) => {
-            let version = event.version();
-            let version = Some(wire::StateVersion {
-                epoch: version.epoch.clone(),
-                sequence: version.sequence,
-            });
             let event = match event {
                 Event::Snapshot(_, value) => match value.as_ref() {
                     PublishedState::Failure(failure) => WireEvent::Failure(failure.clone()),
                     PublishedState::Value(value) => WireEvent::Snapshot(value.as_ref().clone()),
                 },
-                Event::Change(_, delivery, value) => match value.as_ref() {
+                Event::Change(_, _, value) => match value.as_ref() {
                     PublishedState::Failure(failure) => WireEvent::Failure(failure.clone()),
                     PublishedState::Value(value) => WireEvent::Change(wire::StateChange {
-                        delta: *delivery == Delivery::Delta,
                         payload: Some(value.as_ref().clone()),
                     }),
                 },
                 Event::Bookmark(_) => WireEvent::Bookmark(wire::Unit {}),
             };
-            (target.clone(), version, event)
+            (target.clone(), event)
         }
     };
     to_rpc(&wire::StateSubscriptionEvent {
         subscription_id,
-        version,
         event: Some(event),
     })
 }

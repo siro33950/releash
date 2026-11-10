@@ -1149,13 +1149,6 @@ mod delegate_diagnostics_tests {
             // Then
             assert!(diagnosis.has_errors(), "{value}");
             assert!(
-                crate::adaptor::gateway::workflow::storage::parse_workflow_source(
-                    &value.to_string(),
-                    std::path::Path::new(".")
-                )
-                .is_err()
-            );
-            assert!(
                 diagnosis
                     .diagnostics
                     .iter()
@@ -1183,13 +1176,6 @@ mod delegate_diagnostics_tests {
             let diagnosis = check(&value);
             // Then
             assert!(diagnosis.has_errors());
-            assert!(
-                crate::adaptor::gateway::workflow::storage::parse_workflow_source(
-                    &value.to_string(),
-                    std::path::Path::new(".")
-                )
-                .is_err()
-            );
             assert!(diagnosis
                 .diagnostics
                 .iter()
@@ -1297,13 +1283,6 @@ mod delegate_diagnostics_tests {
             ] {
                 value["nodes"]["main"]["completion"]["delegate"]["inputs"] = invalid;
                 assert!(check(&value).has_errors(), "{value}");
-                assert!(
-                    crate::adaptor::gateway::workflow::storage::parse_workflow_source(
-                        &value.to_string(),
-                        std::path::Path::new(".")
-                    )
-                    .is_err()
-                );
             }
         }
         let mut ambiguous = definition();

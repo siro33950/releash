@@ -430,17 +430,13 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         false
     }
 
-    pub fn activate(
-        &mut self,
-        id: &str,
-        version: Option<&Version>,
-    ) -> Result<(), SubscriptionError> {
+    pub fn activate(&mut self, id: &str) -> Result<(), SubscriptionError> {
         let (client, target) = self.lookup(id).ok_or(SubscriptionError::StreamEnded)?;
         let value = self
             .targets
             .get(&target)
             .ok_or(SubscriptionError::UnknownTarget)?;
-        let awaiting_snapshot = value.snapshot.is_none() && !value.resumable(version);
+        let awaiting_snapshot = value.snapshot.is_none();
         if awaiting_snapshot && value.delivery != Delivery::Delta {
             return Err(SubscriptionError::UnknownTarget);
         }
@@ -455,14 +451,14 @@ impl<T: Clone + PartialEq> Subscriptions<T> {
         subscription.pending = if awaiting_snapshot {
             VecDeque::new()
         } else {
-            value.resume(version)
+            value.resume(None)
         };
-        subscription.sent = version.filter(|v| v.epoch == value.version.epoch).cloned();
+        subscription.sent = None;
         subscription.overflowed = awaiting_snapshot;
         subscription.sizes = if awaiting_snapshot {
             VecDeque::new()
         } else {
-            value.pending_sizes(version)
+            value.pending_sizes(None)
         };
         subscription.pending_units = subscription.sizes.iter().sum();
         Ok(())

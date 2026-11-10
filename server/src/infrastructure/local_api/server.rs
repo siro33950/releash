@@ -60,7 +60,6 @@ impl LocalApiServerBinding {
                 daemon_id: daemon_id.clone(),
                 pid,
                 process_started_at,
-                ..Default::default()
             },
         );
 

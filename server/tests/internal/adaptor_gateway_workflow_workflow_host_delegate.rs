@@ -1,7 +1,6 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::*;
 use releashd::test_support::integration::workflow::current_timestamp;
 use releashd::test_support::integration::workflow::DelegateContinuationGateway;
-use releashd::test_support::integration::workflow::ExecutionOrigin;
 use releashd::test_support::integration::workflow::HostDelegateContinuation;
 use releashd::test_support::integration::workflow::NodeExecutionStatus;
 use releashd::test_support::integration::workflow::NodeStart;
@@ -1563,7 +1562,6 @@ schemas:
             definition,
             "/repo-worktrees/development".into(),
             Some("specification".into()),
-            ExecutionOrigin::Cli,
         )
         .await
         .unwrap();
@@ -2235,7 +2233,6 @@ pub async fn test_委任_保存の競合が続いてもabortを完了し注入�
             {
                 assert!(item.record.active);
                 assert!(!item.requires_attention);
-                assert!(item.record.last_observed_ms > item.record.first_observed_ms);
                 break;
             }
             tokio::task::yield_now().await;

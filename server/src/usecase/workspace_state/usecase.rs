@@ -126,35 +126,6 @@ pub async fn load_repository_group_state(
     repository.load_repository_group(path).await
 }
 
-pub struct WorkspaceStateMigrationResult {
-    pub unresolved_repositories: Vec<(String, crate::usecase::repository_error::UsecaseError)>,
-    pub migration: Result<(), WorkspaceStateError>,
-}
-
-pub async fn migrate_workspace_states(
-    repository: &dyn WorkspaceStateRepository,
-    repositories: &[String],
-    worktree_repository: &crate::usecase::git_usecase::GitUsecase,
-) -> WorkspaceStateMigrationResult {
-    let mut unresolved_repositories = Vec::new();
-    let inventories = repositories
-        .iter()
-        .map(|path| match worktree_repository.list_worktrees(path) {
-            Ok(items) => Some(items.into_iter().map(|worktree| worktree.path).collect()),
-            Err(error) => {
-                unresolved_repositories.push((path.clone(), error));
-                None
-            }
-        })
-        .collect();
-    let worktrees = crate::domain::workspace_state::services::migration_worktree_paths(inventories);
-    let migration = repository.migrate_legacy(repositories, &worktrees).await;
-    WorkspaceStateMigrationResult {
-        unresolved_repositories,
-        migration,
-    }
-}
-
 pub(super) fn conflict_progress(error: &WorkspaceStateError) -> Option<AttemptProgress> {
     match error {
         WorkspaceStateError::VersionConflict => Some(AttemptProgress::Reload),

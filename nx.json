@@ -49,7 +49,6 @@
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/Cargo.lock",
       "{workspaceRoot}/rust-toolchain.toml",
-      "{workspaceRoot}/.cargo/**/*",
       "{workspaceRoot}/proto/**/*",
       "{workspaceRoot}/workflows/**/*",
       {

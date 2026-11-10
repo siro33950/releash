@@ -8,7 +8,6 @@ fn execution() -> ExecutionTree {
             repository_root: None,
             workspace_identity: "/repo".into(),
             worktree_path: "/repo".into(),
-            created_from: ExecutionOrigin::Cli,
             request: String::new(),
             workflow_name: "old".into(),
             definition: None,

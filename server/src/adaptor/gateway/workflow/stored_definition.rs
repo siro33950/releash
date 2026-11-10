@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ExecutionOrigin, ExecutionParentRef, ExecutionTreeLaunch, NodeFact, StartedFact, TreeRootFact,
+    ExecutionParentRef, ExecutionTreeLaunch, NodeFact, StartedFact, TreeRootFact,
     WorkflowDefinitionContent,
 };
 
@@ -59,7 +59,6 @@ struct RootRecord {
     repository_root: Option<String>,
     workspace_identity: String,
     worktree_path: String,
-    created_from: String,
     request: String,
     #[serde(default)]
     workflow_name: String,
@@ -76,8 +75,6 @@ pub(crate) fn definition_error(detail: &str) -> Result<Option<String>, String> {
     record
         .root
         .map(|root| {
-            ExecutionOrigin::from_public_value(&root.created_from)
-                .map_err(|error| error.to_string())?;
             #[derive(Deserialize)]
             struct Snapshot {
                 #[serde(rename = "entry")]
@@ -102,8 +99,6 @@ pub(crate) fn decode_terminal_started(detail: &str) -> Result<NodeFact, String> 
                 repository_root: root.repository_root,
                 workspace_identity: root.workspace_identity,
                 worktree_path: root.worktree_path,
-                created_from: ExecutionOrigin::from_public_value(&root.created_from)
-                    .map_err(|error| error.to_string())?,
                 request: root.request,
                 workflow_name: root.workflow_name,
                 definition: None,

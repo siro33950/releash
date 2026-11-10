@@ -167,24 +167,3 @@ async fn validation_properties_data_sourceがない場合はdatabase_jsonから�
         }]
     );
 }
-
-#[tokio::test]
-async fn fetch_workspace_users_for_label_options_people取得失敗を伝播する() {
-    let result = fetch_workspace_users_for_label_options(true, || async {
-        Err(NotionError::ApiError("HTTP 500".to_string()))
-    })
-    .await;
-
-    assert_eq!(result.unwrap_err().to_string(), "API エラー: HTTP 500");
-}
-
-#[tokio::test]
-async fn fetch_workspace_users_for_label_options_people以外ではusersを取得しない() {
-    let result = fetch_workspace_users_for_label_options(false, || async {
-        panic!("workspace users fetch should not be called")
-    })
-    .await
-    .unwrap();
-
-    assert!(result.is_empty());
-}

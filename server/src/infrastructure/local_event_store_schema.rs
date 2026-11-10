@@ -13,28 +13,6 @@ pub(crate) fn create_store_metadata_v8(connection: &Connection) -> Result<(), ru
     )
 }
 
-pub(crate) fn evolve_v8(
-    connection: &Connection,
-    copy_metadata: impl FnOnce(&Connection) -> Result<(), rusqlite::Error>,
-) -> Result<(), rusqlite::Error> {
-    connection.execute_batch("ALTER TABLE store_metadata RENAME TO store_metadata_v7;")?;
-    create_store_metadata_v8(connection)?;
-    copy_metadata(connection)?;
-    connection.execute_batch(
-        "DROP TABLE store_metadata_v7;
-         DROP TABLE operation_bindings;
-         DROP TABLE caller_attempts;
-         DROP TABLE operation_records;
-         DROP TABLE pending_obligations;
-         DROP TABLE obligations;
-         DROP TABLE recovery_action_attempts;
-         DROP TABLE shutdown_targets;
-         DROP TABLE shutdown_recovery_snapshots;
-         DROP TABLE shutdown_plans;",
-    )?;
-    connection.pragma_update(None, "user_version", 8)
-}
-
 pub(crate) fn transaction(
     connection: &Connection,
     operation: impl FnOnce(&Connection) -> Result<(), rusqlite::Error>,
@@ -45,14 +23,4 @@ pub(crate) fn transaction(
         let _ = connection.execute_batch("ROLLBACK;");
     }
     result
-}
-
-pub(crate) fn migration(
-    connection: &Connection,
-    operation: impl FnOnce(&Connection) -> Result<(), rusqlite::Error>,
-) -> Result<(), rusqlite::Error> {
-    connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
-    let result = transaction(connection, operation);
-    let restore = connection.execute_batch("PRAGMA foreign_keys = ON;");
-    result.and(restore)
 }

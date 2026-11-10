@@ -59,7 +59,6 @@ impl From<&crate::adaptor::presenter::client::TerminalStatus> for TerminalShellS
 pub struct TerminalSurfaceV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_state: Option<TerminalShellStateV1>,
-    pub session_key: String,
     pub terminal_surface: TerminalSurfaceCheckpointV1,
     pub is_exited: bool,
     pub exit_code: Option<i32>,
@@ -71,7 +70,6 @@ impl From<TerminalSurfaceSnapshotDto> for TerminalSurfaceV1 {
     fn from(surface: TerminalSurfaceSnapshotDto) -> Self {
         Self {
             shell_state: surface.shell_state.map(Into::into),
-            session_key: surface.session_key,
             terminal_surface: TerminalSurfaceCheckpointV1 {
                 replay: surface.replay,
                 sequence: surface.sequence,
@@ -92,16 +90,11 @@ impl From<crate::domain::terminal_surface::entities::TerminalSurface> for Termin
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct GetOrSpawnTerminalV1 {
-    pub session_key: String,
-}
+pub struct GetOrSpawnTerminalV1 {}
 
 impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
-    fn from(outcome: GetOrSpawnTerminalOutcome) -> Self {
-        let surface = outcome.surface;
-        Self {
-            session_key: surface.session_key,
-        }
+    fn from(_: GetOrSpawnTerminalOutcome) -> Self {
+        Self {}
     }
 }
 
@@ -109,7 +102,6 @@ impl From<GetOrSpawnTerminalOutcome> for GetOrSpawnTerminalV1 {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TerminalSurfaceStreamItemV1 {
     Status {
-        session_key: String,
         state: TerminalShellStateV1,
         sequence: u64,
     },
@@ -117,19 +109,16 @@ pub enum TerminalSurfaceStreamItemV1 {
         surface: TerminalSurfaceV1,
     },
     Output {
-        session_key: String,
         data: Arc<str>,
         sequence: u64,
     },
     Resize {
-        session_key: String,
         cols: u16,
         rows: u16,
         sequence: u64,
     },
     Exit {
         state: Option<TerminalShellStateV1>,
-        session_key: String,
         exit_code: Option<i32>,
         sequence: u64,
     },
@@ -143,11 +132,10 @@ impl From<crate::usecase::terminal_surface::application::TerminalSurfaceStreamIt
     ) -> Self {
         match item {
             crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Status {
-                session_key,
+                session_key: _,
                 state,
                 sequence,
             } => Self::Status {
-                session_key,
                 state: state.into(),
                 sequence,
             },
@@ -157,33 +145,27 @@ impl From<crate::usecase::terminal_surface::application::TerminalSurfaceStreamIt
                 surface: surface.into(),
             },
             crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Output {
-                session_key,
+                session_key: _,
                 data,
                 sequence,
-            } => Self::Output {
-                session_key,
-                data,
-                sequence,
-            },
+            } => Self::Output { data, sequence },
             crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Resize {
-                session_key,
+                session_key: _,
                 cols,
                 rows,
                 sequence,
             } => Self::Resize {
-                session_key,
                 cols,
                 rows,
                 sequence,
             },
             crate::usecase::terminal_surface::application::TerminalSurfaceStreamItem::Exit {
                 state,
-                session_key,
+                session_key: _,
                 exit_code,
                 sequence,
             } => Self::Exit {
                 state: Some(state.into()),
-                session_key,
                 exit_code,
                 sequence,
             },
@@ -200,14 +182,12 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
         use crate::adaptor::presenter::client::terminal_event::Item;
         match value.item.as_ref().ok_or("Missing terminal event")? {
             Item::Status(status) => Ok(Self::Status {
-                session_key: status.session_key.clone(),
                 state: status.into(),
                 sequence: status.sequence,
             }),
             Item::Snapshot(snapshot) => Ok(Self::Snapshot {
                 surface: TerminalSurfaceV1 {
                     shell_state: snapshot.status.as_ref().map(Into::into),
-                    session_key: snapshot.session_key.clone(),
                     terminal_surface: TerminalSurfaceCheckpointV1 {
                         replay: snapshot.replay.clone(),
                         sequence: snapshot.sequence,
@@ -226,12 +206,10 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
                 },
             }),
             Item::Output(output) => Ok(Self::Output {
-                session_key: output.session_key.clone(),
                 data: Arc::from(output.data.as_str()),
                 sequence: output.sequence,
             }),
             Item::Resize(resize) => Ok(Self::Resize {
-                session_key: resize.session_key.clone(),
                 cols: resize
                     .cols
                     .try_into()
@@ -244,7 +222,6 @@ impl TryFrom<&crate::adaptor::presenter::client::TerminalEvent> for TerminalSurf
             }),
             Item::Exit(exit) => Ok(Self::Exit {
                 state: exit.status.as_ref().map(Into::into),
-                session_key: exit.session_key.clone(),
                 exit_code: exit.exit_code,
                 sequence: exit.sequence,
             }),

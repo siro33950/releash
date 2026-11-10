@@ -196,7 +196,6 @@ async fn test_複数作成_実launcherが新規と既存の起動引数を渡す
                         workflow_name: name.clone(),
                         worktree_path: path.clone(),
                         request: request.clone(),
-                        created_from: crate::domain::workflow::ExecutionOrigin::DesktopUi
                     }
                 ),
                 LaunchAfterCreation::None => unreachable!(),

@@ -39,7 +39,6 @@ pub struct AgentSessionItemDto {
     pub provider_session_id: Option<String>,
     pub transcript_ref: Option<String>,
     pub operations: AgentSessionOperationsDto,
-    pub last_exit_abnormal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_presence: Option<String>,
 }

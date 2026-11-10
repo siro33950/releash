@@ -189,7 +189,7 @@ fn test_ターミナル画面_取得または生成_既存画面の概要取得�
         .lock()
         .apply("runtime-only-output");
 
-    let outcome = crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
+    crate::usecase::terminal_surface::spawn_usecase::get_or_spawn(
         &crate::adaptor::gateway::telemetry::TelemetryGateway,
         &gateway,
         &crate::adaptor::presenter::terminal_event_hub::TerminalSurfaceEventHub::new(),
@@ -200,8 +200,6 @@ fn test_ターミナル画面_取得または生成_既存画面の概要取得�
         None,
     )
     .unwrap();
-
-    let _: TerminalSurfaceSummary = outcome.surface;
 }
 
 #[test]
@@ -892,7 +890,6 @@ async fn assert_terminal_recreation(drain_exit: bool) {
             "client",
             &crate::usecase::state_subscription::SubscriptionTarget::parse(&target).unwrap(),
             "input",
-            None,
         )
         .await
         .unwrap();
@@ -954,7 +951,7 @@ async fn assert_terminal_recreation(drain_exit: bool) {
         .await
         .unwrap();
     assert!(
-        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) if version.epoch.ends_with(":2") && matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(surface) if surface.session_key == key))
+        matches!(next, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(version, value))) if version.epoch.ends_with(":2") && matches!(crate::test_support::state_subscription::terminal_item(&value), crate::adaptor::presenter::client::terminal_event::Item::Snapshot(_)))
     );
     terminal.write_attached(&owner, "input", 1, "new").unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1167,7 +1164,7 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
     // When
     let start = subscriptions
         .deps()
-        .start_subscription("client", &target, "input", None)
+        .start_subscription("client", &target, "input")
         .await
         .unwrap_err();
     let snapshot = subscriptions
@@ -1192,7 +1189,7 @@ async fn test_terminal対象なし_購読開始とsnapshot読取と配信でnot_
         .usecase
         .test_presenter()
         .unwrap()
-        .reserve_delivery("client", "input", &target.to_string(), None)
+        .reserve_delivery("client", "input", &target.to_string())
         .unwrap();
     crate::usecase::state_subscription::StateSubscriptionDelivery::start(&delivery).unwrap();
     let event = stream.next().await.unwrap();

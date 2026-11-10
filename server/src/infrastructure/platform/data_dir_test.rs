@@ -30,20 +30,6 @@ fn test_data_dir解決_明示指定と環境変数と既定の優先順() {
 }
 
 #[test]
-fn test_旧保存先_ビルド種別ごとのos保存先を返す() {
-    // Given / When / Then
-    for (profile, name) in [
-        (BuildProfile::Production, "com.releash.app"),
-        (BuildProfile::Development, "com.releash.app.dev"),
-    ] {
-        assert_eq!(
-            legacy_data_dir_for_profile(profile),
-            dirs::data_dir().map(|base| base.join(name))
-        );
-    }
-}
-
-#[test]
 fn test_workflow保存先_指定されたディレクトリを使い空指定は既定へ戻る() {
     // Given
     let _lock = crate::test_support::TEST_ENV_LOCK.lock();

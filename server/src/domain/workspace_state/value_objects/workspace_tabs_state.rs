@@ -7,5 +7,4 @@ pub struct WorkspaceTabEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceTabsState {
     pub editors: Vec<WorkspaceTabEntry>,
-    pub active_editor_path: Option<String>,
 }

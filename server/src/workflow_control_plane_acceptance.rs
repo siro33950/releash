@@ -34,7 +34,7 @@ use crate::usecase::workflow::{
 };
 
 pub use crate::agent_session_tui_acceptance::{
-    AcceptanceAgentSessionLifecycle, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
+    AcceptanceAgentSessionAvailability, AcceptanceProvider, AgentSessionTuiAcceptanceConfig,
 };
 
 const AUTO_CLAUDE_WORKFLOW: &str = "acceptance-auto-claude";
@@ -363,9 +363,23 @@ impl WorkspaceNodeActionResolver for AcceptanceWorkspaceNodeActionResolver {
         _worktree_path: &str,
         node_id: &str,
     ) -> Result<WorkspaceNodeApprovalTarget, WorkflowError> {
+        use crate::adaptor::gateway::workflow::fact_log;
+        let backend = fact_log::FactLogReadBackend::Live(self.0.clone());
+        let execution_id = backend
+            .tree_id_for_node(node_id)
+            .await
+            .map_err(WorkflowError::from)?
+            .ok_or_else(|| WorkflowError::NotFound(node_id.to_string()))?;
+        let node_name = fact_log::read_tree_records_from(&backend, &execution_id)
+            .await
+            .map_err(WorkflowError::from)?
+            .into_iter()
+            .find(|record| record.meta.node_execution_id == node_id)
+            .map(|record| record.meta.node_name)
+            .ok_or_else(|| WorkflowError::NotFound(node_id.to_string()))?;
         Ok(WorkspaceNodeApprovalTarget {
-            execution_id: node_id.to_string(),
-            node_name: "session".to_string(),
+            execution_id,
+            node_name,
             node_execution_id: node_id.to_string(),
         })
     }
@@ -469,7 +483,6 @@ impl WorkflowControlPlaneAcceptanceHost {
         let session_tabs = crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
             Arc::new(
                 crate::adaptor::gateway::workspace_state::WorkspaceStateStore::with_store(
-                    config.data_dir.clone(),
                     store.clone(),
                 ),
             ),
@@ -560,7 +573,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 Arc::new(
                     crate::adaptor::gateway::workflow::ExecutionTreeArchiveFactRepository::new(
                         store.clone(),
-                        config.data_dir.clone(),
                     ),
                 ),
                 Arc::new(crate::usecase::worktree_operation::WorktreeOperations::new(Arc::new(
@@ -582,7 +594,6 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         std::fs::create_dir_all(&workflows_dir).map_err(|error| error.to_string())?;
         let workflow_read = Arc::new(crate::acceptance_test_support::workflow_read(
             execution_reads.clone(),
-            config.data_dir.clone(),
             Some(workflows_dir),
         ));
         let (binding, daemon) =
@@ -762,7 +773,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         worktree_path: &str,
         workflow_name: &str,
     ) -> Result<String, String> {
-        let value = self.call("start_workflow", serde_json::json!({"workflowName":workflow_name,"worktreePath":worktree_path,"request":"acceptance initial instruction","createdFrom":"api"})).await?;
+        let value = self.call("start_workflow", serde_json::json!({"workflowName":workflow_name,"worktreePath":worktree_path,"request":"acceptance initial instruction"})).await?;
         serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
@@ -855,13 +866,19 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
         self.call("workflow_submit_output",serde_json::json!({"nodeExecutionId":node_execution_id,"artifact":{"contract":contract,"value":value}})).await.map(|_| ())
     }
 
-    pub async fn approve(
-        &self,
-        execution_id: &str,
-        node_name: &str,
-        node_execution_id: &str,
-    ) -> Result<(), String> {
-        self.call("approve_workflow_node",serde_json::json!({"args":{"executionId":execution_id,"nodeName":node_name,"nodeExecutionId":node_execution_id,"comment":null}})).await.map(|_| ())
+    pub async fn approve(&self, execution_id: &str, node_execution_id: &str) -> Result<(), String> {
+        let execution = self
+            .workflow_read
+            .get_execution_state(execution_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "execution not found".to_string())?;
+        self.call(
+            "approve_workspace_node",
+            serde_json::json!({"worktreePath":execution.worktree_path,"nodeId":node_execution_id}),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn retry(&self, execution_id: &str, node_execution_id: &str) -> Result<(), String> {
@@ -948,14 +965,16 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     }
 
     pub async fn archive_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
-        self.provider_lifecycle
-            .archive(
-                agent_session_id,
-                &format!("acceptance-archive-{agent_session_id}"),
-            )
+        let session = self
+            .provider_sessions
+            .find(agent_session_id)
             .await
-            .map(|_| ())
-            .map_err(|error| format!("{error:?}"))
+            .map_err(|error| format!("{error:?}"))?
+            .ok_or_else(|| "agent session not found".to_string())?;
+        self._runtime
+            .archive_execution_tree(session.session().tree_location().tree_id())
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub async fn restore_agent_session(&self, agent_session_id: &str) -> Result<(), String> {
@@ -1034,16 +1053,16 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
     pub async fn agent_session_lifecycle(
         &self,
         agent_session_id: &str,
-    ) -> Result<Option<AcceptanceAgentSessionLifecycle>, String> {
+    ) -> Result<Option<AcceptanceAgentSessionAvailability>, String> {
         let session = self
             .provider_sessions
             .find(agent_session_id)
             .await
             .map_err(|error| format!("{error:?}"))?;
         Ok(session.map(|session| match session.session().lifecycle() {
-            AgentSessionLifecycle::Open => AcceptanceAgentSessionLifecycle::Open,
-            AgentSessionLifecycle::Paused => AcceptanceAgentSessionLifecycle::Paused,
-            AgentSessionLifecycle::Archived => AcceptanceAgentSessionLifecycle::Archived,
+            AgentSessionLifecycle::Open => AcceptanceAgentSessionAvailability::Open,
+            AgentSessionLifecycle::Paused => AcceptanceAgentSessionAvailability::Paused,
+            AgentSessionLifecycle::Archived => AcceptanceAgentSessionAvailability::Archived,
         }))
     }
 

@@ -89,11 +89,9 @@ final class WorkspaceActionsTests: XCTestCase {
     merged.name = "merged-in-git"
     merged.worktreePath = "/repo/merged"
     merged.isMerged = true
-    merged.hasPr_p = false
     var completed = Releash_Client_V1_WorkspaceBranch()
     completed.name = "completed-pr"
     completed.worktreePath = "/repo/completed"
-    completed.hasPr_p = false
     completed.prState = "closed"
     completed.prStateNumber = 42
     repository.branches.items = [merged, completed]
@@ -109,9 +107,6 @@ final class WorkspaceActionsTests: XCTestCase {
       model: model, repository: received, branch: received.branches.items[1])
     XCTAssertEqual(completedCard.branch.prState, "closed")
     XCTAssertEqual(completedCard.branch.prStateNumber, 42)
-    XCTAssertFalse(completedCard.branch.hasPr_p)
-    XCTAssertFalse(completedCard.branch.hasPrNumber)
-    XCTAssertFalse(completedCard.branch.hasPrURL)
     await model.stop()
   }
 

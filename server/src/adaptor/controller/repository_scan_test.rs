@@ -37,11 +37,7 @@ impl RepositoryScanner for Scanner {
         }
         Ok(RepositorySnapshotParts {
             status: Vec::new(),
-            diff_stats: Vec::new(),
             dirty_count: 0,
-            diff_file_tree: Vec::new(),
-            staged_diff_file_tree: Vec::new(),
-            changes_diff_file_tree: Vec::new(),
         })
     }
 

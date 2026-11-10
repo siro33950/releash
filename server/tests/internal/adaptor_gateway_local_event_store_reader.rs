@@ -307,7 +307,6 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
     use releashd::test_support::integration::platform::CanonicalRuntimeOwnerView;
     use releashd::test_support::integration::platform::LocalEventQueryError;
     use releashd::test_support::integration::providers::ProviderKind;
-    use releashd::test_support::integration::workflow::ExecutionOrigin;
     use releashd::test_support::integration::workflow::ExecutionTreeLaunch;
     use releashd::test_support::integration::workflow::NodeCompletion;
     use releashd::test_support::integration::workflow::NodeDefinition;
@@ -412,7 +411,6 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
                 repository_root: None,
                 workspace_identity: worktree_path.to_string(),
                 worktree_path: worktree_path.to_string(),
-                created_from: ExecutionOrigin::Cli,
                 request: String::new(),
                 workflow_name: "wf".to_string(),
                 definition: Some(WorkflowDefinitionContent {
@@ -606,7 +604,6 @@ pub(crate) mod canonical_runtime_owner_snapshot_tests {
                 session_id,
                 &NodeFact::ArchiveRequested(
                     releashd::test_support::integration::workflow::ArchiveRequestedFact {
-                        reason: "manual".into(),
                         archived_at: 0.0,
                     },
                 ),

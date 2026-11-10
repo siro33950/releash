@@ -130,7 +130,6 @@ fn execution_tree() -> WorkspaceTree {
         node_execution_id: None,
         node_name: None,
         attempt: None,
-        execution_parent: None,
         retry_predecessor_id: None,
         past_attempt_ids: vec![],
         is_retry_history: false,

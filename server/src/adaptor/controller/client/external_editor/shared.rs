@@ -74,37 +74,4 @@ pub(crate) fn register_shared(
             }),
         );
     }
-    {
-        let config = deps.config_repository.clone();
-        let launcher = deps.editor_launcher.clone();
-        router.register_domain(
-            &["open_folder_in_editor"],
-            Box::new(move |command| {
-                let config = config.clone();
-                let launcher = launcher.clone();
-                Box::pin(async move {
-                    let wire::command_request::Command::OpenFolderInEditor(args) = command else {
-                        return Err(invalid_request("Mismatched command"));
-                    };
-                    let result = async move {
-                        let config = config
-                            .ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                        let settings =
-                        crate::adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
-                            config,
-                        );
-                        outcome(
-                            crate::usecase::external_editor::open_usecase::open_folder_in_editor(
-                                launcher.as_ref(),
-                                &settings,
-                                &required(args.folder_path, "folderPath")?,
-                            ),
-                        )
-                    }
-                    .await?;
-                    Ok(wire::command_result::Command::OpenFolderInEditor(result))
-                })
-            }),
-        );
-    }
 }

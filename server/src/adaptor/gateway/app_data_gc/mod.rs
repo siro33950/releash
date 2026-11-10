@@ -12,7 +12,7 @@ use crate::domain::app_data_gc::RetentionPolicy;
 use crate::usecase::app_data_gc::{
     CacheGcRecord, CanonicalRuntimeOwners, GcFileSystem, GcFileSystemError, GcFileType, GcMetadata,
     LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet, ReviewCommentGcRecord,
-    RuntimeProtection, StartupGcRequest, WorkspaceStateGcRecord,
+    RuntimeProtection, StartupGcRequest,
 };
 
 #[derive(Clone)]
@@ -110,11 +110,9 @@ pub fn build_startup_gc_request(
     StartupGcRequest {
         app_data_dir: app_data_dir.clone(),
         live_worktrees: resolve_live_worktrees(shared_repo_paths),
-        workspace_state_records: collect_workspace_state_records(&app_data_dir, file_system),
         review_comment_records: collect_review_comment_records(&app_data_dir, file_system),
         checkpoint_paths: collect_checkpoint_paths(&app_data_dir, file_system),
         cache_records: collect_cache_records(&app_data_dir, file_system),
-        legacy_comment_paths: collect_legacy_comment_paths(&app_data_dir, file_system),
         runtime_protection: RuntimeProtection::incomplete(),
         now_secs: crate::infrastructure::utils::unix_timestamp_seconds(),
         retention: RetentionPolicy::default(),
@@ -178,28 +176,6 @@ fn resolve_live_worktrees(shared_repo_paths: SharedRepoPaths) -> Option<LiveWork
         .with_repository_paths(repo_paths)
         .with_worktree_repositories(worktree_repositories),
     )
-}
-
-fn collect_workspace_state_records(
-    app_data_dir: &Path,
-    file_system: &dyn GcFileSystem,
-) -> Vec<WorkspaceStateGcRecord> {
-    let directory = app_data_dir.join("workspace_state.migrated");
-    read_directory_or_empty(file_system, &directory)
-        .into_iter()
-        .filter_map(|path| {
-            let metadata = file_system.metadata(&path).ok()?;
-            if metadata.file_type != GcFileType::File
-                || path.extension().and_then(|extension| extension.to_str()) != Some("json")
-            {
-                return None;
-            }
-            let key = crate::domain::workspace_state::WorkspaceStateKey::from_storage(
-                path.file_stem().and_then(|stem| stem.to_str())?.to_string(),
-            );
-            Some(WorkspaceStateGcRecord { path, key })
-        })
-        .collect()
 }
 
 fn collect_review_comment_records(
@@ -283,17 +259,6 @@ fn latest_mtime_secs(
         }
     }
     Ok(latest)
-}
-
-fn collect_legacy_comment_paths(
-    app_data_dir: &Path,
-    file_system: &dyn GcFileSystem,
-) -> Vec<PathBuf> {
-    ["comments", "diff-comments", "threads"]
-        .into_iter()
-        .map(|name| app_data_dir.join(name))
-        .filter(|path| file_system.metadata(path).is_ok())
-        .collect()
 }
 
 fn read_directory_or_empty(file_system: &dyn GcFileSystem, path: &Path) -> Vec<PathBuf> {

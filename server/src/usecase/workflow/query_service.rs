@@ -3,14 +3,13 @@
 //! Query services assemble read models from repository ports only. They do not
 //! call command usecases and they do not mutate workflow state.
 
-use crate::domain::workflow::WorkflowDefinitionSourceService;
 use std::sync::Arc;
 
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    ExecutionTree, ExecutionTreeId, Facet, FacetKind, FacetRepository, WorkflowDefinition,
-    WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
+    ExecutionTree, ExecutionTreeId, WorkflowDefinition, WorkflowDefinitionName,
+    WorkflowDefinitionRepository, WorkflowError,
 };
 
 use super::event_draft;
@@ -33,8 +32,6 @@ pub enum WorkflowGetOutputResult {
 #[derive(Clone)]
 pub struct WorkflowQueryService {
     definitions: Arc<dyn WorkflowDefinitionRepository>,
-    definition_sources: Arc<dyn WorkflowDefinitionSourceService>,
-    facets: Arc<dyn FacetRepository>,
     events: Arc<dyn WorkflowEventRepository>,
     execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
 }
@@ -42,15 +39,11 @@ pub struct WorkflowQueryService {
 impl WorkflowQueryService {
     pub fn new(
         definitions: Arc<dyn WorkflowDefinitionRepository>,
-        definition_sources: Arc<dyn WorkflowDefinitionSourceService>,
-        facets: Arc<dyn FacetRepository>,
         events: Arc<dyn WorkflowEventRepository>,
         execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
     ) -> Self {
         Self {
             definitions,
-            definition_sources,
-            facets,
             events,
             execution_projection,
         }
@@ -63,11 +56,6 @@ impl WorkflowQueryService {
     ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
         let name = WorkflowDefinitionName::new(file_stem.to_string())?;
         self.definitions.find(Some(name.as_str()))
-    }
-
-    pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
-        let name = WorkflowDefinitionName::new(file_stem.to_string())?;
-        self.definition_sources.get_source(name.as_str())
     }
 
     pub(in crate::usecase::workflow) async fn read_events(
@@ -117,10 +105,6 @@ impl WorkflowQueryService {
     ) -> Result<Option<ExecutionTree>, WorkflowError> {
         let execution_id = ExecutionTreeId::new(execution_id.to_string())?;
         self.execution_projection.get_execution(&execution_id).await
-    }
-
-    pub fn get_facet(&self, kind: FacetKind, key: &str) -> Result<Facet, WorkflowError> {
-        self.facets.get(kind, key)
     }
 }
 

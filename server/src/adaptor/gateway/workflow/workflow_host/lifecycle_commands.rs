@@ -147,7 +147,7 @@ impl WorkflowRuntimeHost {
         candidate.record_aborted_history_for_active_leaves(timestamp);
         candidate.transition_aborted();
         candidate.abort_active_node_executions(timestamp);
-        candidate.clear_node_stalls(timestamp);
+        candidate.touch(timestamp);
         let snapshot = self
             .commit_control_plane_candidate(
                 app,

@@ -28,9 +28,7 @@ pub use definition::{
     WorkflowSourceFormat, WorktreeMode, MAIN_ENTRY_NODE_NAME, MAX_FANOUT_CHILDREN,
     MAX_NODES_PER_WORKFLOW,
 };
-pub use execution::{
-    ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, ExecutionTree, Fanout,
-};
+pub use execution::{ApprovalTarget, Artifact, ExecutionStatus, ExecutionTree, Fanout};
 pub use execution_metadata::{ExecutionStatusFilter, WorkflowExecutionSummary};
 pub use facet::{FacetContents, FacetKey, FacetKind, WorkflowFacetContents};
 pub use failure::{
@@ -51,10 +49,10 @@ pub use node_fact::{
     NodeFactMeta, NodeFactRecord, ProcessExitedFact, ProviderSessionTitleObservedFact,
     RuntimeFailureObservedFact, SessionAttachedFact, SessionContinuationAdmittedFact,
     SessionExecutionTreeRootFacts, SessionNodeRenamedFact, StartedFact, StopReceivedFact,
-    SubmitReceivedFact, SubmitRejectedFact, TreeRootFact,
+    SubmitReceivedFact, TreeRootFact,
 };
 pub use predicate::{Predicate, PredicateError};
-pub use runtime_event::{ContractViolationRecord, WorkflowEvent};
+pub use runtime_event::WorkflowEvent;
 #[cfg(test)]
 pub use runtime_projection::FanoutChildSnapshot;
 pub use runtime_projection::{

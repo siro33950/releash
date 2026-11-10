@@ -189,20 +189,15 @@ import XCTest
     try await fixture.startServer()
     let repository = try await fixture.repository("update-repository")
     let (client, headers) = try fixture.client()
-    var definition = Releash_Client_V1_SaveWorkflowSourceRequest()
-    definition.source = """
+    try fixture.writeWorkflow(
+      "update-continuity",
+      """
       name: update-continuity
       description: Update continuity regression
       nodes:
         main:
           command: sleep 3600
-      """
-    let saved = try await client.saveWorkflowSource(request: definition, headers: headers).result
-      .get()
-    guard case .success = saved.variant else {
-      XCTFail("Workflow could not be saved: \(saved)")
-      return
-    }
+      """)
     var request = Releash_Client_V1_StartWorkflowRequest()
     request.workflowName = "update-continuity"
     request.worktreePath = repository.path

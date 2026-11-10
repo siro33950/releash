@@ -1,33 +1,49 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
+
 use std::sync::Arc;
 
 use super::fact_log::{self, FactLogReadBackend};
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
 use crate::domain::workflow::{
-    ExecutionTreeArchiveCandidate, ExecutionTreeArchiveRecord, ExecutionTreeArchiveRepository,
-    ExecutionTreeArchiveSnapshot, ExecutionTreeArchiveTarget, ExecutionTreeId, NodeFact,
-    WorkflowError,
+    ExecutionTreeArchiveCandidate, ExecutionTreeArchiveRepository, ExecutionTreeArchiveTarget,
+    ExecutionTreeId, NodeFact, WorkflowError,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionTreeArchiveSnapshot {
+    pub records: Vec<crate::domain::workflow::ExecutionTreeArchiveRecord>,
+}
 
 pub struct ExecutionTreeArchiveFactRepository {
     backend: FactLogReadBackend,
-    legacy_path: Option<PathBuf>,
 }
 
 impl ExecutionTreeArchiveFactRepository {
-    pub fn new(store: Arc<LocalEventStore>, data_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            backend: FactLogReadBackend::Live(store),
-            legacy_path: Some(data_dir.into().join("workflow_execution_archives.json")),
-        }
+    pub fn new(store: Arc<LocalEventStore>) -> Self {
+        Self::from_backend(FactLogReadBackend::Live(store))
     }
 
     pub fn from_backend(backend: FactLogReadBackend) -> Self {
-        Self {
-            backend,
-            legacy_path: None,
+        Self { backend }
+    }
+
+    /// 指定した実行木の archive の状態を、production と同じ集約の判定で読む。
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn archive_snapshot_for(
+        &self,
+        execution_ids: &[String],
+    ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
+        let mut records = Vec::new();
+        for id in execution_ids {
+            if let Some(tree) = fact_log::fold_tree_from(&self.backend, id)
+                .await
+                .map_err(WorkflowError::from)?
+            {
+                records.extend(tree.aggregate.archive_record());
+            }
         }
+        Ok(ExecutionTreeArchiveSnapshot { records })
     }
 
     async fn read_candidate_page(
@@ -43,8 +59,7 @@ impl ExecutionTreeArchiveFactRepository {
                         COALESCE(json_extract(detail, '$.root.repositoryRoot'),
                           (SELECT json_extract(owner.detail, '$.repositoryRoot')
                            FROM node_events owner WHERE owner.tree_id = node_events.tree_id
-                             AND (owner.event_type = 'isolated_worktree_created'
-                               OR (owner.parent_id IS NULL AND owner.event_type = 'repository_root_observed'))
+                             AND owner.parent_id IS NULL AND owner.event_type = 'repository_root_observed'
                            ORDER BY owner.seq LIMIT 1))
                  FROM node_events WHERE tree_id > ?1 AND parent_id IS NULL AND event_type = 'started'
                    AND seq = (SELECT MIN(root.seq) FROM node_events root WHERE root.tree_id = node_events.tree_id)
@@ -211,26 +226,6 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         }
     }
 
-    async fn legacy_session_archive_page(
-        &self,
-        after: Option<&str>,
-    ) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError> {
-        let after = after.unwrap_or("").to_string();
-        let ids = self.backend.run_indexed(move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT tree_id FROM node_events archive
-                 WHERE tree_id > ?1 AND parent_id IS NULL AND event_type = 'archive_requested'
-                   AND json_extract(detail, '$.archivedAt') IS NULL
-                   AND seq = (SELECT MAX(seq) FROM node_events latest WHERE latest.tree_id = archive.tree_id
-                       AND latest.parent_id IS NULL AND latest.event_type IN ('archive_requested', 'restore_requested'))
-                 ORDER BY tree_id LIMIT 128"
-            ).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))?;
-            statement.query_map([after], |row| row.get::<_, String>(0)).and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-                .map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
-        }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
-        Ok(self.archive_snapshot_for(&ids).await?.records)
-    }
-
     async fn target(
         &self,
         execution_id: &str,
@@ -254,35 +249,13 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
         &self,
         execution_id: &ExecutionTreeId,
         archived_at: f64,
-        reason: &str,
     ) -> Result<(), WorkflowError> {
         let mut tree = fact_log::fold_tree_from(&self.backend, execution_id.as_str())
             .await
             .map_err(WorkflowError::from)?
             .ok_or_else(|| WorkflowError::NotFound(execution_id.to_string()))?;
-        if let Some(fact) = tree.aggregate.archive(archived_at, reason)? {
+        if let Some(fact) = tree.aggregate.archive(archived_at)? {
             return self.append(execution_id.as_str(), fact, archived_at).await;
-        }
-        let id = execution_id.to_string();
-        let legacy = self.backend.run_indexed(move |connection| {
-            connection.query_row(
-                "SELECT detail, timestamp FROM node_events WHERE tree_id = ?1 AND parent_id IS NULL
-                 AND event_type IN ('archive_requested', 'restore_requested') ORDER BY seq DESC LIMIT 1",
-                [id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            ).map_err(|error| crate::adaptor::gateway::local_event_store::reader::storage_unavailable(&error))
-        }).await.map_err(|error| WorkflowError::from(fact_log::FactReadError::Query(error)))?;
-        let detail: serde_json::Value = serde_json::from_str(&legacy.0)
-            .map_err(|error| WorkflowError::CorruptStoredState(error.to_string()))?;
-        if detail
-            .get("archivedAt")
-            .is_none_or(serde_json::Value::is_null)
-        {
-            let fact = fact_log::decode_stored_fact("archive_requested", &legacy.0, legacy.1)
-                .map_err(WorkflowError::CorruptStoredState)?
-                .ok_or_else(|| WorkflowError::CorruptStoredState("archive fact missing".into()))?;
-            return self
-                .append(execution_id.as_str(), fact, legacy.1 as f64 / 1000.0)
-                .await;
         }
         Ok(())
     }
@@ -301,76 +274,6 @@ impl ExecutionTreeArchiveRepository for ExecutionTreeArchiveFactRepository {
                 .await?;
         }
         Ok(())
-    }
-
-    async fn archive_snapshot_for(
-        &self,
-        execution_ids: &[String],
-    ) -> Result<ExecutionTreeArchiveSnapshot, WorkflowError> {
-        let facts = fact_log::read_tree_archive_records_for(&self.backend, execution_ids)
-            .await
-            .map_err(WorkflowError::from)?;
-        let mut records = facts
-            .iter()
-            .filter_map(|fact| {
-                crate::domain::workflow::services::fact_replay::derive_tree_archive(
-                    std::slice::from_ref(fact),
-                )
-            })
-            .collect::<Vec<_>>();
-        records.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
-        records.dedup_by(|a, b| a.execution_id == b.execution_id);
-        Ok(ExecutionTreeArchiveSnapshot { records })
-    }
-
-    fn legacy_archives(&self) -> Result<Vec<ExecutionTreeArchiveRecord>, WorkflowError> {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LegacyRecord {
-            archived_at: Option<f64>,
-            archive_reason: Option<String>,
-        }
-        #[derive(serde::Deserialize)]
-        struct LegacyIndex {
-            #[serde(default)]
-            executions: BTreeMap<String, LegacyRecord>,
-        }
-        let Some(path) = &self.legacy_path else {
-            return Ok(Vec::new());
-        };
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(WorkflowError::external(error.to_string())),
-        };
-        let index: LegacyIndex = serde_json::from_slice(&bytes)
-            .map_err(|error| WorkflowError::external(error.to_string()))?;
-        Ok(index
-            .executions
-            .into_iter()
-            .filter_map(|(execution_id, record)| {
-                record
-                    .archived_at
-                    .map(|archived_at| ExecutionTreeArchiveRecord {
-                        execution_id,
-                        archived_at,
-                        archive_reason: record
-                            .archive_reason
-                            .unwrap_or_else(|| "manual".to_string()),
-                    })
-            })
-            .collect())
-    }
-
-    fn finish_legacy_migration(&self) -> Result<(), WorkflowError> {
-        let Some(path) = &self.legacy_path else {
-            return Ok(());
-        };
-        match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(WorkflowError::external(error.to_string())),
-        }
     }
 }
 

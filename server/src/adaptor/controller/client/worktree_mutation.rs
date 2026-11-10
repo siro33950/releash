@@ -31,9 +31,6 @@ pub fn admit(
         C::GitCreateBranch(a) => a.repo_path.as_deref(),
         C::GitStage(a) => a.repo_path.as_deref(),
         C::GitUnstage(a) => a.repo_path.as_deref(),
-        C::GitStageReviewGroup(a) => a.input.as_ref().and_then(|a| a.worktree_path.as_deref()),
-        C::GitUnstageReviewGroup(a) => a.input.as_ref().and_then(|a| a.worktree_path.as_deref()),
-        C::SetBranchBase(a) => a.repo_path.as_deref(),
         C::SetReleashBase(a) => a.repo_path.as_deref(),
         C::SaveNotionConfig(a) => a.repo_path.as_deref(),
         C::DeleteNotionConfig(a) => a.repo_path.as_deref(),
@@ -43,7 +40,6 @@ pub fn admit(
         C::ResumeWorkspaceSessionNode(a) => a.worktree_path.as_deref(),
         C::CreateReviewThread(a) => a.worktree_name.as_deref(),
         C::AppendReviewComment(a) => a.worktree_name.as_deref(),
-        C::DeleteReviewThread(a) => a.worktree_name.as_deref(),
         C::ResolveReviewThread(a) => a.worktree_name.as_deref(),
         C::GetOrSpawnTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
         C::WriteTerminalSurface(a) => terminal_workspace(a.owner.as_ref()),
@@ -57,16 +53,6 @@ pub fn admit(
                 .map_err(|error| invalid_request(error.to_string()))?;
             return runtime
                 .begin_worktrees_creation_mutation(&a.repo_path, &a.branches)
-                .map_err(mutation_error);
-        }
-        C::CreateWorktree(a) => {
-            let runtime =
-                runtime.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-            return runtime
-                .begin_worktree_creation_mutation(
-                    required(a.repo_path.as_deref(), "repoPath")?,
-                    required(a.branch.as_deref(), "branch")?,
-                )
                 .map_err(mutation_error);
         }
         C::SaveWorkspaceState(a) => {

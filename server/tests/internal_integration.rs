@@ -42,8 +42,6 @@ mod adaptor_gateway_agent_session_session_facts;
 mod adaptor_gateway_app_config_repository_impl;
 #[path = "internal/adaptor_gateway_app_data_gc_mod.rs"]
 mod adaptor_gateway_app_data_gc_mod;
-#[path = "internal/adaptor_gateway_code_branch_diff.rs"]
-mod adaptor_gateway_code_branch_diff;
 #[path = "internal/adaptor_gateway_code_directory.rs"]
 mod adaptor_gateway_code_directory;
 #[path = "internal/adaptor_gateway_code_file_content.rs"]

@@ -33,7 +33,7 @@ use releashd::test_support::integration::providers::ProviderLifecycleSignal;
 use releashd::test_support::integration::providers::ProviderLifecycleSlotId;
 use releashd::test_support::integration::providers::ProviderLifecycleUsecase;
 use releashd::test_support::integration::providers::ScopedProviderLifecycleEvent;
-use releashd::test_support::integration::sessions::AgentSessionArchiveOutcome;
+
 use releashd::test_support::integration::sessions::AgentSessionLifecycle;
 use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecase;
 use releashd::test_support::integration::sessions::AgentSessionLifecycleUsecaseError;
@@ -86,12 +86,8 @@ impl Default for RecordingChangeNotifier {
 struct RecordingExecutionTrees {
     worktree_operations: releashd::test_support::integration::platform::WorktreeOperations,
     operation_lock: Arc<tokio::sync::Mutex<()>>,
-    block_archive: AtomicBool,
-    archive_error: Mutex<Option<releashd::test_support::integration::workflow::WorkflowError>>,
     mutation_error: Mutex<Option<releashd::test_support::integration::workflow::WorkflowError>>,
     restore_error: Mutex<Option<releashd::test_support::integration::workflow::WorkflowError>>,
-    archive_stopped: tokio::sync::Notify,
-    archive_release: tokio::sync::Notify,
     store: Option<Arc<LocalEventStore>>,
     lifecycle: Mutex<std::sync::Weak<AgentSessionLifecycleUsecase>>,
     releases: Mutex<Vec<String>>,
@@ -159,62 +155,6 @@ impl releashd::test_support::integration::sessions::AgentSessionExecutionTreeLif
         releashd::test_support::integration::workflow::WorkflowError,
     > {
         Ok(self.operation_lock.clone().lock_owned().await)
-    }
-
-    async fn archive_execution_tree(
-        &self,
-        tree_id: &str,
-    ) -> Result<(), releashd::test_support::integration::workflow::WorkflowError> {
-        if let Some(error) = self.archive_error.lock().unwrap().clone() {
-            return Err(error);
-        }
-        let _operation = self.lock_execution_tree(tree_id).await?;
-        let store = self.store.as_ref().expect("archive fact store");
-        let records =
-            releashd::test_support::integration::workflow::read_tree_records(store, tree_id)
-                .await
-                .unwrap();
-        let meta = &records[0].meta;
-        releashd::test_support::integration::workflow::append_single_fact(
-            store,
-            meta,
-            &NodeFact::AbortRequested(Default::default()),
-            100,
-        )
-        .await
-        .unwrap();
-        let lifecycle = self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .upgrade()
-            .expect("archive lifecycle");
-        lifecycle
-            .stop_for_terminal_execution_tree_node_preserving_checkpoint(
-                tree_id,
-                &meta.node_execution_id,
-                "archive-stop",
-            )
-            .await
-            .unwrap();
-        if self.block_archive.swap(false, Ordering::SeqCst) {
-            self.archive_stopped.notify_one();
-            self.archive_release.notified().await;
-        }
-        releashd::test_support::integration::workflow::append_single_fact(
-            store,
-            meta,
-            &NodeFact::ArchiveRequested(
-                releashd::test_support::integration::workflow::ArchiveRequestedFact {
-                    reason: "manual".into(),
-                    archived_at: 0.0,
-                },
-            ),
-            100,
-        )
-        .await
-        .unwrap();
-        Ok(())
     }
 
     async fn restore_execution_tree(
@@ -1165,7 +1105,6 @@ pub async fn test_workflow所有agent_session停止_checkpointとprovider参照�
 
     let stopped = sessions.find("workflow-agent").await.unwrap().unwrap();
     assert_eq!(stopped.session().lifecycle(), AgentSessionLifecycle::Paused);
-    assert!(!stopped.session().last_exit_abnormal());
     assert_eq!(stopped.session().provider_session_id(), Some("provider-1"));
     assert_eq!(
         stopped.session().transcript_ref(),
@@ -1214,6 +1153,7 @@ pub async fn test_workflow所有agent_session停止_checkpointとprovider参照�
 pub async fn test_archived_agent_sessionのensure_provider_runningは起動せず拒否する() {
     let LifecycleTestContext {
         _directory,
+        store,
         sessions,
         lifecycle,
         launches,
@@ -1239,13 +1179,7 @@ pub async fn test_archived_agent_sessionのensure_provider_runningは起動せ�
         )
         .await
         .unwrap();
-    assert_eq!(
-        lifecycle
-            .archive("archived-agent", "archive-agent")
-            .await
-            .unwrap(),
-        AgentSessionArchiveOutcome::Archived
-    );
+    archive_session(&store, "archived-agent").await;
     assert_eq!(
         sessions
             .find("archived-agent")
@@ -1318,7 +1252,6 @@ pub async fn test_session起動木node終端停止_checkpoint保持とlaunch資�
 
     let stopped = sessions.find("standalone-agent").await.unwrap().unwrap();
     assert_eq!(stopped.session().lifecycle(), AgentSessionLifecycle::Paused);
-    assert!(!stopped.session().last_exit_abnormal());
     assert_eq!(
         stopped.session().provider_session_id(),
         Some("provider-standalone")
@@ -1420,7 +1353,6 @@ pub async fn test_workflow所有agent_session停止_provider未確定でもgcせ
         retained.session().lifecycle(),
         AgentSessionLifecycle::Paused
     );
-    assert!(!retained.session().last_exit_abnormal());
     assert_eq!(retained.session().provider_session_id(), None);
     assert!(terminal.deletes.lock().unwrap().is_empty());
 }
@@ -1534,6 +1466,7 @@ pub async fn test_実行木node終端停止_node不一致と停止失敗ではse
 pub async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを接続する() {
     let LifecycleTestContext {
         _directory,
+        store,
         sessions,
         lifecycle,
         launches,
@@ -1585,10 +1518,7 @@ pub async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを�
         &[ProviderSessionLaunch::resume("provider-1").unwrap()]
     );
 
-    assert_eq!(
-        lifecycle.archive("agent-1", "archive-1").await.unwrap(),
-        AgentSessionArchiveOutcome::Archived
-    );
+    archive_running_session(&store, &lifecycle, "agent-1").await;
     assert!(execution_trees.releases.lock().unwrap().is_empty());
     assert_eq!(terminal.stops.lock().unwrap().len(), 1);
     assert_eq!(
@@ -1649,7 +1579,7 @@ pub async fn test_agent_session_lifecycle_exit_resume_archive_restore_deleteを�
         AgentSessionOpenOutcome::Resumed
     );
     assert!(execution_trees.releases.lock().unwrap().is_empty());
-    lifecycle.archive("agent-1", "archive-2").await.unwrap();
+    archive_running_session(&store, &lifecycle, "agent-1").await;
     lifecycle.delete("agent-1", "delete-1").await.unwrap();
     assert!(sessions.find("agent-1").await.unwrap().is_none());
     assert_eq!(terminal.deletes.lock().unwrap().len(), 1);
@@ -1926,6 +1856,7 @@ pub async fn test_agent_session_gc再照合は確定不在かつunknown_idだけ
 pub async fn test_agent_session_delete_execution_cache解放失敗でも削除を完了する() {
     let LifecycleTestContext {
         _directory,
+        store,
         sessions,
         lifecycle,
         execution_trees,
@@ -1951,13 +1882,7 @@ pub async fn test_agent_session_delete_execution_cache解放失敗でも削除�
         )
         .await
         .unwrap();
-    lifecycle
-        .archive(
-            "agent-delete-release-failure",
-            "archive-delete-release-failure",
-        )
-        .await
-        .unwrap();
+    archive_session(&store, "agent-delete-release-failure").await;
     *execution_trees.release_error.lock().unwrap() =
         Some(ExecutionTreeCacheReleaseError::Unavailable);
 
@@ -2377,121 +2302,6 @@ pub async fn test_agent_session_resume_同一sessionへの並行要求はptyを�
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-pub async fn test_agent_session_resume中のarchiveは同一sessionの操作完了後に実行する() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = LocalEventStore::open(LocalEventStoreConfig::production(
-        directory.path().to_path_buf(),
-        std::sync::Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
-    ))
-    .unwrap();
-    let sessions = Arc::new(test_sessions(
-        Arc::new(LocalAgentSessionRepository::new(store.clone())),
-        Arc::default(),
-        Arc::default(),
-        Arc::default(),
-    ));
-    sessions
-        .create(
-            "agent-resume-archive",
-            WorkspaceIdentity::new("/repo"),
-            "/repo/worktree",
-            ProviderKind::Claude,
-            session_location("agent-resume-archive"),
-            "create-resume-archive",
-        )
-        .await
-        .unwrap();
-    sessions
-        .associate_provider_session(
-            "agent-resume-archive",
-            "provider-resume-archive",
-            None,
-            "associate-resume-archive",
-        )
-        .await
-        .unwrap();
-    sessions
-        .observe_process_exit("agent-resume-archive", Some(0), "pause-resume-archive")
-        .await
-        .unwrap();
-
-    let provider_lifecycle = Arc::new(ProviderLifecycleUsecase::new(
-        Arc::new(LocalProviderLifecycleCredentialGateway),
-        Arc::new(NoopLifecycleEvents),
-    ));
-    let launches = Arc::new(RecordingResumeLaunches::default());
-    let terminal = Arc::new(LifecycleTerminal::new(ManagedPtyPresence::ConfirmedAbsent));
-    let (entered_sender, entered_receiver) = mpsc::channel();
-    let (release_sender, release_receiver) = mpsc::channel();
-    *terminal.first_spawn_entered.lock().unwrap() = Some(entered_sender);
-    *terminal.first_spawn_release.lock().unwrap() = Some(release_receiver);
-    let execution_trees = Arc::new(RecordingExecutionTrees {
-        store: Some(store.clone()),
-        ..Default::default()
-    });
-    let lifecycle = Arc::new(AgentSessionLifecycleUsecase::new(
-        std::sync::Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
-        sessions.clone(),
-        provider_lifecycle,
-        ProviderAgentRuntime::new(
-            Arc::new(AlwaysProviderAvailable),
-            launches,
-            terminal.clone(),
-        ),
-        Arc::new(ProviderHookHealthUsecase::new(Arc::new(
-            MemoryHookHealthRepository::default(),
-        ))),
-        releashd::test_support::integration::subscriptions::test_subscriptions(),
-        execution_trees.clone(),
-        releashd::test_support::integration::workspace::TestWorkspaceTreeRepository::new(),
-    ));
-
-    *execution_trees.lifecycle.lock().unwrap() = Arc::downgrade(&lifecycle);
-
-    let resume = tokio::spawn({
-        let lifecycle = lifecycle.clone();
-        async move {
-            lifecycle
-                .ensure_provider_running("agent-resume-archive", 24, 80, "resume-before-archive")
-                .await
-        }
-    });
-    entered_receiver
-        .recv_timeout(Duration::from_secs(1))
-        .unwrap();
-    let archive = tokio::spawn({
-        let lifecycle = lifecycle.clone();
-        async move {
-            lifecycle
-                .archive("agent-resume-archive", "archive-after-resume")
-                .await
-        }
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    release_sender.send(()).unwrap();
-
-    assert_eq!(
-        resume.await.unwrap().unwrap(),
-        AgentSessionOpenOutcome::Resumed
-    );
-    assert_eq!(
-        archive.await.unwrap().unwrap(),
-        AgentSessionArchiveOutcome::Archived
-    );
-    assert_eq!(terminal.stops.lock().unwrap().len(), 1);
-    assert_eq!(
-        sessions
-            .find("agent-resume-archive")
-            .await
-            .unwrap()
-            .unwrap()
-            .session()
-            .lifecycle(),
-        AgentSessionLifecycle::Archived
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 pub async fn test_agent_session_open_同一sessionへの並行要求は一度だけ自動resumeする() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalEventStore::open(LocalEventStoreConfig::production(
@@ -2606,11 +2416,7 @@ pub async fn test_agent_session_restoreはprocessを起動せずpausedになり�
         .associate_provider_session("restore-agent", "provider", None, "associate")
         .await
         .unwrap();
-    context
-        .lifecycle
-        .archive("restore-agent", "archive")
-        .await
-        .unwrap();
+    archive_session(&context.store, "restore-agent").await;
     for request in ["reselect-tab", "reopen-app"] {
         assert_eq!(
             context
@@ -2787,16 +2593,6 @@ pub async fn test_agent_session_lifecycle_exit由来のpaused遷移で変更通�
         change_notifier.notified.lock().unwrap().as_slice(),
         &["/repo"]
     );
-    assert!(
-        sessions
-            .find("agent-notify")
-            .await
-            .unwrap()
-            .unwrap()
-            .session()
-            .last_exit_abnormal(),
-        "非0 exitはabnormalとして永続化される"
-    );
 
     lifecycle
         .observe_process_exit("agent-notify", 1, Some(137), "exit-notify-again")
@@ -2865,6 +2661,7 @@ pub async fn test_隔離通知_session削除とgcの成功後だけworkspaceを�
         // Given
         let LifecycleTestContext {
             _directory,
+            store,
             sessions,
             lifecycle,
             terminal,
@@ -2894,10 +2691,7 @@ pub async fn test_隔離通知_session削除とgcの成功後だけworkspaceを�
                     .associate_provider_session("isolated-notify", "provider", None, "associate")
                     .await
                     .unwrap();
-                lifecycle
-                    .archive("isolated-notify", "archive")
-                    .await
-                    .unwrap();
+                archive_session(&store, "isolated-notify").await;
                 change_notifier.notified.lock().unwrap().clear();
                 lifecycle.delete("isolated-notify", "delete").await.unwrap();
             }
@@ -3204,218 +2998,6 @@ pub async fn test_workflowのprovider回復_同じnodeを繰り返し再開し�
 }
 
 #[tokio::test]
-pub async fn test_agent_session_archive中のexitとgcはarchive確定後に評価して記録を保持する() {
-    let context = setup();
-    context
-        .sessions
-        .create(
-            "archive-exit",
-            WorkspaceIdentity::new("/repo"),
-            "/repo/worktree",
-            ProviderKind::Claude,
-            session_location("archive-exit"),
-            "create",
-        )
-        .await
-        .unwrap();
-    context
-        .execution_trees
-        .block_archive
-        .store(true, Ordering::SeqCst);
-    let archive = tokio::spawn({
-        let lifecycle = context.lifecycle.clone();
-        async move { lifecycle.archive("archive-exit", "archive").await }
-    });
-    context.execution_trees.archive_stopped.notified().await;
-    *context.terminal.presence.lock().unwrap() = ManagedPtyPresence::ConfirmedAbsent;
-    let exit = tokio::spawn({
-        let lifecycle = context.lifecycle.clone();
-        async move {
-            lifecycle
-                .observe_process_exit("archive-exit", 1, Some(0), "exit")
-                .await
-        }
-    });
-    let gc = tokio::spawn({
-        let lifecycle = context.lifecycle.clone();
-        async move {
-            lifecycle
-                .reconcile_garbage_collection("archive-exit", "gc")
-                .await
-        }
-    });
-    tokio::task::yield_now().await;
-    assert!(!exit.is_finished());
-    assert!(!gc.is_finished());
-    context.execution_trees.archive_release.notify_one();
-    archive.await.unwrap().unwrap();
-    exit.await.unwrap().unwrap();
-    assert_eq!(
-        gc.await.unwrap().unwrap(),
-        releashd::test_support::integration::sessions::AgentSessionGarbageCollectionOutcome::Retained
-    );
-    assert_eq!(
-        context
-            .sessions
-            .find("archive-exit")
-            .await
-            .unwrap()
-            .unwrap()
-            .session()
-            .lifecycle(),
-        AgentSessionLifecycle::Archived
-    );
-}
-
-#[tokio::test]
-pub async fn test_sessionのarchiveとrestore_共通実行木操作のエラー分類を保持する() {
-    use releashd::test_support::integration::workflow::WorkflowError as W;
-    use AgentSessionLifecycleUsecaseError as E;
-    for (error, expected) in [
-        (
-            W::Conflict("deleting".into()),
-            E::Conflict(W::Conflict("deleting".into()).into()),
-        ),
-        (W::InvalidState("invalid".into()), E::InvalidOperation),
-        (
-            W::Validation("invalid".into()),
-            E::Workflow(W::Validation("invalid".into())),
-        ),
-        (
-            W::UnauthorizedApprovalTarget("invalid".into()),
-            E::Workflow(W::UnauthorizedApprovalTarget("invalid".into())),
-        ),
-        (W::NotFound("missing".into()), E::NotFound),
-        (W::CorruptStoredState("corrupt".into()), E::Corrupt),
-        (
-            W::IncompatibleStoredEvent("incompatible".into()),
-            E::Workflow(W::IncompatibleStoredEvent("incompatible".into())),
-        ),
-        (
-            W::Store(
-                releashd::test_support::integration::platform::StorageFailure::from(
-                    releashd::test_support::integration::platform::CommitBatchError::QueueBusy,
-                )
-                .with_message("unavailable"),
-            ),
-            E::Store(
-                releashd::test_support::integration::platform::StorageFailure::from(
-                    releashd::test_support::integration::platform::CommitBatchError::QueueBusy,
-                )
-                .with_message("unavailable"),
-            ),
-        ),
-        (
-            W::External("internal".into()),
-            E::Workflow(W::External("internal".into())),
-        ),
-        (
-            W::Store(
-                releashd::test_support::integration::platform::StorageFailure::from(
-                    releashd::test_support::integration::platform::CommitBatchError::PayloadConflict,
-                )
-                .with_message("repair"),
-            ),
-            E::Store(
-                releashd::test_support::integration::platform::StorageFailure::from(
-                    releashd::test_support::integration::platform::CommitBatchError::PayloadConflict,
-                )
-                .with_message("repair"),
-            ),
-        ),
-        (
-            W::Store(
-                (releashd::test_support::integration::platform::TechnicalFailure {
-                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
-                    message: "failure".into(),
-                })
-                .into(),
-            ),
-            E::Store(
-                (releashd::test_support::integration::platform::TechnicalFailure {
-                    nature: releashd::test_support::integration::platform::TechnicalFailureNature::TimedOut,
-                    message: "failure".into(),
-                })
-                .into(),
-            ),
-        ),
-    ] {
-        // Given
-        let context = setup();
-        let id = "archive-errors";
-        context
-            .sessions
-            .create(
-                id,
-                WorkspaceIdentity::new("/repo"),
-                "/repo/worktree",
-                ProviderKind::Codex,
-                session_location(id),
-                "create",
-            )
-            .await
-            .unwrap();
-        *context.execution_trees.archive_error.lock().unwrap() = Some(error.clone());
-        // When / Then
-        assert_eq!(
-            context.lifecycle.archive(id, "archive").await,
-            Err(expected.clone())
-        );
-        assert_eq!(
-            context
-                .sessions
-                .find(id)
-                .await
-                .unwrap()
-                .unwrap()
-                .session()
-                .lifecycle(),
-            AgentSessionLifecycle::Open
-        );
-        assert!(context.change_notifier.notified.lock().unwrap().is_empty());
-        *context.execution_trees.archive_error.lock().unwrap() = None;
-        context
-            .lifecycle
-            .archive(id, "archive-success")
-            .await
-            .unwrap();
-        context.change_notifier.notified.lock().unwrap().clear();
-        *context.execution_trees.mutation_error.lock().unwrap() = Some(error.clone());
-        assert_eq!(
-            context
-                .lifecycle
-                .restore(id, 24, 80, "restore-admission")
-                .await
-                .map(|(outcome, _)| outcome),
-            Err(expected.clone())
-        );
-        assert!(context.change_notifier.notified.lock().unwrap().is_empty());
-        *context.execution_trees.mutation_error.lock().unwrap() = None;
-        *context.execution_trees.restore_error.lock().unwrap() = Some(error);
-        assert_eq!(
-            context
-                .lifecycle
-                .restore(id, 24, 80, "restore")
-                .await
-                .map(|(outcome, _)| outcome),
-            Err(expected.clone())
-        );
-        assert_eq!(
-            context
-                .sessions
-                .find(id)
-                .await
-                .unwrap()
-                .unwrap()
-                .session()
-                .lifecycle(),
-            AgentSessionLifecycle::Archived
-        );
-        assert!(context.change_notifier.notified.lock().unwrap().is_empty());
-    }
-}
-
-#[tokio::test]
 pub async fn test_workflow_session準備_入口から期限と取消の分類を保持する() {
     use releashd::test_support::integration::workflow::WorkflowSessionLaunchConfig;
 
@@ -3647,11 +3229,7 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
             )
             .await
             .unwrap();
-        context
-            .lifecycle
-            .archive("restore-selection", "archive")
-            .await
-            .unwrap();
+        archive_session(&context.store, "restore-selection").await;
         let lifecycle = AgentSessionLifecycleUsecase::new(
             Arc::new(releashd::test_support::integration::platform::RandomIdentityIssuer),
             context.sessions.clone(),
@@ -3675,4 +3253,59 @@ pub async fn test_session選択_restoreは欠落とrepositoryの失敗の性質�
             expected
         );
     }
+}
+
+async fn archive_session(store: &Arc<LocalEventStore>, session_id: &str) {
+    let records =
+        releashd::test_support::integration::workflow::read_tree_records(store, session_id)
+            .await
+            .unwrap();
+    releashd::test_support::integration::workflow::append_single_fact(
+        store,
+        &records[0].meta,
+        &releashd::test_support::integration::workflow::NodeFact::ArchiveRequested(
+            releashd::test_support::integration::workflow::ArchiveRequestedFact {
+                archived_at: 1.0,
+            },
+        ),
+        1_000,
+    )
+    .await
+    .unwrap();
+}
+
+async fn archive_running_session(
+    store: &Arc<LocalEventStore>,
+    lifecycle: &AgentSessionLifecycleUsecase,
+    session_id: &str,
+) {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, read_tree_records, ArchiveRequestedFact, NodeFact,
+    };
+    let records = read_tree_records(store, session_id).await.unwrap();
+    let meta = &records[0].meta;
+    append_single_fact(
+        store,
+        meta,
+        &NodeFact::AbortRequested(Default::default()),
+        100,
+    )
+    .await
+    .unwrap();
+    lifecycle
+        .stop_for_terminal_execution_tree_node_preserving_checkpoint(
+            session_id,
+            &meta.node_execution_id,
+            "archive-stop",
+        )
+        .await
+        .unwrap();
+    append_single_fact(
+        store,
+        meta,
+        &NodeFact::ArchiveRequested(ArchiveRequestedFact { archived_at: 0.0 }),
+        100,
+    )
+    .await
+    .unwrap();
 }

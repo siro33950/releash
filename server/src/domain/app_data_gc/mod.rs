@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 pub enum GcCategory {
     DeletedWorkspace,
     RegenerableCache,
-    LegacyComments,
 }
 
 impl GcCategory {
@@ -18,7 +17,6 @@ impl GcCategory {
         match self {
             Self::DeletedWorkspace => "deleted_workspace",
             Self::RegenerableCache => "regenerable_cache",
-            Self::LegacyComments => "legacy_comments",
         }
     }
 }

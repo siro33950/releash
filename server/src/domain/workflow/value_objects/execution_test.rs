@@ -18,24 +18,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn execution_origin_owns_the_public_vocabulary_and_rejects_unknown_values() {
-        for (value, expected) in [
-            ("desktop_ui", ExecutionOrigin::DesktopUi),
-            ("desktop-ui", ExecutionOrigin::DesktopUi),
-            ("cli", ExecutionOrigin::Cli),
-            ("agent", ExecutionOrigin::Agent),
-            ("api", ExecutionOrigin::Api),
-        ] {
-            assert_eq!(ExecutionOrigin::from_public_value(value).unwrap(), expected);
-            assert_eq!(
-                ExecutionOrigin::from_public_value(expected.as_public_value()).unwrap(),
-                expected
-            );
-        }
-        assert!(ExecutionOrigin::from_public_value("remote").is_err());
-    }
-
-    #[test]
     fn retryable_node_ids_only_include_the_latest_current_attempt() {
         let node = |id: &str, node_name: &str, attempt: u32| NodeExecution {
             worktree: None,
@@ -63,7 +45,6 @@ pub(crate) mod tests {
             workflow_name: "review".to_string(),
             status: ExecutionStatus::Running,
             current_node: Some("review".to_string()),
-            created_from: ExecutionOrigin::Cli,
             worktree_path: "/repo".to_string(),
             started_at: 1.0,
             updated_at: 2.0,

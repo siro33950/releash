@@ -82,10 +82,8 @@ impl RepoPathsUsecase {
     }
 
     fn notify_changed(&self) {
-        self.subscriptions.notify_and_wait(
-            crate::usecase::state_subscription::StateChangeSource::Repositories,
-            &crate::usecase::state_subscription::SubscriptionTarget::RepositoryPaths,
-        );
+        self.subscriptions
+            .notify(crate::usecase::state_subscription::StateChangeSource::Repositories);
     }
 }
 

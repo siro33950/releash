@@ -1,10 +1,9 @@
 //! status 責務の gateway 実装。git2 による作業ツリー状態取得を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
-use crate::domain::git::{FileDiffStat, FileStatus, GitError, RepositoryStatusScan};
+use crate::domain::git::{FileStatus, GitError, RepositoryStatusScan};
 use crate::infrastructure::git::client;
-use git2::{ErrorCode, Repository, StatusOptions};
-use std::collections::HashMap;
+use git2::{Repository, StatusOptions};
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -94,120 +93,6 @@ fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, GitError> {
     Ok(result)
 }
 
-fn count_patch_lines(diff: &git2::Diff, idx: usize) -> Result<(u32, u32), GitError> {
-    let patch =
-        match git_operation::optional(git_operation::run(|| git2::Patch::from_diff(diff, idx)))? {
-            Some(Some(p)) => p,
-            _ => return Ok((0, 0)),
-        };
-    let mut adds = 0u32;
-    let mut dels = 0u32;
-    for h in 0..patch.num_hunks() {
-        let lines =
-            match git_operation::optional(git_operation::run(|| patch.num_lines_in_hunk(h)))? {
-                Some(n) => n,
-                None => continue,
-            };
-        for l in 0..lines {
-            if let Some(line) =
-                git_operation::optional(git_operation::run(|| patch.line_in_hunk(h, l)))?
-            {
-                match line.origin() {
-                    '+' => adds += 1,
-                    '-' => dels += 1,
-                    _ => {}
-                }
-            }
-        }
-    }
-    Ok((adds, dels))
-}
-
-fn collect_diff_stats(diff: &git2::Diff) -> Result<HashMap<String, (u32, u32)>, GitError> {
-    let mut map = HashMap::new();
-    let num_deltas = diff.deltas().len();
-    for i in 0..num_deltas {
-        let delta = diff.get_delta(i).unwrap();
-        let path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().to_string());
-        if let Some(path) = path {
-            if delta.new_file().is_binary() || delta.old_file().is_binary() {
-                map.insert(path, (0, 0));
-            } else {
-                let (adds, dels) = count_patch_lines(diff, i)?;
-                map.insert(path, (adds, dels));
-            }
-        }
-    }
-    Ok(map)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn get_status_diff_stats(repo_path: &str) -> Result<Vec<FileDiffStat>, GitError> {
-    crate::infrastructure::telemetry::metrics::measure_result(
-        crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
-        || get_status_diff_stats_inner(repo_path),
-    )
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn get_status_diff_stats_inner(repo_path: &str) -> Result<Vec<FileDiffStat>, GitError> {
-    let repo = git_operation::run(|| client::open(repo_path))?;
-    collect_status_diff_stats(&repo)
-}
-
-fn collect_status_diff_stats(repo: &Repository) -> Result<Vec<FileDiffStat>, GitError> {
-    // HEAD tree (may not exist for unborn branch)
-    let head_tree = match git_operation::run(|| repo.head()) {
-        Ok(head) => Some(git_operation::run(|| head.peel_to_tree())?),
-        Err(err) if err.code() == ErrorCode::UnbornBranch => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    // Index diff stats: HEAD → index (staged changes)
-    let index_diff =
-        git_operation::run(|| repo.diff_tree_to_index(head_tree.as_ref(), None, None))?;
-    let index_stats = collect_diff_stats(&index_diff)?;
-
-    // Worktree diff stats: index → worktree (unstaged changes)
-    let mut wt_opts = git2::DiffOptions::new();
-    wt_opts
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
-    let wt_diff = git_operation::run(|| repo.diff_index_to_workdir(None, Some(&mut wt_opts)))?;
-    let wt_stats = collect_diff_stats(&wt_diff)?;
-
-    // Merge all paths
-    let mut all_paths = std::collections::BTreeSet::new();
-    for path in index_stats.keys() {
-        all_paths.insert(path.clone());
-    }
-    for path in wt_stats.keys() {
-        all_paths.insert(path.clone());
-    }
-
-    let result = all_paths
-        .into_iter()
-        .map(|path| {
-            let (ia, id) = index_stats.get(&path).copied().unwrap_or((0, 0));
-            let (wa, wd) = wt_stats.get(&path).copied().unwrap_or((0, 0));
-            FileDiffStat {
-                path,
-                index_additions: ia,
-                index_deletions: id,
-                wt_additions: wa,
-                wt_deletions: wd,
-            }
-        })
-        .collect();
-
-    Ok(result)
-}
-
 pub fn get_repository_status_scan(repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
     crate::common::telemetry::observe_result(
         || {
@@ -231,14 +116,8 @@ fn get_repository_status_scan_inner(repo_path: &str) -> Result<RepositoryStatusS
         .iter()
         .filter(|entry| entry.worktree_status != "ignored")
         .count();
-    let diff_stats = crate::infrastructure::telemetry::metrics::measure_result(
-        crate::infrastructure::telemetry::metrics::HotPath::DiffStats,
-        || collect_status_diff_stats(&repo),
-    )?;
-
     Ok(RepositoryStatusScan {
         status,
-        diff_stats,
         dirty_count,
     })
 }

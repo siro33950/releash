@@ -9,7 +9,7 @@ use crate::domain::local_event::LocalDomainEvent;
 fn test_ui状態の事実_保存形式をcodec経由で往復し未知の版と破損を拒む() {
     // Given
     let stored: StoredWorkspaceState = serde_json::from_value(serde_json::json!({
-        "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
+        "version": 1, "tabs": {"editors": []},
         "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": true, "rightCollapsed": false, "rightBottomCollapsed": false},
         "panes": {"kind": "pane", "id": "pane", "tabs": [{"id": "session", "kind": "session"}, {"id":"file", "kind":"file", "file_path":"src/file.rs", "file_mode":"diff", "file_base":"branch-base"}], "active_tab": "session"}
     })).unwrap();
@@ -70,7 +70,7 @@ fn test_ui状態の事実_不正な配置と別種の事実を受理しない() 
     // Given
     let codec = WorkspaceStateCodec;
     let raw = CborValue::Text(serde_json::json!({
-        "version": 1, "tabs": {"editors": [], "activeEditorPath": null},
+        "version": 1, "tabs": {"editors": []},
         "layout": {"centerTab": "agent", "activeView": "git", "leftNavCollapsed": false, "rightCollapsed": false, "rightBottomCollapsed": false},
         "panes": {"kind": "pane", "id": "pane", "tabs": [], "active_tab": "missing"}
     }).to_string());
@@ -117,7 +117,7 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
 fn test_workspace保存形式_panesのない旧jsonと現在のjsonを直接往復する() {
     // Given
     let legacy = serde_json::json!({
-        "version": 1, "tabs": {"editors": [{"path":"file", "name":"File"}], "activeEditorPath":"file"},
+        "version": 1, "tabs": {"editors": [{"path":"file", "name":"File"}]},
         "layout": {"centerTab":"agent", "activeView":"git", "leftNavCollapsed":true, "rightCollapsed":false, "rightBottomCollapsed":false}
     });
     for panes in [
@@ -147,7 +147,7 @@ fn test_workspace保存形式_省略した設定を補わず往復する() {
     // Given
     let full = serde_json::json!({
         "version": 1,
-        "tabs": {"editors": [], "activeEditorPath": null},
+        "tabs": {"editors": []},
         "layout": {"centerTab":"agent", "activeView":"git", "leftNavCollapsed":false, "rightCollapsed":false, "rightBottomCollapsed":false}
     });
     for tabs in [false, true] {
@@ -189,35 +189,6 @@ fn test_保存タブ_未知の表示と比較を拒否する() {
                 stored
             )
             .is_err()
-        );
-    }
-}
-
-#[test]
-fn test_pane読み込み_workflowタブを除いて残りと分割を保つ() {
-    // Given
-    for active in ["workflow", "terminal"] {
-        let raw = serde_json::json!({"kind":"split","id":"split","axis":"horizontal","ratio":0.5,
-            "first":{"kind":"pane","id":"a","tabs":[{"id":"workflow","kind":"workflow"},{"id":"terminal","kind":"terminal"}],"active_tab":active},
-            "second":{"kind":"pane","id":"b","tabs":[],"active_tab":null}});
-        let stored: StoredPaneLayout = serde_json::from_value(raw).unwrap();
-        // When
-        let layout: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout =
-            stored.try_into().unwrap();
-        let written = serde_json::to_value(StoredPaneLayout::from(&layout)).unwrap();
-        // Then
-        assert_eq!(
-            written["first"]["tabs"],
-            serde_json::json!([{"id":"terminal","kind":"terminal"}])
-        );
-        assert_eq!(written["second"]["id"], "b");
-        assert_eq!(
-            written["first"]["active_tab"],
-            if active == "terminal" {
-                serde_json::json!("terminal")
-            } else {
-                serde_json::Value::Null
-            }
         );
     }
 }

@@ -58,9 +58,3 @@ pub fn acquire(path: &std::path::Path) -> Result<File, LockError> {
     exclusive(&file)?;
     Ok(file)
 }
-
-pub async fn acquire_async(path: &std::path::Path) -> Result<File, LockError> {
-    let file = open(path)?;
-    exclusive_async(&file).await?;
-    Ok(file)
-}

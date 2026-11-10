@@ -43,7 +43,7 @@ fn fixture() -> (
         "seed-archive",
     )
     .unwrap();
-    let repository = ExecutionTreeArchiveFactRepository::new(store.clone(), directory.path());
+    let repository = ExecutionTreeArchiveFactRepository::new(store.clone());
     (directory, store, repository, meta)
 }
 
@@ -53,7 +53,7 @@ pub async fn test_実行木archive_終了前は拒否して終了後の理由と
     let (directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
     // When / Then
-    assert!(repository.archive(&id, 123.456789, "manual").await.is_err());
+    assert!(repository.archive(&id, 123.456789).await.is_err());
     assert!(repository
         .archive_snapshot_for(std::slice::from_ref(&meta.tree_id))
         .await
@@ -68,10 +68,7 @@ pub async fn test_実行木archive_終了前は拒否して終了後の理由と
     )
     .await
     .unwrap();
-    repository
-        .archive(&id, 123.456789, "worktree_removed")
-        .await
-        .unwrap();
+    repository.archive(&id, 123.456789).await.unwrap();
     let records = repository
         .archive_snapshot_for(std::slice::from_ref(&meta.tree_id))
         .await
@@ -82,10 +79,9 @@ pub async fn test_実行木archive_終了前は拒否して終了後の理由と
         vec![ExecutionTreeArchiveRecord {
             execution_id: meta.tree_id.clone(),
             archived_at: 123.456789,
-            archive_reason: "worktree_removed".into(),
         }]
     );
-    repository.archive(&id, 200.0, "manual").await.unwrap();
+    repository.archive(&id, 200.0).await.unwrap();
     assert_eq!(
         repository
             .archive_snapshot_for(&[meta.tree_id])
@@ -113,7 +109,7 @@ pub async fn test_実行木restore_終了状態を保ちsessionはpausedにな�
     )
     .await
     .unwrap();
-    repository.archive(&id, 3.0, "manual").await.unwrap();
+    repository.archive(&id, 3.0).await.unwrap();
     // When
     repository.restore(&id, 4.0).await.unwrap();
     // Then
@@ -144,104 +140,6 @@ pub async fn test_実行木restore_終了状態を保ちsessionはpausedにな�
 }
 
 #[tokio::test]
-pub async fn test_完了済み旧archive_元の時刻を保って移行し次回候補から外す() {
-    // Given
-    let (_directory, store, repository, meta) = fixture();
-    let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
-    for (kind, timestamp) in [
-        ("submit_received", 1000),
-        ("stop_received", 2000),
-        ("archive_requested", 42000),
-    ] {
-        let mut pending = releashd::test_support::integration::workflow::pending_single_fact(
-            &meta,
-            &NodeFact::AbortRequested(Default::default()),
-            timestamp,
-        )
-        .unwrap();
-        pending.row.event_type = kind.into();
-        pending.row.detail = "{}".into();
-        releashd::test_support::integration::workflow::append_pending_rows(&store, vec![pending])
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        repository.target(id.as_str()).await.unwrap().status,
-        releashd::test_support::integration::workflow::ExecutionStatus::Completed
-    );
-    assert_eq!(
-        repository
-            .legacy_session_archive_page(None)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-    // When
-    repository
-        .archive(&id, 100.0, "worktree_removed")
-        .await
-        .unwrap();
-    // Then
-    let snapshot = repository
-        .archive_snapshot_for(&[id.to_string()])
-        .await
-        .unwrap();
-    assert_eq!(snapshot.records[0].archived_at, 42.0);
-    assert_eq!(snapshot.records[0].archive_reason, "manual");
-    assert!(repository
-        .legacy_session_archive_page(None)
-        .await
-        .unwrap()
-        .is_empty());
-    let facts =
-        releashd::test_support::integration::workflow::read_tree_records(&store, id.as_str())
-            .await
-            .unwrap();
-    assert!(!facts
-        .iter()
-        .any(|record| matches!(record.fact, NodeFact::AbortRequested(_))));
-    repository.archive(&id, 200.0, "manual").await.unwrap();
-    assert_eq!(
-        releashd::test_support::integration::workflow::read_tree_records(&store, id.as_str())
-            .await
-            .unwrap(),
-        facts
-    );
-}
-
-#[test]
-pub fn test_旧archive記録_理由と時刻を保って読み移行完了後だけ削除する() {
-    // Given
-    let (directory, _, repository, meta) = fixture();
-    let path = directory.path().join("workflow_execution_archives.json");
-    std::fs::write(
-        &path,
-        serde_json::json!({"executions": {
-            meta.tree_id.clone(): {"archivedAt": 15.125, "archiveReason": "worktree_removed"},
-            "restored": {"restoredAt": 20.0}
-        }})
-        .to_string(),
-    )
-    .unwrap();
-    // When
-    let records = repository.legacy_archives().unwrap();
-    // Then
-    assert_eq!(
-        records,
-        vec![ExecutionTreeArchiveRecord {
-            execution_id: meta.tree_id,
-            archived_at: 15.125,
-            archive_reason: "worktree_removed".into()
-        }]
-    );
-    assert!(path.exists());
-    repository.finish_legacy_migration().unwrap();
-    assert!(!path.exists());
-    assert!(repository.legacy_archives().unwrap().is_empty());
-}
-
-#[tokio::test]
 pub async fn test_実行木restore_archiveされていない実行に終了事実を追加しない() {
     let (_directory, store, repository, meta) = fixture();
     let before =
@@ -258,17 +156,6 @@ pub async fn test_実行木restore_archiveされていない実行に終了事�
             .unwrap(),
         before
     );
-}
-
-#[test]
-pub fn test_旧archive記録_従来許可していた空objectを受理し破損jsonは保持する() {
-    let (directory, _, repository, _) = fixture();
-    let path = directory.path().join("workflow_execution_archives.json");
-    std::fs::write(&path, "{}").unwrap();
-    assert!(repository.legacy_archives().unwrap().is_empty());
-    std::fs::write(&path, "invalid json").unwrap();
-    assert!(repository.legacy_archives().is_err());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "invalid json");
 }
 
 #[tokio::test]
@@ -395,7 +282,7 @@ pub async fn test_archive候補_履歴や定義をfoldせずページングしgc
     .await
     .unwrap();
     repository
-        .archive(&ExecutionTreeId::new(&meta.tree_id).unwrap(), 3.0, "manual")
+        .archive(&ExecutionTreeId::new(&meta.tree_id).unwrap(), 3.0)
         .await
         .unwrap();
     // When
@@ -565,50 +452,6 @@ pub async fn test_repository所属の記録_読取専用では保存失敗を返
 }
 
 #[tokio::test]
-pub async fn test_repository所属の復元_フォルダ消失済みでも旧隔離worktreeの事実を参照する() {
-    // Given
-    let (_directory, store, repository, meta) = fixture();
-    let mut pending = releashd::test_support::integration::workflow::pending_single_fact(
-        &meta,
-        &NodeFact::AbortRequested(Default::default()),
-        2,
-    )
-    .unwrap();
-    pending.row.event_type = "isolated_worktree_created".into();
-    pending.row.parent_id = Some(meta.node_execution_id.clone());
-    pending.row.node_execution_id = "isolated-child".into();
-    pending.row.detail = serde_json::json!({
-        "repositoryRoot": "/owner",
-        "worktreePath": "/owner-worktrees/.releash-isolated/child",
-        "branch": "child"
-    })
-    .to_string();
-    releashd::test_support::integration::workflow::append_pending_rows(&store, vec![pending])
-        .await
-        .unwrap();
-    // When / Then
-    assert_eq!(
-        repository.candidate_page(None).await.unwrap()[0]
-            .repository_root
-            .as_deref(),
-        Some("/owner")
-    );
-    repository
-        .record_repository_root(&meta.tree_id, "/owner", 3.0)
-        .await
-        .unwrap();
-    assert_eq!(
-        repository
-            .target(&meta.tree_id)
-            .await
-            .unwrap()
-            .repository_root
-            .as_deref(),
-        Some("/owner")
-    );
-}
-
-#[tokio::test]
 pub async fn test_archive読取_実経路で失敗分類を保持する() {
     use releashd::test_support::integration::persistence::ReadFailure;
     use releashd::test_support::integration::transport::classified_error;
@@ -616,21 +459,13 @@ pub async fn test_archive読取_実経路で失敗分類を保持する() {
     let (_directory, store, repository, meta) = fixture();
     let id = ExecutionTreeId::new(meta.tree_id.clone()).unwrap();
     for (failure, expected) in ReadFailure::cases() {
-        for operation in 0..6 {
+        for operation in 0..4 {
             store.fail_next_read(failure.clone());
             // When
             let result = match operation {
                 0 => repository.candidate_page(None).await.map(|_| ()),
                 1 => repository.location(&meta.tree_id).await.map(|_| ()),
-                2 => repository
-                    .legacy_session_archive_page(None)
-                    .await
-                    .map(|_| ()),
-                3 => repository
-                    .archive_snapshot_for(std::slice::from_ref(&meta.tree_id))
-                    .await
-                    .map(|_| ()),
-                4 => repository.archive(&id, 2.0, "manual").await,
+                2 => repository.archive(&id, 2.0).await,
                 _ => {
                     repository
                         .append(&meta.tree_id, NodeFact::RestoreRequested, 2.0)

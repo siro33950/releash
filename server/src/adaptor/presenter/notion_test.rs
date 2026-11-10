@@ -63,17 +63,4 @@ pub(crate) mod tests {
 
         assert!(serde_json::from_str::<PropertyMappingView>(json).is_err());
     }
-
-    #[test]
-    fn test_notion_label_option_view_option_ids省略時は空になる() {
-        let json = r#"{
-            "property_name": "Status",
-            "property_type": "status",
-            "options": ["Todo", "Done"]
-        }"#;
-        let deserialized: NotionLabelOptionView = serde_json::from_str(json).unwrap();
-
-        assert_eq!(deserialized.property_name, "Status");
-        assert!(deserialized.option_ids.is_empty());
-    }
 }

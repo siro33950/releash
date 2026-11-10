@@ -1,19 +1,11 @@
 # Claude Code
 .claude/*
-!.claude/commands/
-!.claude/rules/
 
 # Dependencies
 node_modules
-.pnpm-store/
 
 # Build outputs
 target/
-dist/
-out/
-.next/
-build/
-*.tsbuildinfo
 
 # Environment files
 .env
@@ -33,28 +25,13 @@ Thumbs.db
 
 # Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
 # Rust
-target/
 *.rs.bk
-Cargo.lock
-!Cargo.lock
-
-# Debug
-debug/
-*.dSYM/
 
 # Test coverage
-coverage/
-.nyc_output/
 rust-codecov.json
 .qlty/
-
-# Performance harness run output (canonical baselines live in specs/*/performance-baselines/)
-performance-results/
 
 # Terraform
 **/.terraform/

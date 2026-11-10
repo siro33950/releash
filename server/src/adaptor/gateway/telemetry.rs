@@ -3,15 +3,6 @@ use crate::usecase::telemetry::TerminalLaunch;
 
 pub struct TelemetryGateway;
 impl TelemetryPort for TelemetryGateway {
-    fn report_frontend_error(&self, error_type: &str, message: &str, stack: Option<&str>) {
-        crate::infrastructure::telemetry::crash::report_frontend_error(error_type, message, stack);
-    }
-    fn set_mounted_xterm_count(&self, count: u64) {
-        crate::infrastructure::telemetry::metrics::set_mounted_xterm_count(count);
-    }
-    fn record_usage_event(&self, name: &str) {
-        crate::infrastructure::telemetry::metrics::record_usage_event(name);
-    }
     fn set_performance_enabled(&self, enabled: bool) {
         use crate::infrastructure::telemetry::config;
         crate::infrastructure::telemetry::metrics::set_performance_enabled(
