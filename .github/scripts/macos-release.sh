@@ -66,7 +66,16 @@ APP="$WORK/Releash.xcarchive/Products/Applications/Releash.app"
 VERSION=$(python3 "$ROOT/.github/scripts/verify-release.py" "$ROOT" "$APP")
 lipo -verify_arch arm64 "$APP/Contents/MacOS/Releash"
 lipo -verify_arch x86_64 "$APP/Contents/MacOS/Releash"
-codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$APP"
+sign() {
+  codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$KEYCHAIN" --options runtime --timestamp "$@"
+}
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+sign "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+sign --preserve-metadata=entitlements "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+sign "$SPARKLE/Versions/B/Autoupdate"
+sign "$SPARKLE/Versions/B/Updater.app"
+sign "$SPARKLE"
+sign "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 ditto -c -k --keepParent "$APP" "$WORK/notarize.zip"

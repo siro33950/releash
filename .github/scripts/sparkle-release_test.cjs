@@ -100,19 +100,30 @@ for (const [failure, nightly] of ['missing-asset', 'public-asset', 'none'].flatM
     const calls = [];
     writeFileSync(join(root, 'Releash_0.4.21_universal.zip'), '0123456789');
     writeFileSync(join(root, 'sparkle.json'), JSON.stringify({ version: '0.4.21', signature: 'a'.repeat(86) + '==', length: 10 }));
+    // GitHub serves a draft's assets under a temporary path and finds only published releases by tag.
+    const download = path => `https://github.com/owner/repo/releases/download/${path}/Releash_0.4.21_universal.zip`;
     const run = (...args) => {
       calls.push(args);
       if (args[0] === 'curl') {
         assert.equal(target.draft, false);
+        assert.ok(!args.at(-1).includes('untagged-'));
         if (fail === 'public-asset') throw new Error('unavailable asset');
         return '';
       }
-      if (args[1] === 'api') return JSON.stringify(args.at(-1).includes('/tags/') ? target : [stable, target]);
-      if (args[2] === 'upload') target.assets = fail === 'missing-asset' ? [] : release('0.4.21', true).assets;
+      if (args[1] === 'api') {
+        if (!args.at(-1).includes('/tags/')) return JSON.stringify([stable, target]);
+        if (target.draft) throw new Error('HTTP 404');
+        return JSON.stringify(target);
+      }
+      if (args[2] === 'upload') {
+        target.assets = fail === 'missing-asset' ? []
+          : [{ name: 'Releash_0.4.21_universal.zip', size: 10, browser_download_url: download('untagged-0123456789abcdef') }];
+      }
       if (args.includes('--notes-file')) target.body = readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8');
       if (args.includes('--draft=false')) {
         assert.ok(readFileSync('public/appcast.xml', 'utf8').includes('0.4.21'));
         target.draft = false;
+        target.assets = target.assets.map(asset => ({ ...asset, browser_download_url: download(target.tag_name) }));
       }
       return '';
     };
@@ -141,6 +152,7 @@ for (const [failure, nightly] of ['missing-asset', 'public-asset', 'none'].flatM
       // Then
       assert.equal(readFileSync('public/appcast.xml', 'utf8'), first);
       assert.ok(first.includes('0.4.21'));
+      assert.ok(first.includes(download(target.tag_name)));
       assert.equal(first.includes('0.4.20'), nightly);
       assert.ok(calls.some(args => args.includes(`--prerelease=${nightly}`) && args.includes(`--latest=${!nightly}`)));
       assert.equal(target.tag_name, process.env.RELEASE_TAG);

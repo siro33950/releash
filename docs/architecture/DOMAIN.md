@@ -18,11 +18,11 @@
 
 型を domain に置くかは「**誰の都合でその形が決まっているか**」で判断する。
 
-- **フロント（クライアント）の都合をドメインに漏らしてはならない。** 表示・転送のためにその形が必要な型は DTO であり、usecase に置く。
-- フロントの都合でデータ型が必要になったら DTO を作る。domain の Entity を表示用に歪めない。
-- 補足的なサイン: 振る舞い（`impl` のメソッド）・不変条件・識別子を持たず、表示・転送のためだけに生成される型は、Entity ではなく DTO の疑いが強い。ただし `impl` の有無は症状であって判定の本質ではない（本質は上記の「誰の都合か」）。
+- **フロント（クライアント）の都合をドメインに漏らしてはならない。** 表示・転送のためだけに決まる形は domain に置かない。その形は、presenter の転送の型か QueryService の DTO が持つ。
+- domain の Entity を表示用に歪めない。
+- 補足的なサイン: 振る舞い（`impl` のメソッド）・不変条件・識別子を持たず、表示・転送のためだけに生成される型は、domain の型ではない疑いが強い。ただし `impl` の有無は症状であって判定の本質ではない（本質は上記の「誰の都合か」）。
 
-→ Query 側のモデル構築は [USECASE.md](./USECASE.md) の QueryService、[GATEWAY.md](./GATEWAY.md) の QueryService の実装を参照。
+→ 読み取りで Entity と DTO のどちらを返すかは [USECASE.md](./USECASE.md) の「読み取り」を参照。
 
 ## モデルが実行を担う
 
@@ -102,11 +102,11 @@ trait のシグネチャに外部世界の語彙が現れたら、それは**変
 
 schema が実行時に決まることは、汎用値型を内側へ通す理由にならない。domain 自身の値表現を定義すれば、外部形式への依存は消え、検証済みという状態も型で表せる。
 
-DTO を返す読み取りの口（QueryService）は、ドメインの言語をスキップするために存在するので usecase に置く（[USECASE.md](./USECASE.md) QueryService）。domain の trait と混同しない。
+QueryService の trait は usecase に置く（[USECASE.md](./USECASE.md) QueryService）。domain の trait と混同しない。
 
 ### Repository trait
 
-集約の保存の抽象化。
+集約の保存と取得の抽象化。
 
 ## 失敗
 
