@@ -40,6 +40,29 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     try http.publish(payload, target: "directory", args: ["/repo", directory])
   }
 
+  @MainActor private func enterSearch(_ value: String, in host: ViewHarness) async throws {
+    try await host.focusTextField()
+    let editor = try XCTUnwrap(host.window.firstResponder as? NSTextView)
+    editor.insertText(
+      value, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+    await host.refresh()
+  }
+
+  @MainActor private func publishFile(_ name: String, http: TestHTTPClient) async throws {
+    let args = ["/repo", name, "head"]
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.contains { $0.target == "file-tab" && $0.args == args }
+      }
+    }
+    var payload = Releash_Client_V1_StatePayload()
+    payload.fileTab.initialMode = "file"
+    payload.fileTab.view.textDiff.path = name
+    payload.fileTab.view.textDiff.original = ""
+    payload.fileTab.view.textDiff.modified = "fn main() {}\n"
+    try http.publish(payload, target: "file-tab", args: args)
+  }
+
   @MainActor private func views<T: NSView>(_ view: NSView, of type: T.Type) -> [T] {
     (view as? T).map { [$0] } ?? view.subviews.flatMap { views($0, of: type) }
   }
@@ -79,6 +102,30 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
         userInfo: [NSLocalizedDescriptionKey: "Missing accessibility element: \(name)"])
     }
     return found
+  }
+
+  @MainActor private func buttonTitles(in root: AXUIElement) throws -> [String] {
+    func attribute(_ name: String) throws -> CFTypeRef? {
+      var value: CFTypeRef?
+      let result = AXUIElementCopyAttributeValue(root, name as CFString, &value)
+      guard result == .success || result == .noValue || result == .attributeUnsupported else {
+        throw NSError(domain: "Accessibility", code: Int(result.rawValue))
+      }
+      return value
+    }
+    let role = try XCTUnwrap(attribute(kAXRoleAttribute) as? String)
+    var titles: [String] = []
+    if role == kAXButtonRole {
+      let title = try attribute(kAXTitleAttribute) as? String
+      let description = try attribute(kAXDescriptionAttribute) as? String
+      titles = [title, description].compactMap { $0 }
+    }
+    if let children = try attribute(kAXChildrenAttribute) {
+      for child in try XCTUnwrap(children as? [AXUIElement]) {
+        titles += try buttonTitles(in: child)
+      }
+    }
+    return titles
   }
 
   @MainActor private func frame(_ name: String, in host: ViewHarness, role: String? = nil) throws
@@ -232,6 +279,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     let (http, model, panelHost) = try await panel()
     let host: ViewHarness
     if center {
+      let previous = http.state.withLock { Set($0.subscriptions.map(\.subscriptionID)) }
       panelHost.close()
       host = await ViewHarness(
         HStack {
@@ -239,6 +287,14 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
           RightPanelView(expanded: .constant(true), model: model)
         }, size: NSSize(width: 1400, height: 700))
       try await host.press("ファイル")
+      try await eventually {
+        http.state.withLock {
+          $0.subscriptions.contains {
+            $0.target == "directory" && $0.args == ["/repo", "."]
+              && !previous.contains($0.subscriptionID)
+          }
+        }
+      }
     } else {
       host = panelHost
     }
@@ -246,12 +302,15 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     for name in names {
       try await clickRow(name, in: host)
       try await eventuallyView(host) { (try? self.tabFrame(name, in: host)) != nil }
+      try await publishFile(name, http: http)
+      try await eventuallyView(host) { host.element("file-content") != nil }
     }
     return (http, model, host)
   }
 
   @MainActor private func splitFiles(in host: ViewHarness) async throws {
     try await host.press("first.rs")
+    try await eventuallyView(host) { host.element("file-content") != nil }
     let source = try tabFrame("first.rs", in: host)
     let area = try frame("file-content", in: host)
     await drag(
@@ -271,6 +330,28 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
         .first { $0.isVertical && $0.arrangedSubviews.count == 2 })
     XCTAssertTrue(outline.isDescendant(of: split.arrangedSubviews[0]))
     XCTAssertGreaterThan(split.arrangedSubviews[1].frame.width, 0)
+    await model.stop()
+  }
+
+  @MainActor func test_ファイルタブ_b002_一覧から本文を開いても中央のタブは増えない() async throws {
+    // Given
+    let (http, model, host) = try await files([], center: true)
+    defer { host.close() }
+    let pane = try XCTUnwrap(model.panes.controller.focusedPaneId)
+    model.panes.open(.terminal, in: pane)
+    try await eventuallyView(host) { host.element("Terminal 1") != nil }
+    let centerTabs = try strip("Terminal 1", in: host)
+    try publish(http, entries: [entry("first.rs")])
+    // When
+    try await clickRow("first.rs", in: host)
+    try await publishFile("first.rs", http: http)
+    // Then
+    try await eventuallyView(host) { host.element("file-content") != nil }
+    XCTAssertEqual(try strip("first.rs", in: host), ["first.rs"])
+    XCTAssertEqual(try strip("Terminal 1", in: host), centerTabs)
+    XCTAssertEqual(host.element("file-path")?.label, "first.rs")
+    XCTAssertGreaterThan(
+      try frame("file-content", in: host).minX, try tabFrame("Terminal 1", in: host).maxX)
     await model.stop()
   }
 
@@ -442,7 +523,16 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
         host.element("file:first.rs") == nil && host.element("file-path") == nil
           && (try? self.element("first.rs", in: host, role: kAXButtonRole)) == nil
       }
+      let previous = http.state.withLock { Set($0.subscriptions.map(\.subscriptionID)) }
       try await host.press("ファイル")
+      try await eventually {
+        http.state.withLock {
+          $0.subscriptions.contains {
+            $0.target == "directory" && $0.args == ["/repo", "."]
+              && !previous.contains($0.subscriptionID)
+          }
+        }
+      }
       try publish(http, entries: [entry("first.rs")])
       try await eventuallyView(host) {
         host.element("file:first.rs") != nil && host.element("file-path") != nil
@@ -528,7 +618,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_ファイル一覧_b022_b025_b026_絞り込みをやめると元の開閉状態へ戻る() async throws {
+  @MainActor func test_ファイル一覧_b018_b022_b023_b025_b026_絞り込みをやめると元の開閉状態へ戻る() async throws {
     for search in [true, false] {
       // Given
       let (http, model, host) = try await panel()
@@ -545,7 +635,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       try publish(http, directory: "opened", entries: [entry("opened/ordinary.rs")])
       try await eventuallyView(host) { host.element("file:opened/ordinary.rs") != nil }
       if search {
-        try await host.setTextField("needle")
+        try await enterSearch("needle", in: host)
       } else {
         try await host.press("差分のみ")
       }
@@ -568,6 +658,12 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       ]
       try http.publish(payload, target: "filtered-files", args: args)
       try await eventuallyView(host) { host.element("file:closed/needle.rs") != nil }
+      var expanded: CFTypeRef?
+      XCTAssertEqual(
+        AXUIElementCopyAttributeValue(
+          try host.tableRow("file:closed"), kAXDisclosingAttribute as CFString, &expanded), .success
+      )
+      XCTAssertEqual(expanded as? Bool, true)
       if search {
         try await host.press("差分のみ")
         let combined = ["/repo", "name=needle", "changed=true"]
@@ -588,7 +684,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       }
       // When
       if search {
-        try await host.setTextField("")
+        try await enterSearch("", in: host)
       } else {
         try await host.press("差分のみ")
       }
@@ -613,7 +709,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     // Given
     let (http, model, host) = try await panel()
     defer { host.close() }
-    try await host.setTextField("needle")
+    try await enterSearch("needle", in: host)
     try await eventually {
       http.state.withLock { $0.subscriptions.contains { $0.target == "filtered-files" } }
     }
@@ -824,7 +920,11 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       let host = await ViewHarness(
         HStack {
           WorkspacePaneView(model: model)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("acceptance-center")
           RightPanelView(expanded: .constant(true), model: model)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("acceptance-files")
         }, size: NSSize(width: 1400, height: 700))
       defer { host.close() }
       // When
@@ -833,7 +933,19 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       try await host.press("ファイル")
       try await eventuallyView(host) { host.element("file:legacy.rs") != nil }
       // Then: inspect both displayed regions, not the DTO or the database.
-      XCTAssertNil(try? element("legacy.rs", in: host, role: kAXButtonRole))
+      let content = try XCTUnwrap(host.window.contentView)
+      let split = try XCTUnwrap(
+        views(content, of: NSSplitView.self)
+          .first { $0.isVertical && $0.arrangedSubviews.count == 2 })
+      XCTAssertGreaterThan(split.arrangedSubviews[1].frame.width, 0)
+      XCTAssertGreaterThan(split.arrangedSubviews[1].frame.height, 0)
+      for region in ["acceptance-center", "acceptance-files"] {
+        let bounds = try frame(region, in: host)
+        XCTAssertGreaterThan(bounds.width, 0)
+        XCTAssertGreaterThan(bounds.height, 0)
+        let titles = try buttonTitles(in: element(region, in: host))
+        XCTAssertFalse(titles.contains("legacy.rs"), "\(region) に旧版のタブが表示されています")
+      }
     } catch {
       await model.stop()
       throw error
