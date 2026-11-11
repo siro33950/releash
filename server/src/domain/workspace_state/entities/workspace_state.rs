@@ -1,3 +1,4 @@
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycleEvent};
 use crate::domain::workspace_state::value_objects::pane_layout::PaneLayout;
 use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, WorkspaceTabsState};
 
@@ -34,6 +35,14 @@ impl WorkspaceState {
         if let Some(panes) = &mut self.panes {
             panes.remove_session_tab(Some(session_id), None);
         }
+    }
+
+    /// Session に起きた事実にタブ配置を追従させる。
+    /// 停止の事実（`ProcessExited`）では、その Session のタブを閉じる。
+    /// 再開の事実（`Resumed`）では、その Session のタブを `add_session_tab` と同じ規則で開く。
+    /// そのほかの事実では配置を変えない。
+    pub fn follow_session(&mut self, session: &AgentSession, event: &AgentSessionLifecycleEvent) {
+        todo!()
     }
 
     /// 実行木に属する Session のタブを、既存の選択を変えずに追加する。

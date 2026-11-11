@@ -282,6 +282,7 @@ pub fn compose_agent_sessions(
             input.terminal.clone(),
             input.terminal.clone(),
         ),
+        input.session_tabs.clone(),
     ));
     let mut hook_health = ProviderHookHealthUsecase::new(Arc::new(
         LocalProviderHookHealthRepository::new(repository, installation_id),

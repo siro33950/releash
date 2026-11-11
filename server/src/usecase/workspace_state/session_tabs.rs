@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::common::retry::{self, AttemptProgress, RetryBackoff, RetryLimiter};
-use crate::domain::agent_session::aggregates::AgentSession;
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycleEvent};
 use crate::domain::workflow::WorkflowError;
 use crate::domain::workspace_state::{
     WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
@@ -43,6 +43,20 @@ impl SessionTabsUsecase {
     pub async fn remove_session(&self, session: &AgentSession) -> Result<(), WorkspaceStateError> {
         self.update(session.workspace().as_str(), |state| {
             state.remove_session_tab(session.id());
+        })
+        .await
+    }
+
+    /// Session に起きた事実にタブ配置を追従させて保存し、配置の購読へ通知する。
+    pub async fn follow_session(
+        &self,
+        session: &AgentSession,
+        events: &[AgentSessionLifecycleEvent],
+    ) -> Result<(), WorkspaceStateError> {
+        self.update(session.workspace().as_str(), |state| {
+            for event in events {
+                state.follow_session(session, event);
+            }
         })
         .await
     }
