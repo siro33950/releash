@@ -52,6 +52,29 @@ final class FileWorkspaceLifecycleTests: XCTestCase {
     }
   }
 
+  @MainActor private func selectFirstFileTab() async throws {
+    let tab = app.buttons["first.rs"].firstMatch
+    let strip = app.scrollViews.containing(.button, identifier: "first.rs").firstMatch
+    XCTAssertTrue(strip.waitForExistence(timeout: 10))
+    strip.scroll(byDeltaX: 1000, deltaY: 0)
+    let visible = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in strip.frame.contains(tab.frame) && tab.isHittable },
+      object: nil)
+    let visibleResult = await XCTWaiter.fulfillment(of: [visible], timeout: 10)
+    XCTAssertEqual(visibleResult, .completed)
+    guard visibleResult == .completed else {
+      throw NSError(domain: "FileWorkspaceAcceptance", code: 1)
+    }
+    tab.click()
+    let selected = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "selected == true"), object: tab)
+    let selectedResult = await XCTWaiter.fulfillment(of: [selected], timeout: 10)
+    XCTAssertEqual(selectedResult, .completed)
+    guard selectedResult == .completed else {
+      throw NSError(domain: "FileWorkspaceAcceptance", code: 2)
+    }
+  }
+
   @MainActor private func chooseTabMenu(_ title: String) {
     app.menuBars.menuBarItems["タブ"].click()
     app.menuItems[title].click()
@@ -64,7 +87,7 @@ final class FileWorkspaceLifecycleTests: XCTestCase {
       app.menuButtons["開く"].firstMatch.click()
       app.menuItems["Terminal"].click()
     }
-    app.buttons["first.rs"].firstMatch.click()
+    try await selectFirstFileTab()
     app.buttons["Terminal 1"].firstMatch.click()
     // When
     chooseTabMenu("次のタブ")
@@ -77,7 +100,7 @@ final class FileWorkspaceLifecycleTests: XCTestCase {
     XCTAssertTrue(app.buttons["first.rs"].firstMatch.isSelected)
     XCTAssertFalse(app.buttons["second.rs"].firstMatch.isSelected)
     // Given / When: move focus to the file area and close its selected tab.
-    app.buttons["first.rs"].firstMatch.click()
+    try await selectFirstFileTab()
     chooseTabMenu("タブを閉じる")
     // Then
     let closed = XCTNSPredicateExpectation(
@@ -94,24 +117,33 @@ final class FileWorkspaceLifecycleTests: XCTestCase {
     try await prepareFileWorkspace("file-relaunch")
     let first = app.buttons["first.rs"].firstMatch
     let second = app.buttons["second.rs"].firstMatch
-    first.click()
+    try await selectFirstFileTab()
     let content = app.descendants(matching: .any).matching(identifier: "file-content").firstMatch
     XCTAssertTrue(content.waitForExistence(timeout: 10))
     first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(
       forDuration: 0.5,
       thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+    let sharedStrip = app.scrollViews.containing(.button, identifier: "first.rs")
+      .containing(.button, identifier: "second.rs").firstMatch
     let split = XCTNSPredicateExpectation(
       predicate: NSPredicate { _, _ in
-        first.frame.minY > second.frame.maxY
+        first.exists && second.exists && first.isSelected && second.isSelected
+          && !sharedStrip.exists
       }, object: nil)
     let splitResult = await XCTWaiter.fulfillment(of: [split], timeout: 10)
     XCTAssertEqual(splitResult, .completed)
-    let base = try XCTUnwrap(
-      app.checkBoxes.matching(identifier: "base と比較").allElementsBoundByIndex
-        .filter { $0.frame.minY >= first.frame.maxY }.min { $0.frame.minY < $1.frame.minY })
+    func baseComparison() throws -> XCUIElement {
+      let pane = try XCTUnwrap(
+        app.groups.containing(.button, identifier: "first.rs")
+          .containing(.checkBox, identifier: "base と比較").allElementsBoundByIndex
+          .min { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
+      return pane.checkBoxes["base と比較"].firstMatch
+    }
+    let base = try baseComparison()
     base.click()
-    XCTAssertEqual(base.value as? String, "1")
-    let distance = first.frame.minY - second.frame.minY
+    XCTAssertEqual((base.value as? NSNumber)?.boolValue, true)
+    let offset = CGVector(
+      dx: first.frame.minX - second.frame.minX, dy: first.frame.minY - second.frame.minY)
     // When
     app.terminate()
     launch()
@@ -122,10 +154,10 @@ final class FileWorkspaceLifecycleTests: XCTestCase {
     XCTAssertTrue(second.waitForExistence(timeout: 10))
     XCTAssertTrue(first.isSelected)
     XCTAssertTrue(second.isSelected)
-    XCTAssertEqual(first.frame.minY - second.frame.minY, distance, accuracy: 3)
-    let restoredBase = try XCTUnwrap(
-      app.checkBoxes.matching(identifier: "base と比較").allElementsBoundByIndex
-        .filter { $0.frame.minY >= first.frame.maxY }.min { $0.frame.minY < $1.frame.minY })
-    XCTAssertEqual(restoredBase.value as? String, "1")
+    XCTAssertFalse(sharedStrip.exists)
+    XCTAssertEqual(first.frame.minX - second.frame.minX, offset.dx, accuracy: 3)
+    XCTAssertEqual(first.frame.minY - second.frame.minY, offset.dy, accuracy: 3)
+    let restoredBase = try baseComparison()
+    XCTAssertEqual((restoredBase.value as? NSNumber)?.boolValue, true)
   }
 }

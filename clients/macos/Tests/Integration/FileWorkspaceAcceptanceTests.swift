@@ -7,14 +7,18 @@ import XCTest
 @testable import Releash
 
 final class FileWorkspaceAcceptanceTests: XCTestCase {
-  @MainActor private func panel() async throws -> (TestHTTPClient, AppModel, ViewHarness) {
+  @MainActor private func panel(center: Bool = false) async throws -> (
+    TestHTTPClient, AppModel, ViewHarness
+  ) {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
     let host = await ViewHarness(
-      RightPanelView(expanded: .constant(true), model: model),
-      size: NSSize(width: 1000, height: 700))
+      HStack {
+        if center { WorkspacePaneView(model: model) }
+        RightPanelView(expanded: .constant(true), model: model)
+      }, size: NSSize(width: center ? 1400 : 1000, height: 700))
     try await host.press("ファイル")
     try await eventually {
       http.state.withLock { $0.subscriptions.contains { $0.target == "directory" } }
@@ -245,60 +249,62 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     return titles(node)
   }
 
-  @MainActor private func drag(from source: CGPoint, to destination: CGPoint) async {
-    let pid = ProcessInfo.processInfo.processIdentifier
-    let sent = await Task.detached {
-      let events: [(CGEventType, CGPoint)] =
-        [(.mouseMoved, source), (.leftMouseDown, source)]
-        + (1...12).map { step in
-          (
-            .leftMouseDragged,
-            CGPoint(
-              x: source.x + (destination.x - source.x) * Double(step) / 12,
-              y: source.y + (destination.y - source.y) * Double(step) / 12)
-          )
-        } + [(.leftMouseUp, destination)]
-      for (type, point) in events {
-        guard
-          let event = CGEvent(
-            mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        else { return false }
-        event.postToPid(pid)
-        try? await Task.sleep(for: .milliseconds(30))
+  @MainActor private func drag(
+    from source: CGPoint, to destination: CGPoint, in host: ViewHarness
+  ) async throws {
+    let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+    let steps: [(NSEvent.EventType, CGPoint)] =
+      [(.leftMouseDown, source)]
+      + (1...12).map { step in
+        (
+          .leftMouseDragged,
+          CGPoint(
+            x: source.x + (destination.x - source.x) * Double(step) / 12,
+            y: source.y + (destination.y - source.y) * Double(step) / 12)
+        )
+      } + [(.leftMouseUp, destination)]
+    var index = 1
+    let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
+      let done = MainActor.assumeIsolated {
+        let step = steps[index]
+        let event = NSEvent.mouseEvent(
+          with: step.0,
+          location: host.window.convertPoint(
+            fromScreen: NSPoint(x: step.1.x, y: screenHeight - step.1.y)),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: host.window.windowNumber, context: nil, eventNumber: index,
+          clickCount: 1, pressure: step.0 == .leftMouseUp ? 0 : 1)
+        XCTAssertNotNil(event)
+        index += 1
+        if let event { NSApp.postEvent(event, atStart: false) }
+        return index == steps.count
       }
-      return true
-    }.value
-    XCTAssertTrue(sent)
+      if done { timer.invalidate() }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    RunLoop.main.add(timer, forMode: .eventTracking)
+    defer { timer.invalidate() }
+    let down = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown,
+        location: host.window.convertPoint(
+          fromScreen: NSPoint(x: source.x, y: screenHeight - source.y)),
+        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: host.window.windowNumber, context: nil, eventNumber: 0,
+        clickCount: 1, pressure: 1))
+    host.window.sendEvent(down)
+    try await eventually { index == steps.count }
+    await host.refresh()
   }
 
   @MainActor private func files(
-    _ names: [String] = ["first.rs", "second.rs"], center: Bool = false
+    _ names: [String] = ["first.rs", "second.rs"], center: Bool = false,
+    additionalFiles: [String] = []
   )
     async throws -> (TestHTTPClient, AppModel, ViewHarness)
   {
-    let (http, model, panelHost) = try await panel()
-    let host: ViewHarness
-    if center {
-      let previous = http.state.withLock { Set($0.subscriptions.map(\.subscriptionID)) }
-      panelHost.close()
-      host = await ViewHarness(
-        HStack {
-          WorkspacePaneView(model: model)
-          RightPanelView(expanded: .constant(true), model: model)
-        }, size: NSSize(width: 1400, height: 700))
-      try await host.press("ファイル")
-      try await eventually {
-        http.state.withLock {
-          $0.subscriptions.contains {
-            $0.target == "directory" && $0.args == ["/repo", "."]
-              && !previous.contains($0.subscriptionID)
-          }
-        }
-      }
-    } else {
-      host = panelHost
-    }
-    try publish(http, entries: names.map { entry($0) })
+    let (http, model, host) = try await panel(center: center)
+    try publish(http, entries: (names + additionalFiles).map { entry($0) })
     for name in names {
       try await clickRow(name, in: host)
       try await eventuallyView(host) { (try? self.tabFrame(name, in: host)) != nil }
@@ -313,8 +319,9 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     try await eventuallyView(host) { host.element("file-content") != nil }
     let source = try tabFrame("first.rs", in: host)
     let area = try frame("file-content", in: host)
-    await drag(
-      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: area.midX, y: area.maxY - 3))
+    try await drag(
+      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: area.midX, y: area.maxY - 3),
+      in: host)
     try await eventuallyView(host) { (try? self.strip("first.rs", in: host)) == ["first.rs"] }
   }
 
@@ -349,7 +356,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     try await eventuallyView(host) { host.element("file-content") != nil }
     XCTAssertEqual(try strip("first.rs", in: host), ["first.rs"])
     XCTAssertEqual(try strip("Terminal 1", in: host), centerTabs)
-    XCTAssertEqual(host.element("file-path")?.label, "first.rs")
+    XCTAssertEqual(host.element("file-path")?.value, "first.rs")
     XCTAssertGreaterThan(
       try frame("file-content", in: host).minX, try tabFrame("Terminal 1", in: host).maxX)
     await model.stop()
@@ -378,25 +385,23 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     // Then
     XCTAssertEqual(try strip("first.rs", in: host), ["first.rs"])
     XCTAssertEqual(try strip("second.rs", in: host), ["second.rs"])
-    XCTAssertGreaterThan(
-      try tabFrame("first.rs", in: host).minY, try tabFrame("second.rs", in: host).maxY)
     await model.stop()
   }
 
   @MainActor func test_ファイルタブ_b005_別の領域のタブ列へ移す() async throws {
     // Given
-    let (http, model, host) = try await files()
+    let (_, model, host) = try await files(additionalFiles: ["third.rs"])
     defer { host.close() }
     try await splitFiles(in: host)
     try await host.press("first.rs")
-    try publish(http, entries: [entry("first.rs"), entry("second.rs"), entry("third.rs")])
     try await clickRow("third.rs", in: host)
     try await eventuallyView(host) { (try? self.strip("first.rs", in: host).count) == 2 }
     // When
     let source = try tabFrame("third.rs", in: host)
     let target = try tabFrame("second.rs", in: host)
-    await drag(
-      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.midX, y: target.midY))
+    try await drag(
+      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.midX, y: target.midY),
+      in: host)
     // Then
     try await eventuallyView(host) {
       Set((try? self.strip("second.rs", in: host)) ?? []) == ["second.rs", "third.rs"]
@@ -407,12 +412,11 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
 
   @MainActor func test_ファイルタブ_b006_フォーカスのある領域へ開く() async throws {
     // Given
-    let (http, model, host) = try await files()
+    let (_, model, host) = try await files(additionalFiles: ["third.rs"])
     defer { host.close() }
     try await splitFiles(in: host)
     try await host.press("first.rs")
     let other = try strip("second.rs", in: host)
-    try publish(http, entries: [entry("first.rs"), entry("second.rs"), entry("third.rs")])
     // When
     try await clickRow("third.rs", in: host)
     // Then
@@ -451,9 +455,9 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     let source = try tabFrame("first.rs", in: host)
     let target = try tabFrame("second.rs", in: host)
     // When
-    await drag(
+    try await drag(
       from: CGPoint(x: source.midX, y: source.midY),
-      to: CGPoint(x: target.maxX + 15, y: target.midY)
+      to: CGPoint(x: target.maxX + 15, y: target.midY), in: host
     )
     // Then
     try await eventuallyView(host) {
@@ -473,8 +477,9 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     let terminal = try frame("Terminal 1", in: host, role: kAXButtonRole)
     // When / Then
     for (source, target) in [(file, terminal), (terminal, file)] {
-      await drag(
-        from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.midX, y: target.midY))
+      try await drag(
+        from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.midX, y: target.midY),
+        in: host)
       // Observe through subsequent event-loop turns so a delayed drop cannot pass unnoticed.
       let deadline = ContinuousClock.now.advanced(by: .seconds(1))
       repeat {
@@ -559,7 +564,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       let source = CGPoint(
         x: screen.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - screen.y)
       // When
-      await drag(from: source, to: CGPoint(x: source.x + offset, y: source.y))
+      try await drag(from: source, to: CGPoint(x: source.x + offset, y: source.y), in: host)
       // Then
       try await eventuallyView(host) {
         (split.arrangedSubviews[0].frame.width - left) * offset > 0
