@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::adaptor::gateway::shared::git_operation;
 use crate::domain::code::value_objects::file_list::{WalkStep, WorktreeEntry};
-use crate::domain::code::CodeError;
+use crate::domain::code::{CodeError, WorktreeEntries};
 use crate::usecase::code_error::CodeUsecaseError;
 use crate::usecase::directory_query::DirectoryQuery;
 
@@ -32,20 +32,18 @@ impl DirectoryQuery for DirectoryQueryGateway {
             .map(str::to_owned)
             .ok_or_else(|| CodeError::Rule("invalid path encoding".into()).into())
     }
+}
 
-    fn entries(
-        &self,
-        worktree: &str,
-        directory: &str,
-    ) -> Result<Vec<WorktreeEntry>, CodeUsecaseError> {
+impl WorktreeEntries for DirectoryQueryGateway {
+    fn entries(&self, worktree: &str, directory: &str) -> Result<Vec<WorktreeEntry>, CodeError> {
         let relative = Path::new(directory);
         if !worktree_path_is_visible(directory) {
-            return Err(CodeError::Rule("invalid directory path".into()).into());
+            return Err(CodeError::Rule("invalid directory path".into()));
         }
         let root = std::fs::canonicalize(worktree).map_err(CodeError::from)?;
         let target = std::fs::canonicalize(root.join(relative)).map_err(CodeError::from)?;
         if !target.starts_with(&root) {
-            return Err(CodeError::Rule("directory is outside worktree".into()).into());
+            return Err(CodeError::Rule("directory is outside worktree".into()));
         }
         let repo = git_operation::run(|| git2::Repository::open(&root)).map_err(CodeError::from)?;
         let mut entries = Vec::new();
@@ -82,7 +80,7 @@ impl DirectoryQuery for DirectoryQueryGateway {
         &self,
         worktree: &str,
         visit: &mut dyn FnMut(WorktreeEntry) -> WalkStep,
-    ) -> Result<(), CodeUsecaseError> {
+    ) -> Result<(), CodeError> {
         let mut pending = vec![".".to_owned()];
         while let Some(directory) = pending.pop() {
             for entry in self.entries(worktree, &directory)? {

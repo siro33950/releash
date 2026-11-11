@@ -121,6 +121,7 @@ pub(crate) fn build_code_usecase_with_gateways(
         Arc::new(StagingGateway),
         query,
         Arc::new(crate::adaptor::gateway::code::directory::DirectoryQueryGateway),
+        Arc::new(crate::adaptor::gateway::code::directory::DirectoryQueryGateway),
     )
 }
 

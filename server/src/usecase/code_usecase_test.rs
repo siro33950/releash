@@ -80,17 +80,19 @@ impl DirectoryQuery for Directory {
     fn file_target(&self, _: &str, _: &str) -> Result<String, CodeUsecaseError> {
         unreachable!()
     }
-    fn entries(&self, _: &str, _: &str) -> Result<Vec<WorktreeEntry>, CodeUsecaseError> {
+}
+impl WorktreeEntries for Directory {
+    fn entries(&self, _: &str, _: &str) -> Result<Vec<WorktreeEntry>, CodeError> {
         unreachable!()
     }
     fn walk(
         &self,
         worktree: &str,
         visit: &mut dyn FnMut(WorktreeEntry) -> WalkStep,
-    ) -> Result<(), CodeUsecaseError> {
+    ) -> Result<(), CodeError> {
         assert_eq!(worktree, "/repo");
         if self.fail {
-            return Err(CodeError::Rule("walk failed".into()).into());
+            return Err(CodeError::Rule("walk failed".into()));
         }
         for path in ["keep.rs", "skip.rs"] {
             assert_eq!(
@@ -112,6 +114,7 @@ fn usecase(fail: bool) -> CodeUsecase {
     CodeUsecase::new(
         dependencies.clone(),
         CodeQueryService::new(dependencies.clone(), dependencies.clone(), dependencies),
+        Arc::new(Directory { fail }),
         Arc::new(Directory { fail }),
     )
 }

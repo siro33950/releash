@@ -12,6 +12,7 @@ use crate::domain::code::services::filtered_files::FilteredFilesCollector;
 use crate::domain::code::value_objects::file_list::{FileFilter, FilteredFiles};
 use crate::domain::code::{
     ReviewBase, ReviewBlobSide, ReviewSideBytes, ReviewSideMetadata, StagingRepository,
+    WorktreeEntries,
 };
 
 use super::code_dto::DiffHunksResultDto;
@@ -23,6 +24,7 @@ pub struct CodeUsecase {
     staging: Arc<dyn StagingRepository>,
     query: CodeQueryService,
     directory: Arc<dyn super::directory_query::DirectoryQuery>,
+    entries: Arc<dyn WorktreeEntries>,
 }
 
 pub(super) use crate::domain::code::value_objects::review::ReviewContentSource;
@@ -53,11 +55,13 @@ impl CodeUsecase {
         staging: Arc<dyn StagingRepository>,
         query: CodeQueryService,
         directory: Arc<dyn super::directory_query::DirectoryQuery>,
+        entries: Arc<dyn WorktreeEntries>,
     ) -> Self {
         Self {
             staging,
             query,
             directory,
+            entries,
         }
     }
 
@@ -78,7 +82,7 @@ impl CodeUsecase {
         use crate::domain::code::services::directory::{entry_order, entry_status};
         let statuses = parse_statuses(statuses)?;
         let mut entries: Vec<_> = self
-            .directory
+            .entries
             .entries(worktree, directory)?
             .into_iter()
             .map(|entry| super::directory_query::DirectoryEntryDto {
@@ -102,7 +106,7 @@ impl CodeUsecase {
     ) -> Result<FilteredFiles, CodeUsecaseError> {
         let statuses = parse_statuses(statuses)?;
         let mut collector = FilteredFilesCollector::new(filter.clone(), statuses.iter().copied());
-        self.directory
+        self.entries
             .walk(worktree, &mut |entry| collector.offer(entry))?;
         Ok(collector.finish())
     }

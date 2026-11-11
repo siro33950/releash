@@ -1,5 +1,7 @@
 use crate::test_support_git::{add_and_commit, create_initial_commit, create_test_repo};
-use releashd::test_support::integration::code::{DirectoryQuery, DirectoryQueryGateway};
+use releashd::test_support::integration::code::{
+    DirectoryQuery, DirectoryQueryGateway, WorktreeEntries,
+};
 
 #[test]
 fn test_直下一覧_git状態と除外を含みgitを隠す() {
