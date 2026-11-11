@@ -5,6 +5,9 @@ struct ProvidersSettingsView: View {
   var model: AppModel
   @State var state = ProvidersSettingsState()
   @FocusState private var editingProvider: String?
+  /// 最後に編集していた provider。Settings のタブを離れたときの onDisappear で editingProvider を読むと、
+  /// 編集中の入力が保存されない。離れたときに保存する対象をここに持つ
+  @State private var activeEditingProvider: String?
 
   var body: some View {
     Form {
@@ -58,11 +61,12 @@ struct ProvidersSettingsView: View {
     }
     .formStyle(.grouped)
     .onAppear { state.subscribe(model) }
-    .onChange(of: editingProvider) { previous, _ in
+    .onChange(of: editingProvider) { previous, current in
       if let previous { saveExecutable(previous) }
+      activeEditingProvider = current
     }
     .onDisappear {
-      if let editingProvider { saveExecutable(editingProvider) }
+      if let activeEditingProvider { saveExecutable(activeEditingProvider) }
       state.unsubscribe(model)
     }
   }

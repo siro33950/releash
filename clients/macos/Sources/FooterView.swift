@@ -16,7 +16,7 @@ struct FooterView: View {
           }
         }
         if !model.hookHealth.readErrors.isEmpty || model.hookSubscriptionFailure != nil {
-          Image(systemName: "exclamationmark.triangle.fill")
+          CardIcon(image: Image("triangle-alert"))
             .foregroundStyle(UIStyle.attention)
             .help(
               ([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors)
@@ -45,12 +45,8 @@ struct FooterView: View {
             Label {
               Text(serverLabel)
             } icon: {
-              if let icon = NSImage(
-                systemSymbolName: model.releaseCompatibility == "compatible"
-                  ? "server.rack" : "exclamationmark.triangle",
-                accessibilityDescription: serverLabel)
-              {
-                Image(nsImage: icon)
+              if let icon = serverIcon(label: serverLabel) {
+                CardIcon(image: Image(nsImage: icon))
               }
             }
           }
@@ -74,6 +70,18 @@ struct FooterView: View {
     }
   }
 
+  private func serverIcon(label: String) -> NSImage? {
+    guard
+      let icon = NSImage(
+        named: model.releaseCompatibility == "compatible" ? "server" : "triangle-alert")?.copy()
+        as? NSImage
+    else { return nil }
+    // Menu の label は画像を NSImage 自身の大きさで描き、CardIcon の frame は効かない
+    icon.size = NSSize(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+    icon.accessibilityDescription = label
+    return icon
+  }
+
   private func uptime(_ info: Releash_Client_V1_ServerInfo, now: Date) -> String {
     let duration = max(0, Int(now.timeIntervalSince1970) - Int(info.processStartedAt))
     return "\(duration / 3600)h \((duration % 3600) / 60)m"
@@ -91,8 +99,7 @@ private struct ProviderFooterView: View {
       expanded.toggle()
     } label: {
       HStack(spacing: UIStyle.statusSpacing) {
-        Image(systemName: provider == "claude" ? "sparkles" : "terminal")
-          .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+        CardIcon(image: Image(provider == "claude" ? "sparkles" : "terminal"))
         Text(provider.capitalized)
         if let usage {
           ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, window in
@@ -101,7 +108,7 @@ private struct ProviderFooterView: View {
           }
         }
         if !warnings.isEmpty || usage?.windows.contains(where: { $0.warning }) == true {
-          Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(UIStyle.attention)
+          CardIcon(image: Image("triangle-alert")).foregroundStyle(UIStyle.attention)
         }
       }
     }

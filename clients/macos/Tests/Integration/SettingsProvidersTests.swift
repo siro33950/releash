@@ -238,6 +238,49 @@ final class SettingsProvidersTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_Providersを離れる_編集中でないProviderの下書きを保存しない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock { $0.providerAvailability = testProviderAvailability() }
+    let model = try await testModel(http)
+    let state = ProvidersSettingsState()
+    let host = await ViewHarness(ProvidersSettingsView(model: model, state: state))
+    defer { host.close() }
+    try await eventuallyView(host) {
+      host.element("settings-provider-executable-claude")?.value == "/custom/claude"
+    }
+    try await focusExecutable(host)
+    try await host.setTextField("/closing/claude")
+    state.executables["codex"] = "/draft/codex"
+    http.state.withLock { $0.deferSave = true }
+    let subscription = try XCTUnwrap(
+      http.state.withLock { $0.subscriptions.last { $0.target == "provider-availability" } })
+    // When
+    host.window.contentView = nil
+    // Then
+    try await eventually {
+      http.requests("StopStateSubscription").contains {
+        let request = try? Releash_Client_V1_StopStateSubscriptionRequest(
+          serializedBytes: $0.message ?? Data())
+        return request?.subscriptionID == subscription.subscriptionID
+      } && http.state.withLock { $0.pendingSave != nil }
+    }
+    XCTAssertTrue(state.saving.contains(.executable("claude")))
+    let respond = try XCTUnwrap(http.state.withLock { $0.pendingSave })
+    respond(
+      .init(
+        code: .ok, headers: [:], message: Data(), trailers: [:], error: nil,
+        tracingInfo: nil))
+    try await eventually { state.saving.isEmpty }
+    let requests = try http.requests("UpdateProviderExecutable").map {
+      try Releash_Client_V1_UpdateProviderExecutableRequest(
+        serializedBytes: XCTUnwrap($0.message))
+    }
+    XCTAssertEqual(requests.map(\.provider), ["claude"])
+    XCTAssertEqual(requests.map(\.executable), ["/closing/claude"])
+    await model.stop()
+  }
+
   @MainActor func test_別Providerの保存通知_未確定入力を保持して保存し拒否時に復元する() async throws {
     // Given
     let http = TestHTTPClient()
@@ -278,6 +321,59 @@ final class SettingsProvidersTests: XCTestCase {
     XCTAssertEqual(request.provider, "codex")
     XCTAssertEqual(request.executable, "/draft/codex")
     XCTAssertEqual(host.element("settings-provider-executable-claude")?.value, "/new/claude")
+    await model.stop()
+  }
+
+  @MainActor func test_Providersへ戻る_保存応答を待つ間も購読を再開し重複保存しない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock { $0.providerAvailability = testProviderAvailability() }
+    let model = try await testModel(http)
+    let host = await ViewHarness(SettingsView(model: model))
+    defer { host.close() }
+    try await host.press("Providers")
+    try await eventuallyView(host) {
+      host.element("settings-provider-executable-claude")?.value == "/custom/claude"
+    }
+    try await focusExecutable(host)
+    try await host.setTextField("/pending/claude")
+    http.state.withLock { $0.deferSave = true }
+    let first = http.state.withLock {
+      $0.subscriptions.last { $0.target == "provider-availability" }
+    }
+    // When
+    try await host.press("General")
+    try await eventually { http.state.withLock { $0.pendingSave != nil } }
+    try await host.press("Providers")
+    // Then
+    try await eventually {
+      http.state.withLock {
+        guard let current = $0.subscriptions.last(where: { $0.target == "provider-availability" })
+        else { return false }
+        return current.subscriptionID != first?.subscriptionID
+      }
+    }
+    try await eventuallyView(host) {
+      host.element("settings-provider-executable-claude")?.enabled == false
+    }
+    var payload = Releash_Client_V1_StatePayload()
+    payload.providerAvailability = testProviderAvailability()
+    payload.providerAvailability.providers.items[0].configuredExecutable =
+      "/from-subscription/claude"
+    try http.publish(payload, target: "provider-availability")
+    let respond = try XCTUnwrap(http.state.withLock { $0.pendingSave })
+    respond(
+      .init(code: .ok, headers: [:], message: Data(), trailers: [:], error: nil, tracingInfo: nil))
+    try await eventuallyView(host) {
+      host.element("settings-provider-executable-claude")?.value == "/from-subscription/claude"
+        && host.element("settings-provider-executable-claude")?.enabled == true
+    }
+    try await host.press("General")
+    try await host.press("Providers")
+    try await eventuallyView(host) {
+      host.element("settings-provider-executable-claude")?.enabled == true
+    }
+    XCTAssertEqual(http.requests("UpdateProviderExecutable").count, 1)
     await model.stop()
   }
 

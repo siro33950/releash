@@ -87,28 +87,32 @@ struct FileTabPane: View {
         IconChoice(
           selection: Binding(get: { base }, set: { setPresentation(base: $0) }),
           options: [
-            ("head", "HEAD と比較", "circle.and.line.horizontal"),
-            ("branch-base", "base と比較", "arrow.triangle.branch"),
+            ("head", "HEAD と比較", "git-commit-horizontal"),
+            ("branch-base", "base と比較", "git-branch"),
           ]
         ).accessibilityIdentifier("file-base")
         IconChoice(
           selection: settings.$style,
           options: [
-            ("unified", "上下に並べる", "rectangle.split.1x2"),
-            ("split", "左右に並べる", "rectangle.split.2x1"),
+            ("unified", "上下に並べる", "rows-2"),
+            ("split", "左右に並べる", "columns-2"),
           ]
         ).accessibilityIdentifier("file-style")
-        Toggle(isOn: settings.$full) { Label("全文", systemImage: "rectangle.expand.vertical") }
-          .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("全文")
-          .accessibilityIdentifier("file-full")
+        Toggle(isOn: settings.$full) {
+          CardLabel(title: "全文", image: "unfold-vertical")
+        }
+        .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("全文")
+        .accessibilityIdentifier("file-full")
       }
       Toggle(
         isOn: Binding(get: { mode == "diff" }, set: { setPresentation(mode: $0 ? "diff" : "file") })
-      ) { Label("Diff", systemImage: "plus.forwardslash.minus") }
+      ) {
+        CardLabel(title: "Diff", image: "diff")
+      }
       .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("Diff 表示")
       .accessibilityIdentifier("file-mode")
       Button(action: openInEditor) {
-        Label("外部エディタで開く", systemImage: "arrow.up.forward.app")
+        CardLabel(title: "外部エディタで開く", image: "square-arrow-out-up-right")
       }
       .labelStyle(.iconOnly).buttonStyle(IconButtonStyle()).iconButtonFrame().help("外部エディタで開く")
       .accessibilityIdentifier("file-open-editor")
@@ -397,7 +401,7 @@ struct IconChoice<Value: Hashable>: View {
           isOn: Binding(
             get: { selection == option.value }, set: { if $0 { selection = option.value } })
         ) {
-          Label(option.title, systemImage: option.symbol)
+          CardLabel(title: option.title, image: option.symbol)
         }
         .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly)
         .iconButtonFrame()

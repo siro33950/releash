@@ -50,7 +50,7 @@ struct RootView: View {
     Group {
       if let reason = model.connectionFailure {
         ContentUnavailableView {
-          Label("サーバに接続できません", systemImage: "exclamationmark.triangle")
+          Label("サーバに接続できません", image: "triangle-alert")
         } description: {
           Text(reason)
         } actions: {
