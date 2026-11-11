@@ -8,6 +8,44 @@ import XCTest
 @testable import Releash
 
 final class SessionTabPaneTests: XCTestCase {
+  @MainActor func test_会話タブ_停止中にNodeから開き直すと停止表示とResumeを保つ() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var snapshot = Releash_Client_V1_SessionTabSnapshot()
+    snapshot.session.id = "agent"
+    snapshot.session.workspaceWorktreePath = "/repo"
+    snapshot.session.availability = .paused
+    snapshot.node.id = "node"
+    snapshot.node.content.session.sessionID = "agent"
+    snapshot.node.capabilities.canResumeSession = true
+    http.state.withLock { $0.sessionTabs["agent"] = snapshot }
+    let model = try await testModel(http)
+    model.selectWorktree("/repo")
+    try await eventually { model.layoutLoaded }
+    XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+    var root = Releash_Client_V1_WorkspaceTreeItem()
+    root.node.id = "node"
+    root.node.sessionID = "agent"
+    root.node.contentKind.value = .session
+    // When
+    model.openRoot(root)
+    let tab = try XCTUnwrap(model.panes.controller.allTabIds.first)
+    let host = await ViewHarness(
+      SessionTabPane(model: model, tabID: tab, sessionID: "agent", focused: true))
+    defer { host.close() }
+    // Then
+    try await eventuallyView(host) {
+      host.texts().contains("Sessionは停止しています") && host.element("Resume") != nil
+    }
+    for _ in 0..<20 {
+      try await Task.sleep(for: .milliseconds(50))
+      XCTAssertEqual(model.panes.controller.allTabIds, [tab])
+      XCTAssertTrue(host.texts().contains("Sessionは停止しています"))
+      XCTAssertNotNil(host.element("Resume"))
+    }
+    await model.stop()
+  }
+
   @MainActor func test_会話タブ購読_利用可否未設定で端末と購読を解放する() async throws {
     // Given
     let http = TestHTTPClient()
