@@ -131,6 +131,12 @@ WHEN 開発者が Repositories タブを見る
 THEN General、Repositories、Providers、Workflows、System のタブに、`settings`、`folder`、`terminal`、`waypoints`、`monitor` のアイコンが出る
 AND 「リポジトリを選択してください」の表示に `folder` のアイコンが出る
 
+## B-021: Session を準備しているあいだのタブのアイコンの色
+
+GIVEN 中央に、「Sessionを準備しています」と表示する Session のタブが開いていて、その Node の状態が active である
+WHEN 開発者が中央のタブの並びを見る
+THEN そのタブの ● には、状態の色が付いていない
+
 ## 要件IDとBehavior IDの対応表
 | Requirement ID | Behavior ID |
 | --- | --- |
@@ -139,6 +145,6 @@ AND 「リポジトリを選択してください」の表示に `folder` のア
 | R-003 | B-003, B-004, B-010 |
 | R-004 | B-005 |
 | R-005 | B-006 |
-| R-006 | B-007 |
+| R-006 | B-007, B-021 |
 | R-007 | B-008 |
 | R-008 | B-009 |
