@@ -156,6 +156,48 @@ async fn test_ファイル検索_b030_ディレクトリ名とファイル名を
     assert!(snapshot.directories.is_empty());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_ファイル検索_b036_読めないディレクトリを除いてほかの一致を返す() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestorePermissions(std::path::PathBuf, std::fs::Permissions);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, self.1.clone());
+        }
+    }
+
+    // Given
+    let repo = repository();
+    write(repo.path(), "unreadable/needle-hidden.rs");
+    write(repo.path(), "readable/needle-visible.rs");
+    commit(repo.path());
+    let directory = repo.path().join("unreadable");
+    let permissions = std::fs::metadata(&directory).unwrap().permissions();
+    let _restore = RestorePermissions(directory.clone(), permissions);
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(
+        std::fs::read_dir(&directory).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    let data = tempfile::tempdir().unwrap();
+    let (_daemon, discovery) = start(data.path());
+    let (socket, _) = connect(&discovery).await;
+
+    // When
+    let snapshot = filtered(&socket, repo.path(), Some("needle"), false).await;
+
+    // Then
+    assert_tree(
+        &snapshot,
+        &[
+            (".", &["readable"]),
+            ("readable", &["readable/needle-visible.rs"]),
+        ],
+    );
+}
+
 #[tokio::test]
 async fn test_差分のみ_b023_b024_b026_未展開の変更を残し削除を除いて検索と併用する() {
     // Given
