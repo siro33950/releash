@@ -60,7 +60,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO build"
+          "xcodebuild -project Releash.xcodeproj -scheme Releash -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation build"
         ],
         "cwd": "clients/macos",
         "parallel": false,
@@ -99,7 +99,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/\"Releash.app\""
+          "env -u RELEASH_DATA_DIR open clients/macos/.build/DerivedData/Build/Products/Debug/\"Releash Dev.app\""
         ],
         "cwd": ".",
         "parallel": false
@@ -175,7 +175,7 @@
         "commands": [
           "pnpm --dir FileViewer install --frozen-lockfile",
           "pnpm --dir FileViewer test",
-          "xcodebuild -project Releash.xcodeproj -scheme ReleashUnitTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-unit -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
+          "xcodebuild -project Releash.xcodeproj -scheme ReleashUnitTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-unit -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation test"
         ],
         "cwd": "clients/macos",
         "parallel": false,
@@ -203,7 +203,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "xcodebuild -project Releash.xcodeproj -scheme ReleashIntegrationTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-integration -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO test"
+          "xcodebuild -project Releash.xcodeproj -scheme ReleashIntegrationTests -configuration {args.configuration} -destination platform=macOS -derivedDataPath .build/Tests-integration -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -skipPackagePluginValidation test"
         ],
         "cwd": "clients/macos",
         "parallel": false,

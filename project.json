@@ -55,6 +55,7 @@
         "commands": [
           "node --test .github/scripts/*_test.cjs",
           "python3 .github/scripts/macos-e2e_test.py",
+          "python3 .github/scripts/macos-helpers_test.py",
           "python3 .github/scripts/verify-release_test.py"
         ],
         "cwd": "."

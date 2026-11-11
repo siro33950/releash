@@ -135,7 +135,8 @@ import XCTest
     // When
     app.menuItems["Releash について"].click()
     // Then
-    XCTAssertTrue(app.staticTexts["Releash"].waitForExistence(timeout: 10), app.debugDescription)
+    let name = try XCTUnwrap(Bundle(url: update.application)?.infoDictionary?["CFBundleName"] as? String)
+    XCTAssertTrue(app.staticTexts[name].waitForExistence(timeout: 10), app.debugDescription)
     XCTAssertFalse(app.debugDescription.contains("Releash Preview"))
     app.typeKey("w", modifierFlags: .command)
     // When

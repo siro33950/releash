@@ -145,7 +145,14 @@ jobs:
         env:
           NX_TARGET: ${{ matrix.target }}
           RELEASH_HELPERS_RESTORED: ${{ steps.helpers.outputs.cache-hit }}
-        run: ./nx run "macos:$NX_TARGET" --parallel=2 --outputStyle=static
+          XCODE_XCCONFIG_FILE: ${{ runner.temp }}/ci.xcconfig
+        run: |
+          cat > "$XCODE_XCCONFIG_FILE" <<'EOF'
+          CODE_SIGN_IDENTITY = -
+          CODE_SIGN_STYLE = Manual
+          DEVELOPMENT_TEAM =
+          EOF
+          ./nx run "macos:$NX_TARGET" --parallel=2 --outputStyle=static
 
   server-required:
     needs: [plan, server-checks]

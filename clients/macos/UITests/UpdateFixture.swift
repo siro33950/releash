@@ -1,11 +1,12 @@
 import CryptoKit
 import Foundation
 import Network
+import Security
 import XCTest
 
 final class UpdateFixture: @unchecked Sendable {
   let fixture: Fixture
-  let identifier = "test.releash.update.\(UUID().uuidString)"
+  let identifier = "com.releash.macos.dev.update-test"
   let application: URL
   private(set) var currentVersion = ""
   private(set) var updatedVersion = ""
@@ -59,6 +60,7 @@ final class UpdateFixture: @unchecked Sendable {
       }
     }
     listener.start(queue: .global())
+    UserDefaults(suiteName: identifier)?.removePersistentDomain(forName: identifier)
   }
 
   func prepare(
@@ -72,7 +74,8 @@ final class UpdateFixture: @unchecked Sendable {
     guard port != 0 else { throw NSError(domain: "UpdateFixture", code: 1) }
     let key = Curve25519.Signing.PrivateKey()
     let source = fixture.root.appendingPathComponent(
-      "clients/macos/.build/E2EDerivedData/Build/Products/Debug/Releash.app")
+      "clients/macos/.build/E2EDerivedData/Build/Products/Debug/Releash Dev.app")
+    let identity = try signingIdentity(of: source)
     let updated = fixture.directory.appendingPathComponent("new/Releash.app")
     let updatedCLI = fixture.root.appendingPathComponent(
       "clients/macos/.build/Helpers/Update/releash")
@@ -104,7 +107,7 @@ final class UpdateFixture: @unchecked Sendable {
       }
       try fixture.process(
         URL(fileURLWithPath: "/usr/bin/codesign"),
-        ["--force", "--deep", "--sign", "-", destination.path])
+        ["--force", "--deep", "--timestamp=none", "--sign", identity, destination.path])
     }
     let archive = fixture.directory.appendingPathComponent("update.zip")
     try fixture.process(
@@ -121,6 +124,25 @@ final class UpdateFixture: @unchecked Sendable {
     try feed.write(
       to: fixture.directory.appendingPathComponent("appcast.xml"), atomically: true, encoding: .utf8
     )
+  }
+
+  private func signingIdentity(of bundle: URL) throws -> String {
+    var code: SecStaticCode?
+    guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess, let code else {
+      throw NSError(domain: "UpdateFixture", code: 2)
+    }
+    var information: CFDictionary?
+    guard
+      SecCodeCopySigningInformation(
+        code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess
+    else { throw NSError(domain: "UpdateFixture", code: 3) }
+    guard
+      let certificates = (information as? [String: Any])?[kSecCodeInfoCertificates as String]
+        as? [SecCertificate],
+      let leaf = certificates.first
+    else { return "-" }
+    return Insecure.SHA1.hash(data: SecCertificateCopyData(leaf) as Data)
+      .map { String(format: "%02X", $0) }.joined()
   }
 
   private func release(of cli: URL) throws -> String {
