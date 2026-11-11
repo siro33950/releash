@@ -337,8 +337,12 @@ done
     }
 
     async fn layout(&self) -> wire::WorkspaceStateDto {
-        let mut stream =
-            subscribe_state(&self.socket, "workspace-state", vec![self.worktree.clone()]).await;
+        let mut stream = subscribe_state(
+            &self.socket,
+            "workspace-state",
+            vec![self.worktree.clone(), self.worktree.clone()],
+        )
+        .await;
         let value = expect_state(
             &mut stream,
             "workspace layout",
@@ -352,11 +356,47 @@ done
     }
 
     async fn tabs(&self, session: &str, count: usize) {
-        let mut stream =
-            subscribe_state(&self.socket, "workspace-state", vec![self.worktree.clone()]).await;
+        let mut stream = subscribe_state(
+            &self.socket,
+            "workspace-state",
+            vec![self.worktree.clone(), self.worktree.clone()],
+        )
+        .await;
         expect_state(&mut stream, &format!("{session}: {count} tabs"), |value| {
             matches!(value, wire::state_payload::Value::WorkspaceState(state) if state.value.as_ref().is_some_and(|state| tab_count(state.pane_layout.as_ref(), session) == count))
         }).await;
+    }
+
+    async fn assert_single_tab_remains(&self, session: &str) {
+        let mut states = subscribe_state(
+            &self.socket,
+            "workspace-state",
+            vec![self.worktree.clone(), self.worktree.clone()],
+        )
+        .await;
+        let observation = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let value = states
+                    .next()
+                    .await
+                    .expect("workspace subscription remains open");
+                let wire::state_payload::Value::WorkspaceState(state) = value else {
+                    panic!("workspace state")
+                };
+                assert_eq!(
+                    tab_count(
+                        state.value.as_ref().and_then(|s| s.pane_layout.as_ref()),
+                        session
+                    ),
+                    1
+                );
+            }
+        })
+        .await;
+        assert!(
+            observation.is_err(),
+            "observe the reopened tab for the full interval"
+        );
     }
 
     async fn availability(&self, session: &str, expected: Option<i32>) {
@@ -580,31 +620,7 @@ async fn test_会話タブ_停止中の明示表示を保ちresumeで一つ開�
                 Some(wire::AgentSessionAvailability::Paused as i32),
             )
             .await;
-            let mut states =
-                subscribe_state(&host.socket, "workspace-state", vec![host.worktree.clone()]).await;
-            let observation = tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    let value = states
-                        .next()
-                        .await
-                        .expect("workspace subscription remains open");
-                    let wire::state_payload::Value::WorkspaceState(state) = value else {
-                        panic!("workspace state")
-                    };
-                    assert_eq!(
-                        tab_count(
-                            state.value.as_ref().and_then(|s| s.pane_layout.as_ref()),
-                            &session
-                        ),
-                        1
-                    );
-                }
-            })
-            .await;
-            assert!(
-                observation.is_err(),
-                "observe the reopened tab for the full interval"
-            );
+            host.assert_single_tab_remains(&session).await;
         }
         // When
         host.resume(&session).await;
@@ -613,6 +629,9 @@ async fn test_会話タブ_停止中の明示表示を保ちresumeで一つ開�
         host.availability(&session, Some(wire::AgentSessionAvailability::Open as i32))
             .await;
         host.tabs(&session, 1).await;
+        if reopen {
+            host.assert_single_tab_remains(&session).await;
+        }
         host.finish().await;
     }
 }
