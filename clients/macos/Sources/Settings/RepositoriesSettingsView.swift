@@ -44,11 +44,6 @@ struct RepositorySettingsView: View {
   @State var state: RepositorySettingsState
   @State private var confirmingRemoval = false
 
-  init(model: AppModel, path: String) {
-    self.model = model
-    _state = State(initialValue: RepositorySettingsState(path: path))
-  }
-
   init(model: AppModel, state: RepositorySettingsState) {
     self.model = model
     _state = State(initialValue: state)

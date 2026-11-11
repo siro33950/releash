@@ -5,6 +5,8 @@ struct ProvidersSettingsView: View {
   var model: AppModel
   @State var state = ProvidersSettingsState()
   @FocusState private var editingProvider: String?
+  /// 最後に編集していた provider。Settings のタブを離れたときの onDisappear で editingProvider を読むと、
+  /// 編集中の入力が保存されない。離れたときに保存する対象をここに持つ
   @State private var activeEditingProvider: String?
 
   var body: some View {
@@ -70,9 +72,7 @@ struct ProvidersSettingsView: View {
   }
 
   private func saveExecutable(_ provider: String) {
-    Task {
-      await state.updateExecutable(provider, model: model)
-    }
+    Task { await state.updateExecutable(provider, model: model) }
   }
 }
 

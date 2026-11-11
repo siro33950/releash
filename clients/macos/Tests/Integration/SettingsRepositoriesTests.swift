@@ -88,7 +88,8 @@ final class SettingsRepositoriesTests: XCTestCase {
       }
     }
     let model = try await testModel(http)
-    let host = await ViewHarness(RepositorySettingsView(model: model, path: "/repo"))
+    let host = await ViewHarness(
+      RepositorySettingsView(model: model, state: RepositorySettingsState(path: "/repo")))
     defer { host.close() }
     try await eventuallyView(host) { host.element("settings-base-branch")?.enabled == true }
     // When
@@ -139,7 +140,8 @@ final class SettingsRepositoriesTests: XCTestCase {
       ]
     }
     let model = try await testModel(http)
-    let host = await ViewHarness(RepositorySettingsView(model: model, path: "/repo"))
+    let host = await ViewHarness(
+      RepositorySettingsView(model: model, state: RepositorySettingsState(path: "/repo")))
     defer { host.close() }
     try await eventuallyView(host) {
       host.element("settings-notion-database")?.value == "saved-database"
