@@ -14,7 +14,10 @@ struct FileWorkspaceView: View {
   }
 
   var body: some View {
-    HSplitView {
+    WorkspaceColumnSplit(
+      minimumLeadingWidth: 180, minimumTrailingWidth: 240, initialLeadingWidth: 260,
+      dividerThickness: 1
+    ) {
       VStack(spacing: 0) {
         HStack(spacing: 4) {
           TextField("検索", text: $query).textFieldStyle(.roundedBorder)
@@ -32,6 +35,7 @@ struct FileWorkspaceView: View {
         Divider()
         FileTreeView(model: model, worktree: worktree, filtered: filtering ? snapshot : nil)
       }.frame(minWidth: 180, idealWidth: 260)
+    } trailing: {
       BonsplitView(controller: model.filePanes.controller) { tab, _ in
         if let file = model.filePanes.tab(tab.id), let path = file.filePath {
           FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree)
@@ -40,8 +44,11 @@ struct FileWorkspaceView: View {
       } emptyPane: { _ in
         Color(nsColor: .textBackgroundColor)
       }
-      .simultaneousGesture(TapGesture().onEnded { model.filesFocused = true })
+      .background(WorkspaceFocusObserver { model.filesFocused = true })
       .frame(minWidth: 240)
+    }
+    .onAppear {
+      model.filePanes.onFocus = { [weak model] in model?.filesFocused = true }
     }
     .task(id: arguments) {
       if let subscription { model.unsubscribe(subscription) }

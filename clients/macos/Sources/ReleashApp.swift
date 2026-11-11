@@ -189,18 +189,20 @@ struct RootView: View {
   }
 }
 
-private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable {
+struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable {
   let minimumLeadingWidth: CGFloat
   var maximumLeadingWidth: CGFloat = .infinity
   let minimumTrailingWidth: CGFloat
   var initialLeadingWidth: CGFloat? = nil
   var fixedTrailingWidth: CGFloat? = nil
+  var dividerThickness: CGFloat = 0
   @ViewBuilder let leading: () -> Leading
   @ViewBuilder let trailing: () -> Trailing
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
   func makeNSView(context: Context) -> SplitView {
     let split = SplitView()
+    split.thickness = dividerThickness
     split.isVertical = true
     split.dividerStyle = .thin
     split.delegate = context.coordinator
@@ -208,6 +210,8 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
     let trailingView = NSHostingView(rootView: trailing())
     leadingView.sizingOptions = []
     trailingView.sizingOptions = []
+    leadingView.safeAreaRegions = []
+    trailingView.safeAreaRegions = []
     split.addArrangedSubview(leadingView)
     split.addArrangedSubview(trailingView)
     return split
@@ -235,8 +239,10 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
     }
   }
   final class SplitView: NSSplitView {
-    override var dividerThickness: CGFloat { 0 }
+    var thickness: CGFloat = 0
+    override var dividerThickness: CGFloat { thickness }
   }
+
   final class Coordinator: NSObject, NSSplitViewDelegate {
     var parent: WorkspaceColumnSplit
     var initialized = false
@@ -268,7 +274,7 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
     }
     func layout(_ splitView: NSSplitView, proposedLeadingWidth proposed: CGFloat) {
       guard splitView.arrangedSubviews.count == 2, splitView.bounds.width > 0 else { return }
-      let width = splitView.bounds.width
+      let width = splitView.bounds.width - splitView.dividerThickness
       let leadingWidth =
         parent.fixedTrailingWidth.map { width - $0 }
         ?? max(
@@ -277,7 +283,8 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
       splitView.arrangedSubviews[0].frame = NSRect(
         x: 0, y: 0, width: leadingWidth, height: splitView.bounds.height)
       splitView.arrangedSubviews[1].frame = NSRect(
-        x: leadingWidth, y: 0, width: max(0, width - leadingWidth), height: splitView.bounds.height)
+        x: leadingWidth + splitView.dividerThickness, y: 0,
+        width: max(0, width - leadingWidth), height: splitView.bounds.height)
       initialized = width >= parent.minimumLeadingWidth + parent.minimumTrailingWidth
     }
     func splitView(

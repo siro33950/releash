@@ -6,6 +6,7 @@ import SwiftUI
   var renamingSession: Releash_Client_V1_SessionTabSnapshot?
   var archivingSession: Releash_Client_V1_SessionTabSnapshot?
   var sessionName = ""
+  var onFocus: (() -> Void)?
   var requestClose: ((PaneTab) async -> Bool)?
   private var closing: Set<TabID> = []
   private var approved: Set<TabID> = []
@@ -408,12 +409,16 @@ import SwiftUI
     return false
   }
 
+  func splitTabBar(_ controller: BonsplitController, didFocusPane pane: PaneID) {
+    onFocus?()
+  }
+
   func openFile(_ path: String, base: String) {
     guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
-    if let existing = controller.allTabIds.first(where: {
-      tabs[$0.id.uuidString]?.filePath == path
+    if let existing = controller.tabs(inPane: pane).first(where: {
+      tabs[$0.id.id.uuidString]?.filePath == path
     }) {
-      controller.selectTab(existing)
+      controller.selectTab(existing.id)
       return
     }
     guard
@@ -479,8 +484,9 @@ struct WorkspacePaneView: View {
     } emptyPane: { _ in
       Color(nsColor: .textBackgroundColor)
     }
-    .simultaneousGesture(TapGesture().onEnded { model.filesFocused = false })
+    .background(WorkspaceFocusObserver { model.filesFocused = false })
     .onAppear {
+      model.panes.onFocus = { [weak model] in model?.filesFocused = false }
       model.panes.requestClose = { [weak model] tab in await model?.closeTerminal(tab) ?? false }
       model.panes.controller.tabContextMenu = { [weak model] id in
         guard let model else { return AnyView(EmptyView()) }

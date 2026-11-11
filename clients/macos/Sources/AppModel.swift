@@ -643,11 +643,24 @@ import SwiftProtobuf
   }
   /// `filePanes` を、worktree に保存された配置で作り直す。保存が無いか読めなければ、空の配置にする。
   func restoreFilePaneLayout(_ worktree: String) {
-    fatalError("未実装: fileLayoutDefaults から worktree の配置を読み、filePanes に戻す")
+    let restored = PaneWorkspace()
+    if let data = fileLayoutDefaults.data(forKey: "filePaneLayout:" + worktree) {
+      do {
+        try restored.restore(JSONDecoder().decode(PaneLayout.self, from: data))
+      } catch {
+        filePanes = PaneWorkspace()
+        return
+      }
+    }
+    filePanes = restored
   }
   /// 選択中の worktree の `filePanes` の配置を保存する。worktree を選んでいなければ何もしない。
   func saveFilePaneLayout() {
-    fatalError("未実装: filePanes の配置を、選択中の worktree のものとして fileLayoutDefaults へ保存する")
+    guard let worktree = selectedWorktree else { return }
+    do {
+      let data = try JSONEncoder().encode(filePanes.layout())
+      fileLayoutDefaults.set(data, forKey: "filePaneLayout:" + worktree)
+    } catch { failure = failureMessage(error) }
   }
   func savePaneLayout() {
     do {

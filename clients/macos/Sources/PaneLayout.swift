@@ -1,6 +1,6 @@
 import Foundation
 
-struct PaneTab: Equatable, Identifiable {
+struct PaneTab: Codable, Equatable, Identifiable {
   var id: String = UUID().uuidString
   var kind: Kind
   var nodeID: String?
@@ -9,7 +9,7 @@ struct PaneTab: Equatable, Identifiable {
   var fileMode: String?
   var fileBase: String?
   var title: String { filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title }
-  enum Kind: String, CaseIterable {
+  enum Kind: String, Codable, CaseIterable {
     case terminal, file, session, command
     var icon: String {
       "circle.fill"
@@ -25,10 +25,10 @@ struct PaneTab: Equatable, Identifiable {
   }
 }
 
-indirect enum PaneLayout: Equatable {
+indirect enum PaneLayout: Codable, Equatable {
   case pane(id: String, tabs: [PaneTab], active: String?)
   case split(id: String, axis: Axis, ratio: Double, first: PaneLayout, second: PaneLayout)
-  enum Axis: String { case horizontal, vertical }
+  enum Axis: String, Codable { case horizontal, vertical }
   static func empty() -> Self { .pane(id: UUID().uuidString, tabs: [], active: nil) }
   var isEmpty: Bool {
     if case .pane(_, let tabs, .none) = self { tabs.isEmpty } else { false }

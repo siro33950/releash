@@ -173,7 +173,20 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertThrowsError(try workspace.restore(malformed))
     XCTAssertEqual(try workspace.layout(), before)
   }
-  @MainActor func testFileTabsReuseAcrossPanesAndPreservePresentationInLayout() throws {
+  @MainActor func test_フォーカス_選択済み領域を押しても通知する() throws {
+    // Given
+    let workspace = PaneWorkspace()
+    let pane = try XCTUnwrap(workspace.controller.focusedPaneId)
+    var notifications = 0
+    workspace.onFocus = { notifications += 1 }
+    // When
+    workspace.controller.focusPane(pane)
+    workspace.controller.focusPane(pane)
+    // Then
+    XCTAssertEqual(notifications, 2)
+  }
+
+  @MainActor func test_ファイルタブ_フォーカス領域内だけで再利用し表示を保持する() throws {
     let workspace = PaneWorkspace()
     try workspace.restore(.empty())
     workspace.openFile("src/file.swift", base: "head")
@@ -193,7 +206,12 @@ final class PaneWorkspaceTests: XCTestCase {
       workspace.controller.splitPane(workspace.controller.allPaneIds[0], orientation: .vertical))
     workspace.controller.focusPane(second)
     workspace.openFile("src/file.swift", base: "head")
-    XCTAssertEqual(workspace.controller.allTabIds.count, 1)
+    XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+    let secondTab = try XCTUnwrap(workspace.controller.selectedTab(inPane: second))
+    XCTAssertNotEqual(secondTab.id, first)
+    workspace.openFile("src/file.swift", base: "head")
+    XCTAssertEqual(workspace.controller.allTabIds.count, 2)
+    XCTAssertEqual(workspace.controller.selectedTab(inPane: second)?.id, secondTab.id)
     XCTAssertEqual(
       workspace.controller.selectedTab(inPane: workspace.controller.allPaneIds[0])?.id, first)
   }
