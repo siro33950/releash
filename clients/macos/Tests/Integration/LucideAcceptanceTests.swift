@@ -177,6 +177,29 @@ final class LucideAcceptanceTests: XCTestCase {
     }
   }
 
+  @MainActor func test_B021_準備中のSessionタブはNodeがactiveでも丸に状態色を付けない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
+    detail.id = "pending-session"
+    detail.title = "Preparing Session"
+    detail.classification.value = .active
+    detail.content.session = .init()
+    http.state.withLock { $0.nodeDetails[detail.id] = detail }
+    let model = try await testModel(http)
+    model.selectWorktree("/icons")
+    try await eventually { model.layoutLoaded }
+    model.panes.openPendingSession(id: detail.id, title: detail.title)
+    // When
+    let host = await ViewHarness(
+      WorkspacePaneView(model: model), size: NSSize(width: 1000, height: 300))
+    defer { host.close() }
+    try await eventuallyView(host) { host.element("Sessionを準備しています") != nil }
+    // Then
+    try await assertTabDot(detail.title, in: host, active: false)
+    await model.stop()
+  }
+
   @MainActor func test_B009_配布アプリが公式のLucideライセンス全文を含む() throws {
     // Given
     let bundle = Bundle(for: AppModel.self)
