@@ -10,10 +10,10 @@ final class FileTabPaneTests: XCTestCase {
   @MainActor func pane(_ model: AppModel, value: Releash_Client_V1_FileTabView? = nil) throws
     -> FileTabPane
   {
-    try model.panes.restore(.empty())
-    model.panes.openFile("src/file.rs", base: "head")
+    try model.filePanes.restore(.empty())
+    model.filePanes.openFile("src/file.rs", base: "head")
     return FileTabPane(
-      model: model, tabID: try XCTUnwrap(model.panes.controller.allTabIds.first),
+      model: model, tabID: try XCTUnwrap(model.filePanes.controller.allTabIds.first),
       path: "src/file.rs", worktree: "/repo", value: value)
   }
 
