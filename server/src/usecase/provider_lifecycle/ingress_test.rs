@@ -127,6 +127,7 @@ async fn test_生payload受付_信号を既存入口へ渡しsubagentと解釈�
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 MemoryHookHealth::default(),
@@ -408,6 +409,7 @@ async fn test_使用率監視_受理したcodexの開始時刻から現行bindin
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         )),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
@@ -541,6 +543,7 @@ async fn test_使用率読取失敗_session開始は読取を待たず適用し�
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         )),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
@@ -641,6 +644,7 @@ async fn test_使用率受付_ingressで資格を照合し拒否した要求で�
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         )),
         Arc::new(ProviderHookHealthUsecase::new(Arc::new(
             MemoryHookHealth::default(),
@@ -759,6 +763,7 @@ async fn test_使用率監視_hook保存失敗後の再送で欠けた観測を�
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         )),
         health,
         (sessions, Arc::new(MemoryWorkflowStops::default())),

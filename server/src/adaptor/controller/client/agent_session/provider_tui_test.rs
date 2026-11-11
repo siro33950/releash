@@ -816,6 +816,7 @@ fn send_dispatch(
             send_thread("outside", "/other", false),
         ])),
         AgentSessionService::new(terminal.clone(), terminal.clone()),
+        crate::usecase::workspace_state::test_support::test_session_tabs(),
     );
     let mut deps = crate::acceptance_test_support::build_client_dependencies(PathBuf::new());
     deps.agent_session_usecase = Some(Arc::new(sessions));

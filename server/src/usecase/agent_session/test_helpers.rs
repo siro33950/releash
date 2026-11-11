@@ -313,6 +313,7 @@ pub fn started_execution_trees() -> Arc<RecordingStartedExecutionTrees> {
 
 #[cfg(test)]
 pub struct FailingSaveRepository {
+    pub save_success: AtomicBool,
     pub stored: Mutex<Option<VersionedAgentSession>>,
     pub create_calls: AtomicUsize,
     pub atomic_create_calls: AtomicUsize,
@@ -338,6 +339,7 @@ impl FailingSaveRepository {
         session.take_uncommitted_events();
         Self {
             stored: Mutex::new(Some(VersionedAgentSession::restored(session, 1))),
+            save_success: AtomicBool::new(false),
             create_calls: AtomicUsize::new(0),
             atomic_create_calls: AtomicUsize::new(0),
             atomic_create_failure: Mutex::new(None),
@@ -398,7 +400,15 @@ impl AgentSessionRepository for FailingSaveRepository {
         _session: VersionedAgentSession,
         _caller_request_id: &str,
     ) -> Result<VersionedAgentSession, AgentSessionRepositoryError> {
-        Err(AgentSessionRepositoryError::Unavailable)
+        if !self.save_success.load(Ordering::SeqCst) {
+            return Err(AgentSessionRepositoryError::Unavailable);
+        }
+        let revision = _session.revision() + 1;
+        let mut session = _session.into_session();
+        session.take_uncommitted_events();
+        let saved = VersionedAgentSession::restored(session, revision);
+        *self.stored.lock().unwrap() = Some(saved.clone());
+        Ok(saved)
     }
 
     async fn remove(
@@ -831,6 +841,7 @@ pub fn launch_usecase_with_tree_registrar(
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         )),
         lifecycle,
         provider_runtime(availability, launch_gateway, terminal),

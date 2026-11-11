@@ -233,7 +233,7 @@ mod memory_tests {
         let terminal = Arc::new(RecordingTerminal::default());
         let execution_trees = started_execution_trees();
         let mut usecase = launch_usecase_with_tree_registrar(
-            repository,
+            repository.clone(),
             availability.clone(),
             launch_gateway.clone(),
             terminal.clone(),
@@ -251,6 +251,16 @@ mod memory_tests {
                 crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
                 crate::test_support::state_subscription::test_subscriptions(),
             );
+
+        usecase.sessions = Arc::new(AgentSessionUsecase::new(
+            repository,
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+            usecase.session_tabs.clone(),
+        ));
 
         let launched = usecase
             .launch_standalone(AgentSessionLaunchRequest {
@@ -510,6 +520,7 @@ mod memory_tests {
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
@@ -605,6 +616,7 @@ mod memory_tests {
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
@@ -700,6 +712,7 @@ mod memory_tests {
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
@@ -877,6 +890,7 @@ mod memory_tests {
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),
@@ -1080,6 +1094,7 @@ mod memory_tests {
                             Arc::new(RecordingTerminal::default()),
                             Arc::new(RecordingTerminalInput::default()),
                         ),
+                        crate::usecase::workspace_state::test_support::test_session_tabs(),
                     )),
                     Arc::new(ProviderLifecycleUsecase::new(
                         Arc::new(crate::usecase::test_helpers::TestCredentials),
@@ -1199,6 +1214,7 @@ mod memory_tests {
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderLifecycleUsecase::new(
                 Arc::new(crate::usecase::test_helpers::TestCredentials),

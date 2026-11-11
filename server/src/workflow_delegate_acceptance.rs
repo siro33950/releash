@@ -139,6 +139,7 @@ impl WorkflowDelegateAcceptanceHost {
                     Arc::new(RecordingTerminal::default()),
                     Arc::new(RecordingTerminalInput::default()),
                 ),
+                crate::usecase::workspace_state::test_support::test_session_tabs(),
             )),
             Arc::new(ProviderHookHealthUsecase::new(Arc::new(
                 LocalProviderHookHealthRepository::new(
