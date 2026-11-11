@@ -82,8 +82,18 @@ impl DirectoryQuery for Directory {
     }
 }
 impl WorktreeEntries for Directory {
-    fn entries(&self, _: &str, _: &str) -> Result<Vec<WorktreeEntry>, CodeError> {
-        unreachable!()
+    fn entries(&self, worktree: &str, directory: &str) -> Result<Vec<WorktreeEntry>, CodeError> {
+        assert_eq!(worktree, "/repo");
+        assert_eq!(directory, "src");
+        if self.fail {
+            return Err(CodeError::External("directory unreadable".into()));
+        }
+        Ok(vec![WorktreeEntry {
+            path: "src/keep.rs".into(),
+            name: "keep.rs".into(),
+            directory: false,
+            ignored: true,
+        }])
     }
     fn walk(
         &self,
@@ -117,6 +127,45 @@ fn usecase(fail: bool) -> CodeUsecase {
         Arc::new(Directory { fail }),
         Arc::new(Directory { fail }),
     )
+}
+
+#[test]
+fn test_直下一覧_指定したディレクトリの列挙結果とgit状態を返す() {
+    // Given
+    let usecase = usecase(false);
+    let statuses = vec![FileStatusDto {
+        path: "src/keep.rs".into(),
+        index_status: "none".into(),
+        worktree_status: "modified".into(),
+    }];
+    // When
+    let result = usecase
+        .directory_entries("/repo", "src", &statuses)
+        .unwrap();
+    // Then
+    assert_eq!(
+        result,
+        vec![crate::usecase::directory_query::DirectoryEntryDto {
+            path: "src/keep.rs".into(),
+            name: "keep.rs".into(),
+            directory: false,
+            ignored: true,
+            status: GitStatus::Modified,
+        }]
+    );
+}
+
+#[test]
+fn test_直下一覧_列挙失敗を返す() {
+    // Given
+    let usecase = usecase(true);
+    // When
+    let error = usecase.directory_entries("/repo", "src", &[]).unwrap_err();
+    // Then
+    assert!(matches!(
+        error,
+        CodeUsecaseError::Code(CodeError::External(message)) if message == "directory unreadable"
+    ));
 }
 
 #[test]
