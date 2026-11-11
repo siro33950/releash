@@ -252,6 +252,7 @@ final class SettingsProvidersTests: XCTestCase {
     try await focusExecutable(host)
     try await host.setTextField("/closing/claude")
     state.executables["codex"] = "/draft/codex"
+    http.state.withLock { $0.deferSave = true }
     let subscription = try XCTUnwrap(
       http.state.withLock { $0.subscriptions.last { $0.target == "provider-availability" } })
     // When
@@ -262,8 +263,15 @@ final class SettingsProvidersTests: XCTestCase {
         let request = try? Releash_Client_V1_StopStateSubscriptionRequest(
           serializedBytes: $0.message ?? Data())
         return request?.subscriptionID == subscription.subscriptionID
-      } && !http.requests("UpdateProviderExecutable").isEmpty
+      } && http.state.withLock { $0.pendingSave != nil }
     }
+    XCTAssertGreaterThan(state.pendingExecutableSaves, 0)
+    let respond = try XCTUnwrap(http.state.withLock { $0.pendingSave })
+    respond(
+      .init(
+        code: .ok, headers: [:], message: Data(), trailers: [:], error: nil,
+        tracingInfo: nil))
+    try await eventually { state.pendingExecutableSaves == 0 }
     let requests = try http.requests("UpdateProviderExecutable").map {
       try Releash_Client_V1_UpdateProviderExecutableRequest(
         serializedBytes: XCTUnwrap($0.message))

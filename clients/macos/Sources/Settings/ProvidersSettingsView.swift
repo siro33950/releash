@@ -70,7 +70,11 @@ struct ProvidersSettingsView: View {
   }
 
   private func saveExecutable(_ provider: String) {
-    Task { await state.updateExecutable(provider, model: model) }
+    state.pendingExecutableSaves += 1
+    Task {
+      defer { state.pendingExecutableSaves -= 1 }
+      await state.updateExecutable(provider, model: model)
+    }
   }
 }
 
@@ -83,6 +87,7 @@ struct ProvidersSettingsView: View {
   var executables: [String: String] = [:]
   var failure: String?
   var saving: Set<Field> = []
+  var pendingExecutableSaves = 0
   @ObservationIgnored private var subscription: UUID?
 
   func subscribe(_ model: AppModel) {
