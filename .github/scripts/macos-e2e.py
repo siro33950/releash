@@ -1,6 +1,7 @@
 import argparse
 import ctypes
 import fcntl
+import importlib.util
 import json
 import os
 import plistlib
@@ -13,6 +14,9 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = Path(tempfile.gettempdir()) / f'releash-macos-e2e-{os.getuid()}.lock'
+_spec = importlib.util.spec_from_file_location('macos_helpers', Path(__file__).with_name('macos-helpers.py'))
+helpers = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(helpers)
 
 
 def run(command, root, **kwargs):
@@ -35,6 +39,7 @@ def build_fixture(root):
                    and artifact.get('executable')]
     if len(executables) != 1:
         raise ValueError('Cargo did not report one TUI fixture executable')
+    helpers.sign_development([executables[0]])
     manifest = root / 'clients/macos/.build/agent-tui-fixture.json'
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({'executable': executables[0]}))
@@ -69,6 +74,7 @@ def build_updated_cli(root):
     output = build / 'Helpers/Update/releash'
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(executables[0], output)
+    helpers.sign_development([output])
 
 
 def production_processes():

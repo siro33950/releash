@@ -61,7 +61,7 @@ class UpdatedCliTests(unittest.TestCase):
                     'executable': str(binary),
                 }))
             # When
-            with patch.object(module.subprocess, 'run', side_effect=build):
+            with patch.object(module.subprocess, 'run', side_effect=build), patch.object(module.helpers, 'sign_development'):
                 module.build_updated_cli(root)
             # Then
             self.assertIn('members = ["clients/cli"]', built['manifest'])
