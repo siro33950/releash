@@ -5,6 +5,7 @@ struct ProvidersSettingsView: View {
   var model: AppModel
   @State var state = ProvidersSettingsState()
   @FocusState private var editingProvider: String?
+  @State private var activeEditingProvider: String?
 
   var body: some View {
     Form {
@@ -58,11 +59,12 @@ struct ProvidersSettingsView: View {
     }
     .formStyle(.grouped)
     .onAppear { state.subscribe(model) }
-    .onChange(of: editingProvider) { previous, _ in
+    .onChange(of: editingProvider) { previous, current in
       if let previous { saveExecutable(previous) }
+      activeEditingProvider = current
     }
     .onDisappear {
-      for provider in state.executables.keys { saveExecutable(provider) }
+      if let activeEditingProvider { saveExecutable(activeEditingProvider) }
       state.unsubscribe(model)
     }
   }

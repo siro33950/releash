@@ -238,6 +238,41 @@ final class SettingsProvidersTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_Providersを離れる_編集中でないProviderの下書きを保存しない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock { $0.providerAvailability = testProviderAvailability() }
+    let model = try await testModel(http)
+    let state = ProvidersSettingsState()
+    let host = await ViewHarness(ProvidersSettingsView(model: model, state: state))
+    defer { host.close() }
+    try await eventuallyView(host) {
+      host.element("settings-provider-executable-claude")?.value == "/custom/claude"
+    }
+    try await focusExecutable(host)
+    try await host.setTextField("/closing/claude")
+    state.executables["codex"] = "/draft/codex"
+    let subscription = try XCTUnwrap(
+      http.state.withLock { $0.subscriptions.last { $0.target == "provider-availability" } })
+    // When
+    host.window.contentView = nil
+    // Then
+    try await eventually {
+      http.requests("StopStateSubscription").contains {
+        let request = try? Releash_Client_V1_StopStateSubscriptionRequest(
+          serializedBytes: $0.message ?? Data())
+        return request?.subscriptionID == subscription.subscriptionID
+      } && !http.requests("UpdateProviderExecutable").isEmpty
+    }
+    let requests = try http.requests("UpdateProviderExecutable").map {
+      try Releash_Client_V1_UpdateProviderExecutableRequest(
+        serializedBytes: XCTUnwrap($0.message))
+    }
+    XCTAssertEqual(requests.map(\.provider), ["claude"])
+    XCTAssertEqual(requests.map(\.executable), ["/closing/claude"])
+    await model.stop()
+  }
+
   @MainActor func test_別Providerの保存通知_未確定入力を保持して保存し拒否時に復元する() async throws {
     // Given
     let http = TestHTTPClient()
