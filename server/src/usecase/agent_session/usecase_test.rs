@@ -457,6 +457,42 @@ mod memory_tests {
         assert_eq!(tabs.read("/repo").await.unwrap().1, Some(opened));
     }
     #[tokio::test]
+    async fn test_session削除_会話開始済みならprocess不在でもgcを拒否してsessionとタブを保持する() {
+        use crate::domain::agent_session::aggregates::ManagedPtyPresence;
+        use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+        // Given
+        let mut started = session();
+        started
+            .associate_provider_session("provider", None)
+            .unwrap();
+        let repository = Arc::new(FailingSaveRepository::new(started));
+        let original = repository.snapshot();
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        let mut opened = WorkspaceState::default();
+        opened.add_session_tab("session", "session");
+        tabs.save(
+            "/repo",
+            opened,
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+        let original_tabs = tabs.read("/repo").await.unwrap();
+        let usecase = tab_usecase(repository.clone(), tabs.clone());
+        // When
+        let result = usecase
+            .garbage_collect("session", ManagedPtyPresence::ConfirmedAbsent, "gc")
+            .await;
+        // Then
+        assert_eq!(result, Err(AgentSessionUsecaseError::InvalidOperation));
+        assert_eq!(repository.snapshot(), original);
+        assert_eq!(tabs.read("/repo").await.unwrap(), original_tabs);
+    }
+
+    #[tokio::test]
     async fn test_session再開_成功した事実だけ保存してタブを開く() {
         use crate::domain::agent_session::aggregates::AgentSessionRecoveryResult;
         use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
