@@ -23,6 +23,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
         if center { WorkspacePaneView(model: model) }
         RightPanelView(expanded: .constant(true), model: model)
       }, size: NSSize(width: center ? 1400 : 1000, height: 700))
+    host.window.center()
     try await host.press("ファイル")
     try await eventually {
       http.state.withLock { $0.subscriptions.contains { $0.target == "directory" } }
@@ -205,13 +206,15 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
         x: origin.x + dimensions.width / 2, y: screenHeight - origin.y - dimensions.height / 2))
     let up = try XCTUnwrap(
       NSEvent.mouseEvent(
-        with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
+        with: .leftMouseUp, location: point, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
         windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
         clickCount: 1, pressure: 0))
     let down = try XCTUnwrap(
       NSEvent.mouseEvent(
-        with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
-        windowNumber: host.window.windowNumber, context: nil, eventNumber: 0,
+        with: .leftMouseDown, location: point, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
         clickCount: 1, pressure: 1))
     NSApp.postEvent(up, atStart: true)
     host.window.sendEvent(down)
@@ -256,18 +259,26 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
   @MainActor private func drag(
     from source: CGPoint, to destination: CGPoint, in host: ViewHarness
   ) async throws {
+    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    XCTAssertEqual(
+      AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
+      .success)
+    try await eventually {
+      host.window.makeKeyAndOrderFront(nil)
+      return NSApp.keyWindow === host.window
+    }
     let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
     let steps: [(NSEvent.EventType, CGPoint)] =
       [(.leftMouseDown, source)]
-      + (1...12).map { step in
+      + (1...20).map { step in
         (
           .leftMouseDragged,
           CGPoint(
-            x: source.x + (destination.x - source.x) * Double(step) / 12,
-            y: source.y + (destination.y - source.y) * Double(step) / 12)
+            x: source.x + (destination.x - source.x) * Double(step) / 20,
+            y: source.y + (destination.y - source.y) * Double(step) / 20)
         )
       } + [(.leftMouseUp, destination)]
-    var index = 1
+    var index = 0
     let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
       let done = MainActor.assumeIsolated {
         let step = steps[index]
@@ -276,7 +287,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
           location: host.window.convertPoint(
             fromScreen: NSPoint(x: step.1.x, y: screenHeight - step.1.y)),
           modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-          windowNumber: host.window.windowNumber, context: nil, eventNumber: index,
+          windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
           clickCount: 1, pressure: step.0 == .leftMouseUp ? 0 : 1)
         XCTAssertNotNil(event)
         index += 1
@@ -288,15 +299,6 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     RunLoop.main.add(timer, forMode: .common)
     RunLoop.main.add(timer, forMode: .eventTracking)
     defer { timer.invalidate() }
-    let down = try XCTUnwrap(
-      NSEvent.mouseEvent(
-        with: .leftMouseDown,
-        location: host.window.convertPoint(
-          fromScreen: NSPoint(x: source.x, y: screenHeight - source.y)),
-        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-        windowNumber: host.window.windowNumber, context: nil, eventNumber: 0,
-        clickCount: 1, pressure: 1))
-    host.window.sendEvent(down)
     try await eventually { index == steps.count }
     await host.refresh()
   }
@@ -655,6 +657,11 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
           $0.subscriptions.contains { $0.target == "filtered-files" && $0.args == args }
         }
       }
+      var changedMatch = entry("closed/needle.rs")
+      changedMatch.status = "modified"
+      let cleanMatch = entry("closed/needle-clean.rs")
+      var changedOther = entry("closed/other.rs")
+      changedOther.status = "modified"
       var payload = Releash_Client_V1_StatePayload()
       payload.filteredFiles.directories = [
         .with {
@@ -663,11 +670,16 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
         },
         .with {
           $0.path = "closed"
-          $0.entries = [entry("closed/needle.rs")]
+          $0.entries = [changedMatch, search ? cleanMatch : changedOther]
         },
       ]
       try http.publish(payload, target: "filtered-files", args: args)
-      try await eventuallyView(host) { host.element("file:closed/needle.rs") != nil }
+      try await eventuallyView(host) {
+        host.element("file:closed/needle.rs") != nil
+          && host.element("file:\(search ? cleanMatch.path : changedOther.path)") != nil
+      }
+      XCTAssertNil(host.element("file:opened/ordinary.rs"))
+      XCTAssertNil(host.element("file:\(search ? changedOther.path : cleanMatch.path)"))
       var expanded: CFTypeRef?
       XCTAssertEqual(
         AXUIElementCopyAttributeValue(
@@ -682,8 +694,15 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
             $0.subscriptions.contains { $0.target == "filtered-files" && $0.args == combined }
           }
         }
-        try http.publish(payload, target: "filtered-files", args: combined)
-        try await eventuallyView(host) { host.element("file:closed/needle.rs") != nil }
+        var combinedPayload = payload
+        combinedPayload.filteredFiles.directories[1].entries = [changedMatch]
+        try http.publish(combinedPayload, target: "filtered-files", args: combined)
+        try await eventuallyView(host) {
+          host.element("file:closed/needle.rs") != nil
+            && host.element("file:closed/needle-clean.rs") == nil
+        }
+        XCTAssertNil(host.element("file:closed/other.rs"))
+        XCTAssertNil(host.element("file:opened/ordinary.rs"))
         try await host.press("差分のみ")
         try await eventually {
           http.state.withLock {
