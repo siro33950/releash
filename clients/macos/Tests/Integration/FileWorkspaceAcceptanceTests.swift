@@ -452,7 +452,8 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     let target = try tabFrame("second.rs", in: host)
     // When
     await drag(
-      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.maxX - 2, y: target.midY)
+      from: CGPoint(x: source.midX, y: source.midY),
+      to: CGPoint(x: target.maxX + 15, y: target.midY)
     )
     // Then
     try await eventuallyView(host) {
