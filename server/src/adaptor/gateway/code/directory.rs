@@ -81,16 +81,46 @@ impl WorktreeEntries for DirectoryQueryGateway {
         worktree: &str,
         visit: &mut dyn FnMut(WorktreeEntry) -> WalkStep,
     ) -> Result<(), CodeError> {
-        let mut pending = vec![".".to_owned()];
-        while let Some(directory) = pending.pop() {
-            for entry in self.entries(worktree, &directory)? {
-                let child = entry.directory.then(|| entry.path.clone());
-                match visit(entry) {
-                    WalkStep::Stop => return Ok(()),
-                    WalkStep::SkipChildren => {}
-                    WalkStep::Continue => {
-                        if let Some(child) = child {
-                            pending.push(child);
+        let root = std::fs::canonicalize(worktree).map_err(CodeError::from)?;
+        let repo = git_operation::run(|| git2::Repository::open(&root)).map_err(CodeError::from)?;
+        let mut pending = vec![std::fs::read_dir(&root).map_err(CodeError::from)?];
+        while let Some(directory) = pending.last_mut() {
+            let Some(entry) = directory.next() else {
+                pending.pop();
+                continue;
+            };
+            let Ok(entry) = entry else { continue };
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !worktree_path_is_visible(&name) {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let target = entry.path();
+            let path = target.strip_prefix(&root).map_err(CodeError::from)?;
+            let Some(path) = path.to_str() else { continue };
+            let ignored = git_operation::run(|| repo.status_should_ignore(Path::new(path)))
+                .map_err(CodeError::from)?;
+            match visit(WorktreeEntry {
+                path: path.to_owned(),
+                name,
+                directory: kind.is_dir(),
+                ignored,
+            }) {
+                WalkStep::Stop => return Ok(()),
+                WalkStep::SkipChildren => {}
+                WalkStep::Continue => {
+                    if kind.is_dir() {
+                        let Ok(target) = std::fs::canonicalize(target) else {
+                            continue;
+                        };
+                        if target.starts_with(&root) {
+                            if let Ok(children) = std::fs::read_dir(target) {
+                                pending.push(children);
+                            }
                         }
                     }
                 }

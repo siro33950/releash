@@ -29,6 +29,19 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertThrowsError(try PaneLayout(wire))
     XCTAssertThrowsError(try PaneLayout(.init()))
   }
+
+  func test_中央タブ配置_ファイルを除外して残るタブを選ぶ() throws {
+    // Given
+    let file = PaneTab(kind: .file, filePath: "file")
+    let terminal = PaneTab(kind: .terminal)
+    let layout = PaneLayout.pane(id: "pane", tabs: [file, terminal], active: file.id)
+    // When
+    let restored = try PaneLayout(layout.message)
+    // Then
+    XCTAssertEqual(
+      restored,
+      .pane(id: "pane", tabs: [terminal], active: terminal.id))
+  }
 }
 
 extension PaneLayoutTests {
@@ -39,16 +52,5 @@ extension PaneLayoutTests {
     ]
     let layout = PaneLayout.pane(id: "pane", tabs: tabs, active: tabs[1].id)
     XCTAssertEqual(try PaneLayout(layout.message), layout)
-  }
-}
-
-extension PaneLayoutTests {
-  func testFileTabsAreExcludedFromServerLayoutAndSelectionMovesToRemainingTab() throws {
-    let file = PaneTab(kind: .file, filePath: "file")
-    let terminal = PaneTab(kind: .terminal)
-    let layout = PaneLayout.pane(id: "pane", tabs: [file, terminal], active: file.id)
-    XCTAssertEqual(
-      try PaneLayout(layout.message),
-      .pane(id: "pane", tabs: [terminal], active: terminal.id))
   }
 }

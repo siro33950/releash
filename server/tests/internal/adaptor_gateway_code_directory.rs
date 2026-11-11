@@ -141,3 +141,75 @@ fn test_再帰列挙_枝の省略と終了と読取失敗を返す() {
         })
         .is_err());
 }
+
+#[test]
+fn test_再帰列挙_読めない子を飛ばし他の項目を続ける() {
+    use releashd::test_support::integration::code::WalkStep;
+    use std::os::unix::fs::PermissionsExt;
+    // Given
+    let (_dir, repo) = create_test_repo();
+    let root = repo.workdir().unwrap();
+    let unreadable = root.join("unreadable");
+    std::fs::create_dir(&unreadable).unwrap();
+    std::fs::write(unreadable.join("hidden"), "x").unwrap();
+    std::fs::write(root.join("visible"), "x").unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0)).unwrap();
+    let mut paths = Vec::new();
+    // When
+    let result = DirectoryQueryGateway.walk(root.to_str().unwrap(), &mut |entry| {
+        paths.push(entry.path);
+        WalkStep::Continue
+    });
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Then
+    result.unwrap();
+    assert!(paths.iter().any(|path| path == "visible"));
+    assert!(!paths.iter().any(|path| path == "unreadable/hidden"));
+}
+
+#[test]
+fn test_再帰列挙_取得後に消えた子を飛ばす() {
+    use releashd::test_support::integration::code::WalkStep;
+    // Given
+    let (_dir, repo) = create_test_repo();
+    let root = repo.workdir().unwrap();
+    std::fs::create_dir(root.join("child")).unwrap();
+    let mut paths = Vec::new();
+    // When
+    DirectoryQueryGateway
+        .walk(root.to_str().unwrap(), &mut |entry| {
+            if entry.directory {
+                std::fs::remove_dir(root.join(&entry.path)).unwrap();
+            }
+            paths.push(entry.path);
+            WalkStep::Continue
+        })
+        .unwrap();
+    // Then
+    assert_eq!(paths, ["child"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_再帰列挙_非utf8名を飛ばし直下一覧は失敗する() {
+    use releashd::test_support::integration::code::WalkStep;
+    use std::os::unix::ffi::OsStringExt;
+    // Given
+    let (_dir, repo) = create_test_repo();
+    let root = repo.workdir().unwrap();
+    std::fs::write(root.join(std::ffi::OsString::from_vec(vec![0xff])), "x").unwrap();
+    std::fs::write(root.join("visible"), "x").unwrap();
+    let mut paths = Vec::new();
+    // When
+    DirectoryQueryGateway
+        .walk(root.to_str().unwrap(), &mut |entry| {
+            paths.push(entry.path);
+            WalkStep::Continue
+        })
+        .unwrap();
+    // Then
+    assert_eq!(paths, ["visible"]);
+    assert!(DirectoryQueryGateway
+        .entries(root.to_str().unwrap(), ".")
+        .is_err());
+}

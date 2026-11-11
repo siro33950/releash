@@ -301,7 +301,7 @@ final class LucideAcceptanceTests: XCTestCase {
     let model = try await testModel(http)
     model.selectWorktree("/icons")
     try await eventually { model.layoutLoaded }
-    let host = await ViewHarness(WorkspacePaneView(model: model))
+    let host = await ViewHarness(FileWorkspaceView(model: model, worktree: "/icons"))
     defer { host.close() }
     model.openFile("example.txt")
     try await eventually {

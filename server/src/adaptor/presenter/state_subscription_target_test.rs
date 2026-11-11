@@ -357,3 +357,57 @@ fn test_node_artifact購読_node実行idだけを保持する() {
         SubscriptionTarget::NodeArtifact("node-1".into())
     );
 }
+
+#[test]
+fn test_絞込購読_条件と区切り文字を含む名前が往復する() {
+    // Given
+    for filters in [
+        vec!["name=main"],
+        vec!["changed=true"],
+        vec!["name=main", "changed=true"],
+        vec!["name=日本語/:= changed=true", "changed=true"],
+        vec!["name=changed=true"],
+        vec!["name= "],
+    ] {
+        let mut args = vec!["/作業:repo"];
+        args.extend(filters);
+        // When
+        let target = SubscriptionTarget::from_parts("filtered-files", &args).unwrap();
+        let (name, parts) = target.parts();
+        let restored = SubscriptionTarget::parse(&target.to_string());
+        // Then
+        assert_eq!(name, "filtered-files");
+        assert_eq!(parts, args);
+        assert_eq!(restored, Ok(target.clone()));
+        assert_eq!(
+            SubscriptionTarget::from_parts(
+                name,
+                &parts.iter().map(String::as_str).collect::<Vec<_>>()
+            ),
+            Ok(target)
+        );
+    }
+}
+
+#[test]
+fn test_絞込購読_空条件と不正な順序と重複と未知の条件を拒否する() {
+    // Given
+    for filters in [
+        vec![],
+        vec!["name="],
+        vec!["name=\0"],
+        vec!["changed=true", "name=main"],
+        vec!["changed=false"],
+        vec!["unknown=true"],
+        vec!["name=main", "name=other"],
+        vec!["changed=true", "changed=true"],
+        vec!["name=main", "changed=true", "changed=true"],
+    ] {
+        let mut args = vec!["/repo"];
+        args.extend(filters);
+        // When
+        let result = SubscriptionTarget::from_parts("filtered-files", &args);
+        // Then
+        assert_eq!(result, Err(SubscriptionError::InvalidId), "{args:?}");
+    }
+}

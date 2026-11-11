@@ -1259,3 +1259,57 @@ fn test_絞込一覧_木を親ごとの順序に写し上限を伝える() {
     .directories
     .is_empty());
 }
+
+#[test]
+fn test_ファイル一覧配信_直下一覧と絞込結果が同じgit状態を返す() {
+    use crate::domain::code::services::directory::GitStatus;
+    use crate::domain::code::value_objects::file_list::{FileNode, FilteredFiles, WorktreeEntry};
+    use crate::usecase::directory_query::DirectoryEntryDto;
+    // Given
+    for (status, expected) in [
+        (GitStatus::None, "none"),
+        (GitStatus::New, "new"),
+        (GitStatus::Modified, "modified"),
+        (GitStatus::Renamed, "renamed"),
+        (GitStatus::Deleted, "deleted"),
+        (GitStatus::Conflicted, "conflicted"),
+    ] {
+        let entry = WorktreeEntry {
+            path: "file.rs".into(),
+            name: "file.rs".into(),
+            directory: false,
+            ignored: true,
+        };
+        let directory = StateValue::Directory(vec![DirectoryEntryDto {
+            path: entry.path.clone(),
+            name: entry.name.clone(),
+            directory: entry.directory,
+            ignored: entry.ignored,
+            status,
+        }]);
+        let files = StateValue::FilteredFiles(FilteredFiles {
+            roots: vec![FileNode {
+                entry,
+                status,
+                children: vec![],
+            }],
+            truncated: true,
+        });
+        // When
+        let wire::state_payload::Value::Directory(directory) =
+            payload(&directory).unwrap().value.unwrap()
+        else {
+            panic!("directory payload")
+        };
+        let wire::state_payload::Value::FilteredFiles(files) =
+            payload(&files).unwrap().value.unwrap()
+        else {
+            panic!("filtered files payload")
+        };
+        // Then
+        assert_eq!(directory.entries[0].status, expected);
+        assert_eq!(files.directories[0].path, ".");
+        assert_eq!(files.directories[0].entries, directory.entries);
+        assert!(files.truncated);
+    }
+}

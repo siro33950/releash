@@ -22,10 +22,10 @@ struct FileWorkspaceView: View {
         HStack(spacing: 4) {
           TextField("検索", text: $query).textFieldStyle(.roundedBorder)
             .accessibilityIdentifier("file-search")
-          Toggle(isOn: $changed) { Label("差分のみ", systemImage: "plus.forwardslash.minus") }
+          Toggle(isOn: $changed) { CardLabel(title: "差分のみ", image: "diff") }
             .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("差分のみ")
           Button(action: openInEditor) {
-            Label("IDE で開く", systemImage: "arrow.up.forward.app")
+            CardLabel(title: "IDE で開く", image: "square-arrow-out-up-right")
           }.labelStyle(.iconOnly).buttonStyle(IconButtonStyle()).iconButtonFrame().help("IDE で開く")
         }.padding(8).frame(height: 44).background(Color(nsColor: .textBackgroundColor))
         if filtering && snapshot.truncated {

@@ -75,14 +75,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 wire::state_payload::Value::WorkspaceState(value)
             },
             StateValue::Directory(entries) => wire::state_payload::Value::Directory(wire::DirectorySnapshot {
-                entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: match entry.status {
-                    crate::domain::code::services::directory::GitStatus::None => "none",
-                    crate::domain::code::services::directory::GitStatus::New => "new",
-                    crate::domain::code::services::directory::GitStatus::Modified => "modified",
-                    crate::domain::code::services::directory::GitStatus::Renamed => "renamed",
-                    crate::domain::code::services::directory::GitStatus::Deleted => "deleted",
-                    crate::domain::code::services::directory::GitStatus::Conflicted => "conflicted",
-                }.into() }).collect(),
+                entries: entries.iter().map(|entry| directory_entry(&entry.path, &entry.name, entry.directory, entry.ignored, entry.status)).collect(),
                 removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
             }),
             StateValue::FilteredFiles(files) => wire::state_payload::Value::FilteredFiles(filtered_files(files)),
@@ -286,10 +279,6 @@ pub(crate) fn event(
     })
 }
 
-#[cfg(test)]
-#[path = "state_subscription_wire_test.rs"]
-pub(crate) mod state_subscription_wire_tests;
-
 fn filtered_files(
     files: &crate::domain::code::value_objects::file_list::FilteredFiles,
 ) -> wire::FilteredFilesSnapshot {
@@ -302,22 +291,14 @@ fn filtered_files(
             path: path.into(),
             entries: nodes
                 .iter()
-                .map(|node| wire::DirectoryEntry {
-                    path: node.entry.path.clone(),
-                    name: node.entry.name.clone(),
-                    directory: node.entry.directory,
-                    ignored: node.entry.ignored,
-                    status: match node.status {
-                        crate::domain::code::services::directory::GitStatus::None => "none",
-                        crate::domain::code::services::directory::GitStatus::New => "new",
-                        crate::domain::code::services::directory::GitStatus::Modified => "modified",
-                        crate::domain::code::services::directory::GitStatus::Renamed => "renamed",
-                        crate::domain::code::services::directory::GitStatus::Deleted => "deleted",
-                        crate::domain::code::services::directory::GitStatus::Conflicted => {
-                            "conflicted"
-                        }
-                    }
-                    .into(),
+                .map(|node| {
+                    directory_entry(
+                        &node.entry.path,
+                        &node.entry.name,
+                        node.entry.directory,
+                        node.entry.ignored,
+                        node.status,
+                    )
                 })
                 .collect(),
         });
@@ -332,3 +313,32 @@ fn filtered_files(
         truncated: files.truncated,
     }
 }
+
+fn directory_entry(
+    path: &str,
+    name: &str,
+    directory: bool,
+    ignored: bool,
+    status: crate::domain::code::services::directory::GitStatus,
+) -> wire::DirectoryEntry {
+    use crate::domain::code::services::directory::GitStatus;
+    wire::DirectoryEntry {
+        path: path.into(),
+        name: name.into(),
+        directory,
+        ignored,
+        status: match status {
+            GitStatus::None => "none",
+            GitStatus::New => "new",
+            GitStatus::Modified => "modified",
+            GitStatus::Renamed => "renamed",
+            GitStatus::Deleted => "deleted",
+            GitStatus::Conflicted => "conflicted",
+        }
+        .into(),
+    }
+}
+
+#[cfg(test)]
+#[path = "state_subscription_wire_test.rs"]
+pub(crate) mod state_subscription_wire_tests;
