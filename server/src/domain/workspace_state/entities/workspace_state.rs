@@ -42,7 +42,15 @@ impl WorkspaceState {
     /// 再開の事実（`Resumed`）では、その Session のタブを `add_session_tab` と同じ規則で開く。
     /// そのほかの事実では配置を変えない。
     pub fn follow_session(&mut self, session: &AgentSession, event: &AgentSessionLifecycleEvent) {
-        todo!()
+        match event {
+            AgentSessionLifecycleEvent::ProcessExited { .. } => {
+                self.remove_session_tab(session.id());
+            }
+            AgentSessionLifecycleEvent::Resumed => {
+                self.add_session_tab(session.id(), session.tree_location().node_execution_id());
+            }
+            _ => {}
+        }
     }
 
     /// 実行木に属する Session のタブを、既存の選択を変えずに追加する。
