@@ -186,6 +186,38 @@ final class PaneWorkspaceTests: XCTestCase {
     XCTAssertEqual(notifications, 2)
   }
 
+  @MainActor func test_配置復元_ファイル領域の操作対象を変えない() throws {
+    for split in [false, true] {
+      // Given
+      let model = AppModel()
+      let terminal = PaneTab(id: "terminal", kind: .terminal)
+      let center = PaneLayout.pane(id: "center", tabs: [terminal], active: terminal.id)
+      try model.panes.restore(center)
+      model.panes.onFocus = { [weak model] in model?.filesFocused = false }
+      model.filePanes.onFocus = { [weak model] in model?.filesFocused = true }
+      model.openFile("first.rs")
+      let updated =
+        split
+        ? PaneLayout.split(
+          id: "split", axis: .horizontal, ratio: 0.5, first: center,
+          second: .pane(id: "other", tabs: [], active: nil))
+        : PaneLayout.pane(
+          id: "center", tabs: [terminal, PaneTab(id: "added", kind: .terminal)],
+          active: terminal.id)
+      // When
+      try model.panes.restore(updated)
+      // Then
+      XCTAssertTrue(model.focusedPanes === model.filePanes)
+      model.focusedPanes.closeCurrentTab()
+      XCTAssertTrue(model.filePanes.controller.allTabIds.isEmpty)
+      XCTAssertEqual(try model.panes.layout(), updated)
+      model.panes.controller.focusPane(try XCTUnwrap(model.panes.controller.focusedPaneId))
+      XCTAssertTrue(model.focusedPanes === model.panes)
+      model.filePanes.controller.focusPane(try XCTUnwrap(model.filePanes.controller.focusedPaneId))
+      XCTAssertTrue(model.focusedPanes === model.filePanes)
+    }
+  }
+
   @MainActor func test_ファイルタブ_フォーカス領域内だけで再利用し表示を保持する() throws {
     let workspace = PaneWorkspace()
     try workspace.restore(.empty())

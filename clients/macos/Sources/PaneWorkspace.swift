@@ -17,6 +17,7 @@ import SwiftUI
   private var tabs: [String: PaneTab] = [:]
   private var pendingSessionTabs: [String: TabID] = [:]
   private var nextTerminalNumber = 1
+  private var restoring = false
 
   init() {
     for id in controller.allTabIds { controller.closeTab(id) }
@@ -27,6 +28,8 @@ import SwiftUI
   }
 
   func restore(_ layout: PaneLayout) throws {
+    restoring = true
+    defer { restoring = false }
     if try applyToExistingPanes(layout) { return }
     var ids: [String: String] = [:]
     var restoredTabs: [String: PaneTab] = [:]
@@ -410,6 +413,7 @@ import SwiftUI
   }
 
   func splitTabBar(_ controller: BonsplitController, didFocusPane pane: PaneID) {
+    guard !restoring else { return }
     onFocus?()
   }
 
