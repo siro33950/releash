@@ -241,6 +241,10 @@ struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable 
   final class SplitView: NSSplitView {
     var thickness: CGFloat = 0
     override var dividerThickness: CGFloat { thickness }
+    // SwiftUI から境界のマウス操作を AppKit に配送させる。
+    override func mouseDown(with event: NSEvent) {
+      super.mouseDown(with: event)
+    }
   }
 
   final class Coordinator: NSObject, NSSplitViewDelegate {

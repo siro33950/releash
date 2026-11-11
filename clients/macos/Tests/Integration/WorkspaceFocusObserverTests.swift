@@ -50,15 +50,10 @@ final class WorkspaceFocusObserverTests: XCTestCase {
 
   @MainActor func test_ファイル境界_左右へドラッグすると両領域の幅が変わる() async throws {
     // Given
+    let model = AppModel()
     let host = await ViewHarness(
-      WorkspaceColumnSplit(
-        minimumLeadingWidth: 180, minimumTrailingWidth: 240, initialLeadingWidth: 260,
-        dividerThickness: 1
-      ) {
-        Color.red
-      } trailing: {
-        Color.blue
-      }, size: NSSize(width: 1000, height: 700))
+      FileWorkspaceView(model: model, worktree: "/repo"),
+      size: NSSize(width: 1000, height: 700))
     defer { host.close() }
     func findSplit(_ view: NSView) -> NSSplitView? {
       if let split = view as? NSSplitView { return split }
