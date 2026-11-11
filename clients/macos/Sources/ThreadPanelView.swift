@@ -222,12 +222,7 @@ private struct ThreadPanelRow: View {
           .accessibilityLabel(thread.commentCountLabel)
           .accessibilityIdentifier("thread-comments:\(thread.id)")
         if thread.isResolved {
-          Label {
-            Text("解決済み")
-          } icon: {
-            Image("circle-check").resizable().frame(
-              width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
-          }.font(.caption)
+          CardLabel(title: "解決済み", image: "circle-check").font(.caption)
             .accessibilityIdentifier("thread-resolved:\(thread.id)")
         }
       }

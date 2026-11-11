@@ -18,19 +18,16 @@ struct SidebarView: View {
         Text("Workspaces").font(.callout).foregroundStyle(.secondary)
         Spacer()
         Button(action: model.addRepository) {
-          Image("folder-plus").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+          CardIcon(image: Image("folder-plus"))
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加").accessibilityLabel(
           "Repositoryを追加")
         Button(action: model.refresh) {
-          Image("refresh-cw").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+          CardIcon(image: Image("refresh-cw"))
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("再読み込み").accessibilityLabel("再読み込み")
         Button {
           creating = true
         } label: {
-          Image("plus").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+          CardIcon(image: Image("plus"))
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Worktreeを作成").accessibilityLabel(
           "Worktreeを作成")
       }
@@ -105,19 +102,15 @@ struct WorktreeCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
       HStack(spacing: UIStyle.rowSpacing) {
-        Image(branch.isMainWorktree ? "house" : "git-branch").resizable().frame(
-          width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
-        )
+        CardIcon(image: Image(branch.isMainWorktree ? "house" : "git-branch"))
         Text(branch.name).fontWeight(.medium)
       }
       VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
         if branch.isMerged || (branch.hasDirtyCount && branch.dirtyCount > 0) || branch.isDeleting {
           HStack {
             if branch.isMerged {
-              Image("circle-check").resizable().frame(
-                width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
-              )
-              .foregroundStyle(.secondary).accessibilityLabel("Merged").help("Merged")
+              CardIcon(image: Image("circle-check"))
+                .foregroundStyle(.secondary).accessibilityLabel("Merged").help("Merged")
             }
             if branch.hasDirtyCount && branch.dirtyCount > 0 {
               Text("\(branch.dirtyCount) changes").font(.caption).foregroundStyle(.secondary)
@@ -129,11 +122,9 @@ struct WorktreeCard: View {
           }
         }
         if branch.hasPrState {
-          Image(prIcon(branch.prState)).resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
-          )
-          .foregroundStyle(.secondary)
-          .help("PR #\(branch.prStateNumber): \(branch.prState)")
+          CardIcon(image: Image(prIcon(branch.prState)))
+            .foregroundStyle(.secondary)
+            .help("PR #\(branch.prStateNumber): \(branch.prState)")
         }
         if branch.hasDirtyCountError { Text("Changes unavailable").help(branch.dirtyCountError) }
         if branch.hasPullRequestError { Text("PR unavailable").help(branch.pullRequestError) }
@@ -143,11 +134,7 @@ struct WorktreeCard: View {
             VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
               if execution.isWorkflow {
                 HStack(spacing: UIStyle.rowSpacing) {
-                  Image("waypoints")
-                    .resizable()
-                    .renderingMode(.template)
-                    .scaledToFit()
-                    .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+                  CardIcon(image: Image("waypoints"))
                     .foregroundStyle(UIStyle.statusColor(execution.status))
                     .accessibilityLabel("Workflow, \(execution.status)")
                   Text("\(execution.title) · \(execution.nodeCount) nodes")
@@ -166,11 +153,7 @@ struct WorktreeCard: View {
                 .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
               } else {
                 HStack(spacing: UIStyle.rowSpacing) {
-                  Image("bot")
-                    .resizable()
-                    .renderingMode(.template)
-                    .scaledToFit()
-                    .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+                  CardIcon(image: Image("bot"))
                     .foregroundStyle(UIStyle.statusColor(execution.status))
                     .accessibilityLabel("Session, \(execution.status)")
                   Text(

@@ -16,15 +16,13 @@ struct FooterView: View {
           }
         }
         if !model.hookHealth.readErrors.isEmpty || model.hookSubscriptionFailure != nil {
-          Image("triangle-alert").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
-          )
-          .foregroundStyle(UIStyle.attention)
-          .help(
-            ([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors)
-              .joined(separator: "\n")
-          )
-          .accessibilityLabel("hookの状態を確認できません")
+          CardIcon(image: Image("triangle-alert"))
+            .foregroundStyle(UIStyle.attention)
+            .help(
+              ([model.hookSubscriptionFailure].compactMap { $0 } + model.hookHealth.readErrors)
+                .joined(separator: "\n")
+            )
+            .accessibilityLabel("hookの状態を確認できません")
         }
         Spacer(minLength: 0)
         if let version = model.updater.availableVersion {
@@ -48,8 +46,7 @@ struct FooterView: View {
               Text(serverLabel)
             } icon: {
               if let icon = serverIcon(label: serverLabel) {
-                Image(nsImage: icon).resizable()
-                  .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+                CardIcon(image: Image(nsImage: icon))
               }
             }
           }
@@ -101,9 +98,7 @@ private struct ProviderFooterView: View {
       expanded.toggle()
     } label: {
       HStack(spacing: UIStyle.statusSpacing) {
-        Image(provider == "claude" ? "sparkles" : "terminal").resizable().frame(
-          width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
-        )
+        CardIcon(image: Image(provider == "claude" ? "sparkles" : "terminal"))
         Text(provider.capitalized)
         if let usage {
           ForEach(Array(usage.windows.enumerated()), id: \.offset) { _, window in
@@ -112,9 +107,7 @@ private struct ProviderFooterView: View {
           }
         }
         if !warnings.isEmpty || usage?.windows.contains(where: { $0.warning }) == true {
-          Image("triangle-alert").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth
-          ).foregroundStyle(UIStyle.attention)
+          CardIcon(image: Image("triangle-alert")).foregroundStyle(UIStyle.attention)
         }
       }
     }

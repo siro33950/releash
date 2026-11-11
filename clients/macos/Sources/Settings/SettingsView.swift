@@ -3,6 +3,8 @@ import SwiftUI
 struct SettingsView: View {
   var model: AppModel
   @State private var selected = Tab.general
+  @State private var repositories = RepositoriesSettingsState()
+  @State private var providers = ProvidersSettingsState()
 
   private enum Tab: String, CaseIterable {
     case general = "General"
@@ -27,12 +29,7 @@ struct SettingsView: View {
       HStack(spacing: UIStyle.rowSpacing) {
         ForEach(Tab.allCases, id: \.self) { tab in
           Toggle(isOn: Binding(get: { selected == tab }, set: { if $0 { selected = tab } })) {
-            Label {
-              Text(tab.rawValue)
-            } icon: {
-              Image(tab.icon).resizable().frame(
-                width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
-            }
+            CardLabel(title: tab.rawValue, image: tab.icon)
           }
           .toggleStyle(IconToggleStyle())
           .frame(height: UIStyle.tabBarHeight)
@@ -45,8 +42,8 @@ struct SettingsView: View {
       Group {
         switch selected {
         case .general: GeneralSettingsView(model: model)
-        case .repositories: RepositoriesSettingsView(model: model)
-        case .providers: ProvidersSettingsView(model: model)
+        case .repositories: RepositoriesSettingsView(model: model, state: repositories)
+        case .providers: ProvidersSettingsView(model: model, state: providers)
         case .workflows: WorkflowsSettingsView(model: model)
         case .system: SystemSettingsView(model: model)
         }

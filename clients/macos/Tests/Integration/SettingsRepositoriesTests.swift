@@ -193,6 +193,55 @@ final class SettingsRepositoriesTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_Settingsのタブ往復_選択と未保存のNotion設定と接続結果を保持する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock {
+      $0.repositories = [.with { $0.path = "/first" }, .with { $0.path = "/second" }]
+      $0.notionValidation.status.value = .configured
+      $0.notionValidation.properties.items = [
+        .with {
+          $0.name = "Name"
+          $0.propertyType = "title"
+        }
+      ]
+    }
+    let model = try await testModel(http)
+    let host = await ViewHarness(SettingsView(model: model))
+    defer { host.close() }
+    try await host.press("Repositories")
+    try await host.selectRow("/second")
+    try await eventuallyView(host) { host.element("settings-notion-database")?.enabled == true }
+    try await host.focusTextField(index: 0)
+    let tokenEditor = try XCTUnwrap(host.window.firstResponder as? NSTextView)
+    tokenEditor.selectAll(nil)
+    tokenEditor.insertText("draft-token", replacementRange: tokenEditor.selectedRange())
+    try await host.focusTextField(index: 1)
+    try await host.setTextField("draft-database")
+    try await host.press("settings-notion-validate")
+    try await eventuallyView(host) { host.element("settings-notion-save") != nil }
+    _ = try await choosePicker(host, "settings-notion-title", "Name (title)")
+    // When
+    try await host.press("General")
+    try await host.press("Repositories")
+    // Then
+    try await eventuallyView(host) {
+      host.element("settings-notion-database")?.value == "draft-database"
+        && host.element("接続に成功しました") != nil
+        && host.element("settings-notion-title")?.value == "Name (title)"
+    }
+    XCTAssertTrue(http.requests("SaveNotionConfig").isEmpty)
+    try await host.press("settings-notion-save")
+    try await eventually { http.requests("SaveNotionConfig").count == 1 }
+    let request = try Releash_Client_V1_SaveNotionConfigRequest(
+      serializedBytes: XCTUnwrap(http.requests("SaveNotionConfig").last?.message))
+    XCTAssertEqual(request.repoPath, "/second")
+    XCTAssertEqual(request.apiToken, "draft-token")
+    XCTAssertEqual(request.databaseID, "draft-database")
+    XCTAssertEqual(request.propertyMapping.title, "Name")
+    await model.stop()
+  }
+
   @MainActor private func choosePicker(_ host: ViewHarness, _ identifier: String, _ choice: String)
     async throws -> [String]
   {

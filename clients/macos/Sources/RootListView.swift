@@ -186,21 +186,23 @@ struct RootListView: View {
     .accessibilityIdentifier("node-artifact:\(item.rootID)").accessibilityAddTraits(.isStaticText)
     .accessibilityValue(item.hasArtifact ? "◆" : "")
   }
-  private func nodeIcon(_ item: Releash_Client_V1_WorkspaceTreeItem) -> String {
+  private func nodeIcon(_ item: Releash_Client_V1_WorkspaceTreeItem) -> String? {
     switch item.variant {
-    case .node(let node): node.contentKind.value == .command ? "terminal" : "bot"
+    case .node(let node): UIStyle.nodeIcon(isCommand: node.contentKind.value == .command)
     case .sequence: "waypoints"
     case .fanout: "git-fork"
-    case nil: "waypoints"
+    case nil: nil
     }
   }
   func nameCell(_ item: Releash_Client_V1_WorkspaceTreeItem, isRoot: Bool) -> some View {
     HStack(spacing: UIStyle.rowSpacing) {
       HStack(spacing: UIStyle.rowSpacing) {
-        Image(nodeIcon(item)).resizable()
-          .frame(width: UIStyle.statusSize, height: UIStyle.statusSize)
-          .foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
-          .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
+        if let icon = nodeIcon(item) {
+          Image(icon).resizable()
+            .frame(width: UIStyle.statusSize, height: UIStyle.statusSize)
+            .foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
+            .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
+        }
         if isRoot, case .node(let node) = item.variant, node.hasProvider {
           Text(node.provider.displayName).fontWeight(.medium)
         }
@@ -263,8 +265,7 @@ struct RootListView: View {
             expandedPastAttempts.insert(item.rootID)
           }
         } label: {
-          Image("history").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+          CardIcon(image: Image("history"))
         }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
       }
     }.frame(maxWidth: .infinity, alignment: .leading)

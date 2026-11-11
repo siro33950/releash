@@ -15,7 +15,7 @@ struct NodeInspector: View {
     VStack(spacing: 0) {
       if let detail {
         HStack(spacing: UIStyle.spacing) {
-          Image(detail.content.isCommand ? "terminal" : "bot").resizable()
+          Image(UIStyle.nodeIcon(isCommand: detail.content.isCommand)).resizable()
             .frame(width: UIStyle.statusSize, height: UIStyle.statusSize)
             .foregroundStyle(UIStyle.statusColor(String(describing: detail.classification.value)))
           Text(detail.title).fontWeight(.semibold)

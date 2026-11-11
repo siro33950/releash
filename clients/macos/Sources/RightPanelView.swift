@@ -30,8 +30,7 @@ struct RightPanelView: View {
         if expanded {
           ForEach(Panel.allCases) { panel in
             Toggle(isOn: Binding(get: { selected == panel }, set: { if $0 { selected = panel } })) {
-              Image(panel.icon).resizable().frame(
-                width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+              CardIcon(image: Image(panel.icon))
             }
             .toggleStyle(IconToggleStyle())
             .iconButtonFrame()
@@ -44,8 +43,7 @@ struct RightPanelView: View {
         Button {
           expanded.toggle()
         } label: {
-          Image("panel-right").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+          CardIcon(image: Image("panel-right"))
         }
         .buttonStyle(IconButtonStyle())
         .iconButtonFrame()

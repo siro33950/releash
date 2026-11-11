@@ -86,8 +86,10 @@ struct IconMenu<Content: View>: View {
   let image: String
   @ViewBuilder let content: () -> Content
   var body: some View {
-    Menu(content: content) {
-      Image(image).resizable().frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+    Menu {
+      content().labelStyle(.titleAndIcon)
+    } label: {
+      CardIcon(image: Image(image))
     }
     .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden)
     .iconButtonFrame()
@@ -109,5 +111,33 @@ struct IconToggleStyle: ToggleStyle {
       in: RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius)
     )
     .foregroundStyle(configuration.isOn ? UIStyle.sidebarSelectionText : .primary)
+  }
+}
+
+struct CardIcon: View {
+  let image: Image
+
+  var body: some View {
+    image.resizable().renderingMode(.template).scaledToFit()
+      .frame(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
+  }
+}
+
+struct CardLabel: View {
+  let title: String
+  let image: String
+
+  var body: some View {
+    Label {
+      Text(title)
+    } icon: {
+      CardIcon(image: Image(image))
+    }
+  }
+}
+
+extension UIStyle {
+  static func nodeIcon(isCommand: Bool) -> String {
+    isCommand ? "terminal" : "bot"
   }
 }

@@ -3,24 +3,40 @@ import SwiftUI
 
 struct RepositoriesSettingsView: View {
   var model: AppModel
-  @State private var selectedPath: String?
+  @State var state = RepositoriesSettingsState()
 
   var body: some View {
     HSplitView {
-      List(model.repositories, id: \.path, selection: $selectedPath) { repository in
+      List(
+        model.repositories, id: \.path,
+        selection: Binding(
+          get: { state.selected?.path },
+          set: { path in
+            guard state.selected?.path != path else { return }
+            state.selected = path.map { RepositorySettingsState(path: $0) }
+          })
+      ) { repository in
         Text(repository.path).tag(repository.path)
       }
       .accessibilityIdentifier("settings-repositories")
-      if let path = selectedPath, model.repositories.contains(where: { $0.path == path }) {
-        RepositorySettingsView(model: model, path: path).id(path)
+      if let selected = state.selected,
+        model.repositories.contains(where: { $0.path == selected.path })
+      {
+        RepositorySettingsView(model: model, state: selected).id(selected.path)
       } else {
         ContentUnavailableView { Label("リポジトリを選択してください", image: "folder") }
       }
     }
     .onChange(of: model.repositories.map(\.path), initial: true) { _, paths in
-      if !paths.contains(selectedPath ?? "") { selectedPath = paths.first }
+      if !paths.contains(state.selected?.path ?? "") {
+        state.selected = paths.first.map { RepositorySettingsState(path: $0) }
+      }
     }
   }
+}
+
+@Observable @MainActor final class RepositoriesSettingsState {
+  var selected: RepositorySettingsState?
 }
 
 struct RepositorySettingsView: View {
@@ -31,6 +47,11 @@ struct RepositorySettingsView: View {
   init(model: AppModel, path: String) {
     self.model = model
     _state = State(initialValue: RepositorySettingsState(path: path))
+  }
+
+  init(model: AppModel, state: RepositorySettingsState) {
+    self.model = model
+    _state = State(initialValue: state)
   }
 
   var body: some View {
@@ -186,7 +207,7 @@ struct RepositorySettingsView: View {
         if case .notionConfig(let value) = payload.value {
           guard let self else { return }
           let restore =
-            apiToken == (notion?.value.apiToken ?? "")
+            notion != value && apiToken == (notion?.value.apiToken ?? "")
             && databaseID == (notion?.value.databaseID ?? "")
             && mapping == (notion?.value.propertyMapping ?? .init())
           notion = value

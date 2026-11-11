@@ -99,12 +99,7 @@ struct FileTabPane: View {
           ]
         ).accessibilityIdentifier("file-style")
         Toggle(isOn: settings.$full) {
-          Label {
-            Text("全文")
-          } icon: {
-            Image("unfold-vertical").resizable().frame(
-              width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
-          }
+          CardLabel(title: "全文", image: "unfold-vertical")
         }
         .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("全文")
         .accessibilityIdentifier("file-full")
@@ -112,22 +107,12 @@ struct FileTabPane: View {
       Toggle(
         isOn: Binding(get: { mode == "diff" }, set: { setPresentation(mode: $0 ? "diff" : "file") })
       ) {
-        Label {
-          Text("Diff")
-        } icon: {
-          Image("diff").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
-        }
+        CardLabel(title: "Diff", image: "diff")
       }
       .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly).iconButtonFrame().help("Diff 表示")
       .accessibilityIdentifier("file-mode")
       Button(action: openInEditor) {
-        Label {
-          Text("外部エディタで開く")
-        } icon: {
-          Image("square-arrow-out-up-right").resizable().frame(
-            width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
-        }
+        CardLabel(title: "外部エディタで開く", image: "square-arrow-out-up-right")
       }
       .labelStyle(.iconOnly).buttonStyle(IconButtonStyle()).iconButtonFrame().help("外部エディタで開く")
       .accessibilityIdentifier("file-open-editor")
@@ -416,12 +401,7 @@ struct IconChoice<Value: Hashable>: View {
           isOn: Binding(
             get: { selection == option.value }, set: { if $0 { selection = option.value } })
         ) {
-          Label {
-            Text(option.title)
-          } icon: {
-            Image(option.symbol).resizable().frame(
-              width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
-          }
+          CardLabel(title: option.title, image: option.symbol)
         }
         .toggleStyle(IconToggleStyle()).labelStyle(.iconOnly)
         .iconButtonFrame()

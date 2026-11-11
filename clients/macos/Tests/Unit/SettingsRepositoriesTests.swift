@@ -5,6 +5,48 @@ import XCTest
 @testable import Releash
 
 final class SettingsRepositoriesTests: XCTestCase {
+  @MainActor func test_Notion再購読_保存値が同じなら接続テストの結果を保持する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock {
+      $0.notionConfigs["/repo"] = .with {
+        $0.value.apiToken = "saved-token"
+        $0.value.databaseID = "saved-database"
+      }
+      $0.notionValidation.status.value = .configured
+    }
+    let model = try await testModel(http)
+    let state = RepositorySettingsState(path: "/repo")
+    state.subscribe(model)
+    try await eventually { state.apiToken == "saved-token" }
+    await state.validateNotion(model: model)
+    let result = try XCTUnwrap(state.validation)
+    let first = http.state.withLock { $0.subscriptions.last { $0.target == "notion-config" } }
+    // When
+    state.unsubscribe(model)
+    state.subscribe(model)
+    try await eventually {
+      http.state.withLock {
+        guard let current = $0.subscriptions.last(where: { $0.target == "notion-config" }) else {
+          return false
+        }
+        return current.subscriptionID != first?.subscriptionID
+      }
+    }
+    var payload = Releash_Client_V1_StatePayload()
+    payload.notionConfig = try XCTUnwrap(state.notion)
+    try http.publish(payload, target: "notion-config", args: ["/repo"])
+    var marker = Releash_Client_V1_StatePayload()
+    marker.releashBase.value = "after-notion"
+    try http.publish(marker, target: "releash-base", args: ["/repo"])
+    // Then
+    try await eventually { state.base?.value == "after-notion" }
+    XCTAssertEqual(state.validation, result)
+    XCTAssertEqual(state.apiToken, "saved-token")
+    state.unsubscribe(model)
+    await model.stop()
+  }
+
   @MainActor func test_Repository購読_パスごとの保存値と変更を受け取り終了時に解放する() async throws {
     // Given
     let http = TestHTTPClient()
