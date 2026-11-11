@@ -76,6 +76,8 @@ struct FooterView: View {
         named: model.releaseCompatibility == "compatible" ? "server" : "triangle-alert")?.copy()
         as? NSImage
     else { return nil }
+    // Menu の label は画像を NSImage 自身の大きさで描き、CardIcon の frame は効かない
+    icon.size = NSSize(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
     icon.accessibilityDescription = label
     return icon
   }
