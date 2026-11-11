@@ -10,6 +10,10 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
   @MainActor private func panel(center: Bool = false) async throws -> (
     TestHTTPClient, AppModel, ViewHarness
   ) {
+    XCTAssertEqual(AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.2), .success)
+    addTeardownBlock {
+      AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0)
+    }
     let http = TestHTTPClient()
     let model = try await testModel(http)
     model.selectWorktree("/repo")
