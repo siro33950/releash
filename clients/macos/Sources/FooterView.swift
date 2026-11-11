@@ -77,7 +77,6 @@ struct FooterView: View {
         as? NSImage
     else { return nil }
     icon.accessibilityDescription = label
-    icon.size = NSSize(width: UIStyle.cardIconWidth, height: UIStyle.cardIconWidth)
     return icon
   }
 
