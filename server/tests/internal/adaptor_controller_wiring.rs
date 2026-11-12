@@ -306,7 +306,7 @@ async fn test_workflow開始_本番runtime配線で隔離したfacet本文をses
         &crate::agent_tui_fixture::FixturePlan::new("isolated-runtime", vec![]),
     );
     std::fs::write(&executable, format!(
-        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo fixture; exit 0; fi\nfor argument do instruction=$argument; done\nprintf '%s' \"$instruction\" > '{}'\nexec env {command}\n",
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo fixture; exit 0; fi\nfor argument do instruction=$argument; done\ncaptured='{}'\nprintf '%s' \"$instruction\" > \"$captured.tmp\" && mv \"$captured.tmp\" \"$captured\" || exit 1\nexec env {command}\n",
         captured.to_str().unwrap().replace('\'', "'\"'\"'")
     )).unwrap();
     use std::os::unix::fs::PermissionsExt;
