@@ -268,6 +268,19 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       return NSApp.isActive && NSApp.keyWindow === host.window
     }
     let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+    let pasteboard = NSPasteboard(name: .drag)
+    let before = pasteboard.changeCount
+    print(
+      "drag begin from=\(source) to=\(destination) window=\(host.window.frame) pointer=\(NSEvent.mouseLocation)"
+    )
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) {
+      event in
+      print(
+        "drag delivered type=\(event.type) point=\(event.locationInWindow) window=\(event.windowNumber)"
+      )
+      return event
+    }
+    defer { if let monitor { NSEvent.removeMonitor(monitor) } }
     let steps: [(NSEvent.EventType, CGPoint)] =
       [(.leftMouseDown, source)]
       + (1...20).map { step in
@@ -300,6 +313,9 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     RunLoop.main.add(timer, forMode: .eventTracking)
     defer { timer.invalidate() }
     try await eventually { index == steps.count }
+    print(
+      "drag end pasteboard=\(before)->\(pasteboard.changeCount) types=\(pasteboard.types ?? []) pointer=\(NSEvent.mouseLocation)"
+    )
     await host.refresh()
   }
 
