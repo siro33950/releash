@@ -14,6 +14,6 @@ pub mod value_objects;
 pub use error::CodeError;
 pub use repository::{
     BranchBaseResolver, DiffComputer, FileContentRepository, ReviewBlobSide, ReviewSideBytes,
-    ReviewSideMetadata, StagingRepository,
+    ReviewSideMetadata, StagingRepository, WorktreeEntries,
 };
 pub use value_objects::{Hunk, ReviewBase};

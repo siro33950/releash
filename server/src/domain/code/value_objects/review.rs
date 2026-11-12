@@ -17,14 +17,6 @@ impl FileMode {
         }
     }
 
-    pub fn parse(value: &str) -> Result<Self, CodeError> {
-        match value {
-            "file" => Ok(Self::File),
-            "diff" => Ok(Self::Diff),
-            other => Err(CodeError::Rule(format!("invalid file mode: {other}"))),
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",

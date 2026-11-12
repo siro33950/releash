@@ -4,6 +4,7 @@ import SwiftUI
 struct FileTreeView: NSViewRepresentable {
   let model: AppModel
   let worktree: String
+  var filtered: Releash_Client_V1_FilteredFilesSnapshot?
 
   func makeCoordinator() -> Coordinator { Coordinator(model: model, worktree: worktree) }
   func makeNSView(context: Context) -> NSScrollView {
@@ -24,10 +25,22 @@ struct FileTreeView: NSViewRepresentable {
     outline.setAccessibilityIdentifier("file-tree")
     scroll.documentView = outline
     context.coordinator.outline = outline
-    context.coordinator.subscribe(".")
+    if let filtered {
+      context.coordinator.apply(filtered)
+    } else {
+      context.coordinator.subscribe(".")
+    }
     return scroll
   }
-  func updateNSView(_ view: NSScrollView, context: Context) {}
+  func updateNSView(_ view: NSScrollView, context: Context) {
+    if context.coordinator.filtered != filtered {
+      if let filtered {
+        context.coordinator.apply(filtered)
+      } else {
+        context.coordinator.restoreUnfiltered()
+      }
+    }
+  }
   static func dismantleNSView(_ view: NSScrollView, coordinator: Coordinator) {
     coordinator.stop()
   }
@@ -45,15 +58,50 @@ struct FileTreeView: NSViewRepresentable {
     var children: [String: [Item]] = [:]
     var subscriptions: [String: UUID] = [:]
     var applying = false
+    var filtered: Releash_Client_V1_FilteredFilesSnapshot?
+    private var unfiltered: (items: [String: Item], children: [String: [Item]], expanded: [Item])?
+    func apply(_ value: Releash_Client_V1_FilteredFilesSnapshot) {
+      if filtered == nil {
+        unfiltered = (items, children, items.values.filter { outline?.isItemExpanded($0) == true })
+        stop()
+      }
+      filtered = value
+      items = [:]
+      children = [:]
+      for directory in value.directories {
+        children[directory.path] = directory.entries.map { entry in
+          let item = Item(entry)
+          items[entry.path] = item
+          return item
+        }
+      }
+      applying = true
+      defer { applying = false }
+      outline?.reloadData()
+      outline?.expandItem(nil, expandChildren: true)
+    }
+    func restoreUnfiltered() {
+      guard let saved = unfiltered else { return }
+      filtered = nil
+      unfiltered = nil
+      items = saved.items
+      children = saved.children
+      applying = true
+      outline?.reloadData()
+      for item in saved.expanded { outline?.expandItem(item) }
+      applying = false
+      subscribe(".")
+      for item in saved.expanded { subscribe(item.entry.path) }
+    }
     init(model: AppModel, worktree: String) {
       self.model = model
       self.worktree = worktree
     }
     func subscribe(_ directory: String) {
-      guard subscriptions[directory] == nil else { return }
+      guard filtered == nil, subscriptions[directory] == nil else { return }
       subscriptions[directory] = model.subscribe("directory", [worktree, directory]) {
         [weak self] payload in
-        guard let self, case .directory(let value) = payload.value else { return }
+        guard let self, filtered == nil, case .directory(let value) = payload.value else { return }
         apply(value, directory: directory)
       }
     }

@@ -52,8 +52,6 @@ mod adaptor_gateway_code_mod;
 mod adaptor_gateway_code_staging;
 #[path = "internal/adaptor_gateway_comment_mod.rs"]
 mod adaptor_gateway_comment_mod;
-#[path = "internal/adaptor_gateway_external_editor_launcher_impl.rs"]
-mod adaptor_gateway_external_editor_launcher_impl;
 #[path = "internal/adaptor_gateway_git_host_discovery.rs"]
 mod adaptor_gateway_git_host_discovery;
 #[path = "internal/adaptor_gateway_git_host_github.rs"]

@@ -1,6 +1,8 @@
 pub mod code {
     pub use crate::adaptor::gateway::code::directory::DirectoryQueryGateway;
     pub use crate::domain::code::services::directory::GitStatus;
+    pub use crate::domain::code::value_objects::file_list::WalkStep;
+    pub use crate::domain::code::WorktreeEntries;
     pub use crate::usecase::directory_query::DirectoryQuery;
 
     pub use crate::adaptor::gateway::code::diff_compute::diff_buffers;
@@ -197,7 +199,6 @@ pub mod platform {
     pub use crate::adaptor::gateway::comment::FileReviewEventStore;
     pub use crate::adaptor::gateway::comment::SystemReviewClock;
     pub use crate::adaptor::gateway::comment::UuidReviewIdGenerator;
-    pub use crate::adaptor::gateway::external_editor::launcher_impl::open_path_with;
     pub use crate::adaptor::gateway::external_editor::scanner_impl::MacInstalledEditorGateway;
     pub use crate::adaptor::gateway::external_editor::settings_gateway_impl::EditorSettingsConfigGateway;
     pub use crate::adaptor::gateway::failure_records::FailureRecordStore;

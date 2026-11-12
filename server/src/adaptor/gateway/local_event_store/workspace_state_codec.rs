@@ -269,15 +269,9 @@ struct StoredPaneTab {
     pub id: String,
     pub kind: StoredPaneTabKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_base: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -331,20 +325,40 @@ impl TryFrom<StoredPaneLayout>
     for crate::domain::workspace_state::value_objects::pane_layout::PaneLayout
 {
     type Error = WorkspaceStateError;
+    /// 保存済みの配置を domain の配置に変える。
+    ///
+    /// 以前の版が保存したファイルタブ（`kind` が `file` のタブ）は、配置に入れずに落とす。
+    /// 落としたタブが選択中だったときは、その pane の選択を、落とさなかったタブの中から決める。
     fn try_from(value: StoredPaneLayout) -> Result<Self, Self::Error> {
         match value {
             StoredPaneLayout::Pane {
                 id,
                 tabs,
-                active_tab,
+                mut active_tab,
             } => {
-                let tabs = tabs
+                let removed_active = tabs.iter().any(|tab| {
+                    tab.kind == StoredPaneTabKind::File && active_tab.as_ref() == Some(&tab.id)
+                });
+                let tabs: Vec<_> = tabs
                     .into_iter()
-                    .map(|tab| {
-                        let kind = tab.kind.domain_kind();
-                        tab.into_domain(kind)
+                    .filter_map(|tab| {
+                        let kind = match tab.kind {
+                            StoredPaneTabKind::File => return None,
+                            StoredPaneTabKind::Terminal => PaneTabKind::Terminal,
+                            StoredPaneTabKind::Session => PaneTabKind::Session,
+                            StoredPaneTabKind::Command => PaneTabKind::Command,
+                        };
+                        Some(PaneTab {
+                            id: tab.id,
+                            kind,
+                            node_id: tab.node_id,
+                            agent_session_id: tab.agent_session_id,
+                        })
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect();
+                if removed_active {
+                    active_tab = tabs.first().map(|tab| tab.id.clone());
+                }
                 Self::pane(id, tabs, active_tab)
             }
             StoredPaneLayout::Split {
@@ -368,52 +382,15 @@ impl From<PaneTab> for StoredPaneTab {
         Self {
             id: value.id,
             kind: value.kind.into(),
-            file_path: value.file_path,
             node_id: value.node_id,
             agent_session_id: value.agent_session_id,
-            file_mode: value.file_mode.map(|mode| mode.as_str().into()),
-            file_base: value.file_base.map(|base| base.as_str().into()),
         }
-    }
-}
-impl StoredPaneTabKind {
-    fn domain_kind(&self) -> PaneTabKind {
-        match self {
-            Self::Terminal => PaneTabKind::Terminal,
-            Self::File => PaneTabKind::File,
-            Self::Session => PaneTabKind::Session,
-            Self::Command => PaneTabKind::Command,
-        }
-    }
-}
-impl StoredPaneTab {
-    fn into_domain(self, kind: PaneTabKind) -> Result<PaneTab, WorkspaceStateError> {
-        Ok(PaneTab {
-            id: self.id,
-            kind,
-            file_path: self.file_path,
-            node_id: self.node_id,
-            agent_session_id: self.agent_session_id,
-            file_mode: self
-                .file_mode
-                .as_deref()
-                .map(crate::domain::code::value_objects::review::FileMode::parse)
-                .transpose()
-                .map_err(|_| WorkspaceStateError::InvalidLayout)?,
-            file_base: self
-                .file_base
-                .as_deref()
-                .map(crate::domain::code::ReviewBase::parse)
-                .transpose()
-                .map_err(|_| WorkspaceStateError::InvalidLayout)?,
-        })
     }
 }
 impl From<PaneTabKind> for StoredPaneTabKind {
     fn from(value: PaneTabKind) -> Self {
         match value {
             PaneTabKind::Terminal => Self::Terminal,
-            PaneTabKind::File => Self::File,
             PaneTabKind::Command => Self::Command,
             PaneTabKind::Session => Self::Session,
         }

@@ -6,6 +6,7 @@
 //! 各 trait のメソッドは同期シグネチャで定義する。
 
 use super::error::CodeError;
+use super::value_objects::file_list::{WalkStep, WorktreeEntry};
 use super::value_objects::Hunk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,4 +92,26 @@ pub trait BranchBaseResolver: Send + Sync {
         path_hint: &str,
         base_name: &str,
     ) -> Result<Option<String>, CodeError>;
+}
+
+/// worktree の中の項目の列挙。
+pub trait WorktreeEntries: Send + Sync {
+    /// `directory` の直下の項目を返す。
+    ///
+    /// `worktree_path_is_visible` が偽になる項目は返さない。
+    fn entries(&self, worktree: &str, directory: &str) -> Result<Vec<WorktreeEntry>, CodeError>;
+
+    /// worktree の項目を上から順に列挙し、一つずつ `visit` に渡す。
+    ///
+    /// - ディレクトリは、その中の項目より先に渡す。
+    /// - `worktree_path_is_visible` が偽になる項目と、その中の項目は渡さない。
+    /// - `visit` が `SkipChildren` を返したディレクトリの中は列挙しない。
+    /// - `visit` が `Stop` を返したら、列挙を終えて成功を返す。
+    /// - 読めないディレクトリの中の項目と、名前が UTF-8 として読めない項目は渡さず、ほかの項目の列挙を続ける。
+    /// - worktree そのものを読めないときは失敗する。
+    fn walk(
+        &self,
+        worktree: &str,
+        visit: &mut dyn FnMut(WorktreeEntry) -> WalkStep,
+    ) -> Result<(), CodeError>;
 }

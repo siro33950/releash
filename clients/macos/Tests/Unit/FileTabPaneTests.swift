@@ -10,10 +10,10 @@ final class FileTabPaneTests: XCTestCase {
   @MainActor func pane(_ model: AppModel, value: Releash_Client_V1_FileTabView? = nil) throws
     -> FileTabPane
   {
-    try model.panes.restore(.empty())
-    model.panes.openFile("src/file.rs", base: "head")
+    try model.filePanes.restore(.empty())
+    model.filePanes.openFile("src/file.rs", base: "head")
     return FileTabPane(
-      model: model, tabID: try XCTUnwrap(model.panes.controller.allTabIds.first),
+      model: model, tabID: try XCTUnwrap(model.filePanes.controller.allTabIds.first),
       path: "src/file.rs", worktree: "/repo", value: value)
   }
 
@@ -87,7 +87,8 @@ final class FileTabPaneTests: XCTestCase {
     }
     let open = try Releash_Client_V1_OpenInEditorRequest(
       serializedBytes: XCTUnwrap(http.requests("OpenInEditor").first?.message))
-    XCTAssertEqual(open.filePath, "/repo/src/file.rs")
+    XCTAssertEqual(open.worktreePath, "/repo")
+    XCTAssertEqual(open.file, "src/file.rs")
     XCTAssertEqual(acceptedReplies, 1)
     let reply = try Releash_Client_V1_AppendReviewCommentRequest(
       serializedBytes: XCTUnwrap(http.requests("AppendReviewComment").first?.message))

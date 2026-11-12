@@ -1,8 +1,9 @@
 //! code ドメインの値オブジェクト。
 //!
-//! diff 計算の表現（`Hunk`）と、review の比較基準と区分を保持する。
+//! diff 計算の表現（`Hunk`）と、review の比較基準と区分、ファイル一覧の絞り込みの条件と結果を保持する。
 //! いずれも純粋なデータであり、外部リソースに依存しない。
 
+pub mod file_list;
 pub mod hunk;
 pub mod review;
 

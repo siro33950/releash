@@ -63,15 +63,6 @@ fn test_初期表示_選択した比較元との一致でfileとdiffを決める
 }
 
 #[test]
-fn test_表示選択_既知の値を型に変換し未知の値を拒否する() {
-    // Given / When / Then
-    for mode in [super::FileMode::File, super::FileMode::Diff] {
-        assert_eq!(super::FileMode::parse(mode.as_str()).unwrap(), mode);
-    }
-    assert!(super::FileMode::parse("unknown").is_err());
-}
-
-#[test]
 fn test_属性バイナリの初期表示_比較の変更有無を表示選択にする() {
     // Given / When / Then
     assert_eq!(super::FileMode::for_change(false), super::FileMode::File);

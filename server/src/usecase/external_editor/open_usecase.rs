@@ -1,17 +1,17 @@
 use crate::domain::app_config::AppConfigRepository;
-use crate::domain::external_editor::services::validate_path;
 use crate::domain::external_editor::EditorError;
+use crate::domain::external_editor::EditorTarget;
 use crate::domain::external_editor::{EditorLauncherGateway, EditorSettingsGateway};
 use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
 
+/// 対象を、選択中の外部エディタで開く。
 pub fn open_in_editor(
     launcher: &dyn EditorLauncherGateway,
     settings: &dyn EditorSettingsGateway,
-    file_path: &str,
+    target: &EditorTarget,
 ) -> Result<(), EditorError> {
-    validate_path(file_path, "ファイルパス").map_err(EditorError::InvalidInput)?;
     let editor = settings.selected_editor()?;
-    launcher.open_path(file_path, &editor, "ファイル")
+    launcher.open_paths(&target.editor_paths(), &editor, target.label())
 }
 
 pub fn get_external_editor(settings: &dyn EditorSettingsGateway) -> Result<String, EditorError> {

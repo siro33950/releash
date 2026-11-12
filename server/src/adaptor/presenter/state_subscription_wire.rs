@@ -75,16 +75,10 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 wire::state_payload::Value::WorkspaceState(value)
             },
             StateValue::Directory(entries) => wire::state_payload::Value::Directory(wire::DirectorySnapshot {
-                entries: entries.iter().map(|entry| wire::DirectoryEntry { path: entry.path.clone(), name: entry.name.clone(), directory: entry.directory, ignored: entry.ignored, status: match entry.status {
-                    crate::domain::code::services::directory::GitStatus::None => "none",
-                    crate::domain::code::services::directory::GitStatus::New => "new",
-                    crate::domain::code::services::directory::GitStatus::Modified => "modified",
-                    crate::domain::code::services::directory::GitStatus::Renamed => "renamed",
-                    crate::domain::code::services::directory::GitStatus::Deleted => "deleted",
-                    crate::domain::code::services::directory::GitStatus::Conflicted => "conflicted",
-                }.into() }).collect(),
+                entries: entries.iter().map(|entry| directory_entry(&entry.path, &entry.name, entry.directory, entry.ignored, entry.status)).collect(),
                 removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
             }),
+            StateValue::FilteredFiles(files) => wire::state_payload::Value::FilteredFiles(filtered_files(files)),
             StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
                 view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
                 patch: value.patch.clone(),
@@ -283,6 +277,66 @@ pub(crate) fn event(
         subscription_id,
         event: Some(event),
     })
+}
+
+fn filtered_files(
+    files: &crate::domain::code::value_objects::file_list::FilteredFiles,
+) -> wire::FilteredFilesSnapshot {
+    use crate::domain::code::value_objects::file_list::FileNode;
+    fn append(path: &str, nodes: &[FileNode], directories: &mut Vec<wire::FilteredDirectory>) {
+        if nodes.is_empty() {
+            return;
+        }
+        directories.push(wire::FilteredDirectory {
+            path: path.into(),
+            entries: nodes
+                .iter()
+                .map(|node| {
+                    directory_entry(
+                        &node.entry.path,
+                        &node.entry.name,
+                        node.entry.directory,
+                        node.entry.ignored,
+                        node.status,
+                    )
+                })
+                .collect(),
+        });
+        for node in nodes {
+            append(&node.entry.path, &node.children, directories);
+        }
+    }
+    let mut directories = Vec::new();
+    append(".", &files.roots, &mut directories);
+    wire::FilteredFilesSnapshot {
+        directories,
+        truncated: files.truncated,
+    }
+}
+
+fn directory_entry(
+    path: &str,
+    name: &str,
+    directory: bool,
+    ignored: bool,
+    status: crate::domain::code::services::directory::GitStatus,
+) -> wire::DirectoryEntry {
+    use crate::domain::code::services::directory::GitStatus;
+    wire::DirectoryEntry {
+        path: path.into(),
+        name: name.into(),
+        directory,
+        ignored,
+        status: match status {
+            GitStatus::None => "none",
+            GitStatus::New => "new",
+            GitStatus::Modified => "modified",
+            GitStatus::Renamed => "renamed",
+            GitStatus::Deleted => "deleted",
+            GitStatus::Conflicted => "conflicted",
+        }
+        .into(),
+    }
 }
 
 #[cfg(test)]

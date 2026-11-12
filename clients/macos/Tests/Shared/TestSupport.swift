@@ -66,7 +66,12 @@ final class TestHTTPClient: HTTPClientInterface {
   let state = Mutex(State())
   let discoveryFile = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString)
-  deinit { try? FileManager.default.removeItem(at: discoveryFile) }
+  let fileLayoutDefaultsName = "TestHTTPClient.FileLayout." + UUID().uuidString
+  deinit {
+    try? FileManager.default.removeItem(at: discoveryFile)
+    UserDefaults(suiteName: fileLayoutDefaultsName)?.removePersistentDomain(
+      forName: fileLayoutDefaultsName)
+  }
 
   func unary(
     request: HTTPRequest<Data?>,
@@ -428,6 +433,7 @@ func testReviewThread(_ id: String, resolved: Bool = false) -> Releash_Client_V1
         XCTAssertEqual(args, ["status", "--json"])
         return status
       }), httpClient: http)
+  model.fileLayoutDefaults = try XCTUnwrap(UserDefaults(suiteName: http.fileLayoutDefaultsName))
   await model.start()
   try await eventually { model.connected }
   return model

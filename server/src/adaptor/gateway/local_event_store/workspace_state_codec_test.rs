@@ -94,7 +94,7 @@ fn test_ui状態の無効化の事実_別種の事実と不正なpayloadを拒�
 }
 
 #[test]
-fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保つ() {
+fn test_pane形式_旧ファイルタブを除去し分割と残った選択を保つ() {
     // Given
     for axis in ["horizontal", "vertical"] {
         let json = format!(
@@ -105,10 +105,12 @@ fn test_pane形式_既存jsonと全種類と分割軸をdomainとの往復で保
         let domain: crate::domain::workspace_state::value_objects::pane_layout::PaneLayout =
             dto.clone().try_into().unwrap();
         // Then
-        assert_eq!(StoredPaneLayout::from(&domain), dto);
+        let mut expected: serde_json::Value = serde_json::from_str(&json).unwrap();
+        expected["second"]["tabs"] = serde_json::json!([{"id":"session", "kind":"session"}]);
+        expected["second"]["active_tab"] = serde_json::json!("session");
         assert_eq!(
-            serde_json::to_value(dto).unwrap(),
-            serde_json::from_str::<serde_json::Value>(&json).unwrap()
+            serde_json::to_value(StoredPaneLayout::from(&domain)).unwrap(),
+            expected
         );
     }
 }
@@ -178,7 +180,7 @@ fn test_workspace保存形式_省略した設定を補わず往復する() {
 }
 
 #[test]
-fn test_保存タブ_未知の表示と比較を拒否する() {
+fn test_保存タブ_削除する旧ファイルの表示設定は解釈しない() {
     // Given / When / Then
     for (mode, base) in [("unknown", "head"), ("diff", "unknown")] {
         let stored: StoredPaneLayout = serde_json::from_value(serde_json::json!({
@@ -188,7 +190,7 @@ fn test_保存タブ_未知の表示と比較を拒否する() {
             crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::try_from(
                 stored
             )
-            .is_err()
+            .is_ok()
         );
     }
 }

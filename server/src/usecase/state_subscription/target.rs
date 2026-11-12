@@ -21,6 +21,11 @@ pub enum SubscriptionTarget {
     WorkspaceState(String, String),
     RepositoryGroupState(String),
     Directory(String, String),
+    /// worktree の、条件で絞り込んだファイル一覧。
+    FilteredFiles(
+        String,
+        crate::domain::code::value_objects::file_list::FileFilter,
+    ),
     FileTab(String, String, ReviewBase),
     FileThreads(String, String),
     ReviewThreads(String),
@@ -72,6 +77,10 @@ impl SubscriptionTarget {
                         .into_owned(),
                     StateChangeSource::Worktree(path.clone()),
                 ),
+            ],
+            Self::FilteredFiles(path, _) => vec![
+                WatchRequirement::Git(path.clone()),
+                WatchRequirement::Files(path.clone(), StateChangeSource::Worktree(path.clone())),
             ],
             Self::FileTab(path, file, _) => vec![
                 WatchRequirement::Git(path.clone()),
@@ -172,6 +181,7 @@ impl SubscriptionTarget {
                 Self::Branches(p, _)
                 | Self::AvailableBranches(p)
                 | Self::Directory(p, _)
+                | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
                 | Self::ReleashBase(p) => paths.contains(p),
                 _ => false,
@@ -184,6 +194,7 @@ impl SubscriptionTarget {
                 | Self::WorkflowOutput(..)
                 | Self::NodeArtifact(_) => true,
                 Self::Directory(p, _)
+                | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
                 | Self::NodeDetail(p, _)
                 | Self::SessionHistory(p, _) => p == path,

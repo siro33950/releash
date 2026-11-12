@@ -130,7 +130,7 @@ final class SettingsGeneralTests: XCTestCase {
     defer { defaults.set(saved, forKey: "diffBase") }
     defaults.removeObject(forKey: "diffBase")
     let model = AppModel()
-    try model.panes.restore(.empty())
+    try model.filePanes.restore(.empty())
     let view = GeneralSettingsView(model: model)
     XCTAssertEqual(view.diffBase, "head")
     // When
@@ -139,7 +139,7 @@ final class SettingsGeneralTests: XCTestCase {
     // Then
     XCTAssertEqual(defaults.string(forKey: "diffBase"), "branch-base")
     XCTAssertEqual(
-      model.panes.tab(try XCTUnwrap(model.panes.controller.allTabIds.last))?.fileBase,
+      model.filePanes.tab(try XCTUnwrap(model.filePanes.controller.allTabIds.last))?.fileBase,
       "branch-base")
     XCTAssertEqual(GeneralSettingsView(model: AppModel()).diffBase, "branch-base")
   }

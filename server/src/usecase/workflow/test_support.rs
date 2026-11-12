@@ -10,14 +10,6 @@ impl crate::domain::external_editor::EditorSettingsGateway for NoopEditorSetting
 
 pub struct NoopEditorLauncherGateway;
 impl crate::domain::external_editor::EditorLauncherGateway for NoopEditorLauncherGateway {
-    fn open_path(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-    ) -> Result<(), crate::domain::external_editor::EditorError> {
-        Ok(())
-    }
     fn open_paths(
         &self,
         _: &[std::path::PathBuf],

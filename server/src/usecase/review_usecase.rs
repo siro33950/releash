@@ -20,6 +20,7 @@ use super::code_error::CodeUsecaseError;
 use super::code_usecase::{CodeUsecase, ReviewContentSource, SelectedReviewSide};
 use super::repository_dto::FileStatusDto;
 use super::repository_state::snapshot::RepositorySnapshot;
+use crate::domain::code::value_objects::file_list::{FileFilter, FilteredFiles};
 
 use super::repository_state::{RepositoryStateError, RepositoryStateService};
 
@@ -43,6 +44,12 @@ trait ReviewCodePort: Send + Sync {
         directory: &str,
         statuses: &[FileStatusDto],
     ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError>;
+    fn filtered_files(
+        &self,
+        worktree: &str,
+        filter: &FileFilter,
+        statuses: &[FileStatusDto],
+    ) -> Result<FilteredFiles, CodeUsecaseError>;
 
     fn select_review_side_source(
         &self,
@@ -86,6 +93,15 @@ impl ReviewCodePort for CodeUsecase {
         statuses: &[FileStatusDto],
     ) -> Result<Vec<super::directory_query::DirectoryEntryDto>, CodeUsecaseError> {
         CodeUsecase::directory_entries(self, worktree, directory, statuses)
+    }
+
+    fn filtered_files(
+        &self,
+        worktree: &str,
+        filter: &FileFilter,
+        statuses: &[FileStatusDto],
+    ) -> Result<FilteredFiles, CodeUsecaseError> {
+        CodeUsecase::filtered_files(self, worktree, filter, statuses)
     }
 
     fn select_review_side_source(
@@ -162,6 +178,16 @@ impl ReviewUsecase {
         let snapshot = self.snapshot(worktree)?;
         self.code
             .directory_entries(worktree, directory, &snapshot.status)
+    }
+
+    /// worktree の git の状態を読み、条件で絞り込んだファイル一覧を返す。
+    pub fn filtered_files(
+        &self,
+        worktree: &str,
+        filter: &FileFilter,
+    ) -> Result<FilteredFiles, CodeUsecaseError> {
+        let snapshot = self.snapshot(worktree)?;
+        self.code.filtered_files(worktree, filter, &snapshot.status)
     }
 
     pub fn get_file_tab_view(

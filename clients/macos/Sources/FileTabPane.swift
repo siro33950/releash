@@ -15,7 +15,7 @@ struct FileTabPane: View {
   @State private var subscription: UUID?
   @State private var threadSubscription: UUID?
   @State var draft = FileThreadDraft()
-  var tab: PaneTab? { model.panes.tab(tabID) }
+  var tab: PaneTab? { model.filePanes.tab(tabID) }
   var base: String { tab?.fileBase ?? "head" }
   var mode: String { tab?.fileMode ?? value?.initialMode ?? "file" }
 
@@ -140,13 +140,13 @@ struct FileTabPane: View {
     }
   }
   func setPresentation(mode: String? = nil, base: String? = nil) {
-    model.panes.setFilePresentation(tabID, mode: mode, base: base)
-    model.savePaneLayout()
+    model.filePanes.setFilePresentation(tabID, mode: mode, base: base)
   }
   func openInEditor() {
     guard let client = model.client else { return }
     var request = Releash_Client_V1_OpenInEditorRequest()
-    request.filePath = URL(fileURLWithPath: worktree).appendingPathComponent(path).path
+    request.worktreePath = worktree
+    request.file = path
     model.perform {
       _ = try await client.openInEditor(request: request, headers: model.headers).result.get()
     }

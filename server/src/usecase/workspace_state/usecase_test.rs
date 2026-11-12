@@ -555,9 +555,6 @@ fn legacy_state() -> WorkspaceState {
                     kind: PaneTabKind::Session,
                     node_id: Some(node.into()),
                     agent_session_id: None,
-                    file_path: None,
-                    file_mode: None,
-                    file_base: None,
                 })
                 .collect(),
             Some("0".into()),

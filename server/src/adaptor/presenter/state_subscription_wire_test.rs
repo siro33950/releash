@@ -1213,3 +1213,103 @@ fn test_実行概要の部分成功_正常木と失敗idと原因を転送して
         );
     }
 }
+
+#[test]
+fn test_絞込一覧_木を親ごとの順序に写し上限を伝える() {
+    // Given
+    use crate::domain::code::services::directory::GitStatus;
+    use crate::domain::code::value_objects::file_list::{FileNode, FilteredFiles, WorktreeEntry};
+    let leaf = FileNode {
+        entry: WorktreeEntry {
+            path: "src/file".into(),
+            name: "file".into(),
+            directory: false,
+            ignored: true,
+        },
+        status: GitStatus::Modified,
+        children: vec![],
+    };
+    let files = FilteredFiles {
+        roots: vec![FileNode {
+            entry: WorktreeEntry {
+                path: "src".into(),
+                name: "src".into(),
+                directory: true,
+                ignored: false,
+            },
+            status: GitStatus::Modified,
+            children: vec![leaf],
+        }],
+        truncated: true,
+    };
+    // When
+    let value = filtered_files(&files);
+    // Then
+    assert!(value.truncated);
+    assert_eq!(value.directories.len(), 2);
+    assert_eq!(value.directories[0].path, ".");
+    assert_eq!(value.directories[0].entries[0].path, "src");
+    assert_eq!(value.directories[1].path, "src");
+    assert!(value.directories[1].entries[0].ignored);
+    assert_eq!(value.directories[1].entries[0].status, "modified");
+    assert!(filtered_files(&FilteredFiles {
+        roots: vec![],
+        truncated: false
+    })
+    .directories
+    .is_empty());
+}
+
+#[test]
+fn test_ファイル一覧配信_直下一覧と絞込結果が同じgit状態を返す() {
+    use crate::domain::code::services::directory::GitStatus;
+    use crate::domain::code::value_objects::file_list::{FileNode, FilteredFiles, WorktreeEntry};
+    use crate::usecase::directory_query::DirectoryEntryDto;
+    // Given
+    for (status, expected) in [
+        (GitStatus::None, "none"),
+        (GitStatus::New, "new"),
+        (GitStatus::Modified, "modified"),
+        (GitStatus::Renamed, "renamed"),
+        (GitStatus::Deleted, "deleted"),
+        (GitStatus::Conflicted, "conflicted"),
+    ] {
+        let entry = WorktreeEntry {
+            path: "file.rs".into(),
+            name: "file.rs".into(),
+            directory: false,
+            ignored: true,
+        };
+        let directory = StateValue::Directory(vec![DirectoryEntryDto {
+            path: entry.path.clone(),
+            name: entry.name.clone(),
+            directory: entry.directory,
+            ignored: entry.ignored,
+            status,
+        }]);
+        let files = StateValue::FilteredFiles(FilteredFiles {
+            roots: vec![FileNode {
+                entry,
+                status,
+                children: vec![],
+            }],
+            truncated: true,
+        });
+        // When
+        let wire::state_payload::Value::Directory(directory) =
+            payload(&directory).unwrap().value.unwrap()
+        else {
+            panic!("directory payload")
+        };
+        let wire::state_payload::Value::FilteredFiles(files) =
+            payload(&files).unwrap().value.unwrap()
+        else {
+            panic!("filtered files payload")
+        };
+        // Then
+        assert_eq!(directory.entries[0].status, expected);
+        assert_eq!(files.directories[0].path, ".");
+        assert_eq!(files.directories[0].entries, directory.entries);
+        assert!(files.truncated);
+    }
+}

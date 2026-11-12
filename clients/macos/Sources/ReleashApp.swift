@@ -21,15 +21,15 @@ import SwiftUI
             .disabled(!model.connected || model.selectedWorktree == nil)
         }
         CommandMenu("タブ") {
-          Button("タブを閉じる") { model.panes.closeCurrentTab() }
+          Button("タブを閉じる") { model.focusedPanes.closeCurrentTab() }
             .keyboardShortcut("w").disabled(!model.layoutLoaded)
-          Button("ほかのタブを閉じる") { model.panes.closeOtherTabs() }
+          Button("ほかのタブを閉じる") { model.focusedPanes.closeOtherTabs() }
             .keyboardShortcut("t", modifiers: [.command, .option]).disabled(!model.layoutLoaded)
           Divider()
-          Button("前のタブ") { model.panes.controller.selectPreviousTab() }
+          Button("前のタブ") { model.focusedPanes.controller.selectPreviousTab() }
             .keyboardShortcut(.leftArrow, modifiers: [.command, .option]).disabled(
               !model.layoutLoaded)
-          Button("次のタブ") { model.panes.controller.selectNextTab() }
+          Button("次のタブ") { model.focusedPanes.controller.selectNextTab() }
             .keyboardShortcut(.rightArrow, modifiers: [.command, .option]).disabled(
               !model.layoutLoaded)
         }
@@ -189,18 +189,20 @@ struct RootView: View {
   }
 }
 
-private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable {
+struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepresentable {
   let minimumLeadingWidth: CGFloat
   var maximumLeadingWidth: CGFloat = .infinity
   let minimumTrailingWidth: CGFloat
   var initialLeadingWidth: CGFloat? = nil
   var fixedTrailingWidth: CGFloat? = nil
+  var dividerThickness: CGFloat = 0
   @ViewBuilder let leading: () -> Leading
   @ViewBuilder let trailing: () -> Trailing
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
   func makeNSView(context: Context) -> SplitView {
     let split = SplitView()
+    split.thickness = dividerThickness
     split.isVertical = true
     split.dividerStyle = .thin
     split.delegate = context.coordinator
@@ -208,6 +210,8 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
     let trailingView = NSHostingView(rootView: trailing())
     leadingView.sizingOptions = []
     trailingView.sizingOptions = []
+    leadingView.safeAreaRegions = []
+    trailingView.safeAreaRegions = []
     split.addArrangedSubview(leadingView)
     split.addArrangedSubview(trailingView)
     return split
@@ -235,8 +239,14 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
     }
   }
   final class SplitView: NSSplitView {
-    override var dividerThickness: CGFloat { 0 }
+    var thickness: CGFloat = 0
+    override var dividerThickness: CGFloat { thickness }
+    // SwiftUI から境界のマウス操作を AppKit に配送させる。
+    override func mouseDown(with event: NSEvent) {
+      super.mouseDown(with: event)
+    }
   }
+
   final class Coordinator: NSObject, NSSplitViewDelegate {
     var parent: WorkspaceColumnSplit
     var initialized = false
@@ -268,7 +278,7 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
     }
     func layout(_ splitView: NSSplitView, proposedLeadingWidth proposed: CGFloat) {
       guard splitView.arrangedSubviews.count == 2, splitView.bounds.width > 0 else { return }
-      let width = splitView.bounds.width
+      let width = splitView.bounds.width - splitView.dividerThickness
       let leadingWidth =
         parent.fixedTrailingWidth.map { width - $0 }
         ?? max(
@@ -277,7 +287,8 @@ private struct WorkspaceColumnSplit<Leading: View, Trailing: View>: NSViewRepres
       splitView.arrangedSubviews[0].frame = NSRect(
         x: 0, y: 0, width: leadingWidth, height: splitView.bounds.height)
       splitView.arrangedSubviews[1].frame = NSRect(
-        x: leadingWidth, y: 0, width: max(0, width - leadingWidth), height: splitView.bounds.height)
+        x: leadingWidth + splitView.dividerThickness, y: 0,
+        width: max(0, width - leadingWidth), height: splitView.bounds.height)
       initialized = width >= parent.minimumLeadingWidth + parent.minimumTrailingWidth
     }
     func splitView(

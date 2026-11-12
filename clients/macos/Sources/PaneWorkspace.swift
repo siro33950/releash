@@ -6,6 +6,7 @@ import SwiftUI
   var renamingSession: Releash_Client_V1_SessionTabSnapshot?
   var archivingSession: Releash_Client_V1_SessionTabSnapshot?
   var sessionName = ""
+  var onFocus: (() -> Void)?
   var requestClose: ((PaneTab) async -> Bool)?
   private var closing: Set<TabID> = []
   private var approved: Set<TabID> = []
@@ -16,6 +17,7 @@ import SwiftUI
   private var tabs: [String: PaneTab] = [:]
   private var pendingSessionTabs: [String: TabID] = [:]
   private var nextTerminalNumber = 1
+  private var restoring = false
 
   init() {
     for id in controller.allTabIds { controller.closeTab(id) }
@@ -26,6 +28,8 @@ import SwiftUI
   }
 
   func restore(_ layout: PaneLayout) throws {
+    restoring = true
+    defer { restoring = false }
     if try applyToExistingPanes(layout) { return }
     var ids: [String: String] = [:]
     var restoredTabs: [String: PaneTab] = [:]
@@ -408,6 +412,11 @@ import SwiftUI
     return false
   }
 
+  func splitTabBar(_ controller: BonsplitController, didFocusPane pane: PaneID) {
+    guard !restoring else { return }
+    onFocus?()
+  }
+
   func openFile(_ path: String, base: String) {
     guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
     if let existing = controller.tabs(inPane: pane).first(where: {
@@ -472,11 +481,6 @@ struct WorkspacePaneView: View {
           focused: model.panes.isFocused(tab.id, in: pane),
           tabID: tab.id
         ).id(path + nodeID)
-      } else if let file = model.panes.tab(tab.id), let path = file.filePath,
-        let worktree = model.selectedWorktree
-      {
-        FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree).id(
-          "\(worktree):\(tab.id):\(path)")
       } else {
         Text(tab.title).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -484,7 +488,9 @@ struct WorkspacePaneView: View {
     } emptyPane: { _ in
       Color(nsColor: .textBackgroundColor)
     }
+    .background(WorkspaceFocusObserver { model.filesFocused = false })
     .onAppear {
+      model.panes.onFocus = { [weak model] in model?.filesFocused = false }
       model.panes.requestClose = { [weak model] tab in await model?.closeTerminal(tab) ?? false }
       model.panes.controller.tabContextMenu = { [weak model] id in
         guard let model else { return AnyView(EmptyView()) }

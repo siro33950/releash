@@ -5,6 +5,7 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
 
+use crate::infrastructure::file_watcher::watch_tree;
 use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::repository_state::runtime::WorktreePathNormalizer;
 use crate::usecase::repository_state::service::RepositoryStateRepository;
@@ -110,15 +111,12 @@ fn start_file_watcher(
 
     let mut debouncer = debouncer;
     for watch_path in watch_paths {
-        debouncer
-            .watcher()
-            .watch(&watch_path, RecursiveMode::Recursive)
-            .map_err(|err| {
-                RepositoryStateError::Watcher(format!(
-                    "Failed to watch path {}: {err}",
-                    watch_path.display()
-                ))
-            })?;
+        watch_tree(debouncer.watcher(), &watch_path).map_err(|err| {
+            RepositoryStateError::Watcher(format!(
+                "Failed to watch path {}: {err}",
+                watch_path.display()
+            ))
+        })?;
     }
     Ok(debouncer)
 }

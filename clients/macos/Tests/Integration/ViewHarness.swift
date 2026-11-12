@@ -19,6 +19,8 @@ struct ViewElement {
   private var snapshot: [ViewElement] = []
   private var menuHandled = false
   private var trackingMenu: NSMenu?
+  private var menuTracking = false
+  private var menuSelection: (menu: NSMenu, index: Int)?
   init<V: View>(_ view: V, size: NSSize = NSSize(width: 1000, height: 700)) async {
     existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
     window = NSWindow(
@@ -128,6 +130,10 @@ struct ViewElement {
   }
   @objc private func menuBegan(_ notification: Notification) {
     trackingMenu = notification.object as? NSMenu
+    menuTracking = true
+  }
+  @objc private func menuEnded(_ notification: Notification) {
+    if notification.object as? NSMenu === trackingMenu { menuTracking = false }
   }
   func menu(
     _ name: String, selecting choice: String?, file: StaticString = #filePath, line: UInt = #line,
@@ -137,48 +143,60 @@ struct ViewElement {
     let row = try XCTUnwrap(element(name), file: file, line: line)
     menuHandled = false
     trackingMenu = nil
+    menuTracking = false
+    menuSelection = nil
     NotificationCenter.default.addObserver(
       self, selector: #selector(menuBegan(_:)), name: NSMenu.didBeginTrackingNotification,
+      object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(menuEnded(_:)), name: NSMenu.didEndTrackingNotification,
       object: nil)
     defer {
       NotificationCenter.default.removeObserver(
         self, name: NSMenu.didBeginTrackingNotification, object: nil)
+      NotificationCenter.default.removeObserver(
+        self, name: NSMenu.didEndTrackingNotification, object: nil)
       trackingMenu = nil
+      menuSelection = nil
     }
     let deadline = ContinuousClock.now + .seconds(5)
-    await withCheckedContinuation { continuation in
-      let timer = Timer(timeInterval: 0.05, repeats: true) { [self] timer in
-        let handled = MainActor.assumeIsolated {
-          guard let menu = trackingMenu else { return false }
-          let titles = menu.items.map(\.title)
-          guard let choice, let index = titles.firstIndex(of: choice) else {
-            if ContinuousClock.now < deadline { return false }
-            inspect(titles)
-            XCTAssertNil(choice)
-            menuHandled = true
-            menu.cancelTracking()
-            return true
-          }
+    let timer = Timer(timeInterval: 0.05, repeats: true) { [self] timer in
+      let handled = MainActor.assumeIsolated {
+        guard let menu = trackingMenu else { return false }
+        let titles = menu.items.map(\.title)
+        guard let choice, let index = titles.firstIndex(of: choice) else {
+          if ContinuousClock.now < deadline { return false }
           inspect(titles)
+          XCTAssertNil(choice)
           menuHandled = true
-          menu.performActionForItem(at: index)
           menu.cancelTracking()
           return true
         }
-        if handled { timer.invalidate() }
+        inspect(titles)
+        menuHandled = true
+        menuSelection = (menu, index)
+        menu.cancelTracking()
+        return true
       }
-      RunLoop.main.add(timer, forMode: .eventTracking)
+      if handled { timer.invalidate() }
+    }
+    RunLoop.main.add(timer, forMode: .eventTracking)
+    defer { timer.invalidate() }
+    await withCheckedContinuation { continuation in
       DispatchQueue.main.async { [self] in
         let result = AXUIElementPerformAction(row.reference, kAXShowMenuAction as CFString)
-        timer.invalidate()
-        if !menuHandled {
-          inspect([])
-          XCTAssertNil(choice)
-        }
         XCTAssertEqual(result, .success)
         continuation.resume()
       }
     }
+    if choice != nil {
+      try await eventually({ menuHandled && !menuTracking }, file: file, line: line)
+    }
+    if !menuHandled {
+      inspect([])
+      XCTAssertNil(choice, file: file, line: line)
+    }
+    if let selection = menuSelection { selection.menu.performActionForItem(at: selection.index) }
     await refresh()
   }
   func pressAlertButton(_ name: String) async throws {

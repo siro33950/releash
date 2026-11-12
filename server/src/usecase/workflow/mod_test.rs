@@ -33,14 +33,6 @@ impl FakeEditorLauncher {
 }
 
 impl crate::domain::external_editor::EditorLauncherGateway for FakeEditorLauncher {
-    fn open_path(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-    ) -> Result<(), crate::domain::external_editor::EditorError> {
-        unreachable!()
-    }
     fn open_paths(
         &self,
         paths: &[std::path::PathBuf],

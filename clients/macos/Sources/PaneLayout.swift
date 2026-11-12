@@ -1,6 +1,6 @@
 import Foundation
 
-struct PaneTab: Equatable, Identifiable {
+struct PaneTab: Codable, Equatable, Identifiable {
   var id: String = UUID().uuidString
   var kind: Kind
   var nodeID: String?
@@ -9,7 +9,7 @@ struct PaneTab: Equatable, Identifiable {
   var fileMode: String?
   var fileBase: String?
   var title: String { filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title }
-  enum Kind: String, CaseIterable {
+  enum Kind: String, Codable, CaseIterable {
     case terminal, file, session, command
     var icon: String {
       "circle.fill"
@@ -25,10 +25,10 @@ struct PaneTab: Equatable, Identifiable {
   }
 }
 
-indirect enum PaneLayout: Equatable {
+indirect enum PaneLayout: Codable, Equatable {
   case pane(id: String, tabs: [PaneTab], active: String?)
   case split(id: String, axis: Axis, ratio: Double, first: PaneLayout, second: PaneLayout)
-  enum Axis: String { case horizontal, vertical }
+  enum Axis: String, Codable { case horizontal, vertical }
   static func empty() -> Self { .pane(id: UUID().uuidString, tabs: [], active: nil) }
   var isEmpty: Bool {
     if case .pane(_, let tabs, .none) = self { tabs.isEmpty } else { false }
@@ -45,7 +45,6 @@ indirect enum PaneLayout: Equatable {
         let kind: PaneTab.Kind
         switch tab.kind {
         case .terminal: kind = .terminal
-        case .file: kind = .file
         case .session: kind = .session
         case .command: kind = .command
         default: throw CLIFailure(message: "Unknown pane tab kind")
@@ -53,10 +52,7 @@ indirect enum PaneLayout: Equatable {
         return PaneTab(
           id: tab.id, kind: kind,
           nodeID: tab.hasNodeID ? tab.nodeID : nil,
-          agentSessionID: tab.hasAgentSessionID ? tab.agentSessionID : nil,
-          filePath: tab.hasFilePath ? tab.filePath : nil,
-          fileMode: tab.hasFileMode ? tab.fileMode : nil,
-          fileBase: tab.hasFileBase ? tab.fileBase : nil)
+          agentSessionID: tab.hasAgentSessionID ? tab.agentSessionID : nil)
       }
       self = .pane(id: pane.id, tabs: tabs, active: pane.hasActiveTab ? pane.activeTab : nil)
     case .split(let split):
@@ -79,23 +75,26 @@ indirect enum PaneLayout: Equatable {
     case .pane(let id, let tabs, let active):
       var pane = Releash_Client_V1_Pane()
       pane.id = id
-      pane.tabs = tabs.map { tab in
+      pane.tabs = tabs.compactMap { tab in
         var value = Releash_Client_V1_PaneTab()
         value.id = tab.id
         if let nodeID = tab.nodeID { value.nodeID = nodeID }
         if let id = tab.agentSessionID { value.agentSessionID = id }
-        if let path = tab.filePath { value.filePath = path }
-        if let mode = tab.fileMode { value.fileMode = mode }
-        if let base = tab.fileBase { value.fileBase = base }
         switch tab.kind {
         case .terminal: value.kind = .terminal
-        case .file: value.kind = .file
+        case .file: return nil
         case .session: value.kind = .session
         case .command: value.kind = .command
         }
         return value
       }
-      if let active { pane.activeTab = active }
+      if let active {
+        if tabs.contains(where: { $0.id == active && $0.kind == .file }) {
+          if let first = pane.tabs.first { pane.activeTab = first.id }
+        } else {
+          pane.activeTab = active
+        }
+      }
       result.pane = pane
     case .split(let id, let axis, let ratio, let first, let second):
       var split = Releash_Client_V1_PaneSplit()

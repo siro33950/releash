@@ -60,11 +60,20 @@ pub(crate) fn register_shared(
                         crate::adaptor::gateway::external_editor::EditorSettingsConfigGateway::new(
                             config,
                         );
+                        let worktree = required(args.worktree_path, "worktreePath")?;
+                        let target = outcome(match args.file {
+                            Some(file) => {
+                                crate::domain::external_editor::EditorTarget::file(&worktree, &file)
+                            }
+                            None => {
+                                crate::domain::external_editor::EditorTarget::worktree(&worktree)
+                            }
+                        })?;
                         outcome(
                             crate::usecase::external_editor::open_usecase::open_in_editor(
                                 launcher.as_ref(),
                                 &settings,
-                                &required(args.file_path, "filePath")?,
+                                &target,
                             ),
                         )
                     }
