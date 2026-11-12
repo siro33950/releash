@@ -381,7 +381,12 @@ impl AgentSessionUsecase {
         session: &AgentSession,
         events: &[AgentSessionLifecycleEvent],
     ) {
-        session_tab_follow::follow(&self.session_tabs, session, events).await;
+        if let Err(error) = self.session_tabs.follow_session(session, events).await {
+            log::warn!(
+                "failed to follow AgentSession '{}' facts in the Session tabs: {error:?}",
+                session.id()
+            );
+        }
     }
 
     /// 削除した Session のタブを閉じる。失敗は警告として記録し、Session の削除を失敗にしない。
@@ -411,6 +416,3 @@ fn map_repository_error(error: AgentSessionRepositoryError) -> AgentSessionUseca
 #[cfg(test)]
 #[path = "usecase_test.rs"]
 mod usecase_tests;
-
-#[path = "session_tab_follow.rs"]
-mod session_tab_follow;

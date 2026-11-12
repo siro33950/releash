@@ -48,11 +48,15 @@ impl SessionTabsUsecase {
     }
 
     /// Session に起きた事実にタブ配置を追従させて保存し、配置の購読へ通知する。
+    /// タブ配置を変える事実（`WorkspaceState::follows_session_event`）が無ければ、タブ配置を読み込まない。
     pub async fn follow_session(
         &self,
         session: &AgentSession,
         events: &[AgentSessionLifecycleEvent],
     ) -> Result<(), WorkspaceStateError> {
+        if !events.iter().any(WorkspaceState::follows_session_event) {
+            return Ok(());
+        }
         self.update(session.workspace().as_str(), |state| {
             for event in events {
                 state.follow_session(session, event);

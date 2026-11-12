@@ -42,15 +42,21 @@ impl WorkspaceState {
     /// 再開の事実（`Resumed`）では、その Session のタブを `add_session_tab` と同じ規則で開く。
     /// そのほかの事実では配置を変えない。
     pub fn follow_session(&mut self, session: &AgentSession, event: &AgentSessionLifecycleEvent) {
-        match event {
-            AgentSessionLifecycleEvent::ProcessExited { .. } => {
+        match session_tab_change(event) {
+            Some(SessionTabChange::Close) => {
                 self.remove_session_tab(session.id());
             }
-            AgentSessionLifecycleEvent::Resumed => {
+            Some(SessionTabChange::Open) => {
                 self.add_session_tab(session.id(), session.tree_location().node_execution_id());
             }
-            _ => {}
+            None => {}
         }
+    }
+
+    /// Session に起きた事実のうち、`follow_session` がタブ配置を変えるものか。
+    /// 偽を返す事実だけなら、タブ配置を読み込まずに済ませてよい。
+    pub fn follows_session_event(event: &AgentSessionLifecycleEvent) -> bool {
+        session_tab_change(event).is_some()
     }
 
     /// 実行木に属する Session のタブを、既存の選択を変えずに追加する。
@@ -85,6 +91,23 @@ impl WorkspaceState {
             self.layout = self.layout.or(previous.layout);
         }
         self
+    }
+}
+
+/// Session に起きた事実が Session タブに及ぼす変更。
+enum SessionTabChange {
+    /// その Session のタブを閉じる。
+    Close,
+    /// その Session のタブを開く。
+    Open,
+}
+
+/// Session に起きた事実と Session タブの変更の対応。変更の無い事実には `None` を返す。
+fn session_tab_change(event: &AgentSessionLifecycleEvent) -> Option<SessionTabChange> {
+    match event {
+        AgentSessionLifecycleEvent::ProcessExited { .. } => Some(SessionTabChange::Close),
+        AgentSessionLifecycleEvent::Resumed => Some(SessionTabChange::Open),
+        _ => None,
     }
 }
 
