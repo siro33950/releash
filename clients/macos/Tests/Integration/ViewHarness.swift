@@ -17,7 +17,6 @@ struct ViewElement {
   let window: NSWindow
   let existingWindows: Set<ObjectIdentifier>
   private var snapshot: [ViewElement] = []
-  private var snapshotDiagnostics = ""
   private var menuHandled = false
   private var trackingMenu: NSMenu?
   private var menuTracking = false
@@ -74,15 +73,9 @@ struct ViewElement {
           + (attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []).flatMap(collect)
       }
       let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-      var rawWindows: CFTypeRef?
-      let windowsResult = AXUIElementCopyAttributeValue(
-        app, kAXWindowsAttribute as CFString, &rawWindows)
-      let allWindows = rawWindows as? [AXUIElement] ?? []
-      let windows = allWindows.filter {
+      let windows = (attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []).filter {
         attribute($0, kAXTitleAttribute) as? String == window.title
       }
-      snapshotDiagnostics =
-        "AXWindows=\(windowsResult.rawValue) reported=\(allWindows.count) matched=\(windows.count)"
       let menus = (attribute(app, kAXChildrenAttribute) as? [AXUIElement] ?? []).filter {
         attribute($0, kAXRoleAttribute) as? String == kAXMenuRole
       }
@@ -95,11 +88,7 @@ struct ViewElement {
   func value(_ element: ViewElement?) -> String? { element?.value }
   func texts() -> [String] { snapshot.flatMap { [$0.label, $0.value] } }
   func debugDump() -> String {
-    "window=\(window.title) visible=\(window.isVisible) key=\(window.isKeyWindow) "
-      + "appActive=\(NSApp.isActive) frame=\(window.frame) "
-      + "\(snapshotDiagnostics) elements=\(snapshot.count)\n"
-      + snapshot.map { "\($0.role)#\($0.identifier)[\($0.label)|\($0.value)]" }.joined(
-        separator: " ")
+    snapshot.map { "\($0.role)#\($0.identifier)[\($0.label)|\($0.value)]" }.joined(separator: " ")
   }
   func press(_ name: String, file: StaticString = #filePath, line: UInt = #line) async throws {
     await refresh()
@@ -287,8 +276,7 @@ struct ViewElement {
 }
 
 @MainActor func eventuallyView(
-  _ host: ViewHarness, diagnostics: () -> String = { "" }, _ condition: () -> Bool,
-  file: StaticString = #filePath, line: UInt = #line
+  _ host: ViewHarness, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line
 ) async throws {
   let deadline = ContinuousClock.now + .seconds(5)
   repeat {
@@ -296,5 +284,5 @@ struct ViewElement {
     if condition() { return }
     try await Task.sleep(for: .milliseconds(20))
   } while ContinuousClock.now < deadline
-  XCTAssertTrue(condition(), diagnostics() + "\n" + host.debugDump(), file: file, line: line)
+  XCTAssertTrue(condition(), host.debugDump(), file: file, line: line)
 }

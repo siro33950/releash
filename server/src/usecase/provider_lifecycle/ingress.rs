@@ -221,38 +221,39 @@ impl ProviderLifecycleIngressUsecase {
                 Ok(result)
             }
             ProviderLifecycleSignalKind::StopObserved { .. } => {
-                let _operation = self
-                    .sessions
-                    .lock_operation(&agent_session_id)
-                    .await
-                    .map_err(map_session_error)?;
-                let session = self
-                    .sessions
-                    .find(&agent_session_id)
-                    .await
-                    .map_err(map_session_error)?
-                    .ok_or(ProviderLifecycleIngressUsecaseError::InvalidInput)?;
-                let tree_location = session.session().tree_location().clone();
-                let transaction = self.execution_tree_stop_transaction.clone();
-                let command = ProviderExecutionTreeStopCommand {
-                    agent_session_id,
-                    tree_id: tree_location.tree_id().to_string(),
-                    node_execution_id: tree_location.node_execution_id().to_string(),
-                    binding_id,
+                let (result, follow_up) = {
+                    let _operation = self
+                        .sessions
+                        .lock_operation(&agent_session_id)
+                        .await
+                        .map_err(map_session_error)?;
+                    let session = self
+                        .sessions
+                        .find(&agent_session_id)
+                        .await
+                        .map_err(map_session_error)?
+                        .ok_or(ProviderLifecycleIngressUsecaseError::InvalidInput)?;
+                    let tree_location = session.session().tree_location().clone();
+                    let transaction = self.execution_tree_stop_transaction.clone();
+                    let command = ProviderExecutionTreeStopCommand {
+                        agent_session_id,
+                        tree_id: tree_location.tree_id().to_string(),
+                        node_execution_id: tree_location.node_execution_id().to_string(),
+                        binding_id,
+                    };
+                    self.lifecycle
+                        .receive_with_commit(
+                            slot_id,
+                            capability,
+                            signal,
+                            move |lifecycle_events| async move {
+                                transaction
+                                    .commit_provider_stop(command, lifecycle_events)
+                                    .await
+                            },
+                        )
+                        .await?
                 };
-                let (result, follow_up) = self
-                    .lifecycle
-                    .receive_with_commit(
-                        slot_id,
-                        capability,
-                        signal,
-                        move |lifecycle_events| async move {
-                            transaction
-                                .commit_provider_stop(command, lifecycle_events)
-                                .await
-                        },
-                    )
-                    .await?;
                 if let Some(follow_up) = follow_up {
                     follow_up.await?;
                 }

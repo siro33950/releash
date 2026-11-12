@@ -95,33 +95,16 @@ final class RootListViewTests: XCTestCase {
     let host = await ViewHarness(RootListView(model: model, path: "/repo"))
     defer { host.close() }
     func expectExpansion(
-      _ expanded: Bool, status: Releash_Client_V1_WorkspaceStatusClassification.Value, stage: String
+      _ expanded: Bool, status: Releash_Client_V1_WorkspaceStatusClassification.Value
     ) async throws {
-      try await eventuallyView(
-        host,
-        diagnostics: {
-          let received =
-            model.repositories.flatMap(\.worktrees.items)
-            .first { $0.path == "/repo" }?.snapshot.nodes.items ?? []
-          return "stage=\(stage) initial=\(initial) connected=\(model.connected)\n"
-            + ids.map { id in
-              let item = received.first { $0.rootID == id }
-              return "row=\(id) expectedStatus=\(status) expectedExpanded=\(expanded) "
-                + "modelStatus=\(item.map { String(describing: $0.rootStatus.value) } ?? "missing") "
-                + "modelChildren=\(item?.children.map(\.rootID) ?? []) "
-                + "axStatus=\(host.element("root:\(id)")?.value ?? "missing") "
-                + "axChildVisible=\(host.element("root:\(id)-child") != nil)"
-            }.joined(separator: "\n")
-        },
-        {
-          ids.allSatisfy { id in
-            host.element("root:\(id)")?.value == String(describing: status)
-              && (host.element("root:\(id)-child") != nil) == expanded
-          }
+      try await eventuallyView(host) {
+        ids.allSatisfy { id in
+          host.element("root:\(id)")?.value == String(describing: status)
+            && (host.element("root:\(id)-child") != nil) == expanded
         }
-      )
+      }
     }
-    try await expectExpansion(initial != .idle, status: initial, stage: "initial")
+    try await expectExpansion(initial != .idle, status: initial)
     if let manualExpansion {
       for id in ids {
         if manualExpansion && id != "session" {
@@ -130,7 +113,7 @@ final class RootListViewTests: XCTestCase {
           try await host.setRowExpanded("root:\(id)", manualExpansion)
         }
       }
-      try await expectExpansion(manualExpansion, status: initial, stage: "manual")
+      try await expectExpansion(manualExpansion, status: initial)
     }
     if removeAndReinsert {
       tree.snapshot.nodes.items = []
@@ -142,12 +125,11 @@ final class RootListViewTests: XCTestCase {
         ids.allSatisfy { host.element("root:\($0)") == nil }
       }
       try http.publish(payload(initial), target: "workspaces")
-      try await expectExpansion(initial != .idle, status: initial, stage: "reinserted")
+      try await expectExpansion(initial != .idle, status: initial)
     }
-    for (index, update) in updates.enumerated() {
-      let (status, expanded) = update
+    for (status, expanded) in updates {
       try http.publish(payload(status), target: "workspaces")
-      try await expectExpansion(expanded, status: status, stage: "update[\(index)]")
+      try await expectExpansion(expanded, status: status)
     }
     await model.stop()
   }

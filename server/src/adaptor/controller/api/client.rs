@@ -132,6 +132,20 @@ pub async fn ingress<T>(
     .await
 }
 
+pub(super) async fn owned_ingress<T: Send + 'static>(
+    deadline: Option<std::time::Instant>,
+    operation: impl std::future::Future<Output = Result<T, connectrpc::ConnectError>> + Send + 'static,
+) -> Result<T, connectrpc::ConnectError> {
+    crate::common::operation_context::owned(deadline, operation)
+        .await
+        .map_err(task_error)?
+        .map_err(|error| {
+            crate::adaptor::presenter::connect::classified_error(
+                crate::adaptor::gateway::shared::operation_context::stopped_failure(error),
+            )
+        })?
+}
+
 pub fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
     crate::adaptor::presenter::connect::classified_error(
         crate::domain::failure::TechnicalFailure::from(error),

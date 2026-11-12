@@ -105,3 +105,55 @@ async fn test_優先度包み_受理を通知してから次を呼ぶ() {
     // Then
     assert_eq!(*events.0.lock().unwrap(), ["admitted", "next"]);
 }
+
+#[tokio::test]
+async fn test_優先度包み_所有taskは要求が消えても完了まで枠を保持する() {
+    // Given
+    let limits = Arc::new(PriorityLimits::new(1, &[("default", 1)], 0));
+    let gate = Arc::new(PriorityGate::new(
+        limits.clone(),
+        |_| Some("default"),
+        Arc::new(RecordingEvents::default()),
+    ));
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (finish, done) = tokio::sync::oneshot::channel();
+    let (released, release) = tokio::sync::oneshot::channel::<()>();
+    let call = tokio::spawn(async move {
+        gate.run(
+            "/signal",
+            |path| *path,
+            None,
+            |_| async {
+                super::super::operation_context::owned(None, async move {
+                    let _released = released;
+                    started.send(()).unwrap();
+                    done.await.unwrap();
+                })
+                .await
+                .unwrap()
+                .unwrap();
+                Ok::<_, Rejection>(())
+            },
+            |error| error,
+        )
+        .await
+    });
+    ready.await.unwrap();
+    // When
+    call.abort();
+    assert!(call.await.unwrap_err().is_cancelled());
+    // Then
+    assert!(limits.admit("default", None).await.is_err());
+    finish.send(()).unwrap();
+    let _ = release.await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if limits.admit("default", None).await.is_ok() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
