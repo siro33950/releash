@@ -209,12 +209,9 @@ pub async fn owned<T: Send + 'static>(
     }
     tokio::spawn(scope(context, async move {
         check()?;
-        match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline.into(), operation)
-                .await
-                .map_err(|_| OperationStopped::Expired),
-            None => Ok(operation.await),
-        }
+        let result = operation.await;
+        check()?;
+        Ok(result)
     }))
     .await
 }

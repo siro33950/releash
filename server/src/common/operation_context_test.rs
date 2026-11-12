@@ -256,16 +256,26 @@ async fn test_所有task_呼出元が消えても処理を完了する() {
 }
 
 #[tokio::test]
-async fn test_所有task_期限切れで待機を終了しpanicを返す() {
+async fn test_所有task_期限を超えても完了を待ち期限切れとpanicを返す() {
     // Given
-    let deadline = Instant::now() + Duration::from_millis(20);
-    // When / Then
-    assert_eq!(
-        owned(Some(deadline), std::future::pending::<()>())
-            .await
-            .unwrap(),
-        Err(OperationStopped::Expired)
-    );
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (finish, done) = tokio::sync::oneshot::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let call = tokio::spawn(owned(Some(deadline), async move {
+        started.send(()).unwrap();
+        done.await.unwrap();
+        completed.send(()).unwrap();
+    }));
+    ready.await.unwrap();
+    // When
+    tokio::time::sleep_until(deadline.into()).await;
+    tokio::task::yield_now().await;
+    assert!(!call.is_finished());
+    finish.send(()).unwrap();
+    // Then
+    completion.await.unwrap();
+    assert_eq!(call.await.unwrap().unwrap(), Err(OperationStopped::Expired));
     assert!(owned(None, async { panic!("test panic") })
         .await
         .unwrap_err()

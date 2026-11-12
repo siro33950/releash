@@ -110,13 +110,7 @@ impl ClientApiDeps {
         })
         .await
         .map_err(task_error)?
-        .map_err(|error| {
-            crate::adaptor::presenter::connect::classified_error(
-                crate::adaptor::presenter::error::AppError::from_failure(
-                    crate::domain::failure::TechnicalFailure::from(error),
-                ),
-            )
-        })?
+        .map_err(stopped_connect_error)?
     }
 }
 
@@ -125,9 +119,7 @@ pub async fn ingress<T>(
     operation: impl std::future::Future<Output = Result<T, connectrpc::ConnectError>>,
 ) -> Result<T, connectrpc::ConnectError> {
     crate::common::operation_context::ingress_result(deadline, operation, |_, error| {
-        crate::adaptor::presenter::connect::classified_error(
-            crate::adaptor::gateway::shared::operation_context::stopped_failure(error),
-        )
+        stopped_connect_error(error)
     })
     .await
 }
@@ -139,11 +131,15 @@ pub(super) async fn owned_ingress<T: Send + 'static>(
     crate::common::operation_context::owned(deadline, operation)
         .await
         .map_err(task_error)?
-        .map_err(|error| {
-            crate::adaptor::presenter::connect::classified_error(
-                crate::adaptor::gateway::shared::operation_context::stopped_failure(error),
-            )
-        })?
+        .map_err(stopped_connect_error)?
+}
+
+fn stopped_connect_error(
+    error: crate::common::operation_context::OperationStopped,
+) -> connectrpc::ConnectError {
+    crate::adaptor::presenter::connect::classified_error(
+        crate::adaptor::gateway::shared::operation_context::stopped_failure(error),
+    )
 }
 
 pub fn task_error(error: tokio::task::JoinError) -> connectrpc::ConnectError {
