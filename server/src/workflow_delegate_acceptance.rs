@@ -186,7 +186,8 @@ impl WorkflowDelegateAcceptanceHost {
     }
 
     pub async fn stop_parent(&self, tree: &str, node: &RuntimeNodeExecution) {
-        self.control
+        let recorded = self
+            .control
             .record_provider_stop(
                 ProviderExecutionTreeStopCommand {
                     agent_session_id: node.session_id.clone().unwrap(),
@@ -196,6 +197,10 @@ impl WorkflowDelegateAcceptanceHost {
                 },
                 Vec::new(),
             )
+            .await
+            .unwrap();
+        self.control
+            .advance_after_provider_stop(recorded)
             .await
             .unwrap();
     }

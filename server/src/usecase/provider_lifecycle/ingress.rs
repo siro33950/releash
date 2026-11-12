@@ -47,6 +47,11 @@ pub struct ProviderExecutionTreeStopCommand {
     pub binding_id: String,
 }
 
+/// provider の Stop を記録したあとに行う、実行木を先へ進める処理。
+pub type ProviderStopFollowUp = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), ProviderLifecycleIngressUsecaseError>> + Send>,
+>;
+
 #[async_trait::async_trait]
 pub trait ProviderExecutionTreeStopTransaction: Send + Sync {
     fn begin_worktree_mutation(
@@ -57,11 +62,13 @@ pub trait ProviderExecutionTreeStopTransaction: Send + Sync {
         ProviderLifecycleIngressUsecaseError,
     >;
 
+    /// provider の Stop を記録し、実行木を先へ進める処理を返す。
+    /// 返した処理は、呼び出し側が provider lifecycle slot の lock を放してから待つ。
     async fn commit_provider_stop(
         &self,
         command: ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
-    ) -> Result<(), ProviderLifecycleIngressUsecaseError>;
+    ) -> Result<ProviderStopFollowUp, ProviderLifecycleIngressUsecaseError>;
 }
 
 impl From<ProviderLifecycleUsecaseError> for ProviderLifecycleIngressUsecaseError {
@@ -175,7 +182,7 @@ impl ProviderLifecycleIngressUsecase {
                 let has_session_changes = !prepared.session().uncommitted_events().is_empty();
                 let transaction = self.session_start_transaction.clone();
                 let caller_request_id = format!("provider-session-associated.{binding_id}");
-                let result = self
+                let (result, _) = self
                     .lifecycle
                     .receive_with_commit(
                         slot_id,
@@ -233,7 +240,8 @@ impl ProviderLifecycleIngressUsecase {
                     node_execution_id: tree_location.node_execution_id().to_string(),
                     binding_id,
                 };
-                self.lifecycle
+                let (result, follow_up) = self
+                    .lifecycle
                     .receive_with_commit(
                         slot_id,
                         capability,
@@ -244,7 +252,11 @@ impl ProviderLifecycleIngressUsecase {
                                 .await
                         },
                     )
-                    .await
+                    .await?;
+                if let Some(follow_up) = follow_up {
+                    follow_up.await?;
+                }
+                Ok(result)
             }
             ProviderLifecycleSignalKind::StopFailed { .. } => {
                 self.receive_activity_observation(

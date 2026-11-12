@@ -245,7 +245,10 @@ impl ProviderExecutionTreeStopTransaction for DeferredProviderExecutionTreeStopT
         &self,
         command: ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
-    ) -> Result<(), ProviderLifecycleIngressUsecaseError> {
+    ) -> Result<
+        crate::usecase::provider_lifecycle::ProviderStopFollowUp,
+        ProviderLifecycleIngressUsecaseError,
+    > {
         let target = self
             .target
             .read()

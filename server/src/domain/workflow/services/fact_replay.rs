@@ -981,7 +981,6 @@ impl SessionFactsFold {
                 self.view.exited = true;
                 self.view.archived = false;
             }
-            NodeFact::AbortRequested(_) => self.view.exited = true,
             NodeFact::ArchiveRequested(_) => self.view.archived = true,
             _ => {}
         }

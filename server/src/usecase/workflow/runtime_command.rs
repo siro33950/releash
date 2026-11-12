@@ -136,16 +136,6 @@ impl WorkflowRuntimeUsecase {
         self.submit_output.execute(command).await
     }
 
-    pub async fn record_provider_stop(
-        &self,
-        command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
-        lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
-    ) -> Result<(), WorkflowError> {
-        self.control_plane
-            .record_provider_stop(command, lifecycle_events)
-            .await
-    }
-
     #[cfg(test)]
     pub async fn get_state_by_execution_id(
         &self,
@@ -197,28 +187,52 @@ impl crate::usecase::provider_lifecycle::ProviderExecutionTreeStopTransaction
         &self,
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent>,
-    ) -> Result<(), crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError> {
-        self.record_provider_stop(command, lifecycle_events)
+    ) -> Result<
+        crate::usecase::provider_lifecycle::ProviderStopFollowUp,
+        crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError,
+    > {
+        let recorded = self
+            .control_plane
+            .record_provider_stop(command, lifecycle_events)
             .await
-            .map_err(|error| match error {
-                WorkflowError::Store(kind) => crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(kind),
-                WorkflowError::Validation(_) | WorkflowError::Diagnostics(_)
-                | WorkflowError::InvalidState(_)
-                | WorkflowError::NotFound(_)
-                | WorkflowError::UnauthorizedApprovalTarget(_) => {
-                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput
-                }
-                WorkflowError::Conflict(_) => {
-                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
-                }
-                error @ (WorkflowError::Technical(_) | WorkflowError::External(_) | WorkflowError::Editor(_)) => {
-                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(error.into())
-                }
-                WorkflowError::CorruptStoredState(_)
-                | WorkflowError::IncompatibleStoredEvent(_) => {
-                    crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Corrupt
-                }
-            })
+            .map_err(provider_stop_error)?;
+        let control_plane = self.control_plane.clone();
+        Ok(Box::pin(async move {
+            control_plane
+                .advance_after_provider_stop(recorded)
+                .await
+                .map_err(provider_stop_error)
+        }))
+    }
+}
+
+fn provider_stop_error(
+    error: WorkflowError,
+) -> crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError {
+    match error {
+        WorkflowError::Store(kind) => {
+            crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(kind)
+        }
+        WorkflowError::Validation(_)
+        | WorkflowError::Diagnostics(_)
+        | WorkflowError::InvalidState(_)
+        | WorkflowError::NotFound(_)
+        | WorkflowError::UnauthorizedApprovalTarget(_) => {
+            crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput
+        }
+        WorkflowError::Conflict(_) => {
+            crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Conflict
+        }
+        error @ (WorkflowError::Technical(_)
+        | WorkflowError::External(_)
+        | WorkflowError::Editor(_)) => {
+            crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(
+                error.into(),
+            )
+        }
+        WorkflowError::CorruptStoredState(_) | WorkflowError::IncompatibleStoredEvent(_) => {
+            crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Corrupt
+        }
     }
 }
 

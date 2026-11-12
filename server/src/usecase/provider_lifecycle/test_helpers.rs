@@ -144,12 +144,12 @@ impl ProviderExecutionTreeStopTransaction for MemoryWorkflowStops {
         &self,
         command: ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
-    ) -> Result<(), super::ProviderLifecycleIngressUsecaseError> {
+    ) -> Result<super::ProviderStopFollowUp, super::ProviderLifecycleIngressUsecaseError> {
         self.commits
             .lock()
             .unwrap()
             .push((command, lifecycle_events));
-        Ok(())
+        Ok(Box::pin(async { Ok(()) }))
     }
 }
 
