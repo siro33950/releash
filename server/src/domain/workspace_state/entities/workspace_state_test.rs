@@ -488,6 +488,7 @@ fn test_session追従_正常終了と異常終了で対象だけ閉じ未保存�
         // When
         state.follow_session(&session, &event);
         // Then
+        assert!(WorkspaceState::follows_session_event(&event));
         assert_eq!(
             pane_tabs(state.panes.as_ref().unwrap()),
             (&[kept][..], Some("other"))
@@ -526,6 +527,9 @@ fn test_session追従_再開で追加しpendingを関連付け既存タブと選
         state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
         state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
         // Then
+        assert!(WorkspaceState::follows_session_event(
+            &AgentSessionLifecycleEvent::Resumed
+        ));
         assert_eq!(state, expected);
     }
     let mut state = WorkspaceState {
@@ -581,6 +585,7 @@ fn test_session追従_停止と再開以外の全事実は開き直したタブ�
             // When
             state.follow_session(&session, event);
             // Then
+            assert!(!WorkspaceState::follows_session_event(event), "{event:?}");
             assert_eq!(state, initial, "{event:?}");
         }
     }
