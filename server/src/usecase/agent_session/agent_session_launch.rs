@@ -1072,21 +1072,15 @@ impl AgentSessionLaunchUsecase {
         created: &VersionedAgentSession,
         caller_request_id: &str,
     ) {
-        let session_result = async {
-            self.sessions
-                .garbage_collect(
-                    created.session().id(),
-                    ManagedPtyPresence::ConfirmedAbsent,
-                    &format!("{caller_request_id}.rollback"),
-                )
-                .await
-                .map_err(map_session_error)?;
-            self.session_tabs
-                .remove_session(created.session())
-                .await
-                .map_err(map_tab_error)
-        }
-        .await;
+        let session_result = self
+            .sessions
+            .garbage_collect(
+                created.session().id(),
+                ManagedPtyPresence::ConfirmedAbsent,
+                &format!("{caller_request_id}.rollback"),
+            )
+            .await
+            .map_err(map_session_error);
         if let Err(rollback_error) = session_result {
             log::warn!(
                 "failed to roll back AgentSession history resume after execution tree registration failure: {rollback_error:?}"
@@ -1162,21 +1156,15 @@ impl AgentSessionLaunchUsecase {
             .launch_gateway
             .cleanup(created.session().id())
             .map_err(AgentSessionLaunchUsecaseError::Launch);
-        let session_result = async {
-            self.sessions
-                .garbage_collect(
-                    created.session().id(),
-                    ManagedPtyPresence::ConfirmedAbsent,
-                    &format!("{caller_request_id}.rollback"),
-                )
-                .await
-                .map_err(map_session_error)?;
-            self.session_tabs
-                .remove_session(created.session())
-                .await
-                .map_err(map_tab_error)
-        }
-        .await;
+        let session_result = self
+            .sessions
+            .garbage_collect(
+                created.session().id(),
+                ManagedPtyPresence::ConfirmedAbsent,
+                &format!("{caller_request_id}.rollback"),
+            )
+            .await
+            .map_err(map_session_error);
         if session_result.is_ok() {
             if let Err(error) = self
                 .execution_trees

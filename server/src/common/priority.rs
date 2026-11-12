@@ -44,7 +44,7 @@ impl PriorityGate {
         let Some(level) = (self.classify)(path) else {
             return next(request).await;
         };
-        let _seat = match self.limits.admit(level, deadline).await {
+        let seat = match self.limits.admit(level, deadline).await {
             Ok(seat) => seat,
             Err(rejection) => {
                 self.events.rejected(path, &rejection);
@@ -52,7 +52,8 @@ impl PriorityGate {
             }
         };
         self.events.admitted();
-        next(request).await
+        let context = super::operation_context::current().retaining(Arc::new(seat));
+        super::operation_context::scope(context, next(request)).await
     }
 
     #[cfg(any(test, feature = "test-support"))]

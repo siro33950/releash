@@ -1,3 +1,4 @@
+use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycleEvent};
 use crate::domain::workspace_state::value_objects::pane_layout::PaneLayout;
 use crate::domain::workspace_state::value_objects::{WorkspaceLayoutState, WorkspaceTabsState};
 
@@ -36,6 +37,28 @@ impl WorkspaceState {
         }
     }
 
+    /// Session に起きた事実にタブ配置を追従させる。
+    /// 停止の事実（`ProcessExited`）では、その Session のタブを閉じる。
+    /// 再開の事実（`Resumed`）では、その Session のタブを `add_session_tab` と同じ規則で開く。
+    /// そのほかの事実では配置を変えない。
+    pub fn follow_session(&mut self, session: &AgentSession, event: &AgentSessionLifecycleEvent) {
+        match session_tab_change(event) {
+            Some(SessionTabChange::Close) => {
+                self.remove_session_tab(session.id());
+            }
+            Some(SessionTabChange::Open) => {
+                self.add_session_tab(session.id(), session.tree_location().node_execution_id());
+            }
+            None => {}
+        }
+    }
+
+    /// Session に起きた事実のうち、`follow_session` がタブ配置を変えるものか。
+    /// 偽を返す事実だけなら、タブ配置を読み込まずに済ませてよい。
+    pub fn follows_session_event(event: &AgentSessionLifecycleEvent) -> bool {
+        session_tab_change(event).is_some()
+    }
+
     /// 実行木に属する Session のタブを、既存の選択を変えずに追加する。
     pub fn add_execution_tabs(&mut self, tree: &crate::domain::workspace_tree::WorkspaceTree) {
         for node in tree.nodes().iter().filter(|node| !node.is_retry_history) {
@@ -68,6 +91,23 @@ impl WorkspaceState {
             self.layout = self.layout.or(previous.layout);
         }
         self
+    }
+}
+
+/// Session に起きた事実が Session タブに及ぼす変更。
+enum SessionTabChange {
+    /// その Session のタブを閉じる。
+    Close,
+    /// その Session のタブを開く。
+    Open,
+}
+
+/// Session に起きた事実と Session タブの変更の対応。変更の無い事実には `None` を返す。
+fn session_tab_change(event: &AgentSessionLifecycleEvent) -> Option<SessionTabChange> {
+    match event {
+        AgentSessionLifecycleEvent::ProcessExited { .. } => Some(SessionTabChange::Close),
+        AgentSessionLifecycleEvent::Resumed => Some(SessionTabChange::Open),
+        _ => None,
     }
 }
 

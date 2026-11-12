@@ -450,3 +450,143 @@ fn test_実行木のタブ削除_旧node参照とsession未確定のタブも消
         (kept.as_slice(), Some("command"))
     );
 }
+
+fn followed_session() -> AgentSession {
+    AgentSession::create(
+        "session",
+        crate::domain::workspace_tree::WorkspaceIdentity::new("workspace"),
+        "/repo",
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        crate::domain::agent_session::aggregates::AgentSessionTreeLocation::workflow_node(
+            "tree", "node",
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn test_session追従_正常終了と異常終了で対象だけ閉じ未保存の配置は作らない() {
+    // Given
+    let session = followed_session();
+    for abnormal in [false, true] {
+        let kept = tab("other", PaneTabKind::Session, None, Some("other"));
+        let mut state = WorkspaceState {
+            panes: Some(pane(
+                "pane",
+                vec![
+                    kept.clone(),
+                    tab("target", PaneTabKind::Session, None, Some("session")),
+                ],
+                Some("other"),
+            )),
+            ..WorkspaceState::default()
+        };
+        let event = AgentSessionLifecycleEvent::ProcessExited {
+            last_exit_abnormal: abnormal,
+        };
+        // When
+        state.follow_session(&session, &event);
+        // Then
+        assert!(WorkspaceState::follows_session_event(&event));
+        assert_eq!(
+            pane_tabs(state.panes.as_ref().unwrap()),
+            (&[kept][..], Some("other"))
+        );
+        let closed = state.clone();
+        state.follow_session(&session, &event);
+        assert_eq!(state, closed);
+        state.panes = None;
+        state.follow_session(&session, &event);
+        assert!(state.panes.is_none());
+    }
+}
+
+#[test]
+fn test_session追従_再開で追加しpendingを関連付け既存タブと選択を保持する() {
+    // Given
+    let session = followed_session();
+    for tabs in [
+        vec![tab("other", PaneTabKind::Session, None, Some("other"))],
+        vec![
+            tab("other", PaneTabKind::Session, None, Some("other")),
+            tab("pending", PaneTabKind::Session, Some("node"), None),
+        ],
+        vec![
+            tab("other", PaneTabKind::Session, None, Some("other")),
+            tab("existing", PaneTabKind::Session, None, Some("session")),
+        ],
+    ] {
+        let mut state = WorkspaceState {
+            panes: Some(pane("pane", tabs, Some("other"))),
+            ..WorkspaceState::default()
+        };
+        let mut expected = state.clone();
+        expected.add_session_tab("session", "node");
+        // When
+        state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
+        state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
+        // Then
+        assert!(WorkspaceState::follows_session_event(
+            &AgentSessionLifecycleEvent::Resumed
+        ));
+        assert_eq!(state, expected);
+    }
+    let mut state = WorkspaceState {
+        panes: None,
+        ..WorkspaceState::default()
+    };
+    let mut expected = state.clone();
+    expected.add_session_tab("session", "node");
+    state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
+    assert_eq!(state, expected);
+}
+
+#[test]
+fn test_session追従_停止と再開以外の全事実は開き直したタブも閉じた配置も変えない() {
+    use crate::domain::agent_session::AgentSessionDisplayName;
+    // Given
+    let mut session = followed_session();
+    let mut events = session.take_uncommitted_events();
+    events.extend([
+        AgentSessionLifecycleEvent::ProviderSessionAssociated {
+            provider_session_id: "provider".into(),
+            transcript_ref: None,
+        },
+        AgentSessionLifecycleEvent::ActivityObserved {
+            activity: crate::domain::workflow::AgentSessionActivity::Working,
+        },
+        AgentSessionLifecycleEvent::SessionNodeRenamed {
+            name: AgentSessionDisplayName::new("name").unwrap(),
+        },
+        AgentSessionLifecycleEvent::ProviderSessionTitleObserved {
+            title: AgentSessionDisplayName::new("title").unwrap(),
+        },
+        AgentSessionLifecycleEvent::InitialInstructionAdmitted,
+        AgentSessionLifecycleEvent::ContinuationAdmitted {
+            request_id: "request".into(),
+        },
+    ]);
+    session.observe_provider_process_exit(Some(0));
+    for panes in [
+        None,
+        Some(pane(
+            "pane",
+            vec![tab("reopened", PaneTabKind::Session, None, Some("session"))],
+            Some("reopened"),
+        )),
+    ] {
+        let initial = WorkspaceState {
+            panes,
+            ..WorkspaceState::default()
+        };
+        for event in &events {
+            let mut state = initial.clone();
+            // When
+            state.follow_session(&session, event);
+            // Then
+            assert!(!WorkspaceState::follows_session_event(event), "{event:?}");
+            assert_eq!(state, initial, "{event:?}");
+        }
+    }
+}

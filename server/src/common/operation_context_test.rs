@@ -225,3 +225,67 @@ async fn test_接続期限_期限切れで資源を破棄する() {
     assert_eq!(result, Err(OperationStopped::Expired));
     assert!(token.is_cancelled());
 }
+
+#[tokio::test]
+async fn test_所有task_呼出元が消えても処理を完了する() {
+    // Given
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (finish, done) = tokio::sync::oneshot::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let call = tokio::spawn(owned(
+        Some(Instant::now() + Duration::from_secs(5)),
+        async move {
+            started.send(()).unwrap();
+            done.await.unwrap();
+            completed.send(check()).unwrap();
+        },
+    ));
+    ready.await.unwrap();
+    // When
+    call.abort();
+    assert!(call.await.unwrap_err().is_cancelled());
+    finish.send(()).unwrap();
+    // Then
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), completion)
+            .await
+            .unwrap()
+            .unwrap(),
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn test_所有task_期限を超えても完了を待ち期限切れとpanicを返す() {
+    // Given
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (finish, done) = tokio::sync::oneshot::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let call = tokio::spawn(owned(Some(deadline), async move {
+        started.send(()).unwrap();
+        done.await.unwrap();
+        completed.send(()).unwrap();
+    }));
+    ready.await.unwrap();
+    // When
+    tokio::time::sleep_until(deadline.into()).await;
+    tokio::task::yield_now().await;
+    assert!(!call.is_finished());
+    finish.send(()).unwrap();
+    // Then
+    completion.await.unwrap();
+    assert_eq!(call.await.unwrap().unwrap(), Err(OperationStopped::Expired));
+    assert!(owned(None, async { panic!("test panic") })
+        .await
+        .unwrap_err()
+        .is_panic());
+    assert_eq!(
+        owned(Some(Instant::now()), async {
+            panic!("期限切れの処理は開始しない")
+        })
+        .await
+        .unwrap(),
+        Err(OperationStopped::Expired)
+    );
+}

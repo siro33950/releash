@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use crate::domain::agent_session::aggregates::{
-    AgentSession, AgentSessionInitialInstructionOutcome, AgentSessionMutationOutcome,
-    AgentSessionProcessExitOutcome, AgentSessionRecoveryResult, ManagedPtyPresence,
+    AgentSession, AgentSessionInitialInstructionOutcome, AgentSessionLifecycleEvent,
+    AgentSessionMutationOutcome, AgentSessionProcessExitOutcome, AgentSessionRecoveryResult,
+    ManagedPtyPresence,
 };
 use crate::domain::agent_session::repository::{
     AgentSessionRepository, AgentSessionRepositoryError, VersionedAgentSession,
@@ -16,6 +17,7 @@ use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::provider_lifecycle::ScopedProviderLifecycleEvent;
 use crate::domain::workflow::AgentSessionActivity;
 use crate::domain::workspace_tree::WorkspaceIdentity;
+use crate::usecase::workspace_state::session_tabs::SessionTabsUsecase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSessionUsecaseError {
@@ -57,20 +59,23 @@ pub struct AgentSessionUsecase {
     operation_locks: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
     threads: Arc<dyn ThreadRepository>,
     service: AgentSessionService,
+    session_tabs: SessionTabsUsecase,
 }
 
 impl AgentSessionUsecase {
-    /// Session と Thread の取得先、および Session への送信サービスを持つ。
+    /// Session と Thread の取得先、Session への送信サービス、および Session の事実に追従させるタブ配置を持つ。
     pub(crate) fn new(
         repository: Arc<dyn AgentSessionRepository>,
         threads: Arc<dyn ThreadRepository>,
         service: AgentSessionService,
+        session_tabs: SessionTabsUsecase,
     ) -> Self {
         Self {
             repository,
             operation_locks: Mutex::new(HashMap::new()),
             threads,
             service,
+            session_tabs,
         }
     }
 
@@ -195,13 +200,7 @@ impl AgentSessionUsecase {
                 transcript_ref,
             )
             .await?;
-        if session.session().uncommitted_events().is_empty() {
-            return Ok(session);
-        }
-        self.repository
-            .save(session, caller_request_id)
-            .await
-            .map_err(map_repository_error)
+        self.save_if_changed(session, caller_request_id).await
     }
 
     pub(crate) async fn prepare_provider_session_association(
@@ -233,12 +232,7 @@ impl AgentSessionUsecase {
         let outcome = session
             .session_mut()
             .observe_provider_process_exit(exit_code);
-        if !session.session().uncommitted_events().is_empty() {
-            self.repository
-                .save(session, caller_request_id)
-                .await
-                .map_err(map_repository_error)?;
-        }
+        self.save_if_changed(session, caller_request_id).await?;
         Ok(outcome)
     }
 
@@ -298,6 +292,7 @@ impl AgentSessionUsecase {
         Ok(outcome)
     }
 
+    /// Archive 済みの Session を削除し、その Session のタブを閉じる。
     pub async fn delete(
         &self,
         agent_session_id: &str,
@@ -308,12 +303,16 @@ impl AgentSessionUsecase {
             .session()
             .authorize_delete()
             .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
+        let removed = session.session().clone();
         self.repository
             .remove(session, authorization, caller_request_id)
             .await
-            .map_err(map_repository_error)
+            .map_err(map_repository_error)?;
+        self.close_removed_session_tab(&removed).await;
+        Ok(())
     }
 
+    /// 会話を始めずに process が無くなった Session を削除し、その Session のタブを閉じる。
     pub async fn garbage_collect(
         &self,
         agent_session_id: &str,
@@ -325,10 +324,13 @@ impl AgentSessionUsecase {
             .session()
             .authorize_gc(pty_presence)
             .map_err(|_| AgentSessionUsecaseError::InvalidOperation)?;
+        let removed = session.session().clone();
         self.repository
             .remove(session, authorization, caller_request_id)
             .await
-            .map_err(map_repository_error)
+            .map_err(map_repository_error)?;
+        self.close_removed_session_tab(&removed).await;
+        Ok(())
     }
 
     pub async fn admit_continuation(
@@ -354,19 +356,47 @@ impl AgentSessionUsecase {
             .ok_or(AgentSessionUsecaseError::NotFound)
     }
 
+    /// 未保存の事実があれば Session を保存し、保存した事実にタブ配置を追従させる。
     async fn save_if_changed(
         &self,
         session: VersionedAgentSession,
         caller_request_id: &str,
-    ) -> Result<(), AgentSessionUsecaseError> {
+    ) -> Result<VersionedAgentSession, AgentSessionUsecaseError> {
         if session.session().uncommitted_events().is_empty() {
-            return Ok(());
+            return Ok(session);
         }
-        self.repository
+        let events = session.session().uncommitted_events().to_vec();
+        let saved = self
+            .repository
             .save(session, caller_request_id)
             .await
-            .map(|_| ())
-            .map_err(map_repository_error)
+            .map_err(map_repository_error)?;
+        self.follow_in_session_tabs(saved.session(), &events).await;
+        Ok(saved)
+    }
+
+    /// 保存した事実にタブ配置を追従させる。追従の失敗は警告として記録し、Session の操作を失敗にしない。
+    async fn follow_in_session_tabs(
+        &self,
+        session: &AgentSession,
+        events: &[AgentSessionLifecycleEvent],
+    ) {
+        if let Err(error) = self.session_tabs.follow_session(session, events).await {
+            log::warn!(
+                "failed to follow AgentSession '{}' facts in the Session tabs: {error:?}",
+                session.id()
+            );
+        }
+    }
+
+    /// 削除した Session のタブを閉じる。失敗は警告として記録し、Session の削除を失敗にしない。
+    async fn close_removed_session_tab(&self, session: &AgentSession) {
+        if let Err(error) = self.session_tabs.remove_session(session).await {
+            log::warn!(
+                "failed to close the Session tab of removed AgentSession '{}': {error:?}",
+                session.id()
+            );
+        }
     }
 }
 

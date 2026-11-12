@@ -285,8 +285,16 @@ impl ProviderExecutionTreeStopTransaction for NoopProviderExecutionTreeStops {
         &self,
         _command: ProviderExecutionTreeStopCommand,
         _lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
-    ) -> Result<(), ProviderLifecycleIngressUsecaseError> {
-        Ok(())
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), ProviderLifecycleIngressUsecaseError>>
+                    + Send,
+            >,
+        >,
+        ProviderLifecycleIngressUsecaseError,
+    > {
+        Ok(Box::pin(async { Ok(()) }))
     }
 }
 

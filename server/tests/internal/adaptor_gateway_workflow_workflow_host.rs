@@ -22,8 +22,10 @@ use releashd::test_support::integration::persistence::StdGcFileSystem;
 use releashd::test_support::integration::persistence::StoreLayout;
 use releashd::test_support::integration::process::CommandRunOutput;
 use releashd::test_support::integration::process::CommandRunnerError;
-use releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand;
 use releashd::test_support::integration::providers::ProviderKind;
+use releashd::test_support::integration::providers::{
+    ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
+};
 use releashd::test_support::integration::sessions::AgentSession;
 use releashd::test_support::integration::sessions::AgentSessionTreeLocation;
 use releashd::test_support::integration::sessions::LocalAgentSessionRepository;
@@ -534,7 +536,7 @@ pub async fn test_workflow永続化_本番構成で起動から完了とabortま
                 })
                 .await
                 .unwrap();
-            control
+            let recorded = control
                 .record_provider_stop(
                     ProviderExecutionTreeStopCommand {
                         agent_session_id: node.session_id.clone().unwrap(),
@@ -546,6 +548,7 @@ pub async fn test_workflow永続化_本番構成で起動から完了とabortま
                 )
                 .await
                 .unwrap();
+            control.advance_after_provider_stop(recorded).await.unwrap();
         }
 
         // Then
@@ -922,9 +925,9 @@ pub async fn test_実行木archive_終了済みは状態を保持しrestoreで�
                 })
                 .await
                 .unwrap();
-            fixture
+            let follow_up = fixture
                 .runtime
-                .record_provider_stop(
+                .commit_provider_stop(
                     ProviderExecutionTreeStopCommand {
                         agent_session_id: node.session_id.clone().unwrap(),
                         tree_id: id.clone(),
@@ -935,6 +938,7 @@ pub async fn test_実行木archive_終了済みは状態を保持しrestoreで�
                 )
                 .await
                 .unwrap();
+            follow_up.await.unwrap();
         }
         fixture.runtime.archive_execution_tree(&id).await.unwrap();
         fixture.runtime.restore_execution_tree(&id).await.unwrap();
@@ -1531,7 +1535,7 @@ pub async fn test_記録からの操作_完了済み単独sessionは再開後も
         })
         .await
         .unwrap_err();
-    control
+    let recorded = control
         .record_provider_stop(
             ProviderExecutionTreeStopCommand {
                 agent_session_id: id.into(),
@@ -1543,6 +1547,7 @@ pub async fn test_記録からの操作_完了済み単独sessionは再開後も
         )
         .await
         .unwrap();
+    control.advance_after_provider_stop(recorded).await.unwrap();
     // Then
     assert!(matches!(submit_error, WorkflowError::InvalidState(_)));
     let records =
@@ -3743,9 +3748,14 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
         node_execution_id: fixture.first_node_execution_id.clone(),
         binding_id: "binding-completed-workflow".to_string(),
     };
-    fixture
+    let recorded = fixture
         .control_plane
         .record_provider_stop(workflow_stop.clone(), Vec::new())
+        .await
+        .unwrap();
+    fixture
+        .control_plane
+        .advance_after_provider_stop(recorded)
         .await
         .unwrap();
     fixture
@@ -3862,12 +3872,17 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
     let standalone_before = node_signals(&fixture.store, standalone_id, standalone_id).await;
 
     // When
-    fixture
+    let recorded = fixture
         .control_plane
         .record_provider_stop(workflow_stop, Vec::new())
         .await
         .unwrap();
     fixture
+        .control_plane
+        .advance_after_provider_stop(recorded)
+        .await
+        .unwrap();
+    let recorded = fixture
         .control_plane
         .record_provider_stop(
             ProviderExecutionTreeStopCommand {
@@ -3878,6 +3893,11 @@ pub async fn test_provider停止_完了済みworkflowと単独sessionはプロ�
             },
             Vec::new(),
         )
+        .await
+        .unwrap();
+    fixture
+        .control_plane
+        .advance_after_provider_stop(recorded)
         .await
         .unwrap();
 
@@ -5007,22 +5027,26 @@ nodes:
                     .unwrap()
                     .clone()
                     .expect("execution id is recorded during prepare");
-                control_plane
-                    .record_provider_stop(
-                        ProviderExecutionTreeStopCommand {
-                            agent_session_id: node_session_id.to_string(),
-                            tree_id: execution_id,
-                            node_execution_id: node_execution_id.to_string(),
-                            binding_id: "binding-stop-during-activation".to_string(),
-                        },
-                        Vec::new(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        WorkflowRuntimeError::InvalidState(format!(
-                            "provider Stop during activation was rejected: {error}"
-                        ))
-                    })
+                async {
+                    let recorded = control_plane
+                        .record_provider_stop(
+                            ProviderExecutionTreeStopCommand {
+                                agent_session_id: node_session_id.to_string(),
+                                tree_id: execution_id,
+                                node_execution_id: node_execution_id.to_string(),
+                                binding_id: "binding-stop-during-activation".to_string(),
+                            },
+                            Vec::new(),
+                        )
+                        .await?;
+                    control_plane.advance_after_provider_stop(recorded).await
+                }
+                .await
+                .map_err(|error| {
+                    WorkflowRuntimeError::InvalidState(format!(
+                        "provider Stop during activation was rejected: {error}"
+                    ))
+                })
             }
 
             async fn confirm_workflow_agent_session_attachment(
@@ -5679,7 +5703,7 @@ nodes:
                 .unwrap();
 
             // When
-            fixture
+            let recorded = fixture
                 .control_plane
                 .record_provider_stop(
                     ProviderExecutionTreeStopCommand {
@@ -5690,6 +5714,11 @@ nodes:
                     },
                     Vec::new(),
                 )
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .advance_after_provider_stop(recorded)
                 .await
                 .unwrap();
 
@@ -6001,7 +6030,7 @@ nodes:
                 .unwrap();
 
             // When
-            fixture
+            let recorded = fixture
                 .control_plane
                 .record_provider_stop(
                     ProviderExecutionTreeStopCommand {
@@ -6016,7 +6045,17 @@ nodes:
                 .unwrap();
             fixture
                 .control_plane
+                .advance_after_provider_stop(recorded)
+                .await
+                .unwrap();
+            let recorded = fixture
+                .control_plane
                 .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .advance_after_provider_stop(recorded)
                 .await
                 .unwrap();
 
@@ -6205,10 +6244,17 @@ nodes:
             )];
 
             // When
-            let result = fixture
-                .control_plane
-                .record_provider_stop(provider_stop_command(&fixture), lifecycle_events)
-                .await;
+            let result = async {
+                let recorded = fixture
+                    .control_plane
+                    .record_provider_stop(provider_stop_command(&fixture), lifecycle_events)
+                    .await?;
+                fixture
+                    .control_plane
+                    .advance_after_provider_stop(recorded)
+                    .await
+            }
+            .await;
 
             // Then
             assert!(result.is_ok(), "unexpected provider Stop error: {result:?}");
@@ -6233,9 +6279,14 @@ nodes:
         pub async fn test_submit_agent_session停止失敗でも成功とsucceededを維持する() {
             // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), true).await;
-            fixture
+            let recorded = fixture
                 .control_plane
                 .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .advance_after_provider_stop(recorded)
                 .await
                 .unwrap();
 
@@ -6262,7 +6313,7 @@ nodes:
             // Given
             let fixture = sequential_runtime_effect_fixture().await;
             fixture.calls.lock().unwrap().clear();
-            fixture
+            let recorded = fixture
                 .control_plane
                 .record_provider_stop(
                     ProviderExecutionTreeStopCommand {
@@ -6273,6 +6324,11 @@ nodes:
                     },
                     Vec::new(),
                 )
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .advance_after_provider_stop(recorded)
                 .await
                 .unwrap();
             assert!(fixture.calls.lock().unwrap().is_empty());
@@ -6345,12 +6401,16 @@ nodes:
                 .unwrap();
 
             // When
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let recorded = fixture
+                    .control_plane
+                    .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                    .await?;
                 fixture
                     .control_plane
-                    .record_provider_stop(provider_stop_command(&fixture), Vec::new()),
-            )
+                    .advance_after_provider_stop(recorded)
+                    .await
+            })
             .await;
 
             // Then
@@ -6367,9 +6427,14 @@ nodes:
         pub async fn test_終端済みsessionへの再stop_確定状態と停止回数を変えない() {
             // Given
             let fixture = runtime_effect_fixture(NodeCompletion::default(), false).await;
-            fixture
+            let recorded = fixture
                 .control_plane
                 .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .advance_after_provider_stop(recorded)
                 .await
                 .unwrap();
             fixture
@@ -6387,10 +6452,17 @@ nodes:
             wait_for_single_terminal_stop(&fixture).await;
 
             // When
-            let result = fixture
-                .control_plane
-                .record_provider_stop(provider_stop_command(&fixture), Vec::new())
-                .await;
+            let result = async {
+                let recorded = fixture
+                    .control_plane
+                    .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                    .await?;
+                fixture
+                    .control_plane
+                    .advance_after_provider_stop(recorded)
+                    .await
+            }
+            .await;
 
             // Then
             assert!(result.is_ok(), "unexpected repeated Stop error: {result:?}");
@@ -6413,9 +6485,14 @@ nodes:
                 })
                 .await
                 .unwrap();
-            fixture
+            let recorded = fixture
                 .control_plane
                 .record_provider_stop(provider_stop_command(&fixture), Vec::new())
+                .await
+                .unwrap();
+            fixture
+                .control_plane
+                .advance_after_provider_stop(recorded)
                 .await
                 .unwrap();
             let waiting = fixture

@@ -17,5 +17,6 @@ pub fn test_sessions(
         repository,
         threads,
         AgentSessionService::new(terminal, input),
+        crate::usecase::workspace_state::test_support::test_session_tabs(),
     )
 }

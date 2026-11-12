@@ -24,7 +24,7 @@ pub(crate) use hook_health::{
 pub(crate) use ingress::{
     ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
     ProviderLifecycleIngressUsecase, ProviderLifecycleIngressUsecaseError, ProviderPayloadReceiver,
-    ProviderSessionStartTransaction,
+    ProviderSessionStartTransaction, ProviderStopFollowUp,
 };
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -200,21 +200,26 @@ impl ProviderLifecycleUsecase {
         result
     }
 
-    pub(crate) async fn receive_with_commit<E, F, Fut>(
+    /// signal を slot に適用し、slot の lock を持ったまま `commit` を待つ。
+    /// `commit` が返した値は、lock を放したあとに結果と一緒に返す。signal を拒否したときは `None` を返す。
+    pub(crate) async fn receive_with_commit<E, T, F, Fut>(
         &self,
         slot_id: &ProviderLifecycleSlotId,
         capability: &str,
         signal: ProviderLifecycleSignal,
         commit: F,
-    ) -> Result<ProviderLifecycleIngressResult, E>
+    ) -> Result<(ProviderLifecycleIngressResult, Option<T>), E>
     where
         E: From<ProviderLifecycleUsecaseError>,
         F: FnOnce(Vec<ScopedProviderLifecycleEvent>) -> Fut,
-        Fut: Future<Output = Result<(), E>>,
+        Fut: Future<Output = Result<T, E>>,
     {
         let Some(live) = self.find_slot(slot_id).map_err(E::from)? else {
-            return Ok(ProviderLifecycleIngressResult::Rejected(
-                ProviderLifecycleRejection::BindingNotActive,
+            return Ok((
+                ProviderLifecycleIngressResult::Rejected(
+                    ProviderLifecycleRejection::BindingNotActive,
+                ),
+                None,
             ));
         };
         let scope = signal.scope().clone();
@@ -224,16 +229,16 @@ impl ProviderLifecycleUsecase {
         let outcome = candidate.receive(&capability_hash, signal);
         let result = match outcome {
             ProviderLifecycleOutcome::Applied(events) => {
-                commit(scoped(scope, events)).await?;
+                let committed = commit(scoped(scope, events)).await?;
                 *current = candidate;
-                ProviderLifecycleIngressResult::Applied
+                (ProviderLifecycleIngressResult::Applied, Some(committed))
             }
             ProviderLifecycleOutcome::Duplicate => {
-                commit(Vec::new()).await?;
-                ProviderLifecycleIngressResult::Duplicate
+                let committed = commit(Vec::new()).await?;
+                (ProviderLifecycleIngressResult::Duplicate, Some(committed))
             }
             ProviderLifecycleOutcome::Rejected(reason) => {
-                ProviderLifecycleIngressResult::Rejected(reason)
+                (ProviderLifecycleIngressResult::Rejected(reason), None)
             }
         };
         drop(current);

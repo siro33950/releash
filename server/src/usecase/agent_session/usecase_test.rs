@@ -61,6 +61,7 @@ mod memory_tests {
             repository,
             Arc::new(FakeThreadRepository(std::sync::Mutex::new(threads))),
             AgentSessionService::new(Arc::new(RecordingTerminal::default()), input.clone()),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         );
         (usecase, input)
     }
@@ -188,6 +189,7 @@ mod memory_tests {
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         );
 
         let created = usecase
@@ -228,6 +230,7 @@ mod memory_tests {
                 Arc::new(RecordingTerminal::default()),
                 Arc::new(RecordingTerminalInput::default()),
             ),
+            crate::usecase::workspace_state::test_support::test_session_tabs(),
         );
 
         let result = usecase
@@ -243,5 +246,288 @@ mod memory_tests {
         let unchanged = repository.snapshot();
         assert_eq!(unchanged.revision(), 1);
         assert_eq!(unchanged.session().provider_session_id(), None);
+    }
+
+    fn tab_usecase(
+        repository: Arc<FailingSaveRepository>,
+        tabs: Arc<crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository>,
+    ) -> AgentSessionUsecase {
+        AgentSessionUsecase::new(
+            repository,
+            Arc::new(FakeThreadRepository::default()),
+            AgentSessionService::new(
+                Arc::new(RecordingTerminal::default()),
+                Arc::new(RecordingTerminalInput::default()),
+            ),
+            crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
+                tabs,
+                crate::usecase::workspace_tree::test_support::TestWorkspaceTreeRepository::new(),
+                crate::test_support::state_subscription::test_subscriptions(),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_session保存_保存した事実だけ追従しタブ保存失敗でもsession保存は成功する() {
+        use crate::domain::agent_session::repository::VersionedAgentSession;
+        use crate::domain::workspace_state::{
+            WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
+        };
+        use crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository;
+        // Given
+        for (save_success, tab_failure) in [(true, false), (false, false), (true, true)] {
+            let repository = Arc::new(FailingSaveRepository::new(session()));
+            repository
+                .save_success
+                .store(save_success, std::sync::atomic::Ordering::SeqCst);
+            let tabs = Arc::new(MemoryWorkspaceStateRepository::default());
+            let mut opened = WorkspaceState::default();
+            opened.add_session_tab("session", "session");
+            tabs.save(
+                "/repo",
+                opened.clone(),
+                crate::domain::local_event::StreamVersion::zero(),
+            )
+            .await
+            .unwrap();
+            if tab_failure {
+                *tabs.next_save_error.lock() = Some(WorkspaceStateError::InvalidLayout);
+            }
+            let usecase = tab_usecase(repository.clone(), tabs.clone());
+            let mut changed = repository.snapshot().session().clone();
+            changed
+                .associate_provider_session("provider", None)
+                .unwrap();
+            changed.observe_provider_process_exit(Some(0));
+            // When
+            let result = usecase
+                .save_if_changed(VersionedAgentSession::restored(changed, 1), "exit")
+                .await;
+            // Then
+            if save_success {
+                let saved = result.unwrap();
+                assert_eq!(saved.revision(), 2);
+                assert!(saved.session().uncommitted_events().is_empty());
+                assert_eq!(saved, repository.snapshot());
+            } else {
+                assert_eq!(result.unwrap_err(), AgentSessionUsecaseError::Unavailable);
+                assert_eq!(repository.snapshot().revision(), 1);
+            }
+            assert_eq!(
+                tabs.read("/repo").await.unwrap().1,
+                Some(if save_success && !tab_failure {
+                    WorkspaceState::default()
+                } else {
+                    opened
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session保存_未保存の事実がなければ保存せず開き直したタブを維持する() {
+        use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+        // Given
+        let mut stopped = session();
+        stopped
+            .associate_provider_session("provider", None)
+            .unwrap();
+        stopped.observe_provider_process_exit(Some(0));
+        let repository = Arc::new(FailingSaveRepository::new(stopped));
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        let mut opened = WorkspaceState::default();
+        opened.add_session_tab("session", "session");
+        tabs.save(
+            "/repo",
+            opened.clone(),
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+        let usecase = tab_usecase(repository.clone(), tabs.clone());
+        let original = repository.snapshot();
+        // When
+        let saved = usecase
+            .save_if_changed(original.clone(), "unchanged")
+            .await
+            .unwrap();
+        // Then
+        assert_eq!(saved, original);
+        assert_eq!(tabs.read("/repo").await.unwrap().1, Some(opened));
+    }
+
+    #[tokio::test]
+    async fn test_session削除_archiveとgcは削除成功後に閉じタブ保存失敗は削除を失敗にしない() {
+        use crate::domain::agent_session::aggregates::ManagedPtyPresence;
+        use crate::domain::agent_session::repository::AgentSessionRepositoryError;
+        use crate::domain::workspace_state::{
+            WorkspaceState, WorkspaceStateError, WorkspaceStateRepository,
+        };
+        // Given
+        for archive in [false, true] {
+            for (remove_failure, tab_failure) in [(false, false), (true, false), (false, true)] {
+                let mut target = session();
+                if archive {
+                    crate::domain::agent_session::test_helpers::archive_derived(&mut target);
+                }
+                let repository = Arc::new(FailingSaveRepository::new(target));
+                if remove_failure {
+                    *repository.remove_failure.lock().unwrap() =
+                        Some(AgentSessionRepositoryError::Unavailable);
+                }
+                let tabs = Arc::new(crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default());
+                let mut opened = WorkspaceState::default();
+                opened.add_session_tab("session", "session");
+                tabs.save(
+                    "/repo",
+                    opened.clone(),
+                    crate::domain::local_event::StreamVersion::zero(),
+                )
+                .await
+                .unwrap();
+                if tab_failure {
+                    *tabs.next_save_error.lock() = Some(WorkspaceStateError::InvalidLayout);
+                }
+                let usecase = tab_usecase(repository.clone(), tabs.clone());
+                // When
+                let result = if archive {
+                    usecase.delete("session", "delete").await
+                } else {
+                    usecase
+                        .garbage_collect("session", ManagedPtyPresence::ConfirmedAbsent, "gc")
+                        .await
+                };
+                // Then
+                assert_eq!(
+                    result,
+                    if remove_failure {
+                        Err(AgentSessionUsecaseError::Unavailable)
+                    } else {
+                        Ok(())
+                    }
+                );
+                assert_eq!(repository.stored.lock().unwrap().is_none(), !remove_failure);
+                assert_eq!(
+                    tabs.read("/repo").await.unwrap().1,
+                    Some(if remove_failure || tab_failure {
+                        opened
+                    } else {
+                        WorkspaceState::default()
+                    })
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_session削除_未archiveと存在するprocessは拒否してタブも保持する() {
+        use crate::domain::agent_session::aggregates::ManagedPtyPresence;
+        use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+        // Given
+        let repository = Arc::new(FailingSaveRepository::new(session()));
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        let mut opened = WorkspaceState::default();
+        opened.add_session_tab("session", "session");
+        tabs.save(
+            "/repo",
+            opened.clone(),
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+        let usecase = tab_usecase(repository.clone(), tabs.clone());
+        // When / Then
+        assert_eq!(
+            usecase.delete("session", "delete").await,
+            Err(AgentSessionUsecaseError::InvalidOperation)
+        );
+        assert_eq!(
+            usecase
+                .garbage_collect("session", ManagedPtyPresence::Live, "gc")
+                .await,
+            Err(AgentSessionUsecaseError::InvalidOperation)
+        );
+        assert!(repository.stored.lock().unwrap().is_some());
+        assert_eq!(tabs.read("/repo").await.unwrap().1, Some(opened));
+    }
+    #[tokio::test]
+    async fn test_session削除_会話開始済みならprocess不在でもgcを拒否してsessionとタブを保持する() {
+        use crate::domain::agent_session::aggregates::ManagedPtyPresence;
+        use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+        // Given
+        let mut started = session();
+        started
+            .associate_provider_session("provider", None)
+            .unwrap();
+        let repository = Arc::new(FailingSaveRepository::new(started));
+        let original = repository.snapshot();
+        let tabs = Arc::new(
+            crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
+            ),
+        );
+        let mut opened = WorkspaceState::default();
+        opened.add_session_tab("session", "session");
+        tabs.save(
+            "/repo",
+            opened,
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+        let original_tabs = tabs.read("/repo").await.unwrap();
+        let usecase = tab_usecase(repository.clone(), tabs.clone());
+        // When
+        let result = usecase
+            .garbage_collect("session", ManagedPtyPresence::ConfirmedAbsent, "gc")
+            .await;
+        // Then
+        assert_eq!(result, Err(AgentSessionUsecaseError::InvalidOperation));
+        assert_eq!(repository.snapshot(), original);
+        assert_eq!(tabs.read("/repo").await.unwrap(), original_tabs);
+    }
+
+    #[tokio::test]
+    async fn test_session再開_成功した事実だけ保存してタブを開く() {
+        use crate::domain::agent_session::aggregates::AgentSessionRecoveryResult;
+        use crate::domain::workspace_state::{WorkspaceState, WorkspaceStateRepository};
+        // Given
+        for result in [
+            AgentSessionRecoveryResult::Succeeded,
+            AgentSessionRecoveryResult::Failed,
+        ] {
+            let mut stopped = session();
+            stopped
+                .associate_provider_session("provider", None)
+                .unwrap();
+            stopped.observe_provider_process_exit(Some(0));
+            let repository = Arc::new(FailingSaveRepository::new(stopped));
+            repository
+                .save_success
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let tabs = Arc::new(crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default());
+            let usecase = tab_usecase(repository.clone(), tabs.clone());
+            // When
+            usecase
+                .complete_resume("session", result, "resume")
+                .await
+                .unwrap();
+            // Then
+            let saved = tabs.read("/repo").await.unwrap().1;
+            if result == AgentSessionRecoveryResult::Succeeded {
+                let mut expected = WorkspaceState::default();
+                expected.add_session_tab("session", "session");
+                assert_eq!(saved, Some(expected));
+                assert_eq!(repository.snapshot().revision(), 2);
+            } else {
+                assert_eq!(saved, None);
+                assert_eq!(repository.snapshot().revision(), 1);
+            }
+        }
     }
 }

@@ -47,7 +47,7 @@ async fn submit(control: &WorkflowControlPlaneUsecase, id: &str, value: serde_js
 }
 
 async fn stop(control: &WorkflowControlPlaneUsecase, tree: &str, node: &RuntimeNodeExecution) {
-    control
+    let recorded = control
         .record_provider_stop(
             releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand {
                 agent_session_id: node.session_id.clone().unwrap(),
@@ -59,6 +59,7 @@ async fn stop(control: &WorkflowControlPlaneUsecase, tree: &str, node: &RuntimeN
         )
         .await
         .unwrap();
+    control.advance_after_provider_stop(recorded).await.unwrap();
 }
 
 fn definition(child_worktree: &str) -> String {

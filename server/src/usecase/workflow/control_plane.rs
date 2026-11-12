@@ -26,6 +26,19 @@ pub struct WorkflowControlPlaneCommit {
     pub(crate) provider_events: Vec<ScopedProviderLifecycleEvent>,
 }
 
+/// 実行木への記録を終えた provider の Stop。
+/// `WorkflowControlPlaneUsecase::advance_after_provider_stop` に渡して実行木を先へ進める。
+#[must_use = "advance_after_provider_stop に渡さないと、実行木が先へ進まない"]
+pub struct RecordedProviderStop {
+    committed: Option<CommittedProviderStop>,
+}
+
+struct CommittedProviderStop {
+    worktree_path: String,
+    snapshot: RuntimeCommitSnapshot,
+    outcome: Option<NodeOutcome>,
+}
+
 #[async_trait::async_trait]
 pub trait WorkflowControlPlaneGateway: Send + Sync {
     fn current_timestamp(&self) -> f64;
@@ -592,11 +605,12 @@ impl WorkflowControlPlaneUsecase {
         Ok(())
     }
 
+    /// provider の Stop を実行木に記録する。実行木を先へ進める処理は行わない。
     pub async fn record_provider_stop(
         &self,
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
-    ) -> Result<(), WorkflowError> {
+    ) -> Result<RecordedProviderStop, WorkflowError> {
         super::command::retry_control_plane_conflicts(
             &self.retrying,
             &command.node_execution_id,
@@ -605,15 +619,34 @@ impl WorkflowControlPlaneUsecase {
         .await
     }
 
+    /// 記録を終えた provider の Stop から、実行木を先へ進める。
+    /// 次の Node の起動と、delegate の結果を親の Session へ渡す処理を含む。
+    /// Stop を受けた provider lifecycle slot の lock を持ったまま呼ばない。
+    pub async fn advance_after_provider_stop(
+        &self,
+        recorded: RecordedProviderStop,
+    ) -> Result<(), WorkflowError> {
+        let Some(committed) = recorded.committed else {
+            return Ok(());
+        };
+        self.finish_control_plane_commit(
+            &committed.worktree_path,
+            &committed.snapshot,
+            committed.outcome,
+        )
+        .await?;
+        self.auto_approve_if_needed(&committed.snapshot).await
+    }
+
     async fn record_provider_stop_once(
         &self,
         command: crate::usecase::provider_lifecycle::ProviderExecutionTreeStopCommand,
         lifecycle_events: Vec<ScopedProviderLifecycleEvent>,
-    ) -> Result<(), WorkflowError> {
+    ) -> Result<RecordedProviderStop, WorkflowError> {
         let active = self.runtime.load_active_execution(&command.tree_id).await?;
         let Some(current) = active else {
             if lifecycle_events.is_empty() {
-                return Ok(());
+                return Ok(RecordedProviderStop { committed: None });
             }
             return Err(WorkflowError::NotFound(format!(
                 "Workflow execution not found: {}",
@@ -670,9 +703,13 @@ impl WorkflowControlPlaneUsecase {
                 provider_events: lifecycle_events,
             })
             .await?;
-        self.finish_control_plane_commit(&worktree_path, &snapshot, outcome)
-            .await?;
-        self.auto_approve_if_needed(&snapshot).await
+        Ok(RecordedProviderStop {
+            committed: Some(CommittedProviderStop {
+                worktree_path,
+                snapshot,
+                outcome,
+            }),
+        })
     }
 }
 

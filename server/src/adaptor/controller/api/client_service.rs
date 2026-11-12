@@ -92,13 +92,15 @@ async fn receive_provider_signal<'a>(
     super::provider_signal::validate_payload(&request.payload)?;
     let provider = request.provider.and_then(|provider| provider.value).and_then(|value| wire::agent_session_provider_dto::Value::try_from(value).ok()).ok_or_else(|| crate::adaptor::presenter::connect::invalid_request("Invalid provider"))?;
     let (provider, slot, scope) = super::provider_signal::ingress_context(provider, &request.slot_id, &request.agent_session_id).map_err(|error| crate::adaptor::presenter::connect::invalid_request(error.to_string()))?;
-    let ingress = self.provider_lifecycle.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider lifecycle unavailable")))?;
-    let result = crate::common::telemetry::observe_result_async(
-        crate::adaptor::controller::api::client::ingress(ctx.deadline(), async {
-            ingress.receive_payload( &slot, &request.capability, crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput { provider, binding_id: &request.binding_id, scope, payload: &request.payload }).await.map_err(crate::adaptor::presenter::connect::classified_error)
-        }),
-        super::provider_signal::record_ingress,
-    ).await?;
+    let ingress = self.provider_lifecycle.as_ref().ok_or_else(|| crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::unavailable("Provider lifecycle unavailable")))?.clone();
+    let result = crate::adaptor::controller::api::client::owned_ingress(ctx.deadline(), async move {
+        crate::common::telemetry::observe_result_async(
+            async {
+                ingress.receive_payload( &slot, &request.capability, crate::usecase::provider_lifecycle::ingress::ProviderPayloadInput { provider, binding_id: &request.binding_id, scope, payload: &request.payload }).await.map_err(crate::adaptor::presenter::connect::classified_error)
+            },
+            super::provider_signal::record_ingress,
+        ).await
+    }).await?;
     connectrpc::Response::ok(to_rpc::<rpc::ReceiveProviderSignalResponse>(&wire::ReceiveProviderSignalResponse::from(result.0))?)
 }
 

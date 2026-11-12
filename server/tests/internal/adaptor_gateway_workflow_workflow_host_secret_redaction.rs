@@ -107,7 +107,7 @@ schemas:
             })
             .await
             .unwrap();
-        control
+        let recorded = control
             .record_provider_stop(
                 ProviderExecutionTreeStopCommand {
                     agent_session_id: node.session_id.clone().unwrap(),
@@ -119,6 +119,7 @@ schemas:
             )
             .await
             .unwrap();
+        control.advance_after_provider_stop(recorded).await.unwrap();
         control
             .resolve_approval(ApprovalCommand {
                 execution_id: execution_id.clone(),

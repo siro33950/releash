@@ -280,3 +280,134 @@ async fn test_実行木のタブ更新_木が見つからなければ保存も�
     assert_eq!(repository.read("workspace").await.unwrap().1, None);
     assert!(changes.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn test_session追従_事実の順に更新して保存通知し空の事実と保存失敗では通知しない() {
+    use crate::domain::agent_session::aggregates::AgentSessionTreeLocation;
+    // Given
+    let session = AgentSession::create(
+        "session",
+        WorkspaceIdentity::new("workspace"),
+        "/repo",
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root("session").unwrap(),
+    )
+    .unwrap();
+    let repository = Arc::new(MemoryWorkspaceStateRepository::default());
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let usecase = SessionTabsUsecase::new(
+        repository.clone(),
+        Arc::new(Trees {
+            tree: None,
+            calls: Default::default(),
+        }),
+        publisher,
+    );
+    let exited = AgentSessionLifecycleEvent::ProcessExited {
+        last_exit_abnormal: false,
+    };
+    // When
+    usecase
+        .follow_session(
+            &session,
+            &[exited.clone(), AgentSessionLifecycleEvent::Resumed],
+        )
+        .await
+        .unwrap();
+    // Then
+    let (version, saved) = repository.read("workspace").await.unwrap();
+    let mut expected = WorkspaceState::default();
+    expected.add_session_tab("session", "session");
+    assert_eq!(saved, Some(expected.clone()));
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::WorkspaceState("workspace".into())
+    );
+    // When
+    usecase.follow_session(&session, &[]).await.unwrap();
+    // Then
+    assert_eq!(
+        repository.read("workspace").await.unwrap(),
+        (version, Some(expected.clone()))
+    );
+    assert!(changes.try_recv().is_err());
+    *repository.next_save_error.lock() = Some(WorkspaceStateError::InvalidLayout);
+    // When / Then
+    assert_eq!(
+        usecase.follow_session(&session, &[exited.clone()]).await,
+        Err(WorkspaceStateError::InvalidLayout)
+    );
+    assert_eq!(
+        repository.read("workspace").await.unwrap(),
+        (version, Some(expected))
+    );
+    assert!(changes.try_recv().is_err());
+    // When
+    usecase
+        .follow_session(&session, &[AgentSessionLifecycleEvent::Resumed, exited])
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(
+        repository.read("workspace").await.unwrap().1,
+        Some(WorkspaceState::default())
+    );
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::WorkspaceState("workspace".into())
+    );
+    assert!(changes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_session追従_対象外の事実だけなら配置を読まず対象が混ざれば保存通知する() {
+    use crate::domain::agent_session::aggregates::AgentSessionTreeLocation;
+    use std::sync::atomic::Ordering;
+    // Given
+    let mut session = AgentSession::create(
+        "session",
+        WorkspaceIdentity::new("workspace"),
+        "/repo",
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root("session").unwrap(),
+    )
+    .unwrap();
+    let mut events = session.take_uncommitted_events();
+    events.push(AgentSessionLifecycleEvent::ProviderSessionAssociated {
+        provider_session_id: "provider".into(),
+        transcript_ref: None,
+    });
+    let repository = Arc::new(MemoryWorkspaceStateRepository::default());
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let usecase = SessionTabsUsecase::new(
+        repository.clone(),
+        Arc::new(Trees {
+            tree: None,
+            calls: Default::default(),
+        }),
+        publisher,
+    );
+    // When
+    usecase.follow_session(&session, &[]).await.unwrap();
+    usecase.follow_session(&session, &events).await.unwrap();
+    // Then
+    assert_eq!(repository.read_calls.load(Ordering::SeqCst), 0);
+    assert!(changes.try_recv().is_err());
+    assert_eq!(repository.read("workspace").await.unwrap().1, None);
+    // When
+    events.insert(1, AgentSessionLifecycleEvent::Resumed);
+    usecase.follow_session(&session, &events).await.unwrap();
+    // Then
+    let (version, saved) = repository.read("workspace").await.unwrap();
+    assert_eq!(version.value(), 1);
+    let mut expected = WorkspaceState::default();
+    expected.add_session_tab("session", "session");
+    assert_eq!(saved, Some(expected));
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::WorkspaceState("workspace".into())
+    );
+    assert!(changes.try_recv().is_err());
+}

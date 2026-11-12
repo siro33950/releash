@@ -199,6 +199,23 @@ impl Cancellation for tokio_util::sync::CancellationToken {
     }
 }
 
+pub async fn owned<T: Send + 'static>(
+    deadline: Option<Instant>,
+    operation: impl Future<Output = T> + Send + 'static,
+) -> Result<Result<T, OperationStopped>, tokio::task::JoinError> {
+    let mut context = OperationContext::default().retaining(Arc::new(current()));
+    if let Some(deadline) = deadline {
+        context = context.with_deadline(Deadline::new(deadline));
+    }
+    tokio::spawn(scope(context, async move {
+        check()?;
+        let result = operation.await;
+        check()?;
+        Ok(result)
+    }))
+    .await
+}
+
 pub async fn spawned<T: Send + 'static>(
     operation: impl Future<Output = T> + Send + 'static,
 ) -> Result<Result<T, OperationStopped>, tokio::task::JoinError> {

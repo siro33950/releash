@@ -861,3 +861,158 @@ pub async fn test_providerライフサイクル再試行_中断後も同一commi
     );
     assert_eq!(provider_event_count(&store, "agent-1").await, 2);
 }
+
+#[tokio::test]
+async fn test_provider停止_永続化後の処理が同じsessionの操作lockを取得できる() {
+    use providers::ProviderLifecycleEventRepository;
+    use releashd::test_support::integration::{
+        platform, providers, sessions, subscriptions, workspace,
+    };
+
+    struct StopTransaction {
+        sessions: Arc<sessions::AgentSessionUsecase>,
+        events: Arc<LocalProviderLifecycleEventRepository>,
+        operations: platform::WorktreeOperations,
+    }
+    #[async_trait::async_trait]
+    impl providers::ProviderExecutionTreeStopTransaction for StopTransaction {
+        fn begin_worktree_mutation(
+            &self,
+            path: &str,
+        ) -> Result<platform::WorktreeMutationGuard, providers::ProviderLifecycleIngressUsecaseError>
+        {
+            self.operations
+                .mutate(path)
+                .map_err(|_| providers::ProviderLifecycleIngressUsecaseError::Conflict)
+        }
+        async fn commit_provider_stop(
+            &self,
+            command: providers::ProviderExecutionTreeStopCommand,
+            events: Vec<providers::ScopedProviderLifecycleEvent>,
+        ) -> Result<
+            std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<(), providers::ProviderLifecycleIngressUsecaseError>,
+                        > + Send,
+                >,
+            >,
+            providers::ProviderLifecycleIngressUsecaseError,
+        > {
+            self.events.append(events).await.unwrap();
+            let sessions = self.sessions.clone();
+            let events = self.events.clone();
+            Ok(Box::pin(async move {
+                let _operation = sessions
+                    .lock_operation(&command.agent_session_id)
+                    .await
+                    .unwrap();
+                let session = sessions
+                    .find(&command.agent_session_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    session.session().provider_session_id(),
+                    Some("provider-session")
+                );
+                let saved = events
+                    .load_scope(&ProviderLifecycleScope::new(&command.agent_session_id).unwrap())
+                    .await
+                    .unwrap();
+                assert!(saved.into_iter().any(|event| matches!(
+                    event.into_parts().1,
+                    providers::ProviderLifecycleEvent::StopObserved { .. }
+                )));
+                Ok(())
+            }))
+        }
+    }
+
+    // Given
+    let (_directory, store, lifecycle) = setup_persistence_usecase();
+    let lifecycle = Arc::new(lifecycle);
+    let repository = Arc::new(sessions::LocalAgentSessionRepository::new(store.clone()));
+    let sessions = Arc::new(sessions::test_sessions(
+        repository.clone(),
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ));
+    sessions
+        .create(
+            "parent",
+            workspace::WorkspaceIdentity::new("/repo"),
+            "/repo/worktree",
+            ProviderKind::Codex,
+            sessions::session_location("parent"),
+            "create",
+        )
+        .await
+        .unwrap();
+    let transaction = Arc::new(StopTransaction {
+        sessions: sessions.clone(),
+        events: Arc::new(LocalProviderLifecycleEventRepository::new(
+            platform::shared().clone(),
+            store.clone(),
+            store.installation_id().to_string(),
+        )),
+        operations: platform::WorktreeOperations::default(),
+    });
+    let ingress = providers::ProviderLifecycleIngressUsecase::new(
+        Arc::new(providers::LocalProviderPayloadInterpreter),
+        Arc::new(platform::RandomIdentityIssuer),
+        lifecycle.clone(),
+        sessions,
+        Arc::new(providers::ProviderHookHealthUsecase::new(Arc::new(
+            sessions::MemoryHookHealthRepository::default(),
+        ))),
+        (repository, transaction),
+        subscriptions::test_subscriptions(),
+    );
+    let slot = providers::ProviderLifecycleSlotId::new("slot").unwrap();
+    let scope = ProviderLifecycleScope::new("parent").unwrap();
+    let armed = lifecycle
+        .arm(slot.clone(), ProviderKind::Codex, scope.clone())
+        .await
+        .unwrap();
+    ingress
+        .receive(
+            &slot,
+            armed.capability(),
+            ProviderLifecycleSignal::session_started(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                scope.clone(),
+                "provider-session",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // When
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        ingress.receive(
+            &slot,
+            armed.capability(),
+            ProviderLifecycleSignal::stop_observed(
+                armed.binding_id(),
+                ProviderKind::Codex,
+                scope,
+                "provider-session",
+                None,
+            )
+            .unwrap(),
+        ),
+    )
+    .await;
+
+    // Then
+    assert_eq!(
+        result.expect("永続化後の処理がSession操作lockを再取得して完了する"),
+        Ok(ProviderLifecycleIngressResult::Applied)
+    );
+}

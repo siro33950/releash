@@ -1670,7 +1670,7 @@ pub async fn test_session再開_完了したnodeは状態を変えずに会話�
         )
         .await
         .unwrap();
-    control
+    let recorded = control
         .record_provider_stop(
             releashd::test_support::integration::providers::ProviderExecutionTreeStopCommand {
                 agent_session_id: node.session_id.clone().unwrap(),
@@ -1682,6 +1682,7 @@ pub async fn test_session再開_完了したnodeは状態を変えずに会話�
         )
         .await
         .unwrap();
+    control.advance_after_provider_stop(recorded).await.unwrap();
     let completed = fixture
         .host
         .load_executions(&fixture.app, &id)
