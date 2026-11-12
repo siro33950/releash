@@ -2116,6 +2116,38 @@ mod abort_tests {
     use super::*;
 
     #[test]
+    fn test_session停止_abort指示だけでは停止せずprocess_exitで停止する() {
+        for parent_id in [None, Some("workflow-root")] {
+            // Given
+            let mut log = FactLog::new();
+            let session = meta(
+                "session-node",
+                parent_id,
+                "session",
+                NodeKindName::Session,
+                1,
+            );
+            let abort_target = parent_id.map_or_else(
+                || session.clone(),
+                |root| meta(root, None, "workflow", NodeKindName::Sequence, 1),
+            );
+            log.push(session.clone(), attached("session-1"));
+
+            // When
+            log.push(abort_target, NodeFact::AbortRequested(Default::default()));
+
+            // Then
+            assert!(!derive_session_facts(&log.records, "session-node", "session-1").exited);
+
+            // When
+            log.push(session, exited(0));
+
+            // Then
+            assert!(derive_session_facts(&log.records, "session-node", "session-1").exited);
+        }
+    }
+
+    #[test]
     fn test_abort_指示の事実だけで中止が導出される() {
         let mut log = FactLog::new();
         let root_meta = meta("root-exec", None, "session", NodeKindName::Session, 1);
