@@ -18,11 +18,15 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     let model = try await testModel(http)
     model.selectWorktree("/repo")
     try await eventually { model.layoutLoaded }
+    let screen = try XCTUnwrap(NSScreen.main)
+    let available = NSWindow.contentRect(forFrameRect: screen.visibleFrame, styleMask: .titled)
     let host = await ViewHarness(
       HStack {
         if center { WorkspacePaneView(model: model) }
         RightPanelView(expanded: .constant(true), model: model)
-      }, size: NSSize(width: center ? 1400 : 1000, height: 700))
+      },
+      size: NSSize(
+        width: min(center ? 1400 : 1000, available.width), height: min(700, available.height)))
     host.window.center()
     try await host.press("ファイル")
     try await eventually {
@@ -259,6 +263,8 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
   @MainActor private func drag(
     from source: CGPoint, to destination: CGPoint, in host: ViewHarness
   ) async throws {
+    let pointer = try XCTUnwrap(CGEvent(source: nil)?.location)
+    addTeardownBlock { CGWarpMouseCursorPosition(pointer) }
     let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
     XCTAssertEqual(
       AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
@@ -268,6 +274,11 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       return NSApp.isActive && NSApp.keyWindow === host.window
     }
     let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+    let visible = try XCTUnwrap(host.window.screen).visibleFrame
+    for point in [source, destination] {
+      XCTAssertTrue(
+        visible.contains(CGPoint(x: point.x, y: screenHeight - point.y)), "画面外の入力: \(point)")
+    }
     let pasteboard = NSPasteboard(name: .drag)
     let before = pasteboard.changeCount
     print(
@@ -295,6 +306,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
       let done = MainActor.assumeIsolated {
         let step = steps[index]
+        XCTAssertEqual(CGWarpMouseCursorPosition(step.1), .success)
         let event = NSEvent.mouseEvent(
           with: step.0,
           location: host.window.convertPoint(
