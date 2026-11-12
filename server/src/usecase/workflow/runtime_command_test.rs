@@ -33,7 +33,7 @@ pub(crate) mod tests {
                     tree_id: "tree".into(), node_execution_id: "node".into(),
                     agent_session_id: "session".into(), binding_id: "binding".into(),
                 }, Vec::new(),
-            ).await.unwrap_err(), crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput);
+            ).await.err().unwrap(), crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::InvalidInput);
             assert_eq!(
                 ExecutionTreeCache::release_deleted_execution_tree(&usecase, "tree")
                     .await
@@ -122,7 +122,7 @@ pub(crate) mod tests {
                     );
                 } else {
                     assert_eq!(
-                stop.await.unwrap_err(),
+                stop.await.err().unwrap(),
                 crate::usecase::provider_lifecycle::ProviderLifecycleIngressUsecaseError::Store(
                     expected.clone()
                 )
@@ -158,6 +158,8 @@ pub(crate) mod tests {
     pub(crate) struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
         failure: Option<WorkflowError>,
+        advance_failure: Option<WorkflowError>,
+        execution: Option<crate::domain::workflow::entities::workflow_execution::ExecutionTree>,
     }
 
     #[async_trait::async_trait]
@@ -259,7 +261,7 @@ pub(crate) mod tests {
             if let Some(error) = &self.failure {
                 return Err(error.clone());
             }
-            Ok(None)
+            Ok(self.execution.clone())
         }
 
         async fn register_started_execution_tree(
@@ -298,12 +300,16 @@ pub(crate) mod tests {
 
         async fn commit_control_plane(
             &self,
-            _commit: crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit,
+            commit: crate::usecase::workflow::control_plane::WorkflowControlPlaneCommit,
         ) -> Result<crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot, WorkflowError>
         {
-            Err(WorkflowError::external(
-                "control plane is not used by this test",
-            ))
+            self.calls.lock().unwrap().push("commit");
+            Ok(
+                crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot::from_execution(
+                    &commit.after,
+                )
+                .unwrap(),
+            )
         }
 
         async fn finish_control_plane_commit(
@@ -312,7 +318,11 @@ pub(crate) mod tests {
             _snapshot: &crate::usecase::workflow::runtime_snapshot::RuntimeCommitSnapshot,
             _outcome: Option<crate::usecase::workflow::runtime_driver::NodeOutcome>,
         ) -> Result<(), WorkflowError> {
-            Ok(())
+            self.calls.lock().unwrap().push("advance");
+            match &self.advance_failure {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
         }
     }
 
@@ -340,6 +350,111 @@ pub(crate) mod tests {
         async fn shutdown_active_commands(&self) {
             self.calls.lock().unwrap().push("shutdown_active_commands");
         }
+    }
+
+    #[tokio::test]
+    async fn test_provider停止_記録では進めず返した処理で実行木を進める() {
+        use crate::domain::workflow::entities::workflow_execution::{
+            ExecutionTree, ExecutionTreeRestore,
+        };
+        use crate::domain::workflow::NodeKindName;
+        use crate::usecase::provider_lifecycle::{
+            ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
+            ProviderLifecycleIngressUsecaseError,
+        };
+        // Given
+        let mut execution = ExecutionTree::restore_runtime(ExecutionTreeRestore {
+            id: "tree".into(),
+            workflow: serde_saphyr::from_str(
+                "name: test\ndescription: test\nnodes:\n  main: {session: {provider: codex}}\n",
+            )
+            .unwrap(),
+            ..Default::default()
+        });
+        execution
+            .begin_node_attempt(
+                "main".into(),
+                NodeKindName::Session,
+                1,
+                None,
+                "node".into(),
+                1.0,
+            )
+            .unwrap();
+        execution.attach_node_session("node", "session".into(), 2.0);
+        for (advance_failure, expected) in [
+            (None, Ok(())),
+            (
+                Some(WorkflowError::InvalidState("advance".into())),
+                Err(ProviderLifecycleIngressUsecaseError::InvalidInput),
+            ),
+        ] {
+            let gateway = Arc::new(FakeRuntimeGateway {
+                execution: Some(execution.clone()),
+                advance_failure,
+                ..Default::default()
+            });
+            let usecase = WorkflowRuntimeUsecase::new(
+                gateway.clone(),
+                Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+            );
+            // When
+            let follow_up = usecase
+                .commit_provider_stop(
+                    ProviderExecutionTreeStopCommand {
+                        tree_id: "tree".into(),
+                        node_execution_id: "node".into(),
+                        agent_session_id: "session".into(),
+                        binding_id: "binding".into(),
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            // Then
+            assert_eq!(
+                *gateway.calls.lock().unwrap(),
+                vec!["load_active", "commit"]
+            );
+            assert_eq!(follow_up.await, expected);
+            assert_eq!(
+                *gateway.calls.lock().unwrap(),
+                vec!["load_active", "commit", "advance"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider停止_記録がなければ後続処理を呼ばず成功する() {
+        use crate::usecase::provider_lifecycle::{
+            ProviderExecutionTreeStopCommand, ProviderExecutionTreeStopTransaction,
+        };
+        // Given
+        let gateway = Arc::new(FakeRuntimeGateway {
+            advance_failure: Some(WorkflowError::InvalidState("must not advance".into())),
+            ..Default::default()
+        });
+        let usecase = WorkflowRuntimeUsecase::new(
+            gateway.clone(),
+            Arc::new(crate::usecase::workflow::NoopArchiveRepository),
+        );
+        // When
+        let follow_up = usecase
+            .commit_provider_stop(
+                ProviderExecutionTreeStopCommand {
+                    tree_id: "missing".into(),
+                    node_execution_id: "node".into(),
+                    agent_session_id: "session".into(),
+                    binding_id: "binding".into(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let result = follow_up.await;
+        // Then
+        assert_eq!(result, Ok(()));
+        assert_eq!(*gateway.calls.lock().unwrap(), vec!["load_active"]);
     }
 
     #[tokio::test]

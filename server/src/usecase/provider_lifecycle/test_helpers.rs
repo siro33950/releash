@@ -117,6 +117,7 @@ impl ProviderSessionStartTransaction for MemoryAgentSessions {
 
 #[derive(Default)]
 pub(super) struct MemoryWorkflowStops {
+    pub(super) follow_up: Mutex<Option<super::ProviderStopFollowUp>>,
     pub(super) operations: crate::usecase::worktree_operation::WorktreeOperations,
     pub(super) commits: Mutex<
         Vec<(
@@ -149,7 +150,12 @@ impl ProviderExecutionTreeStopTransaction for MemoryWorkflowStops {
             .lock()
             .unwrap()
             .push((command, lifecycle_events));
-        Ok(Box::pin(async { Ok(()) }))
+        Ok(self
+            .follow_up
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Box::pin(async { Ok(()) })))
     }
 }
 

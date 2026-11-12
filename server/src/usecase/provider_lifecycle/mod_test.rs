@@ -92,6 +92,19 @@ mod provider_lifecycle_ingress_tests {
             )
             .await
             .unwrap();
+        // Given: follow-up が slot を再取得でき、完了まで待たれることを確かめる。
+        let live = lifecycle.find_slot(&slot_id).unwrap().unwrap();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = completed.clone();
+        *transaction.follow_up.lock().unwrap() = Some(Box::pin(async move {
+            assert!(
+                live.try_lock().is_ok(),
+                "follow-up must run after slot unlock"
+            );
+            tokio::task::yield_now().await;
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }));
         let revision_before_stop = agent_repository.stored.lock().unwrap().revision();
         let result = ingress
             .receive(
@@ -110,6 +123,7 @@ mod provider_lifecycle_ingress_tests {
             .unwrap();
 
         assert_eq!(result, ProviderLifecycleIngressResult::Applied);
+        assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(
             agent_repository.stored.lock().unwrap().revision(),
             revision_before_stop
@@ -129,6 +143,10 @@ mod provider_lifecycle_ingress_tests {
             assert_eq!(commits[0].1.len(), 1);
         }
 
+        // When: 記録後の follow-up が失敗した場合も、呼出元へその失敗を返す。
+        *transaction.follow_up.lock().unwrap() = Some(Box::pin(async {
+            Err(ProviderLifecycleIngressUsecaseError::Conflict)
+        }));
         let next_turn = ingress
             .receive(
                 &slot_id,
@@ -142,9 +160,12 @@ mod provider_lifecycle_ingress_tests {
                 )
                 .unwrap(),
             )
-            .await
-            .unwrap();
-        assert_eq!(next_turn, ProviderLifecycleIngressResult::Applied);
+            .await;
+        // Then
+        assert_eq!(
+            next_turn,
+            Err(ProviderLifecycleIngressUsecaseError::Conflict)
+        );
         {
             let commits = transaction.commits.lock().unwrap();
             assert_eq!(commits.len(), 2);
@@ -1396,6 +1417,108 @@ mod provider_lifecycle_usecase_tests {
             events,
             credentials,
         )
+    }
+
+    #[tokio::test]
+    async fn test_signal記録_commitをlock内で待ち返却時にlockを解放する() {
+        // Given
+        let (usecase, _, _) = usecase();
+        let slot = slot_id("slot-commit");
+        let armed = usecase
+            .arm(slot.clone(), ProviderKind::Codex, scope("agent"))
+            .await
+            .unwrap();
+        let live = usecase.find_slot(&slot).unwrap().unwrap();
+        for expected in [
+            ProviderLifecycleIngressResult::Applied,
+            ProviderLifecycleIngressResult::Duplicate,
+        ] {
+            // When
+            let result = usecase
+                .receive_with_commit(
+                    &slot,
+                    armed.capability(),
+                    session_start(&armed, "provider"),
+                    |events| {
+                        assert_eq!(
+                            events.is_empty(),
+                            expected == ProviderLifecycleIngressResult::Duplicate
+                        );
+                        async {
+                            assert!(live.try_lock().is_err());
+                            tokio::task::yield_now().await;
+                            assert!(live.try_lock().is_err());
+                            Ok::<_, ProviderLifecycleUsecaseError>(String::from("committed"))
+                        }
+                    },
+                )
+                .await
+                .unwrap();
+            // Then
+            assert_eq!(result, (expected, Some(String::from("committed"))));
+            assert!(live.try_lock().is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_signal記録_拒否時はcommitを呼ばず値を返さない() {
+        // Given
+        let (usecase, _, _) = usecase();
+        let slot = slot_id("slot-rejected");
+        let armed = usecase
+            .arm(slot.clone(), ProviderKind::Codex, scope("agent"))
+            .await
+            .unwrap();
+        for target in [slot.clone(), slot_id("missing")] {
+            // When
+            let (result, value) = usecase
+                .receive_with_commit(
+                    &target,
+                    "invalid-capability",
+                    session_start(&armed, "provider"),
+                    |_| std::future::ready(Err::<(), _>(ProviderLifecycleUsecaseError::Corrupt)),
+                )
+                .await
+                .unwrap();
+            // Then
+            assert!(matches!(
+                result,
+                ProviderLifecycleIngressResult::Rejected(_)
+            ));
+            assert_eq!(value, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_signal記録_commit失敗を返し再送で適用できる() {
+        // Given
+        let (usecase, _, _) = usecase();
+        let slot = slot_id("slot-failure");
+        let armed = usecase
+            .arm(slot.clone(), ProviderKind::Codex, scope("agent"))
+            .await
+            .unwrap();
+        // When
+        let result = usecase
+            .receive_with_commit(
+                &slot,
+                armed.capability(),
+                session_start(&armed, "provider"),
+                |_| async { Err::<(), _>(ProviderLifecycleUsecaseError::StorageUnavailable) },
+            )
+            .await;
+        // Then
+        assert_eq!(
+            result,
+            Err(ProviderLifecycleUsecaseError::StorageUnavailable)
+        );
+        assert_eq!(
+            usecase
+                .receive(&slot, armed.capability(), session_start(&armed, "provider"))
+                .await
+                .unwrap(),
+            ProviderLifecycleIngressResult::Applied
+        );
     }
 
     #[tokio::test]
