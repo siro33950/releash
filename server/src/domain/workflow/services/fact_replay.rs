@@ -873,6 +873,8 @@ pub struct SessionFactsView {
     /// session が受理済みの delegate 続行指示の識別子。
     pub admitted_continuations: Vec<String>,
     /// 後続の attach / resume が無い process_exited（= Paused の根拠）。
+    /// Abort の指示（`AbortRequested`）だけでは立てない。Abort で止める Session も、
+    /// 停止の操作が `ProcessExited` を記録したときに立つ。
     pub exited: bool,
     /// 後続の restore が無い archive_requested。
     pub archived: bool,
