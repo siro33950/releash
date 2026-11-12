@@ -77,6 +77,12 @@ async fn subscribe_state(socket: &Socket, target: &str, args: Vec<String>) -> St
                 let payload = match event.event {
                     Some(wire::state_subscription_event::Event::Snapshot(value)) => Some(value),
                     Some(wire::state_subscription_event::Event::Change(value)) => value.payload,
+                    Some(wire::state_subscription_event::Event::Failure(error)) => {
+                        panic!(
+                            "state subscription failed: {} ({})",
+                            error.message, error.code
+                        )
+                    }
                     _ => None,
                 };
                 if let Some(wire::StatePayload { value: Some(value) }) = payload {

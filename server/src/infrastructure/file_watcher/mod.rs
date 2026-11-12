@@ -55,9 +55,7 @@ impl FileWatcherManager {
         .map_err(|e| format!("Failed to create debouncer: {}", e))?;
 
         let mut debouncer = debouncer;
-        debouncer
-            .watcher()
-            .watch(&watch_path, RecursiveMode::Recursive)
+        watch_tree(debouncer.watcher(), &watch_path)
             .map_err(|e| format!("Failed to watch path: {}", e))?;
 
         let session = WatcherSession {
@@ -85,4 +83,45 @@ impl FileWatcherManager {
         crate::infrastructure::dispose::dispose_in_background("file-watcher-dispose", session);
         true
     }
+}
+
+pub(crate) fn watch_tree(
+    watcher: &mut dyn notify_debouncer_mini::notify::Watcher,
+    path: &std::path::Path,
+) -> notify_debouncer_mini::notify::Result<()> {
+    use notify_debouncer_mini::notify::{Error, ErrorKind};
+
+    let mut pending = vec![path.to_path_buf()];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(directory) = pending.pop() {
+        if let Err(error) = watcher.watch(&directory, RecursiveMode::Recursive) {
+            if !cfg!(target_os = "linux")
+                || !matches!(&error.kind, ErrorKind::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied)
+            {
+                return Err(error);
+            }
+            let canonical = std::fs::canonicalize(&directory).map_err(Error::io)?;
+            if !seen.insert(canonical) {
+                continue;
+            }
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error)
+                    if directory != path
+                        && error.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(Error::io(error)),
+            };
+            // inotify は失敗した子より前の監視を保持するため、残りの読める枝を登録する。
+            for entry in entries {
+                let entry = entry.map_err(Error::io)?;
+                if entry.path().is_dir() {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+    Ok(())
 }

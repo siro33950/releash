@@ -265,7 +265,7 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       .success)
     try await eventually {
       host.window.makeKeyAndOrderFront(nil)
-      return NSApp.keyWindow === host.window
+      return NSApp.isActive && NSApp.keyWindow === host.window
     }
     let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
     let steps: [(NSEvent.EventType, CGPoint)] =
