@@ -1464,3 +1464,27 @@ async fn test_session開始通知_適用の応答を要求期限内に返す() {
     let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(result, serde_json::json!({}));
 }
+
+#[tokio::test]
+async fn test_所有する入口_期限切れをdeadline_exceededに変換する() {
+    // Given
+    let deadline = std::time::Instant::now();
+    // When
+    let error = owned_ingress(Some(deadline), async {
+        Ok::<_, connectrpc::ConnectError>(())
+    })
+    .await
+    .unwrap_err();
+    // Then
+    assert_eq!(error.code, connectrpc::ErrorCode::DeadlineExceeded);
+}
+
+#[tokio::test]
+async fn test_所有する入口_taskの異常終了をinternalに変換する() {
+    // Given / When
+    let error = owned_ingress::<()>(None, async { panic!("provider signal task failed") })
+        .await
+        .unwrap_err();
+    // Then
+    assert_eq!(error.code, connectrpc::ErrorCode::Internal);
+}

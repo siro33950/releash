@@ -10,6 +10,7 @@ use crate::domain::workspace_state::{
 
 #[derive(Default)]
 pub struct MemoryWorkspaceStateRepository {
+    pub read_calls: std::sync::atomic::AtomicUsize,
     states: Mutex<HashMap<String, (StreamVersion, WorkspaceState)>>,
     pub next_save_error: Mutex<Option<WorkspaceStateError>>,
 }
@@ -20,6 +21,8 @@ impl WorkspaceStateRepository for MemoryWorkspaceStateRepository {
         &self,
         workspace: &str,
     ) -> Result<(StreamVersion, Option<WorkspaceState>), WorkspaceStateError> {
+        self.read_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.states.lock().get(workspace).map_or_else(
             || (StreamVersion::new(0).unwrap(), None),
             |(version, state)| (*version, Some(state.clone())),
