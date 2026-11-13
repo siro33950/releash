@@ -1,6 +1,6 @@
 /// ワークツリー（メイン / リンク済み）と、そこに checkout されたブランチ。
 ///
-/// worktree 単一集約に属する不変条件・配置情報と、ブランチが base に取り込まれたかを持つ。
+/// worktree 単一集約に属する不変条件・配置情報を持つ。
 /// `dirty_count`（status 由来）や `base_branch`（git_config 由来）、PR（git_host 由来）といった
 /// 別集約の値はここに持たない。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,7 +10,6 @@ pub struct Worktree {
     pub branch: String,
     pub is_main: bool,
     pub is_locked: bool,
-    pub is_merged: bool,
 }
 
 impl Worktree {
@@ -22,7 +21,6 @@ impl Worktree {
             branch,
             is_main: false,
             is_locked: false,
-            is_merged: false,
         }
     }
 

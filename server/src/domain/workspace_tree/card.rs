@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    WorkspaceExecution, WorkspaceNodeKind, WorkspaceNodeStatusClassification, WorkspacePublicRoot,
-    WorkspaceTree, WorkspaceTreeNode,
+    WorkspaceExecution, WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTree, WorkspaceTreeNode,
 };
 impl WorkspaceTree {
     pub(crate) fn active_execution_roots(
@@ -102,12 +101,6 @@ impl<'a> ExecutionNodes<'a> {
     }
     pub fn node(&self) -> &'a WorkspaceTreeNode {
         Self::node_for(self.root, self.launch)
-    }
-    pub fn session_states(&self) -> impl Iterator<Item = WorkspaceNodeStatusClassification> + '_ {
-        self.leaves
-            .iter()
-            .filter(|node| node.kind == WorkspaceNodeKind::WorkflowSession)
-            .map(|node| node.status_classification)
     }
     pub fn node_count(&self) -> usize {
         self.leaves.len()

@@ -41,15 +41,6 @@ impl PrStatus {
                 })
         })
     }
-
-    pub fn branch_is_merged(&self, branch: &str, merged_in_git: bool) -> bool {
-        merged_in_git
-            || (self.open_for_branch(branch).is_none()
-                && self
-                    .completed_prs
-                    .iter()
-                    .any(|(name, pr)| name == branch && pr.state == PrState::Merged))
-    }
 }
 
 #[cfg(test)]

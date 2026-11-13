@@ -200,7 +200,6 @@ impl GitService for FakeRepo {
             branch: branch.to_string(),
             is_main: false,
             is_locked: false,
-            is_merged: false,
         })
     }
     fn validate_removal(&self, _: &str, path: &str, force: bool) -> Result<String, GitError> {
@@ -315,7 +314,6 @@ pub fn wt(path: &str, branch: &str, is_main: bool) -> Worktree {
         branch: branch.to_string(),
         is_main,
         is_locked: false,
-        is_merged: false,
     }
 }
 

@@ -12,7 +12,7 @@ pub use repository::{RepoLocator, RepoPathsRepository};
 pub use service::GitService;
 pub use value_objects::{
     normalize_repo_path, repository_names, validate_worktree_branches, worktree_dir, worktree_path,
-    BaseAncestry, GitHubRepository, RepositoryNameSource,
+    GitHubRepository, RepositoryNameSource,
 };
 
 pub(crate) mod file_watcher;

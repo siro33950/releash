@@ -1,13 +1,11 @@
 //! worktree 責務の gateway 実装。git2 によるワークツリー操作を封じ込める。
 
 use crate::adaptor::gateway::shared::git_operation;
+use crate::adaptor::gateway::shared::git_operation::get_branch_name_for_repo;
 use crate::adaptor::gateway::shared::git_operation::GitOperationError;
-use crate::adaptor::gateway::shared::git_operation::{
-    detect_default_branch, get_branch_name_for_repo,
-};
-use crate::domain::git::{normalize_repo_path, BaseAncestry, GitError, Worktree};
+use crate::domain::git::{normalize_repo_path, GitError, Worktree};
 use crate::infrastructure::git::client;
-use git2::{BranchType, Oid, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions};
+use git2::{BranchType, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions};
 use std::path::{Path, PathBuf};
 
 pub fn get_main_repo_path(any_path: &str) -> Result<String, GitError> {
@@ -177,108 +175,9 @@ pub fn registered_worktree_paths(repo_path: &str) -> Result<Vec<(String, String)
     Ok(entries)
 }
 
-fn is_on_first_parent_line(
-    repo: &Repository,
-    ancestor_oid: Oid,
-    descendant_oid: Oid,
-) -> Result<bool, GitOperationError> {
-    let mut current = descendant_oid;
-    const MAX_DEPTH: usize = 10_000;
-    for _ in 0..MAX_DEPTH {
-        if current == ancestor_oid {
-            return Ok(true);
-        }
-        let Some(commit) =
-            git_operation::optional(git_operation::run(|| repo.find_commit(current)))?
-        else {
-            return Ok(false);
-        };
-        if commit.parent_count() == 0 {
-            return Ok(false);
-        }
-        let Some(parent_id) = git_operation::optional(git_operation::run(|| commit.parent_id(0)))?
-        else {
-            return Ok(false);
-        };
-        current = parent_id;
-    }
-    Ok(false)
-}
-
-/// merge 先の base の先頭を解決する: `releash.base`（設定）→ 既定ブランチ（fallback）。
-fn resolve_base_target_oid(repo: &Repository) -> Result<Option<Oid>, GitOperationError> {
-    let local_tip = |name: &str| -> Result<Option<Oid>, GitOperationError> {
-        Ok(git_operation::optional(git_operation::run(|| {
-            repo.find_branch(name, BranchType::Local)
-        }))?
-        .and_then(|branch| branch.get().target()))
-    };
-    let config = git_operation::optional(git_operation::run(|| repo.config()))?;
-    let base_name = config
-        .map(|config| {
-            git_operation::optional(git_operation::run(|| config.get_string("releash.base")))
-        })
-        .transpose()?
-        .flatten();
-    if let Some(oid) = base_name
-        .map(|name| local_tip(&name))
-        .transpose()?
-        .flatten()
-    {
-        return Ok(Some(oid));
-    }
-    detect_default_branch(repo)?
-        .map(|name| local_tip(&name))
-        .transpose()
-        .map(Option::flatten)
-}
-
-/// ブランチの先頭と base の履歴の関係を読む。判定は domain（`BaseAncestry`）が行う。
-fn base_ancestry(
-    repo: &Repository,
-    branch_name: &str,
-    base_target_oid: Option<Oid>,
-) -> Result<Option<BaseAncestry>, GitOperationError> {
-    let Some(target) = base_target_oid else {
-        return Ok(None);
-    };
-    let Some(branch_oid) = git_operation::optional(git_operation::run(|| {
-        repo.find_branch(branch_name, BranchType::Local)
-    }))?
-    .and_then(|branch| branch.get().target()) else {
-        return Ok(None);
-    };
-    let in_base_history =
-        git_operation::optional(git_operation::run(|| repo.merge_base(branch_oid, target)))?
-            == Some(branch_oid);
-    Ok(Some(BaseAncestry {
-        in_base_history,
-        on_base_first_parent: in_base_history && is_on_first_parent_line(repo, branch_oid, target)?,
-    }))
-}
-
 pub fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, GitError> {
     let repo = git_operation::run(|| client::open(repo_path))?;
     let main_workdir = resolve_main_repo_path(&repo)?;
-    let base_target_oid = resolve_base_target_oid(&repo)?;
-    let is_merged = |source: &Repository| -> Result<bool, GitOperationError> {
-        if base_target_oid.is_none() {
-            return Ok(false);
-        }
-        let Some(head) =
-            git_operation::optional(git_operation::run(|| source.find_reference("HEAD")))?
-        else {
-            return Ok(false);
-        };
-        let Some(head) = git_operation::optional(git_operation::run(|| head.resolve()))? else {
-            return Ok(false);
-        };
-        if !head.is_branch() {
-            return Ok(false);
-        }
-        Ok(base_ancestry(&repo, head.shorthand()?, base_target_oid)?
-            .is_some_and(BaseAncestry::is_merged))
-    };
     let mut entries = Vec::new();
 
     let main_branch = get_branch_name_for_repo(&repo)?;
@@ -291,7 +190,6 @@ pub fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, GitError> {
     entries.push(Worktree {
         name: main_name,
         path: path_to_worktree_identity(&main_workdir)?,
-        is_merged: is_merged(&repo)?,
         branch: main_branch,
         is_main: true,
         is_locked: false,
@@ -320,7 +218,6 @@ pub fn list_worktrees(repo_path: &str) -> Result<Vec<Worktree>, GitError> {
         entries.push(Worktree {
             name: wt_name,
             path: path_to_worktree_identity(wt_path)?,
-            is_merged: is_merged(&wt_repo)?,
             branch,
             is_main: false,
             is_locked,
@@ -430,7 +327,6 @@ fn create_worktree_with_before_add(
         branch: branch.to_string(),
         is_main: false,
         is_locked: false,
-        is_merged: false,
     })
 }
 
@@ -476,7 +372,6 @@ fn removal_target(
         branch: wt_branch.clone().unwrap_or_default(),
         is_main: false,
         is_locked,
-        is_merged: false,
     }
     .authorize_removal(
         force,

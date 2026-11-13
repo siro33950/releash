@@ -96,7 +96,6 @@ fn branch(row: &WorkspaceListWorktree) -> wire::WorkspaceBranch {
         dirty_count: row.dirty_count.value.map(|v| v as u64),
         dirty_count_error: row.dirty_count.error.as_ref().map(ToString::to_string),
         pull_request_error: row.pull_request_error.as_ref().map(ToString::to_string),
-        is_merged: Some(row.merged),
     }
 }
 
@@ -116,21 +115,12 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
                 id: execution.execution_id.clone(),
                 title: nodes.node().title.clone(),
                 is_workflow: nodes.is_workflow(),
-                provider: execution
-                    .session
-                    .as_ref()
-                    .map(|session| session.provider())
-                    .map(wire::AgentSessionProviderDto::from),
                 status: nodes
                     .node()
                     .status_classification
                     .as_public_str()
                     .to_owned(),
                 node_count: nodes.node_count() as u64,
-                session_states: nodes
-                    .session_states()
-                    .map(|state| state.as_public_str().to_owned())
-                    .collect(),
             })
             .collect(),
         path: Some(row.worktree.path.clone()),

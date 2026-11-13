@@ -1807,6 +1807,8 @@ message WorkspaceListStatus {
   optional string error = 2 [json_name = "error", (json_nullable) = true];
 }
 message WorkspaceBranch {
+  reserved 10;
+  reserved "is_merged";
   optional bool removal_requires_force = 13;
   optional string pr_state = 14;
   optional uint64 pr_state_number = 19;
@@ -1815,18 +1817,17 @@ message WorkspaceBranch {
   optional bool is_deleting = 7 [json_name = "is_deleting", (json_required) = true];
   optional string worktree_path = 8 [json_name = "worktree_path", (json_required) = true];
   optional uint64 dirty_count = 9 [json_name = "dirty_count", (json_nullable) = true];
-  optional bool is_merged = 10 [json_name = "is_merged", (json_required) = true];
   optional string dirty_count_error = 11 [json_name = "dirty_count_error", (json_nullable) = true];
   optional string pull_request_error = 12 [json_name = "pull_request_error", (json_nullable) = true];
 }
 message WorktreeExecutionSummary {
+  reserved 4, 7;
+  reserved "provider", "session_states";
   string id = 1;
   string title = 2;
   bool is_workflow = 3;
-  optional AgentSessionProviderDto provider = 4;
   string status = 5;
   uint64 node_count = 6;
-  repeated string session_states = 7;
 }
 message WorkspaceWorktreeList {
   repeated WorktreeExecutionSummary executions = 6;

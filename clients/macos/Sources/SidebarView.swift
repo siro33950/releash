@@ -106,12 +106,8 @@ struct WorktreeCard: View {
         Text(branch.name).fontWeight(.medium)
       }
       VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
-        if branch.isMerged || (branch.hasDirtyCount && branch.dirtyCount > 0) || branch.isDeleting {
+        if (branch.hasDirtyCount && branch.dirtyCount > 0) || branch.isDeleting {
           HStack {
-            if branch.isMerged {
-              CardIcon(image: Image("circle-check"))
-                .foregroundStyle(.secondary).accessibilityLabel("Merged").help("Merged")
-            }
             if branch.hasDirtyCount && branch.dirtyCount > 0 {
               Text("\(branch.dirtyCount) changes").font(.caption).foregroundStyle(.secondary)
             }
@@ -140,26 +136,11 @@ struct WorktreeCard: View {
                   Text("\(execution.title) · \(execution.nodeCount) nodes")
                 }
                 .foregroundStyle(.secondary)
-                LazyVGrid(
-                  columns: [
-                    GridItem(.adaptive(minimum: UIStyle.statusSize), spacing: UIStyle.statusSpacing)
-                  ], alignment: .leading, spacing: UIStyle.statusSpacing
-                ) {
-                  ForEach(Array(execution.sessionStates.enumerated()), id: \.offset) { _, state in
-                    Rectangle().fill(UIStyle.statusColor(state)).frame(
-                      width: UIStyle.statusSize, height: UIStyle.statusSize)
-                  }
-                }
-                .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
               } else {
                 HStack(spacing: UIStyle.rowSpacing) {
                   CardIcon(image: Image("bot"))
                     .foregroundStyle(UIStyle.statusColor(execution.status))
                     .accessibilityLabel("Session, \(execution.status)")
-                  Text(
-                    execution.provider.displayName
-                  )
-                  .fontWeight(.medium)
                   Text(execution.title).lineLimit(1)
                 }
               }
