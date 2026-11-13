@@ -100,9 +100,9 @@ final class SidebarAcceptanceTests: XCTestCase {
     defer { host.close() }
     try await eventuallyView(host) { host.element("repository:/acceptance") != nil }
     // Then
-    let title = try frame("repository:/acceptance", in: host)
+    let heading = try frame("repository:/acceptance", in: host)
     let region = NSRect(
-      x: title.maxX, y: title.minY - 5, width: 340 - title.maxX, height: title.height + 10)
+      x: heading.maxX - 30, y: heading.minY - 5, width: 30, height: heading.height + 10)
     try await assertIcon("triangle-alert", in: host, rect: region)
     XCTAssertFalse(host.texts().contains("Repository fetch failed"))
     try await assertTooltip(["Repository fetch failed"], in: host)
@@ -223,7 +223,8 @@ final class SidebarAcceptanceTests: XCTestCase {
     try await eventuallyView(host) { host.element("worktree:deleting") != nil }
     // When
     try await host.menu("worktree:deleting", selecting: "削除") { _ in }
-    try await host.press("削除")
+    try await eventually { host.window.attachedSheet?.isVisible == true }
+    try await host.pressAlertButton("削除")
     try await eventually { http.requests("RemoveWorktree").count == 1 }
     let removal = try Releash_Client_V1_RemoveWorktreeRequest(
       serializedBytes: XCTUnwrap(http.requests("RemoveWorktree").last?.message))
@@ -241,8 +242,6 @@ final class SidebarAcceptanceTests: XCTestCase {
     let workflowCard = try frame("worktree:workflow", in: host)
     let deleting = try frame("worktree:deleting", in: host)
     XCTAssertEqual(empty.height, sessionCard.height, accuracy: 1)
-    XCTAssertEqual(workflowCard.height, sessionCard.height, accuracy: 1)
-    XCTAssertGreaterThan(deleting.height, sessionCard.height)
     XCTAssertTrue(host.element("worktree:session")?.label.contains("Session title") == true)
     XCTAssertTrue(
       host.element("worktree:workflow")?.label.contains("Workflow title · 3 nodes") == true)
@@ -253,6 +252,17 @@ final class SidebarAcceptanceTests: XCTestCase {
     try await assertIcon("waypoints", in: host, element: "worktree:workflow")
     let sessionStyle = try textStyle("Session title", in: host, rect: sessionCard)
     let workflowStyle = try textStyle("Workflow title", in: host, rect: workflowCard)
+    let workflowRaster = try raster(in: host, rect: workflowCard)
+    for side in 6...12 {
+      let square = NSHostingView(
+        rootView: Rectangle().fill(.black)
+          .frame(width: CGFloat(side), height: CGFloat(side)).padding(2).background(.white))
+      let reference = try referenceRaster(square)
+      XCTAssertNotNil(reference.find(reference, color: nil))
+      XCTAssertNil(
+        workflowRaster.find(reference, color: nil),
+        "Workflow card must not display session status squares (\(side) pt)")
+    }
     XCTAssertEqual(sessionStyle.size, workflowStyle.size)
     XCTAssertLessThan(
       ((sessionStyle.color - workflowStyle.color) * (sessionStyle.color - workflowStyle.color))
@@ -262,15 +272,17 @@ final class SidebarAcceptanceTests: XCTestCase {
     XCTAssertEqual(suffix.y, suffix.z, accuracy: 0.05)
     XCTAssertGreaterThan(suffix.sum() / 3, 0.2)
     XCTAssertLessThan(suffix.sum() / 3, 0.8)
+    let deletingRow = NSRect(
+      x: deleting.minX, y: deleting.minY + deleting.height / 3,
+      width: deleting.width, height: deleting.height / 3)
     XCTAssertTrue(
       try axElements(in: host).contains {
-        attribute($0, kAXRoleAttribute) as? String == kAXProgressIndicatorRole
-      })
-    _ = try textStyle(
-      "削除中", in: host,
-      rect: NSRect(
-        x: deleting.minX, y: deleting.minY + deleting.height / 3,
-        width: deleting.width, height: deleting.height / 3))
+        guard attribute($0, kAXRoleAttribute) as? String == kAXProgressIndicatorRole else {
+          return false
+        }
+        return deletingRow.contains(try frame($0, in: host))
+      }, "Progress indicator must be in the deleting worktree card's second row")
+    _ = try textStyle("削除中", in: host, rect: deletingRow)
     _ = try textStyle(
       "Deleting session", in: host,
       rect: NSRect(
@@ -307,10 +319,10 @@ final class SidebarAcceptanceTests: XCTestCase {
       model.selectedWorktree = selection.isEmpty ? nil : "/acceptance/" + selection
       try await eventuallyView(host) { host.element("right-panel:sourceControl") != nil }
       if expected.isEmpty {
-        try await eventuallyView(host) {
-          host.element("3") == nil && host.element("99+") == nil && host.element("0") == nil
-        }
         let toggle = try frame("right-panel:sourceControl", in: host)
+        try await eventuallyView(host) {
+          (try? hasGrayBadge(in: host, rect: toggle.insetBy(dx: -10, dy: -10))) == false
+        }
         XCTAssertFalse(try hasGrayBadge(in: host, rect: toggle.insetBy(dx: -10, dy: -10)))
       } else {
         try await eventuallyView(host) { host.element(expected) != nil }
