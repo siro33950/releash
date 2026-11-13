@@ -705,7 +705,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
         repositories: vec![
             WorkspaceListRepository {
                 path: "/repo".into(),
-                name: "repository".into(),
+                name: "repo".into(),
                 worktrees: Fetched {
                     value: Some(vec![main, feature]),
                     error: Some(failure("scan failed")),
@@ -713,12 +713,12 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             },
             WorkspaceListRepository {
                 path: "/loading".into(),
-                name: "repository".into(),
+                name: "owner/repo".into(),
                 worktrees: Fetched::default(),
             },
             WorkspaceListRepository {
                 path: "/failed".into(),
-                name: "repository".into(),
+                name: "failed-repository".into(),
                 worktrees: Fetched {
                     value: None,
                     error: Some(failure("not a repository")),
@@ -726,7 +726,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             },
             WorkspaceListRepository {
                 path: "/empty".into(),
-                name: "repository".into(),
+                name: "empty-repository".into(),
                 worktrees: Fetched::ready(Vec::new()),
             },
         ],
@@ -744,6 +744,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 {
                     "path": "/repo",
                     "status": {"state": "refreshFailed", "error": "scan failed"},
+                    "name": "repo",
                     "branches": [
                         {
                             "name": "main",
@@ -788,12 +789,14 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 },
                 {
                     "path": "/loading",
+                    "name": "owner/repo",
                     "status": {"state": "loading", "error": null},
                     "branches": [],
                     "worktrees": []
                 },
                 {
                     "path": "/failed",
+                    "name": "failed-repository",
                     "status": {
                         "state": "initialFailed",
                         "error": "not a repository"
@@ -803,6 +806,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                 },
                 {
                     "path": "/empty",
+                    "name": "empty-repository",
                     "status": {"state": "empty", "error": null},
                     "branches": [],
                     "worktrees": []
