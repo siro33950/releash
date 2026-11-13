@@ -282,7 +282,7 @@ mod memory_tests {
                 .store(save_success, std::sync::atomic::Ordering::SeqCst);
             let tabs = Arc::new(MemoryWorkspaceStateRepository::default());
             let mut opened = WorkspaceState::default();
-            opened.add_session_tab("session", "session");
+            opened.add_session_tab("session", "session", None);
             tabs.save(
                 "/repo",
                 opened.clone(),
@@ -339,7 +339,7 @@ mod memory_tests {
             ),
         );
         let mut opened = WorkspaceState::default();
-        opened.add_session_tab("session", "session");
+        opened.add_session_tab("session", "session", None);
         tabs.save(
             "/repo",
             opened.clone(),
@@ -380,7 +380,7 @@ mod memory_tests {
                 }
                 let tabs = Arc::new(crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default());
                 let mut opened = WorkspaceState::default();
-                opened.add_session_tab("session", "session");
+                opened.add_session_tab("session", "session", None);
                 tabs.save(
                     "/repo",
                     opened.clone(),
@@ -433,7 +433,7 @@ mod memory_tests {
             ),
         );
         let mut opened = WorkspaceState::default();
-        opened.add_session_tab("session", "session");
+        opened.add_session_tab("session", "session", None);
         tabs.save(
             "/repo",
             opened.clone(),
@@ -472,7 +472,7 @@ mod memory_tests {
             ),
         );
         let mut opened = WorkspaceState::default();
-        opened.add_session_tab("session", "session");
+        opened.add_session_tab("session", "session", None);
         tabs.save(
             "/repo",
             opened,
@@ -521,7 +521,7 @@ mod memory_tests {
             let saved = tabs.read("/repo").await.unwrap().1;
             if result == AgentSessionRecoveryResult::Succeeded {
                 let mut expected = WorkspaceState::default();
-                expected.add_session_tab("session", "session");
+                expected.add_session_tab("session", "session", None);
                 assert_eq!(saved, Some(expected));
                 assert_eq!(repository.snapshot().revision(), 2);
             } else {

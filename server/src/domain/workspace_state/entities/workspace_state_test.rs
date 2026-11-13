@@ -105,8 +105,8 @@ fn test_sessionタブ追加_別paneのpendingへ束ね選択と順序を保持�
         .unwrap(),
     );
     // When
-    state.add_session_tab("session", "node");
-    state.add_session_tab("session", "node");
+    state.add_session_tab("session", "node", Some("first"));
+    state.add_session_tab("session", "node", Some("first"));
     // Then
     match state.panes.as_ref().unwrap().view() {
         PaneLayoutView::Split {
@@ -156,7 +156,7 @@ fn test_sessionタブ追加_既存sessionが別paneにあればpendingも変更�
     );
     let previous = state.clone();
     // When
-    state.add_session_tab("session", "node");
+    state.add_session_tab("session", "node", Some("first"));
     // Then
     assert_eq!(state, previous);
 }
@@ -178,8 +178,8 @@ fn test_sessionタブ追加_末尾に追加し全paneの選択と既存タブを
         .unwrap(),
     );
     // When
-    state.add_session_tab("new", "node");
-    state.add_session_tab("new", "node");
+    state.add_session_tab("new", "node", None);
+    state.add_session_tab("new", "node", None);
     // Then
     match state.panes.as_ref().unwrap().view() {
         PaneLayoutView::Split {
@@ -293,7 +293,7 @@ fn test_配置初期化_未保存だけ空paneを作り設定を保持する() {
     missing.panes = None;
     missing.remove_session_tab("missing");
     assert!(missing.panes.is_none());
-    missing.add_session_tab("session", "node");
+    missing.add_session_tab("session", "node", None);
     let (tabs, active) = pane_tabs(missing.panes.as_ref().unwrap());
     assert_eq!(tabs.len(), 1);
     assert_eq!(active, None);
@@ -522,7 +522,7 @@ fn test_session追従_再開で追加しpendingを関連付け既存タブと選
             ..WorkspaceState::default()
         };
         let mut expected = state.clone();
-        expected.add_session_tab("session", "node");
+        expected.add_session_tab("session", "node", None);
         // When
         state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
         state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
@@ -537,7 +537,7 @@ fn test_session追従_再開で追加しpendingを関連付け既存タブと選
         ..WorkspaceState::default()
     };
     let mut expected = state.clone();
-    expected.add_session_tab("session", "node");
+    expected.add_session_tab("session", "node", None);
     state.follow_session(&session, &AgentSessionLifecycleEvent::Resumed);
     assert_eq!(state, expected);
 }
@@ -588,5 +588,122 @@ fn test_session追従_停止と再開以外の全事実は開き直したタブ�
             assert!(!WorkspaceState::follows_session_event(event), "{event:?}");
             assert_eq!(state, initial, "{event:?}");
         }
+    }
+}
+
+#[test]
+fn test_sessionタブ追加_指定paneと省略不在時の先頭paneへ追加し選択を保持する() {
+    // Given
+    for (target, expected_pane) in [
+        (Some("third"), "third"),
+        (Some("second"), "second"),
+        (Some("first"), "first"),
+        (None, "first"),
+        (Some("missing"), "first"),
+        (Some("outer"), "first"),
+    ] {
+        let leaf = |id: &str| {
+            pane(
+                id,
+                vec![tab(
+                    &format!("selected-{id}"),
+                    PaneTabKind::Terminal,
+                    None,
+                    None,
+                )],
+                Some(&format!("selected-{id}")),
+            )
+        };
+        let mut state = WorkspaceState {
+            panes: Some(
+                PaneLayout::split(
+                    "outer".into(),
+                    SplitAxis::Horizontal,
+                    0.5,
+                    PaneLayout::split(
+                        "inner".into(),
+                        SplitAxis::Vertical,
+                        0.5,
+                        leaf("first"),
+                        leaf("second"),
+                    )
+                    .unwrap(),
+                    leaf("third"),
+                )
+                .unwrap(),
+            ),
+            ..WorkspaceState::default()
+        };
+        // When
+        state.add_session_tab("new", "node", target);
+        // Then
+        let PaneLayoutView::Split {
+            first,
+            second: third,
+            ..
+        } = state.panes.as_ref().unwrap().view()
+        else {
+            panic!("outer split")
+        };
+        let PaneLayoutView::Split { first, second, .. } = first.view() else {
+            panic!("inner split")
+        };
+        for (id, actual) in [("first", first), ("second", second), ("third", third)] {
+            let (tabs, active) = pane_tabs(actual);
+            assert_eq!(active, Some(format!("selected-{id}").as_str()));
+            assert_eq!(tabs[0], pane_tabs(&leaf(id)).0[0]);
+            assert_eq!(
+                tabs.len(),
+                if id == expected_pane { 2 } else { 1 },
+                "{target:?}: {id}"
+            );
+            if id == expected_pane {
+                assert_eq!(tabs[1].kind, PaneTabKind::Session);
+                assert_eq!(tabs[1].agent_session_id.as_deref(), Some("new"));
+                assert_eq!(tabs[1].node_id, None);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_sessionタブ追加_別nodeの未確定タブと確定済みタブには関連付けない() {
+    // Given
+    for existing in [
+        tab("pending", PaneTabKind::Session, Some("other-node"), None),
+        tab("bound", PaneTabKind::Session, None, Some("other-session")),
+    ] {
+        let first = pane("first", vec![existing], None);
+        let mut state = WorkspaceState {
+            panes: Some(
+                PaneLayout::split(
+                    "split".into(),
+                    SplitAxis::Horizontal,
+                    0.5,
+                    first.clone(),
+                    pane("second", vec![], None),
+                )
+                .unwrap(),
+            ),
+            ..WorkspaceState::default()
+        };
+        // When
+        state.add_session_tab("new", "node", Some("second"));
+        // Then
+        let PaneLayoutView::Split {
+            first: actual,
+            second,
+            ..
+        } = state.panes.as_ref().unwrap().view()
+        else {
+            panic!("split")
+        };
+        assert_eq!(actual, &first);
+        let (tabs, active) = pane_tabs(second);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].kind, PaneTabKind::Session);
+        assert_eq!(tabs[0].agent_session_id.as_deref(), Some("new"));
+        assert_eq!(tabs[0].node_id, None);
+        assert_eq!(active, None);
     }
 }

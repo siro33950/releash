@@ -299,6 +299,7 @@ done
     async fn standalone(&self) -> String {
         let result = self
             .command(C::CreateAgentSession(wire::CreateAgentSessionRequest {
+                pane_id: None,
                 workspace_identity: Some(self.worktree.clone()),
                 worktree_path: Some(self.worktree.clone()),
                 provider: Some("claude".into()),

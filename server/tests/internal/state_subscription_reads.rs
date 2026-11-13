@@ -1672,7 +1672,7 @@ async fn test_workspace状態購読_sessionタブ追加を設定未保存のま�
     stream.next().await.unwrap();
     stream.next().await.unwrap();
     let mut expected = WorkspaceState::default();
-    expected.add_session_tab("session", "node");
+    expected.add_session_tab("session", "node", None);
     // When
     save_workspace_state(
         fixture.reads.workspace_state.as_ref(),

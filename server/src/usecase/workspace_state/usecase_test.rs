@@ -828,7 +828,7 @@ async fn test_sessionタブ保存_競合後の最新配置へ追加して一度�
     use crate::domain::workspace_tree::WorkspaceIdentity;
     // Given
     let mut latest = state_with_panes();
-    latest.add_session_tab("other", "other-node");
+    latest.add_session_tab("other", "other-node", None);
     let store = std::sync::Arc::new(Store {
         readable: true,
         previous: Some(state_with_panes()),
@@ -852,9 +852,9 @@ async fn test_sessionタブ保存_競合後の最新配置へ追加して一度�
     )
     .unwrap();
     // When
-    usecase.add_session(&session).await.unwrap();
+    usecase.add_session(&session, None).await.unwrap();
     // Then
-    latest.add_session_tab("session", "node");
+    latest.add_session_tab("session", "node", None);
     let saved = store.saved.lock();
     assert_eq!(saved.len(), 2);
     assert_eq!(saved.last(), Some(&latest));
@@ -898,7 +898,7 @@ async fn test_sessionタブ保存_技術的失敗は再試行せず通知しな�
     .unwrap();
     // When / Then
     assert_eq!(
-        usecase.add_session(&session).await,
+        usecase.add_session(&session, None).await,
         Err(WorkspaceStateError::Technical(failure))
     );
     assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 1);

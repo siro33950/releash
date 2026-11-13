@@ -215,6 +215,7 @@ mod memory_tests {
     #[tokio::test]
     pub async fn test_agent_session_launch_利用可能な選択providerをterminal_root_processへ接続する()
     {
+        // Given
         let seed = AgentSession::create(
             "seed",
             WorkspaceIdentity::new("/seed"),
@@ -245,6 +246,26 @@ mod memory_tests {
             crate::usecase::workspace_state::test_support::MemoryWorkspaceStateRepository::default(
             ),
         );
+        use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayout, SplitAxis};
+        use crate::domain::workspace_state::WorkspaceState;
+        let initial = PaneLayout::split(
+            "split".into(),
+            SplitAxis::Horizontal,
+            0.5,
+            PaneLayout::pane("first".into(), vec![], None).unwrap(),
+            PaneLayout::pane("second".into(), vec![], None).unwrap(),
+        )
+        .unwrap();
+        tabs.save(
+            "/repo",
+            WorkspaceState {
+                panes: Some(initial.clone()),
+                ..WorkspaceState::default()
+            },
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
         usecase.session_tabs =
             crate::usecase::workspace_state::session_tabs::SessionTabsUsecase::new(
                 tabs.clone(),
@@ -262,8 +283,10 @@ mod memory_tests {
             usecase.session_tabs.clone(),
         ));
 
+        // When
         let launched = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: Some("second".into()),
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/.worktrees/feature".to_string(),
                 provider: ProviderKind::Codex,
@@ -279,11 +302,19 @@ mod memory_tests {
         use crate::domain::workspace_state::WorkspaceStateRepository;
         let (_, state) = tabs.read("/repo").await.unwrap();
         let state = state.unwrap();
+        // Then
+        let PaneLayoutView::Split { first, second, .. } = state.panes.as_ref().unwrap().view()
+        else {
+            panic!("split")
+        };
+        assert!(
+            matches!(first.view(), PaneLayoutView::Pane { tabs, active_tab: None, .. } if tabs.is_empty())
+        );
         let PaneLayoutView::Pane {
             tabs: saved_tabs,
             active_tab,
             ..
-        } = state.panes.as_ref().unwrap().view()
+        } = second.view()
         else {
             panic!("expected a pane");
         };
@@ -323,17 +354,7 @@ mod memory_tests {
             .unwrap();
         // Then
         let (_, state) = tabs.read("/repo").await.unwrap();
-        assert_eq!(
-            state.unwrap().panes,
-            Some(
-                crate::domain::workspace_state::value_objects::pane_layout::PaneLayout::pane(
-                    "pane".into(),
-                    vec![],
-                    None
-                )
-                .unwrap()
-            )
-        );
+        assert_eq!(state.unwrap().panes, Some(initial));
     }
 
     #[tokio::test]
@@ -478,6 +499,7 @@ mod memory_tests {
 
         let error = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Codex,
@@ -546,6 +568,7 @@ mod memory_tests {
 
         let error = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Codex,
@@ -647,6 +670,7 @@ mod memory_tests {
         // When
         let error = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Codex,
@@ -738,6 +762,7 @@ mod memory_tests {
 
         usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Claude,
@@ -785,6 +810,7 @@ mod memory_tests {
         let mut launch = tokio::spawn(async move {
             usecase
                 .launch_standalone(AgentSessionLaunchRequest {
+                    pane: None,
                     workspace: WorkspaceIdentity::new("/repo"),
                     worktree_path: "/repo/worktree".to_string(),
                     provider: ProviderKind::Codex,
@@ -841,6 +867,7 @@ mod memory_tests {
 
         let result = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/.worktrees/feature".to_string(),
                 provider: ProviderKind::Claude,
@@ -1161,6 +1188,7 @@ mod memory_tests {
 
         let error = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Codex,
@@ -1233,6 +1261,7 @@ mod memory_tests {
 
         let launched = usecase
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Codex,

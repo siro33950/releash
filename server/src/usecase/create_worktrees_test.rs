@@ -182,6 +182,7 @@ async fn test_複数作成_実launcherが新規と既存の起動引数を渡す
                 } => assert_eq!(
                     requests.sessions.lock()[index],
                     AgentSessionLaunchRequest {
+                        pane: None,
                         workspace: WorkspaceIdentity::new(path),
                         worktree_path: path.clone(),
                         provider: *provider,
