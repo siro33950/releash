@@ -24,6 +24,16 @@ struct RightPanelView: View {
       }
     }
   }
+  private var sourceControlBadge: String? {
+    guard let path = model.selectedWorktree,
+      let branch = model.repositories.lazy.flatMap({ $0.branches.items }).first(where: {
+        $0.worktreePath == path
+      }),
+      branch.hasDirtyCount, !branch.hasDirtyCountError, branch.dirtyCount > 0
+    else { return nil }
+    return branch.dirtyCount > 99 ? "99+" : String(branch.dirtyCount)
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       HStack(spacing: UIStyle.rowSpacing) {
@@ -37,6 +47,17 @@ struct RightPanelView: View {
             .help(panel.title).accessibilityLabel(panel.title)
             .accessibilityIdentifier("right-panel:\(panel.rawValue)")
             .accessibilityAddTraits(selected == panel ? .isSelected : [])
+            .overlay(alignment: .topTrailing) {
+              if panel == .sourceControl, let badge = sourceControlBadge {
+                Text(badge)
+                  .font(.system(size: 9))
+                  .foregroundStyle(.white)
+                  .frame(width: 20, height: 20)
+                  .background(.gray, in: Circle())
+                  .offset(x: 6, y: -4)
+                  .allowsHitTesting(false)
+              }
+            }
           }
           Spacer(minLength: 0)
         }

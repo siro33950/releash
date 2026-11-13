@@ -12,18 +12,8 @@ struct SidebarView: View {
   }
   var body: some View {
     VStack(spacing: 0) {
-      Color.clear.frame(height: UIStyle.tabBarHeight)
-      Divider()
       HStack {
-        Text("Workspaces").font(.callout).foregroundStyle(.secondary)
         Spacer()
-        Button(action: model.addRepository) {
-          CardIcon(image: Image("folder-plus"))
-        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加").accessibilityLabel(
-          "Repositoryを追加")
-        Button(action: model.refresh) {
-          CardIcon(image: Image("refresh-cw"))
-        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("再読み込み").accessibilityLabel("再読み込み")
         Button {
           creating = true
         } label: {
@@ -31,8 +21,9 @@ struct SidebarView: View {
         }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Worktreeを作成").accessibilityLabel(
           "Worktreeを作成")
       }
-      .frame(height: UIStyle.iconButtonHeight)
-      .padding(UIStyle.padding)
+      .padding(.horizontal, UIStyle.spacing)
+      .frame(height: UIStyle.tabBarHeight)
+      Divider()
       List {
         ForEach(model.repositories, id: \.sidebarID) { repository in
           Section(
@@ -41,9 +32,6 @@ struct SidebarView: View {
               set: { model.setCollapsed(repository.path, !$0) }
             )
           ) {
-            if let error = repositoryFailure(repository) {
-              Text(error).foregroundStyle(.secondary)
-            }
             ForEach(repository.branches.items, id: \.worktreePath) { branch in
               Button {
                 model.selectWorktree(branch.worktreePath)
@@ -72,6 +60,11 @@ struct SidebarView: View {
                 .accessibilityIdentifier("repository:\(repository.path)")
               Text(repository.branches.items.count, format: .number)
                 .foregroundStyle(.secondary)
+              Spacer()
+              if let error = repositoryFailure(repository) {
+                CardIcon(image: Image("triangle-alert"))
+                  .foregroundStyle(.secondary).help(error)
+              }
             }
             .selectionDisabled()
           }
@@ -79,6 +72,19 @@ struct SidebarView: View {
       }
       .listStyle(.sidebar)
       .scrollContentBackground(.hidden)
+      Divider()
+      HStack {
+        Spacer()
+        Button(action: model.addRepository) {
+          CardIcon(image: Image("folder-plus"))
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("Repositoryを追加")
+          .accessibilityLabel("Repositoryを追加")
+        Button(action: model.refresh) {
+          CardIcon(image: Image("refresh-cw"))
+        }.buttonStyle(IconButtonStyle()).iconButtonFrame().help("更新").accessibilityLabel("更新")
+      }
+      .padding(.horizontal, UIStyle.spacing)
+      .frame(height: UIStyle.tabBarHeight)
     }
   }
 
@@ -103,49 +109,44 @@ struct WorktreeCard: View {
     VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
       HStack(spacing: UIStyle.rowSpacing) {
         CardIcon(image: Image(branch.isMainWorktree ? "house" : "git-branch"))
-        Text(branch.name).fontWeight(.medium)
-      }
-      VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
-        if (branch.hasDirtyCount && branch.dirtyCount > 0) || branch.isDeleting {
-          HStack {
-            if branch.hasDirtyCount && branch.dirtyCount > 0 {
-              Text("\(branch.dirtyCount) changes").font(.caption).foregroundStyle(.secondary)
-            }
-            if branch.isDeleting {
-              ProgressView().controlSize(.small)
-              Text("削除中")
-            }
-          }
-        }
+        Text(branch.name).fontWeight(.medium).lineLimit(1)
+        Spacer()
         if branch.hasPrState {
           CardIcon(image: Image(prIcon(branch.prState)))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(prColor(branch.prState))
             .help("PR #\(branch.prStateNumber): \(branch.prState)")
         }
-        if branch.hasDirtyCountError { Text("Changes unavailable").help(branch.dirtyCountError) }
-        if branch.hasPullRequestError { Text("PR unavailable").help(branch.pullRequestError) }
+        if let warning {
+          CardIcon(image: Image("triangle-alert"))
+            .foregroundStyle(.secondary).help(warning)
+        }
+      }
+      VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
+        if branch.isDeleting {
+          HStack(spacing: UIStyle.rowSpacing) {
+            ProgressView().controlSize(.small)
+            Text("削除中")
+          }
+        }
         if let worktree {
-          if worktree.status.hasError { Text(worktree.status.error).foregroundStyle(.secondary) }
           ForEach(worktree.executions, id: \.id) { execution in
-            VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
+            HStack(spacing: UIStyle.rowSpacing) {
+              CardIcon(image: Image(execution.isWorkflow ? "waypoints" : "bot"))
+                .foregroundStyle(UIStyle.statusColor(execution.status))
+                .accessibilityLabel(
+                  "\(execution.isWorkflow ? "Workflow" : "Session"), \(execution.status)")
               if execution.isWorkflow {
-                HStack(spacing: UIStyle.rowSpacing) {
-                  CardIcon(image: Image("waypoints"))
-                    .foregroundStyle(UIStyle.statusColor(execution.status))
-                    .accessibilityLabel("Workflow, \(execution.status)")
-                  Text("\(execution.title) · \(execution.nodeCount) nodes")
-                }
-                .foregroundStyle(.secondary)
+                (Text(execution.title)
+                  + Text(" · \(execution.nodeCount) nodes").foregroundColor(.secondary))
+                  .lineLimit(1)
               } else {
-                HStack(spacing: UIStyle.rowSpacing) {
-                  CardIcon(image: Image("bot"))
-                    .foregroundStyle(UIStyle.statusColor(execution.status))
-                    .accessibilityLabel("Session, \(execution.status)")
-                  Text(execution.title).lineLimit(1)
-                }
+                Text(execution.title).lineLimit(1)
               }
             }
           }
+        }
+        if !branch.isDeleting && (worktree?.executions.isEmpty ?? true) {
+          Text(" ").hidden().accessibilityHidden(true)
         }
       }
       .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
@@ -162,6 +163,24 @@ struct WorktreeCard: View {
       isPresented: $deleting
     ) {
       Button(removalButtonTitle, role: .destructive) { remove() }
+    }
+  }
+
+  private var warning: String? {
+    let messages = [
+      branch.hasDirtyCountError ? "Changes unavailable: \(branch.dirtyCountError)" : nil,
+      branch.hasPullRequestError ? "PR unavailable: \(branch.pullRequestError)" : nil,
+      worktree.flatMap { $0.status.hasError ? $0.status.error : nil },
+    ].compactMap { $0 }
+    return messages.isEmpty ? nil : messages.joined(separator: "\n")
+  }
+
+  private func prColor(_ value: String) -> Color {
+    switch value {
+    case "open": .green
+    case "draft": .gray
+    case "merged": .purple
+    default: .red
     }
   }
 
