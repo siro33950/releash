@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import SwiftProtobuf
 import SwiftUI
+import Vision
 import XCTest
 
 @testable import Releash
@@ -97,7 +98,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
       size: NSSize(width: 340, height: 700))
-    defer { host.close() }
+    defer { host.window.close() }
     try await eventuallyView(host) { host.element("repository:/acceptance") != nil }
     // Then
     let heading = try frame("repository:/acceptance", in: host)
@@ -105,7 +106,7 @@ final class SidebarAcceptanceTests: XCTestCase {
       x: heading.maxX - 30, y: heading.minY - 5, width: 30, height: heading.height + 10)
     try await assertIcon("triangle-alert", in: host, rect: region)
     XCTAssertFalse(host.texts().contains("Repository fetch failed"))
-    try await assertTooltip(["Repository fetch failed"], in: host, rect: region)
+    try await assertWarningTooltip(["Repository fetch failed"], in: host, rect: region)
   }
 
   @MainActor func test_B006_B007_B010_B018_PRと警告が先頭行に状態色で並ぶ() async throws {
@@ -157,7 +158,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
       size: NSSize(width: 340, height: 1000))
-    defer { host.close() }
+    defer { host.window.close() }
     try await eventuallyView(host) { host.element("worktree:empty") != nil }
     // Then
     let empty = try frame("worktree:empty", in: host)
@@ -172,15 +173,7 @@ final class SidebarAcceptanceTests: XCTestCase {
         XCTAssertFalse(host.element("worktree:" + name)?.label.contains(text) == true)
       }
     }
-    let help = try helpTexts(in: host, within: frame("worktree:all", in: host)).joined(
-      separator: "\n")
-    for text in [
-      "Changes unavailable", "Dirty fetch failed", "PR unavailable", "PR fetch failed",
-      "Worktree fetch failed",
-    ] {
-      XCTAssertTrue(help.contains(text), text)
-    }
-    try await assertTooltip(
+    try await assertWarningTooltip(
       [
         "Changes unavailable", "Dirty fetch failed", "PR unavailable", "PR fetch failed",
         "Worktree fetch failed",
@@ -369,7 +362,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     return value
   }
 
-  @MainActor private func assertTooltip(
+  @MainActor private func assertWarningTooltip(
     _ expected: [String], in host: ViewHarness, rect: NSRect
   ) async throws {
     let view = try XCTUnwrap(host.window.contentView)
@@ -387,33 +380,73 @@ final class SidebarAcceptanceTests: XCTestCase {
     let local = NSRect(
       x: region.minX + icon.minX / scale, y: region.minY + icon.minY / scale,
       width: icon.width / scale, height: icon.height / scale)
+    let help = try helpTexts(in: host, within: local).joined(separator: "\n")
+    for text in expected {
+      XCTAssertTrue(help.contains(text), "Warning help must contain: \(text)")
+    }
+
     var screen = host.window.convertToScreen(view.convert(local, to: nil))
     screen.origin.y = try XCTUnwrap(NSScreen.screens.first).frame.height - screen.maxY
     let previous = try XCTUnwrap(CGEvent(source: nil)?.location)
     defer { CGWarpMouseCursorPosition(previous) }
-    NSApp.activate()
-    host.window.makeKeyAndOrderFront(nil)
-    try await eventually { NSApp.isActive && host.window.isKeyWindow }
-    let point = CGPoint(x: screen.midX, y: screen.midY)
-    CGWarpMouseCursorPosition(point)
-    let event = try XCTUnwrap(
-      CGEvent(
-        mouseEventSource: nil, mouseType: .mouseMoved,
-        mouseCursorPosition: point, mouseButton: .left))
-    event.post(tap: .cghidEventTap)
     let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    func displayedText(_ element: AXUIElement, depth: Int = 0) -> String {
-      guard depth < 30 else { return "" }
-      let own = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
-        .compactMap { attribute(element, $0) as? String }
-      let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
-      return (own + children.map { displayedText($0, depth: depth + 1) }).joined(separator: "\n")
+    XCTAssertEqual(
+      AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
+      .success)
+    try await eventually {
+      host.window.makeKeyAndOrderFront(nil)
+      return NSApp.isActive && host.window.isKeyWindow
+    }
+    host.window.acceptsMouseMovedEvents = true
+    let point = CGPoint(x: screen.midX, y: screen.midY)
+    let visible = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
+    for position in [CGPoint(x: point.x - 40, y: point.y), point] {
+      XCTAssertEqual(CGWarpMouseCursorPosition(position), .success)
+      let event = try XCTUnwrap(
+        CGEvent(
+          mouseEventSource: nil, mouseType: .mouseMoved,
+          mouseCursorPosition: position, mouseButton: .left))
+      event.post(tap: .cghidEventTap)
+      let localEvent = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .mouseMoved,
+          location: host.window.convertPoint(
+            fromScreen: NSPoint(
+              x: position.x, y: try XCTUnwrap(NSScreen.screens.first).frame.height - position.y)),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
+          clickCount: 0, pressure: 0))
+      NSApp.postEvent(localEvent, atStart: false)
+      try await Task.sleep(for: .milliseconds(100))
     }
     try await eventually {
-      let windows = self.attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
-      let text = ([app] + windows).map { displayedText($0) }.joined(separator: "\n")
-      return expected.allSatisfy { text.contains($0) }
+      NSApp.windows.contains {
+        $0 !== host.window && $0.isVisible && !visible.contains(ObjectIdentifier($0))
+      }
     }
+    let tooltip = try XCTUnwrap(
+      NSApp.windows.first {
+        $0 !== host.window && $0.isVisible && !visible.contains(ObjectIdentifier($0))
+      })
+    let content = try XCTUnwrap(tooltip.contentView)
+    let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+    content.cacheDisplay(in: content.bounds, to: bitmap)
+    let request = VNRecognizeTextRequest()
+    request.recognitionLanguages = ["en-US"]
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+    let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+      .joined(separator: " ")
+    for value in expected {
+      XCTAssertTrue(text.contains(value), "Displayed tooltip: \(text); expected: \(value)")
+    }
+    XCTAssertEqual(CGWarpMouseCursorPosition(previous), .success)
+    let exitEvent = try XCTUnwrap(
+      CGEvent(
+        mouseEventSource: nil, mouseType: .mouseMoved,
+        mouseCursorPosition: previous, mouseButton: .left))
+    exitEvent.post(tap: .cghidEventTap)
+    try await eventually { !tooltip.isVisible }
   }
 
   @MainActor private func helpTexts(in host: ViewHarness, within rect: NSRect? = nil) throws
@@ -632,6 +665,7 @@ private struct SidebarIconRaster {
       contentRect: NSRect(x: 0, y: 0, width: side, height: side), styleMask: [.borderless],
       backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    defer { window.close() }
     window.contentView = view
     view.layoutSubtreeIfNeeded()
     let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
