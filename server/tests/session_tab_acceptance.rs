@@ -297,9 +297,13 @@ done
     }
 
     async fn standalone(&self) -> String {
+        self.standalone_in(None).await
+    }
+
+    async fn standalone_in(&self, pane: Option<&str>) -> String {
         let result = self
             .command(C::CreateAgentSession(wire::CreateAgentSessionRequest {
-                pane_id: None,
+                pane_id: pane.map(str::to_owned),
                 workspace_identity: Some(self.worktree.clone()),
                 worktree_path: Some(self.worktree.clone()),
                 provider: Some("claude".into()),
@@ -747,5 +751,53 @@ async fn test_会話タブ_delegateの結果で再起動した親sessionを開�
     host.availability(&session, Some(wire::AgentSessionAvailability::Open as i32))
         .await;
     host.tabs(&session, 1).await;
+    host.finish().await;
+}
+
+// issues-2114 R-004
+#[tokio::test]
+async fn test_会話タブ_pane指定の起動で指定したpaneに開く() {
+    // Given
+    let host = Host::new().await;
+    let pane = |id: &str| {
+        Some(Box::new(wire::PaneLayout {
+            node: Some(wire::pane_layout::Node::Pane(wire::Pane {
+                id: id.into(),
+                ..Default::default()
+            })),
+        }))
+    };
+    host.command(C::SaveWorkspaceState(wire::SaveWorkspaceStateRequest {
+        worktree_name: Some(host.worktree.clone()),
+        state: Some(wire::WorkspaceStateDto {
+            version: Some(1),
+            etag: Some("0".into()),
+            pane_layout: Some(wire::PaneLayout {
+                node: Some(wire::pane_layout::Node::Split(Box::new(wire::PaneSplit {
+                    id: "split".into(),
+                    axis: wire::SplitAxis::Horizontal as i32,
+                    ratio: 0.5,
+                    first: pane("first"),
+                    second: pane("second"),
+                }))),
+            }),
+            ..Default::default()
+        }),
+    }))
+    .await;
+    // When
+    let session = host.standalone_in(Some("second")).await;
+    // Then
+    host.tabs(&session, 1).await;
+    let Some(wire::pane_layout::Node::Split(split)) = host
+        .layout()
+        .await
+        .pane_layout
+        .and_then(|layout| layout.node)
+    else {
+        panic!("split layout")
+    };
+    assert_eq!(tab_count(split.first.as_deref(), &session), 0);
+    assert_eq!(tab_count(split.second.as_deref(), &session), 1);
     host.finish().await;
 }
