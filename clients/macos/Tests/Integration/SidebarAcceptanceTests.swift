@@ -105,7 +105,7 @@ final class SidebarAcceptanceTests: XCTestCase {
       x: heading.maxX - 30, y: heading.minY - 5, width: 30, height: heading.height + 10)
     try await assertIcon("triangle-alert", in: host, rect: region)
     XCTAssertFalse(host.texts().contains("Repository fetch failed"))
-    try await assertTooltip(["Repository fetch failed"], in: host)
+    try await assertTooltip(["Repository fetch failed"], in: host, rect: region)
   }
 
   @MainActor func test_B006_B007_B010_B018_PRと警告が先頭行に状態色で並ぶ() async throws {
@@ -185,7 +185,7 @@ final class SidebarAcceptanceTests: XCTestCase {
         "Changes unavailable", "Dirty fetch failed", "PR unavailable", "PR fetch failed",
         "Worktree fetch failed",
       ],
-      in: host)
+      in: host, rect: try frame("worktree:all", in: host))
   }
 
   @MainActor func test_B011_B012_B013_B014_実行行と空行と削除行を配置する() async throws {
@@ -275,14 +275,26 @@ final class SidebarAcceptanceTests: XCTestCase {
     let deletingRow = NSRect(
       x: deleting.minX, y: deleting.minY + deleting.height / 3,
       width: deleting.width, height: deleting.height / 3)
-    XCTAssertTrue(
-      try axElements(in: host).contains {
-        guard attribute($0, kAXRoleAttribute) as? String == kAXProgressIndicatorRole else {
-          return false
-        }
-        return deletingRow.contains(try frame($0, in: host))
-      }, "Progress indicator must be in the deleting worktree card's second row")
-    _ = try textStyle("削除中", in: host, rect: deletingRow)
+    let deletingText = try textStyle("削除中", in: host, rect: deletingRow).rect
+    let indicatorRegion = NSRect(
+      x: deletingText.minX - deletingRow.height, y: deletingRow.minY,
+      width: deletingRow.height, height: deletingRow.height)
+    let indicator = try raster(in: host, rect: indicatorRegion)
+    let indicatorBackground = try XCTUnwrap(indicator.pixels.first)
+    let ink = indicator.pixels.indices.filter {
+      let delta = indicator.pixels[$0] - indicatorBackground
+      return (delta * delta).sum() > 0.01
+    }
+    XCTAssertGreaterThan(ink.count, 8, "The deleting row must display a progress mark")
+    let center = CGPoint(x: CGFloat(indicator.width) / 2, y: CGFloat(indicator.height) / 2)
+    for index in ink {
+      let pixel = indicator.pixels[index]
+      XCTAssertEqual(pixel.x, pixel.y, accuracy: 0.05)
+      XCTAssertEqual(pixel.y, pixel.z, accuracy: 0.05)
+      let dx = CGFloat(index % indicator.width) - center.x
+      let dy = CGFloat(index / indicator.width) - center.y
+      XCTAssertGreaterThan(dx * dx + dy * dy, 4)
+    }
     _ = try textStyle(
       "Deleting session", in: host,
       rect: NSRect(
@@ -357,18 +369,31 @@ final class SidebarAcceptanceTests: XCTestCase {
     return value
   }
 
-  @MainActor private func assertTooltip(_ expected: [String], in host: ViewHarness) async throws {
-    let target = try XCTUnwrap(
-      try axElements(in: host).first { element in
-        let help = attribute(element, kAXHelpAttribute) as? String ?? ""
-        return expected.allSatisfy { help.contains($0) }
-      })
-    var screen = CGRect.zero
-    let value = try XCTUnwrap(attribute(target, "AXFrame"))
-    XCTAssertTrue(AXValueGetValue(value as! AXValue, .cgRect, &screen))
+  @MainActor private func assertTooltip(
+    _ expected: [String], in host: ViewHarness, rect: NSRect
+  ) async throws {
+    let view = try XCTUnwrap(host.window.contentView)
+    let region = rect.integral.intersection(view.bounds)
+    let actual = try raster(in: host, rect: region)
+    var match: NSRect?
+    for size in 10...20 {
+      if let found = actual.find(try Self.reference("triangle-alert", size: size), color: nil) {
+        match = found
+        break
+      }
+    }
+    let icon = try XCTUnwrap(match)
+    let scale = CGFloat(actual.width) / region.width
+    let local = NSRect(
+      x: region.minX + icon.minX / scale, y: region.minY + icon.minY / scale,
+      width: icon.width / scale, height: icon.height / scale)
+    var screen = host.window.convertToScreen(view.convert(local, to: nil))
+    screen.origin.y = try XCTUnwrap(NSScreen.screens.first).frame.height - screen.maxY
     let previous = try XCTUnwrap(CGEvent(source: nil)?.location)
     defer { CGWarpMouseCursorPosition(previous) }
+    NSApp.activate()
     host.window.makeKeyAndOrderFront(nil)
+    try await eventually { NSApp.isActive && host.window.isKeyWindow }
     let point = CGPoint(x: screen.midX, y: screen.midY)
     CGWarpMouseCursorPosition(point)
     let event = try XCTUnwrap(
@@ -385,7 +410,8 @@ final class SidebarAcceptanceTests: XCTestCase {
       return (own + children.map { displayedText($0, depth: depth + 1) }).joined(separator: "\n")
     }
     try await eventually {
-      let text = displayedText(app)
+      let windows = self.attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+      let text = ([app] + windows).map { displayedText($0) }.joined(separator: "\n")
       return expected.allSatisfy { text.contains($0) }
     }
   }
@@ -480,7 +506,7 @@ final class SidebarAcceptanceTests: XCTestCase {
   }
 
   @MainActor private func textStyle(_ text: String, in host: ViewHarness, rect: NSRect) throws
-    -> (size: Int, color: SIMD3<Double>)
+    -> (size: Int, color: SIMD3<Double>, rect: NSRect)
   {
     let actual = try raster(in: host, rect: rect)
     for size in 8...24 {
@@ -498,7 +524,14 @@ final class SidebarAcceptanceTests: XCTestCase {
                 (Int(match.minY) + index / reference.width) * actual.width
                   + Int(match.minX) + index % reference.width]
           } / Double(max(ink.count, 1))
-        return (size, color)
+        let region = rect.integral.intersection(try XCTUnwrap(host.window.contentView).bounds)
+        let scale = CGFloat(actual.width) / region.width
+        return (
+          size, color,
+          NSRect(
+            x: region.minX + match.minX / scale, y: region.minY + match.minY / scale,
+            width: match.width / scale, height: match.height / scale)
+        )
       }
     }
     XCTFail("Rendered title not found: \(text)")
@@ -638,7 +671,9 @@ private struct SidebarIconRaster {
     func ignored(_ index: Int) -> Bool {
       let dx = Double(index % reference.width) - Double(reference.width) / 2
       let dy = Double(index / reference.width) - Double(reference.height) / 2
-      return ignoringCenter && dx * dx + dy * dy < pow(Double(reference.width) * 0.3, 2)
+      return ignoringCenter
+        && (weights[index] < 0.01
+          || dx * dx + dy * dy < pow(Double(reference.width) * 0.3, 2))
     }
     let samples = weights.indices.filter { weights[$0] > 0.5 && !ignored($0) }
     let sampleEnergy = samples.reduce(0) { $0 + weights[$1] * weights[$1] }
