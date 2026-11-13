@@ -19,5 +19,6 @@ pub fn get_origin_url(
 pub fn is_github_repository(
     repo_path: &str,
 ) -> Result<bool, crate::adaptor::gateway::shared::git_operation::GitOperationError> {
-    todo!()
+    Ok(get_origin_url(repo_path)?
+        .is_some_and(|url| crate::domain::git::GitHubRepository::from_origin_url(&url).is_some()))
 }

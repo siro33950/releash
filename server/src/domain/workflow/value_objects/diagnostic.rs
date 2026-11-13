@@ -68,7 +68,15 @@ pub struct DiagnosticReport {
 impl DiagnosticReport {
     /// 診断の全体の件数を、重大度ごとに数える。1 件の診断は、定義と Facet の両方に関わっていても 1 件と数える。
     pub fn total(&self) -> DiagnosticSummary {
-        todo!()
+        let error_count = self
+            .items
+            .iter()
+            .filter(|item| item.severity == Severity::Error)
+            .count();
+        DiagnosticSummary {
+            error_count,
+            info_count: self.items.len() - error_count,
+        }
     }
 }
 
