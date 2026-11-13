@@ -64,6 +64,7 @@ struct SidebarView: View {
               if let error = repositoryFailure(repository) {
                 CardIcon(image: Image("triangle-alert"))
                   .foregroundStyle(.secondary).help(error)
+                  .overlay { WarningTooltip(message: error).allowsHitTesting(false) }
               }
             }
             .selectionDisabled()
@@ -120,7 +121,7 @@ struct WorktreeCard: View {
           CardIcon(image: Image("triangle-alert"))
             .foregroundStyle(.secondary)
             .help(warning)
-            .overlay { WorktreeWarningTooltip(message: warning).allowsHitTesting(false) }
+            .overlay { WarningTooltip(message: warning).allowsHitTesting(false) }
         }
       }
       VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
@@ -207,7 +208,7 @@ struct WorktreeCard: View {
   }
 }
 
-private struct WorktreeWarningTooltip: NSViewRepresentable {
+private struct WarningTooltip: NSViewRepresentable {
   let message: String
 
   func makeNSView(context: Context) -> TooltipView { TooltipView() }
