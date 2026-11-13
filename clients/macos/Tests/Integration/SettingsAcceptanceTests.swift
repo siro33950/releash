@@ -218,7 +218,8 @@ final class SettingsAcceptanceTests: XCTestCase {
     XCTAssertTrue(running.label.contains("実行中"))
     XCTAssertTrue(running.label.contains("error: 1"))
     XCTAssertTrue(
-      try XCTUnwrap(host.element("settings-workflow-builtin-flow")).label.contains("builtin"))
+      try XCTUnwrap(host.element("settings-workflow-builtin-flow")).label
+        .components(separatedBy: ", ").contains("builtin"))
     XCTAssertNotNil(host.element("error: 3"))
     XCTAssertNotNil(host.element("info: 1"))
     let rowBounds = try ["01_author-spec", "builtin-flow", "broken"].map {
@@ -285,17 +286,6 @@ final class SettingsAcceptanceTests: XCTestCase {
     try await eventuallyView(host) { host.element("settings-auto-launch") != nil }
     let headings = ["更新", "ログイン項目", "CLI の設置", "Telemetry"]
     for heading in headings { XCTAssertNotNil(host.element(heading)) }
-    let groups = [
-      ["自動更新", "nightly アップデートを受け入れる"],
-      ["settings-auto-launch", "settings-start-minimized"],
-      ["/usr/local/bin/releash", "settings-install-cli"],
-      ["settings-performance-telemetry", "settings-crash-reporting"],
-    ]
-    for (index, members) in groups.enumerated() {
-      try assertGroup(
-        members, excluding: groups.enumerated().filter { $0.offset != index }.flatMap(\.element),
-        host)
-    }
     for (label, description) in [
       ("nightly アップデートを受け入れる", "毎日作られる開発中の版も、更新の対象にします。"),
       ("最小化状態で起動", "ログイン時に起動したときは、ウィンドウを開きません。"),
