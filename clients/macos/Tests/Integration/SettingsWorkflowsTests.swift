@@ -9,19 +9,19 @@ final class SettingsWorkflowsTests: XCTestCase {
     let http = TestHTTPClient()
     testWorkflowSettings(http)
     let model = try await testModel(http)
-    let host = await ViewHarness(SettingsView(model: model), size: NSSize(width: 560, height: 560))
+    let host = await ViewHarness(SettingsView(model: model), size: NSSize(width: 1024, height: 800))
     defer { host.close() }
     // When
     try await host.press("Workflows")
     // Then
     try await eventuallyView(host) {
       host.element("settings-workflow-01_author-spec")?.label
-        == "01_author-spec, 利用者の定義, 実行中, lua, error: 1, info: 2"
+        == "01_author-spec, 利用者の定義, 実行中, error: 1"
     }
     XCTAssertEqual(
       host.element("settings-workflow-builtin-flow")?.label,
-      "builtin-flow, 組み込みの定義, builtin, yaml, info: 1")
-    XCTAssertEqual(host.element("settings-workflow-broken")?.label, "broken, yaml, 定義を読み取れません")
+      "builtin-flow, 組み込みの定義, builtin")
+    XCTAssertEqual(host.element("settings-workflow-broken")?.label, "broken, 定義を読み取れません")
     // When
     var payload = Releash_Client_V1_StatePayload()
     payload.workflows = http.state.withLock { $0.workflows }
@@ -35,7 +35,7 @@ final class SettingsWorkflowsTests: XCTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-workflow-01_author-spec")?.label
-        == "01_author-spec, 一覧の更新, builtin, 実行中, lua, error: 7, info: 2"
+        == "01_author-spec, 一覧の更新, builtin, 実行中, error: 7"
     }
     // When
     http.state.withLock { $0.failedMethod = "OpenWorkflowDirectoryInEditor" }
@@ -182,7 +182,7 @@ final class SettingsWorkflowsTests: XCTestCase {
     try await host.press("Facet")
     // Then
     try await eventuallyView(host) {
-      host.element("settings-facet-policy-coding")?.label == "coding, 共有Facetの説明, error: 3, info: 4"
+      host.element("settings-facet-policy-coding")?.label == "coding, 共有Facetの説明, error: 3"
     }
     XCTAssertEqual(
       host.element("settings-facet-policy-builtin-facet")?.label,

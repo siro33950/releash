@@ -16,18 +16,27 @@ struct ProvidersSettingsView: View {
           Section(provider.displayName) {
             LabeledContent("可用性", value: provider.available ? "利用可能" : "利用不可")
             LabeledContent("既定の実行ファイル", value: provider.defaultExecutable)
-            LabeledContent("有効な実行ファイル", value: provider.effectiveExecutable)
+            LabeledContent {
+              Text(provider.effectiveExecutable)
+            } label: {
+              SettingsLabel(title: "有効な実行ファイル", description: "上書きがあればその値、無ければ既定の実行ファイルです。")
+            }
             if provider.available {
-              LabeledContent("解決された実行ファイル", value: provider.resolvedExecutable)
+              LabeledContent {
+                Text(provider.resolvedExecutable)
+              } label: {
+                SettingsLabel(title: "解決された実行ファイル", description: "有効な実行ファイルを PATH から探した結果です。")
+              }
             } else {
               LabeledContent("利用できない理由", value: provider.unavailableReason)
             }
             TextField(
-              "実行ファイルの上書き",
               text: Binding(
                 get: { state.executables[provider.provider] ?? provider.configuredExecutable },
                 set: { state.executables[provider.provider] = $0 })
-            )
+            ) {
+              SettingsLabel(title: "実行ファイルの上書き", description: "既定と別の実行ファイルを使うときに指定します。")
+            }
             .focused($editingProvider, equals: provider.provider)
             .onSubmit { saveExecutable(provider.provider) }
             .accessibilityIdentifier("settings-provider-executable-\(provider.provider)")

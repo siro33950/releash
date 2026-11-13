@@ -9,7 +9,7 @@ struct GeneralSettingsView: View {
 
   var body: some View {
     Form {
-      Section {
+      Section("エディタ") {
         Picker(
           "外部エディタ",
           selection: Binding(
@@ -28,31 +28,43 @@ struct GeneralSettingsView: View {
         }
         .disabled(!model.connected || state.editor == nil || state.saving.contains(.editor))
         .accessibilityIdentifier("settings-external-editor")
-        TextField("Terminalの起動コマンド", text: $state.command)
-          .focused($editingCommand)
-          .onSubmit { saveCommand() }
-          .onChange(of: editingCommand) { _, editing in
-            if !editing { saveCommand() }
-          }
-          .disabled(
-            !model.connected || state.terminalCommand == nil || state.saving.contains(.command)
-          )
-          .accessibilityIdentifier("settings-terminal-command")
+        Picker(selection: $diffBase) {
+          Text("HEAD").tag("head")
+          Text("Branch base").tag("branch-base")
+        } label: {
+          SettingsLabel(title: "Diff base の既定", description: "ファイルタブで差分を開いたときに、最初に比べる相手です。")
+        }
+        .accessibilityIdentifier("settings-diff-base")
+      }
+      Section("Terminal") {
+        LabeledContent {
+          TextField("", text: $state.command)
+            .focused($editingCommand)
+            .onSubmit { saveCommand() }
+            .onChange(of: editingCommand) { _, editing in
+              if !editing { saveCommand() }
+            }
+            .disabled(
+              !model.connected || state.terminalCommand == nil || state.saving.contains(.command)
+            )
+            .accessibilityLabel("Terminal の起動コマンド")
+            .accessibilityIdentifier("settings-terminal-command")
+        } label: {
+          SettingsLabel(
+            title: "Terminal の起動コマンド",
+            description: "新しい Terminal のタブで shell が起動した直後に、このコマンドを入力して実行します。空なら何もしません。")
+        }
+      }
+      Section("Workflow") {
         Toggle(
-          "承認の自動化",
           isOn: Binding(
             get: { state.workflow?.approvalAutoApprove ?? false },
             set: { value in Task { await state.updateApproval(value, model: model) } })
-        )
+        ) {
+          SettingsLabel(title: "承認の自動化", description: "承認を求める Node を、人の確認なしに完了させます。")
+        }
         .disabled(!model.connected || state.workflow == nil || state.saving.contains(.approval))
         .accessibilityIdentifier("settings-approval-automation")
-      }
-      Section {
-        Picker("Diff baseの既定", selection: $diffBase) {
-          Text("HEAD").tag("head")
-          Text("Branch base").tag("branch-base")
-        }
-        .accessibilityIdentifier("settings-diff-base")
       }
       if let failure = state.failure {
         Section {

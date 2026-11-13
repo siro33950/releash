@@ -506,3 +506,24 @@ fn resolve_effective_base_branch(
 ) -> Result<Option<String>, releashd::test_support::integration::repository::GitError> {
     resolve_effective_base_branch_with_git(path, &git())
 }
+
+#[test]
+fn test_repositoryのorigin取得_未設定と設定済みを返す() {
+    use releashd::test_support::integration::repository::GitService;
+
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let repository = git2::Repository::init(directory.path()).unwrap();
+    let path = directory.path().to_str().unwrap();
+    let gateway = git();
+
+    // When / Then
+    assert_eq!(gateway.origin_url(path).unwrap(), None);
+    repository
+        .remote("origin", "git@github.com:owner/project.git")
+        .unwrap();
+    assert_eq!(
+        gateway.origin_url(path).unwrap().as_deref(),
+        Some("git@github.com:owner/project.git")
+    );
+}

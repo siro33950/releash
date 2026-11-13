@@ -18,11 +18,12 @@ final class SettingsRepositoriesTests: XCTestCase {
     let host = await ViewHarness(RepositoriesSettingsView(model: model))
     defer { host.close() }
     // Then
-    try await eventuallyView(host) { host.element("settings-base-branch")?.value == "main" }
+    try await eventuallyView(host) { host.element("/first") != nil }
+    XCTAssertNil(host.element("settings-base-branch"))
     XCTAssertNotNil(host.element("/first"))
     XCTAssertNotNil(host.element("/second"))
     // When
-    try await host.selectRow("/second")
+    try await host.press("settings-repository-/second")
     // Then
     try await eventuallyView(host) { host.element("settings-base-branch")?.value == "develop" }
     // When
@@ -31,13 +32,16 @@ final class SettingsRepositoriesTests: XCTestCase {
     try http.publish(payload, target: "workspaces")
     // Then
     try await eventuallyView(host) {
-      host.element("/second") == nil && host.element("settings-base-branch")?.value == "main"
+      host.element("/second") == nil && host.element("/first") != nil
+        && host.element("settings-base-branch") == nil
     }
     // When
     payload.workspaces.repositories.items = []
     try http.publish(payload, target: "workspaces")
     // Then
-    try await eventuallyView(host) { host.element("リポジトリを選択してください") != nil }
+    try await eventuallyView(host) {
+      host.element("settings-repositories") != nil && host.element("/first") == nil
+    }
     await model.stop()
   }
 
@@ -48,6 +52,8 @@ final class SettingsRepositoriesTests: XCTestCase {
     let model = try await testModel(http)
     let host = await ViewHarness(RepositoriesSettingsView(model: model))
     defer { host.close() }
+    try await eventuallyView(host) { host.element("/repo") != nil }
+    try await host.press("settings-repository-/repo")
     try await eventuallyView(host) { host.element("settings-remove-repository") != nil }
     // When
     try await host.press("settings-remove-repository")
@@ -212,7 +218,7 @@ final class SettingsRepositoriesTests: XCTestCase {
     let host = await ViewHarness(SettingsView(model: model))
     defer { host.close() }
     try await host.press("Repositories")
-    try await host.selectRow("/second")
+    try await host.press("settings-repository-/second")
     try await eventuallyView(host) { host.element("settings-notion-database")?.enabled == true }
     try await host.focusTextField(index: 0)
     let tokenEditor = try XCTUnwrap(host.window.firstResponder as? NSTextView)

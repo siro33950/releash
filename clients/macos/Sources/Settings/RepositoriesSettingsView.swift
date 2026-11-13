@@ -6,33 +6,49 @@ struct RepositoriesSettingsView: View {
   @State var state = RepositoriesSettingsState()
 
   var body: some View {
-    HSplitView {
-      List(
-        model.repositories, id: \.path,
-        selection: Binding(
-          get: { state.selected?.path },
-          set: { path in
-            guard state.selected?.path != path else { return }
-            state.selected = path.map { RepositorySettingsState(path: $0) }
-          })
-      ) { repository in
-        Text(repository.path).tag(repository.path)
-      }
-      .accessibilityIdentifier("settings-repositories")
+    VStack(spacing: 0) {
       if let selected = state.selected,
-        model.repositories.contains(where: { $0.path == selected.path })
+        let repository = model.repositories.first(where: { $0.path == selected.path })
       {
+        HStack {
+          Button("戻る") { state.selected = nil }
+          Text(repository.name).font(.title2)
+          Spacer()
+        }
+        .padding()
         RepositorySettingsView(model: model, state: selected).id(selected.path)
       } else {
-        ContentUnavailableView { Label("リポジトリを選択してください", image: "folder") }
+        List(model.repositories, id: \.path) { repository in
+          Button {
+            state.selected = RepositorySettingsState(path: repository.path)
+          } label: {
+            HStack {
+              VStack(alignment: .leading) {
+                Text(repository.name).font(.headline)
+                Text(repository.path).foregroundStyle(.secondary)
+              }
+              Spacer()
+            }
+            .padding(.vertical, 4)
+          }
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("settings-repository-\(repository.path)")
+        }
+        .accessibilityIdentifier("settings-repositories")
+        .overlay {
+          if model.repositories.isEmpty {
+            ContentUnavailableView { Label("リポジトリを選択してください", image: "folder") }
+          }
+        }
       }
     }
-    .onChange(of: model.repositories.map(\.path), initial: true) { _, paths in
-      if !paths.contains(state.selected?.path ?? "") {
-        state.selected = paths.first.map { RepositorySettingsState(path: $0) }
+    .onChange(of: model.repositories.map(\.path)) { _, paths in
+      if let selected = state.selected, !paths.contains(selected.path) {
+        state.selected = nil
       }
     }
   }
+
 }
 
 @Observable @MainActor final class RepositoriesSettingsState {
@@ -51,22 +67,9 @@ struct RepositorySettingsView: View {
 
   var body: some View {
     Form {
-      Section {
-        Text(state.path).textSelection(.enabled)
-        Button("Repositoryを一覧から削除", role: .destructive) { confirmingRemoval = true }
-          .accessibilityIdentifier("settings-remove-repository")
-          .alert("Repositoryを一覧から削除しますか？", isPresented: $confirmingRemoval) {
-            Button("削除", role: .destructive) {
-              Task { await state.removeRepository(model: model) }
-            }
-            Button("キャンセル", role: .cancel) {}
-          } message: {
-            Text("ディスク上のRepositoryは削除されません。")
-          }
-      }
-      Section("Base branch") {
+      Section("Repository") {
+        LabeledContent("パス") { Text(state.path).textSelection(.enabled) }
         Picker(
-          "Base branch",
           selection: Binding(
             get: { state.base?.value ?? "" },
             set: { value in Task { await state.updateBase(value, model: model) } })
@@ -80,11 +83,15 @@ struct RepositorySettingsView: View {
           {
             Text(base).tag(base)
           }
+        } label: {
+          SettingsLabel(
+            title: "Base branch",
+            description: "ファイルタブで「base と比較」を選んだときに、比べる相手になるブランチです。")
         }
         .disabled(state.base == nil || state.branches == nil || state.saving.contains(.base))
         .accessibilityIdentifier("settings-base-branch")
       }
-      Section("Notion") {
+      Section("Notion の連携") {
         SecureField("API token", text: $state.apiToken)
           .accessibilityIdentifier("settings-notion-token")
         TextField("Database ID", text: $state.databaseID)
@@ -101,6 +108,8 @@ struct RepositorySettingsView: View {
             }
           }
           .accessibilityIdentifier("settings-notion-title")
+          SettingsLabel(
+            title: "Labels", description: "新しい Worktree のダイアログで、Notion task を絞り込むのに使います。")
           ForEach(state.validation?.properties.items ?? [], id: \.name) { property in
             Toggle(
               "Labels: \(property.name) (\(property.propertyType))",
@@ -146,6 +155,18 @@ struct RepositorySettingsView: View {
       }
       .disabled(
         state.notion == nil || state.saving.contains(.notion) || state.saving.contains(.validation))
+      Section("一覧からの削除") {
+        Button("Repositoryを一覧から削除", role: .destructive) { confirmingRemoval = true }
+          .accessibilityIdentifier("settings-remove-repository")
+          .alert("Repositoryを一覧から削除しますか？", isPresented: $confirmingRemoval) {
+            Button("削除", role: .destructive) {
+              Task { await state.removeRepository(model: model) }
+            }
+            Button("キャンセル", role: .cancel) {}
+          } message: {
+            Text("ディスク上のRepositoryは削除されません。")
+          }
+      }
       if let failure = state.failure {
         Section {
           Text(failure).foregroundStyle(.secondary)

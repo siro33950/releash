@@ -33,7 +33,7 @@ impl GitService for GitGateway {
     }
 
     fn origin_url(&self, repo_path: &str) -> Result<Option<String>, GitError> {
-        todo!()
+        crate::adaptor::gateway::git_host::discovery::get_origin_url(repo_path).map_err(Into::into)
     }
 
     fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, GitError> {

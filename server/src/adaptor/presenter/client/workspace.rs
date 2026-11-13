@@ -72,7 +72,7 @@ fn repository(
         worktrees: Some(wire::ListWorkspaceWorktreeList {
             items: worktrees.iter().map(worktree).collect::<Result<_, _>>()?,
         }),
-        name: todo!(),
+        name: Some(repository.name.clone()),
     })
 }
 
