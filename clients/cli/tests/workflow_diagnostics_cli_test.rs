@@ -253,7 +253,7 @@ async fn test_診断local_api_実http経由で指定directoryのreportを返す(
 }
 
 #[tokio::test]
-async fn test_診断_cli経路はvalid_fixtureで変更前と同じjsonを返す() {
+async fn test_診断_cli経路はvalid_fixtureで診断総数を含むjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -279,7 +279,7 @@ async fn test_診断_cli経路はvalid_fixtureで変更前と同じjsonを返す
 }
 
 #[tokio::test]
-async fn test_診断_cli経路はinvalid_fixtureで変更前と同じjsonを返す() {
+async fn test_診断_cli経路はinvalid_fixtureで診断総数を含むjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -316,7 +316,7 @@ async fn test_診断_cli経路はinvalid_fixtureで変更前と同じjsonを返�
 }
 
 #[tokio::test]
-async fn test_診断_cli経路はscalar_schema宣言のwfs002で変更前と同じjsonを返す() {
+async fn test_診断_cli経路はscalar_schema宣言のwfs002で診断総数を含むjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
@@ -364,7 +364,7 @@ async fn test_診断_cli経路はscalar_schema宣言のwfs002で変更前と同�
 }
 
 #[tokio::test]
-async fn test_診断_cli経路はnested_schema_validationのwfs002で変更前と同じjsonを返す() {
+async fn test_診断_cli経路はnested_schema_validationのwfs002で診断総数を含むjsonを返す() {
     // Given
     let data_directory = tempfile::tempdir().unwrap();
     let applied_directory = tempfile::tempdir().unwrap();
