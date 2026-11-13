@@ -119,7 +119,9 @@ function composer(thread) {
     composerContent = input.value;
     create.disabled = thread.sending || !input.value.trim();
   };
-  element.append(input, button('キャンセル', () => send({ kind: 'cancelCreate' })), create);
+  const cancel = button('キャンセル', () => send({ kind: 'cancelCreate' }));
+  cancel.disabled = thread.sending;
+  element.append(input, cancel, create);
   queueMicrotask(() => input.focus());
   return element;
 }

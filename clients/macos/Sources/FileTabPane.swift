@@ -231,6 +231,7 @@ struct FileTabPane: View {
       return
     }
     if kind == "cancelCreate" {
+      guard !draft.sending else { return }
       draft.line = nil
       return
     }

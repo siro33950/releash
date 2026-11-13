@@ -160,6 +160,44 @@ final class FileTabPaneTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_作成カード_送信中のキャンセルはカードを閉じない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    view.action(["kind": "select", "line": 2, "endLine": 3])
+    view.startThread()
+    view.action(["kind": "create", "content": "draft"])
+    XCTAssertTrue(view.draft.sending)
+    // When
+    view.action(["kind": "cancelCreate"])
+    // Then
+    XCTAssertEqual(view.draft.line, 2)
+    XCTAssertNotNil(view.bridgePayload(.init(), .init(), colorScheme: .light)["composer"])
+    try await eventually {
+      http.requests("CreateReviewThread").count == 1 && !view.draft.sending
+    }
+    XCTAssertNil(view.draft.line)
+    await model.stop()
+  }
+
+  @MainActor func test_作成カード_送信前のキャンセルは作成を送らない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    view.action(["kind": "select", "line": 2])
+    view.startThread()
+    view.draft.content = "draft"
+    // When
+    view.action(["kind": "cancelCreate"])
+    // Then
+    XCTAssertNil(view.draft.line)
+    XCTAssertNil(view.bridgePayload(.init(), .init(), colorScheme: .light)["composer"])
+    XCTAssertTrue(http.requests("CreateReviewThread").isEmpty)
+    await model.stop()
+  }
+
   @MainActor func test_カードの見出し_Commentと解決者の記録を渡す() throws {
     // Given
     var thread = Releash_Client_V1_ReviewThreadDto()

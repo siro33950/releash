@@ -260,3 +260,16 @@ test('作成カードは範囲末尾に出て入力を保ち作成とキャン�
   ui.window.releashRender(next);
   assert.equal(render().children[0].value, '');
 });
+
+
+test('作成カードのキャンセルは送信中だけ無効になる', async () => {
+  // Given
+  const ui = await bridge();
+  for (const sending of [false, true, false]) {
+    // When
+    ui.window.releashRender({ ...payload(), composer: { line: 1, sending } });
+    const card = ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+    // Then
+    assert.equal(card.children[1].disabled, sending);
+  }
+});
