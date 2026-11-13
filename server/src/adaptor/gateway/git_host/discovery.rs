@@ -21,7 +21,3 @@ pub fn is_github_repository(
 ) -> Result<bool, crate::adaptor::gateway::shared::git_operation::GitOperationError> {
     todo!()
 }
-
-#[cfg(test)]
-#[path = "discovery_test.rs"]
-mod discovery_tests;

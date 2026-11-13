@@ -79,3 +79,7 @@ pub struct FacetUsageEntry {
     pub node_name: String,
     pub slot: String,
 }
+
+#[cfg(test)]
+#[path = "diagnostic_test.rs"]
+mod diagnostic_tests;

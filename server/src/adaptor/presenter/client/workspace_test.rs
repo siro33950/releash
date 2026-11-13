@@ -705,6 +705,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
         repositories: vec![
             WorkspaceListRepository {
                 path: "/repo".into(),
+                name: "repository".into(),
                 worktrees: Fetched {
                     value: Some(vec![main, feature]),
                     error: Some(failure("scan failed")),
@@ -712,10 +713,12 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             },
             WorkspaceListRepository {
                 path: "/loading".into(),
+                name: "repository".into(),
                 worktrees: Fetched::default(),
             },
             WorkspaceListRepository {
                 path: "/failed".into(),
+                name: "repository".into(),
                 worktrees: Fetched {
                     value: None,
                     error: Some(failure("not a repository")),
@@ -723,6 +726,7 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
             },
             WorkspaceListRepository {
                 path: "/empty".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(Vec::new()),
             },
         ],
@@ -835,6 +839,7 @@ fn test_workspaces一覧_読めなくなった実行木は前回の木と失敗�
     let list = WorkspaceList {
         repositories: vec![WorkspaceListRepository {
             path: "/repo".into(),
+            name: "repository".into(),
             worktrees: Fetched::ready(vec![worktree_row(
                 "/repo",
                 "main",
@@ -909,6 +914,7 @@ fn test_実行木の変換_archive済みの実行を木から外し履歴とsess
     let list = WorkspaceList {
         repositories: vec![WorkspaceListRepository {
             path: "/repo".into(),
+            name: "repository".into(),
             worktrees: Fetched::ready(vec![worktree_row("/repo", "main", Fetched::ready(tree))]),
         }],
     };

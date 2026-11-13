@@ -41,6 +41,7 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
     // Given
     let repositories = vec![RepositoryValues {
         path: "/a".into(),
+        name: "repository".into(),
         worktrees: Fetched::ready(vec![
             values("/a", "open", false),
             values("/a/merged", "merged", false),
@@ -101,6 +102,7 @@ fn test_一覧の合成_prが未取得ならworktreeのmerge済みをそのま�
     // Given
     let repositories = vec![RepositoryValues {
         path: "/a".into(),
+        name: "repository".into(),
         worktrees: Fetched::ready(vec![
             values("/a", "main", false),
             values("/a/git", "git-merged", true),
@@ -127,6 +129,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
     let repositories = vec![
         RepositoryValues {
             path: "/a".into(),
+            name: "owner/a".into(),
             worktrees: Fetched {
                 value: Some(vec![values("/a", "one", false), deleting]),
                 error: Some(failure("scan failed")),
@@ -135,6 +138,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
         },
         RepositoryValues {
             path: "/b".into(),
+            name: "b".into(),
             worktrees: Fetched {
                 value: None,
                 error: Some(failure("not a repository")),
@@ -143,6 +147,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
         },
         RepositoryValues {
             path: "/c".into(),
+            name: "c".into(),
             worktrees: Fetched::ready(vec![values("/c", "three", false)]),
             pull_requests: Fetched::default(),
         },
@@ -155,6 +160,13 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
     );
 
     // Then
+    assert_eq!(
+        list.repositories
+            .iter()
+            .map(|repository| (repository.path.as_str(), repository.name.as_str()))
+            .collect::<Vec<_>>(),
+        [("/a", "owner/a"), ("/b", "b"), ("/c", "c")]
+    );
     let first = &list.repositories[0];
     assert_eq!(
         first
@@ -190,6 +202,7 @@ fn test_一覧の合成_未コミット数とprの読取失敗を未設定と区
     };
     let repositories = vec![RepositoryValues {
         path: "/repo".into(),
+        name: "repository".into(),
         worktrees: Fetched::ready(vec![row]),
         pull_requests: Fetched {
             value: None,
@@ -232,6 +245,7 @@ fn test_一覧の合成_完了済みprとopenのprを別々に保持する() {
         let list = compose(
             vec![RepositoryValues {
                 path: "/repo".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![values("/repo", "feature", false)]),
                 pull_requests: Fetched::ready(PrStatus {
                     open_prs: Default::default(),
@@ -244,4 +258,164 @@ fn test_一覧の合成_完了済みprとopenのprを別々に保持する() {
         let row = &list.repositories[0].worktrees.value.as_ref().unwrap()[0];
         assert_eq!(row.state_pull_request, Some(completed));
     }
+}
+
+struct RegisteredPaths(Vec<String>);
+
+impl crate::domain::git::RepoPathsRepository for RegisteredPaths {
+    fn get(&self) -> Vec<String> {
+        self.0.clone()
+    }
+}
+
+impl crate::domain::app_config::AppConfigRepository for RegisteredPaths {
+    fn load(
+        &self,
+    ) -> Result<crate::domain::app_config::AppConfig, crate::domain::app_config::AppConfigError>
+    {
+        panic!("listing repositories must not load configuration")
+    }
+
+    fn save(
+        &self,
+        _: crate::domain::app_config::AppConfig,
+    ) -> Result<(), crate::domain::app_config::AppConfigError> {
+        panic!("listing repositories must not save configuration")
+    }
+}
+
+struct UnusedGitHostProvider;
+
+#[async_trait::async_trait]
+impl crate::domain::git_host::GitHostProvider for UnusedGitHostProvider {
+    async fn fetch_pr_status(
+        &self,
+        _: &str,
+    ) -> Result<PrStatus, crate::domain::git_host::GitHostError> {
+        panic!("listing repositories must not fetch pull requests")
+    }
+
+    async fn list_issues(
+        &self,
+        _: &str,
+    ) -> Result<Vec<crate::domain::git_host::IssueInfo>, crate::domain::git_host::GitHostError>
+    {
+        panic!("listing repositories must not fetch issues")
+    }
+}
+
+fn repository_list(
+    paths: &[&str],
+    git: Arc<crate::usecase::test_helpers::FakeRepo>,
+) -> WorkspaceListUsecase {
+    use crate::usecase::git_host::test_helpers::{FakeIssueCache, FakePrCache};
+    use crate::usecase::repository_state::test_helpers::{counting_service, CountingScanner};
+    use crate::usecase::repository_state::worktree::NoopRepositoryStateWatcher;
+
+    let paths = Arc::new(RegisteredPaths(
+        paths.iter().map(|path| (*path).into()).collect(),
+    ));
+    WorkspaceListUsecase::new(
+        Arc::new(RepoPathsUsecase::new(
+            paths.clone(),
+            paths,
+            crate::test_support::state_subscription::test_subscriptions(),
+            Default::default(),
+        )),
+        Arc::new(crate::usecase::test_helpers::usecase(git)),
+        Arc::new(counting_service(
+            Arc::new(CountingScanner::default()),
+            Arc::new(NoopRepositoryStateWatcher),
+        )),
+        Arc::new(crate::usecase::workflow::mod_tests::empty_usecase()),
+        Arc::new(GitHostUsecase::new(
+            Arc::new(UnusedGitHostProvider),
+            Arc::new(FakePrCache::default()),
+            Arc::new(FakeIssueCache::default()),
+        )),
+    )
+}
+
+#[tokio::test]
+async fn test_repository一覧_登録順にoriginを読み一覧全体で決めた名前を対応させる() {
+    // Given
+    let paths = ["/z-local", "/a-local", "/middle"];
+    let git = Arc::new(crate::usecase::test_helpers::FakeRepo {
+        origins: [
+            (
+                "/z-local".into(),
+                Ok(Some("git@github.com:first/shared.git".into())),
+            ),
+            (
+                "/a-local".into(),
+                Ok(Some("https://github.com/second/unique.git".into())),
+            ),
+            (
+                "/middle".into(),
+                Ok(Some("https://github.com/third/shared.git".into())),
+            ),
+        ]
+        .into(),
+        ..Default::default()
+    });
+    let usecase = repository_list(&paths, git.clone());
+    // When
+    let repositories = usecase.repository_values();
+    // Then
+    assert_eq!(*git.origin_url_calls.lock(), paths);
+    assert_eq!(
+        repositories
+            .iter()
+            .map(|repository| (repository.path.as_str(), repository.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("/z-local", "first/shared"),
+            ("/a-local", "unique"),
+            ("/middle", "third/shared"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_repository一覧_origin読取失敗をフォルダ名にして後続の取得も続ける() {
+    // Given
+    let paths = ["/z-local", "/work/shared", "/a-local", "/work/articles"];
+    let git = Arc::new(crate::usecase::test_helpers::FakeRepo {
+        origins: [
+            (
+                "/z-local".into(),
+                Ok(Some("https://github.com/first/shared.git".into())),
+            ),
+            (
+                "/work/shared".into(),
+                Err(crate::domain::git::GitError::External(
+                    "origin read failed".into(),
+                )),
+            ),
+            (
+                "/a-local".into(),
+                Ok(Some("git@github.com:second/unique.git".into())),
+            ),
+            ("/work/articles".into(), Ok(None)),
+        ]
+        .into(),
+        ..Default::default()
+    });
+    let usecase = repository_list(&paths, git.clone());
+    // When
+    let repositories = usecase.repository_values();
+    // Then
+    assert_eq!(*git.origin_url_calls.lock(), paths);
+    assert_eq!(
+        repositories
+            .iter()
+            .map(|repository| (repository.path.as_str(), repository.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("/z-local", "first/shared"),
+            ("/work/shared", "shared"),
+            ("/a-local", "unique"),
+            ("/work/articles", "articles"),
+        ]
+    );
 }

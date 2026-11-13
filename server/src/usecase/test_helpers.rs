@@ -40,6 +40,10 @@ pub type WorktreeCreation = (String, String, bool, Option<String>);
 #[derive(Default)]
 pub struct FakeRepo {
     pub current_branch: String,
+    pub origin_url: Option<String>,
+    pub origins: std::collections::HashMap<String, Result<Option<String>, GitError>>,
+    pub origin_error: Option<GitError>,
+    pub origin_url_calls: Mutex<Vec<String>>,
     pub fail_current_branch: bool,
     pub stop_current_branch: Option<crate::common::operation_context::OperationStopped>,
     pub worktrees: Vec<Worktree>,
@@ -133,8 +137,15 @@ impl GitService for FakeRepo {
         })
     }
 
-    fn origin_url(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
-        todo!()
+    fn origin_url(&self, repo_path: &str) -> Result<Option<String>, GitError> {
+        self.origin_url_calls.lock().push(repo_path.into());
+        if let Some(result) = self.origins.get(repo_path) {
+            return result.clone();
+        }
+        match &self.origin_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(self.origin_url.clone()),
+        }
     }
 
     fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, GitError> {

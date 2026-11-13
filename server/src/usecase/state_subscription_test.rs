@@ -181,10 +181,12 @@ async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗�
         repositories: vec![
             WorkspaceListRepository {
                 path: "/failed".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![]),
             },
             WorkspaceListRepository {
                 path: "/healthy".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![]),
             },
         ],
@@ -230,6 +232,7 @@ async fn test_監視失敗_読めたrepositoryを残し対象要素だけ失敗�
             Ok(StateValue::Workspaces(WorkspaceList {
                 repositories: vec![WorkspaceListRepository {
                     path: "/failed".into(),
+                    name: "repository".into(),
                     worktrees: Fetched::ready(vec![]),
                 }],
             })),
@@ -930,6 +933,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
         repositories: vec![
             WorkspaceListRepository {
                 path: "/failed".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![WorkspaceListWorktree {
                     worktree: crate::domain::git::Worktree::being_deleted(
                         "/failed/linked",
@@ -945,6 +949,7 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
             },
             WorkspaceListRepository {
                 path: "/healthy".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![]),
             },
         ],
@@ -1094,10 +1099,12 @@ async fn test_監視対象読み取り失敗_reconcileから該当repositoryだ�
         repositories: vec![
             WorkspaceListRepository {
                 path: "/failed".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![]),
             },
             WorkspaceListRepository {
                 path: "/healthy".into(),
+                name: "repository".into(),
                 worktrees: Fetched::ready(vec![]),
             },
         ],

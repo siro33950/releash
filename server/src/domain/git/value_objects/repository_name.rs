@@ -29,3 +29,7 @@ pub struct RepositoryNameSource {
 pub fn repository_names(sources: &[RepositoryNameSource]) -> Vec<String> {
     todo!()
 }
+
+#[cfg(test)]
+#[path = "repository_name_test.rs"]
+mod repository_name_tests;

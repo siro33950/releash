@@ -978,6 +978,7 @@ mod driver_tests {
                 StateValue::Workspaces(WorkspaceList {
                     repositories: vec![WorkspaceListRepository {
                         path: "/repo".into(),
+                        name: "repository".into(),
                         worktrees: Fetched::ready(vec![WorkspaceListWorktree {
                             worktree: crate::domain::git::Worktree {
                                 name: "main".into(),
