@@ -25,9 +25,10 @@ impl Default for WorkspaceState {
 
 impl WorkspaceState {
     /// 同じ Node の Session 未確定の Session タブに関連付け、無ければ追加する。既存の選択は変えない。
-    pub fn add_session_tab(&mut self, session_id: &str, node_id: &str) {
+    /// 追加する先は ID が `pane` の pane である。`pane` が `None` か、配置に無い pane のときは、先頭の pane に追加する。
+    pub fn add_session_tab(&mut self, session_id: &str, node_id: &str, pane: Option<&str>) {
         let panes = self.panes.get_or_insert_with(empty_panes);
-        panes.add_session_tab(session_id, node_id);
+        panes.add_session_tab(session_id, node_id, pane);
     }
 
     /// 指定された Session のタブを削除する。
@@ -47,7 +48,11 @@ impl WorkspaceState {
                 self.remove_session_tab(session.id());
             }
             Some(SessionTabChange::Open) => {
-                self.add_session_tab(session.id(), session.tree_location().node_execution_id());
+                self.add_session_tab(
+                    session.id(),
+                    session.tree_location().node_execution_id(),
+                    None,
+                );
             }
             None => {}
         }
@@ -63,7 +68,7 @@ impl WorkspaceState {
     pub fn add_execution_tabs(&mut self, tree: &crate::domain::workspace_tree::WorkspaceTree) {
         for node in tree.nodes().iter().filter(|node| !node.is_retry_history) {
             if let Some(session_id) = &node.session_id {
-                self.add_session_tab(session_id, &node.id);
+                self.add_session_tab(session_id, &node.id, None);
             }
         }
     }

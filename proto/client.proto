@@ -292,6 +292,8 @@ message CreateAgentSessionRequest {
   optional uint32 rows = 4 [json_name = "rows", (json_required) = true];
   optional uint32 cols = 5 [json_name = "cols", (json_required) = true];
   optional string caller_request_id = 6 [json_name = "callerRequestId", (json_required) = true];
+  // Session のタブを開く pane の ID。省略したときと、配置に無い pane を指定したときは、先頭の pane に開く。
+  optional string pane_id = 7 [json_name = "paneId", (json_nullable) = true];
 }
 
 message CreateReviewThreadRequest {

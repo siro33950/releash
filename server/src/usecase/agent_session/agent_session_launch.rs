@@ -33,6 +33,8 @@ pub struct AgentSessionLaunchRequest {
     pub rows: u16,
     pub cols: u16,
     pub caller_request_id: String,
+    /// Session のタブを開く pane の ID。指定が無ければ `None`。
+    pub pane: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,6 +309,7 @@ struct PreparedAgentSessionLaunch {
     rows: u16,
     cols: u16,
     caller_request_id: String,
+    pane: Option<String>,
 }
 
 struct DurableAgentSessionLaunch {
@@ -557,6 +560,7 @@ impl AgentSessionLaunchUsecase {
                     rows: request.rows,
                     cols: request.cols,
                     caller_request_id: request.caller_request_id,
+                    pane: None,
                 },
                 tree_location,
                 launch,
@@ -706,6 +710,7 @@ impl AgentSessionLaunchUsecase {
             request.cols,
             &request.caller_request_id,
             launch,
+            request.pane,
         )
         .await
     }
@@ -802,6 +807,7 @@ impl AgentSessionLaunchUsecase {
         cols: u16,
         caller_request_id: &str,
         launch: ProviderSessionLaunch,
+        pane: Option<String>,
     ) -> Result<PreparedAgentSessionLaunch, AgentSessionLaunchUsecaseError> {
         let launch_file_materialize = self.performance.start_terminal_launch_phase(
             crate::usecase::telemetry::TerminalLaunch::LaunchFileMaterialize,
@@ -834,6 +840,7 @@ impl AgentSessionLaunchUsecase {
             rows,
             cols,
             caller_request_id: caller_request_id.to_string(),
+            pane,
         })
     }
 
@@ -847,6 +854,7 @@ impl AgentSessionLaunchUsecase {
             rows,
             cols,
             caller_request_id,
+            pane,
         } = pending;
         let DurableAgentSessionLaunch {
             operation: _operation,
@@ -856,7 +864,7 @@ impl AgentSessionLaunchUsecase {
         } = durable;
         let initial_hook_warning = prepared.initial_hook_warning();
         if let Err(error) = self
-            .spawn_session_with_tab(&created, prepared, rows, cols)
+            .spawn_session_with_tab(&created, prepared, rows, cols, pane.as_deref())
             .await
         {
             self.rollback_failed_new_launch_preserving_cause(&created, &armed, &caller_request_id)
@@ -872,13 +880,14 @@ impl AgentSessionLaunchUsecase {
         Ok(created)
     }
 
-    /// Session のプロセスを起動し、その Session のタブを保存する。
+    /// Session のプロセスを起動し、その Session のタブを保存する。`pane` は、タブを開く pane の ID である。
     async fn spawn_session_with_tab(
         &self,
         created: &VersionedAgentSession,
         prepared: crate::domain::agent_session::PreparedProviderLaunch,
         rows: u16,
         cols: u16,
+        pane: Option<&str>,
     ) -> Result<(), AgentSessionLaunchUsecaseError> {
         self.terminal
             .spawn(
@@ -891,7 +900,7 @@ impl AgentSessionLaunchUsecase {
             .inspect_err(|error| record_terminal_spawn_failure(created.session().id(), error))
             .map_err(AgentSessionLaunchUsecaseError::Terminal)?;
         self.session_tabs
-            .add_session(created.session())
+            .add_session(created.session(), pane)
             .await
             .map_err(map_tab_error)
     }
@@ -984,7 +993,11 @@ impl AgentSessionLaunchUsecase {
             )
             .await
             .map_err(map_session_error)?;
-        if let Err(error) = self.session_tabs.add_session(associated.session()).await {
+        if let Err(error) = self
+            .session_tabs
+            .add_session(associated.session(), None)
+            .await
+        {
             log::warn!("failed to save the Session tab after history resume: {error:?}");
             return self.pause_history_resume(&request, &agent_session_id).await;
         }

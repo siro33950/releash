@@ -55,24 +55,17 @@ pub enum PaneLayoutView<'a> {
 }
 
 impl PaneLayout {
+    /// Session のタブを配置に持たせる。
+    /// その Session のタブが既にあれば何も変えない。同じ Node の Session 未確定の Session タブがあれば、それに関連付ける。
+    /// どちらも無ければ、タブを追加する。追加する先は ID が `pane` の pane である。
+    /// `pane` が `None` か、配置に無い pane のときは、先頭の pane（分割の最初の側をたどった先の pane）に追加する。
     pub(in crate::domain::workspace_state) fn add_session_tab(
         &mut self,
         session_id: &str,
         node_id: &str,
+        pane: Option<&str>,
     ) {
-        if self.contains_session(session_id) || self.bind_pending_session(session_id, node_id) {
-            return;
-        }
-        let mut id = format!("session-{session_id}");
-        while self.contains_id(&id) {
-            id.push('-');
-        }
-        self.append_tab(PaneTab {
-            id,
-            kind: PaneTabKind::Session,
-            node_id: None,
-            agent_session_id: Some(session_id.into()),
-        });
+        todo!()
     }
 
     fn append_tab(&mut self, tab: PaneTab) {
