@@ -12,6 +12,9 @@ pub trait GitService: Send + Sync {
     /// 作業ツリーの変更と差分の状態を返す。
     fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, GitError>;
 
+    /// repository の origin の URL を返す。repository を開けない、または origin が無いときは `None`。
+    fn origin_url(&self, repo_path: &str) -> Result<Option<String>, GitError>;
+
     /// 指定したパスが属する主 repository のパスを返す。
     fn main_repo_path(&self, any_path: &str) -> Result<String, GitError>;
     /// 指定したパスが repository に属するとき、その主 repository のパスを返す。

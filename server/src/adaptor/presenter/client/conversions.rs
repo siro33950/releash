@@ -217,6 +217,7 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticReport>
             workflow_summaries: Some(cv(value.workflow_summaries)?),
             facet_summaries: Some(cv(value.facet_summaries)?),
             facet_usage: Some(cv(value.facet_usage)?),
+            total: todo!(),
         })
     }
 }

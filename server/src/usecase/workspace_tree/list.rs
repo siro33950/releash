@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::domain::git::Worktree;
+use crate::domain::git::{repository_names, RepositoryNameSource, Worktree};
 use crate::domain::git_host::{PrInfo, PrStatus};
 use crate::domain::workspace_tree::WorkspaceTree;
 use crate::usecase::{
@@ -18,6 +18,8 @@ pub struct WorkspaceList {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceListRepository {
     pub path: String,
+    /// Repository の名前。登録された Repository の並びから `repository_names` が決める。
+    pub name: String,
     pub worktrees: Fetched<Vec<WorkspaceListWorktree>>,
 }
 
@@ -36,6 +38,7 @@ pub struct WorkspaceListWorktree {
 /// 1 つの Repository について、持ち主から集めた値。
 struct RepositoryValues {
     path: String,
+    name: String,
     worktrees: Fetched<Vec<WorktreeValues>>,
     pull_requests: Fetched<PrStatus>,
 }
@@ -95,10 +98,22 @@ impl WorkspaceListUsecase {
     }
 
     fn repository_values(&self) -> Vec<RepositoryValues> {
-        self.repositories
-            .get()
+        let paths = self.repositories.get();
+        let sources = paths
+            .iter()
+            .map(|path| RepositoryNameSource {
+                path: path.clone(),
+                origin_url: self.repository.origin_url(path).unwrap_or_else(|error| {
+                    log::warn!("workspace repository origin read failed for {path}: {error}");
+                    None
+                }),
+            })
+            .collect::<Vec<_>>();
+        let names = repository_names(&sources);
+        paths
             .into_iter()
-            .map(|path| {
+            .zip(names)
+            .map(|(path, name)| {
                 let scanned = self.repository_state.worktrees(&path);
                 let root = self.repository_state.repository_root(&path).ok();
                 let worktrees = Fetched {
@@ -118,6 +133,7 @@ impl WorkspaceListUsecase {
                 RepositoryValues {
                     pull_requests: self.git_host.pr_status_result(&path),
                     path,
+                    name,
                     worktrees,
                 }
             })
@@ -196,6 +212,7 @@ fn compose(
                 let pull_requests = repository.pull_requests;
                 WorkspaceListRepository {
                     path: repository.path,
+                    name: repository.name,
                     worktrees: Fetched {
                         error: repository.worktrees.error,
                         value: repository.worktrees.value.map(|worktrees| {

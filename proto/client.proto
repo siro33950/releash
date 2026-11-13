@@ -355,6 +355,8 @@ message DiagnosticReport {
   optional MapDiagnosticSummary workflow_summaries = 2 [json_name = "workflow_summaries", (json_required) = true];
   optional MapDiagnosticSummary facet_summaries = 3 [json_name = "facet_summaries", (json_required) = true];
   optional MapListFacetUsageEntry facet_usage = 4 [json_name = "facet_usage", (json_required) = true];
+  // 診断の全体の件数。1 件の診断は、定義と Facet の両方に関わっていても 1 件と数える。
+  optional DiagnosticSummary total = 5 [json_name = "total", (json_required) = true];
 }
 
 message DiagnosticItem {
@@ -1838,6 +1840,9 @@ message WorkspaceRepositoryList {
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
   optional ListWorkspaceBranch branches = 3 [json_name = "branches", (json_required) = true];
   optional ListWorkspaceWorktreeList worktrees = 4 [json_name = "worktrees", (json_required) = true];
+  // Repository の名前。origin が GitHub のリポジトリなら GitHub 上のリポジトリ名、それ以外はフォルダ名。
+  // 同じ名前の Repository が並ぶときだけ、origin が GitHub の Repository は owner/名前 の形になる。
+  optional string name = 5 [json_name = "name", (json_required) = true];
 }
 message WorkspaceListSnapshot {
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];

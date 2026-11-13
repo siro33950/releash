@@ -133,6 +133,10 @@ impl GitService for FakeRepo {
         })
     }
 
+    fn origin_url(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
+        todo!()
+    }
+
     fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, GitError> {
         self.find_main_repo_path_calls.lock().push(path.into());
         if self.no_main_repo_path {

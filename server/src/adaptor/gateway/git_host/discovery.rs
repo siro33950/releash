@@ -14,14 +14,12 @@ pub fn get_origin_url(
     Ok(Some(remote.url()?.to_string()))
 }
 
-pub(super) fn is_github(url: &str) -> bool {
-    url.contains("github.com")
-}
-
+/// repository の origin が GitHub のリポジトリかを返す。
+/// 判定は domain の `GitHubRepository::from_origin_url` に委ねる。
 pub fn is_github_repository(
     repo_path: &str,
 ) -> Result<bool, crate::adaptor::gateway::shared::git_operation::GitOperationError> {
-    Ok(get_origin_url(repo_path)?.is_some_and(|url| is_github(&url)))
+    todo!()
 }
 
 #[cfg(test)]

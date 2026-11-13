@@ -65,6 +65,13 @@ pub struct DiagnosticReport {
     pub facet_usage: HashMap<String, Vec<FacetUsageEntry>>,
 }
 
+impl DiagnosticReport {
+    /// 診断の全体の件数を、重大度ごとに数える。1 件の診断は、定義と Facet の両方に関わっていても 1 件と数える。
+    pub fn total(&self) -> DiagnosticSummary {
+        todo!()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Facet を参照する定義、Node と枠。
 pub struct FacetUsageEntry {
