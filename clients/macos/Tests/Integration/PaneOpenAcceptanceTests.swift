@@ -74,6 +74,23 @@ final class PaneOpenAcceptanceTests: XCTestCase {
     XCTAssertEqual(request.provider, "codex")
     XCTAssertEqual(request.workspaceIdentity, "/repo/a")
     XCTAssertEqual(request.worktreePath, "/repo/a")
+    XCTAssertEqual(request.paneID, "second")
+    try await eventually { model.pendingSaves["/repo/a"] == nil }
+    var state = Releash_Client_V1_StatePayload()
+    state.workspaceState.value.version = 1
+    state.workspaceState.value.paneLayout =
+      PaneLayout.split(
+        id: "split", axis: .horizontal, ratio: 0.5,
+        first: .pane(id: "first", tabs: [], active: nil),
+        second: .pane(
+          id: "second",
+          tabs: [
+            PaneTab(id: "session-agent-session", kind: .session, agentSessionID: "agent-session")
+          ], active: nil)
+      ).message
+    state.workspaceState.value.etag = "1"
+    http.state.withLock { $0.layouts["/repo/a"] = state.workspaceState.value }
+    try http.publish(state, target: "workspace-state")
     try await eventuallyView(host) {
       host.element("terminal:agent-session") != nil && host.element("Accepted Session") != nil
     }
