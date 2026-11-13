@@ -75,6 +75,17 @@ final class SettingsRepositoriesTests: XCTestCase {
     XCTAssertEqual(host.element("settings-notion-label-Name")?.role, kAXCheckBoxRole)
     XCTAssertEqual(host.element("settings-notion-label-Status")?.role, kAXCheckBoxRole)
     XCTAssertNotNil(host.element("接続に成功しました"))
+    // When
+    payload.notionConfig.value.propertyMapping.title = "Name"
+    try http.publish(payload, target: "notion-config", args: ["/repo"])
+    // Then
+    try await eventuallyView(host) {
+      state.mapping.title == "Name"
+        && host.element("settings-notion-label-Name")?.enabled == true
+        && host.element("settings-notion-label-Status")?.enabled == true
+    }
+    XCTAssertEqual(state.validation, result)
+    XCTAssertNotNil(host.element("接続に成功しました"))
     await model.stop()
   }
 

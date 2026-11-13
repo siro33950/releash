@@ -47,6 +47,52 @@ final class SettingsRepositoriesTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_Notion設定通知_接続先が同じならmapping更新後も成功とpropertyを保持する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock {
+      $0.notionConfigs["/repo"] = .with {
+        $0.value.apiToken = "saved-token"
+        $0.value.databaseID = "saved-database"
+      }
+      $0.notionValidation.status.value = .configured
+      $0.notionValidation.properties.items = [
+        .with {
+          $0.name = "Name"
+          $0.propertyType = "title"
+        },
+        .with {
+          $0.name = "Status"
+          $0.propertyType = "status"
+        },
+      ]
+    }
+    let model = try await testModel(http)
+    let state = RepositorySettingsState(path: "/repo")
+    state.subscribe(model)
+    try await eventually { state.databaseID == "saved-database" }
+    await state.validateNotion(model: model)
+    let result = try XCTUnwrap(state.validation)
+    // When
+    var payload = Releash_Client_V1_StatePayload()
+    payload.notionConfig = try XCTUnwrap(state.notion)
+    payload.notionConfig.value.propertyMapping.title = "Name"
+    try http.publish(payload, target: "notion-config", args: ["/repo"])
+    try await eventually { state.mapping.title == "Name" }
+    // Then
+    XCTAssertEqual(state.validation, result)
+    XCTAssertEqual(state.validationMessage, "接続に成功しました")
+    XCTAssertEqual(state.validation?.properties.items.map(\.name), ["Name", "Status"])
+    // When
+    payload.notionConfig.value.databaseID = "other-database"
+    try http.publish(payload, target: "notion-config", args: ["/repo"])
+    try await eventually { state.databaseID == "other-database" }
+    // Then
+    XCTAssertNil(state.validation)
+    state.unsubscribe(model)
+    await model.stop()
+  }
+
   @MainActor func test_Repository購読_パスごとの保存値と変更を受け取り終了時に解放する() async throws {
     // Given
     let http = TestHTTPClient()

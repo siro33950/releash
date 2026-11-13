@@ -295,7 +295,6 @@ struct RepositorySettingsView: View {
     apiToken = notion?.value.apiToken ?? ""
     databaseID = notion?.value.databaseID ?? ""
     mapping = notion?.value.propertyMapping ?? .init()
-    validation = nil
   }
 
   private func save(
@@ -305,7 +304,10 @@ struct RepositorySettingsView: View {
     await saveSetting(
       field, model,
       cleanup: {
-        if field == .notion { self.restoreNotion() }
+        if field == .notion {
+          self.restoreNotion()
+          self.validation = nil
+        }
       }, operation: operation)
   }
 }
