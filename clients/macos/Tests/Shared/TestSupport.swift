@@ -19,6 +19,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var streams: [ResponseCallbacks] = []
     var subscriptions: [Releash_Client_V1_StartStateSubscriptionRequest] = []
     var initialDeliveries: [String: InitialDelivery] = [:]
+    var deferredInitialTargets: Set<String> = []
     var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
     var layouts: [String: Releash_Client_V1_WorkspaceStateDto] = [:]
     var providerUsage = Releash_Client_V1_ProviderUsageSnapshot()
@@ -201,7 +202,10 @@ final class TestHTTPClient: HTTPClientInterface {
         var event = Releash_Client_V1_StateSubscriptionEvent()
         event.subscriptionID = subscription.subscriptionID
         event.snapshot = payload
-        if let stream { try Self.send(event, on: stream) }
+        if let stream, !state.withLock({ $0.deferredInitialTargets.contains(subscription.target) })
+        {
+          try Self.send(event, on: stream)
+        }
         while true {
           let pending = state.withLock { state in
             let pending = state.initialDeliveries[subscription.subscriptionID]?.pending ?? []
