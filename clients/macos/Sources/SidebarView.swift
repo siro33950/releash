@@ -118,7 +118,9 @@ struct WorktreeCard: View {
         }
         if let warning {
           CardIcon(image: Image("triangle-alert"))
-            .foregroundStyle(.secondary).help(warning)
+            .foregroundStyle(.secondary)
+            .help(warning)
+            .overlay { WorktreeWarningTooltip(message: warning).allowsHitTesting(false) }
         }
       }
       VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
@@ -202,5 +204,19 @@ struct WorktreeCard: View {
       _ = try await client.removeWorktree(request: request, headers: model.headers).result.get()
       model.deselectWorktree(request.worktreePath)
     }
+  }
+}
+
+private struct WorktreeWarningTooltip: NSViewRepresentable {
+  let message: String
+
+  func makeNSView(context: Context) -> TooltipView { TooltipView() }
+
+  func updateNSView(_ view: TooltipView, context: Context) {
+    view.toolTip = message
+  }
+
+  final class TooltipView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
   }
 }
