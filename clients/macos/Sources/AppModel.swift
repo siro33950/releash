@@ -765,10 +765,11 @@ extension AppModel {
     for root in roots { panes.renameNode(root.rootID, title: root.rootTabTitle) }
   }
 
-  func startSession(provider: String, path: String) async throws {
+  func startSession(provider: String, path: String, pane: PaneID? = nil) async throws {
     guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
     var request = Releash_Client_V1_CreateAgentSessionRequest()
     request.provider = provider
+    if let pane { request.paneID = panes.paneIdentifier(pane) }
     request.workspaceIdentity = path
     request.worktreePath = path
     request.rows = UIStyle.terminalRows

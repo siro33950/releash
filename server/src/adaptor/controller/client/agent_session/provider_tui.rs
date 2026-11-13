@@ -103,7 +103,7 @@ pub(crate) async fn create_agent_session_shared(
             rows: convert(required(args.rows, "rows")?)?,
             cols: convert(required(args.cols, "cols")?)?,
             caller_request_id: required(args.caller_request_id, "callerRequestId")?,
-            pane: todo!(),
+            pane: args.pane_id,
         })
         .await
         .map_err(|error| launch_error(error, AgentSessionLaunchOperation::Start).into())

@@ -65,7 +65,36 @@ impl PaneLayout {
         node_id: &str,
         pane: Option<&str>,
     ) {
-        todo!()
+        if self.contains_session(session_id) || self.bind_pending_session(session_id, node_id) {
+            return;
+        }
+        let mut id = format!("session-{session_id}");
+        while self.contains_id(&id) {
+            id.push('-');
+        }
+        let tab = PaneTab {
+            id,
+            kind: PaneTabKind::Session,
+            node_id: None,
+            agent_session_id: Some(session_id.into()),
+        };
+        if let Some(target) = pane.and_then(|id| self.find_pane_mut(id)) {
+            target.append_tab(tab);
+        } else {
+            self.append_tab(tab);
+        }
+    }
+
+    fn find_pane_mut(&mut self, target: &str) -> Option<&mut Self> {
+        if matches!(&self.0, PaneLayoutNode::Pane { id, .. } if id == target) {
+            return Some(self);
+        }
+        match &mut self.0 {
+            PaneLayoutNode::Split { first, second, .. } => first
+                .find_pane_mut(target)
+                .or_else(|| second.find_pane_mut(target)),
+            PaneLayoutNode::Pane { .. } => None,
+        }
     }
 
     fn append_tab(&mut self, tab: PaneTab) {

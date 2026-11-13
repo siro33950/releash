@@ -369,6 +369,10 @@ import SwiftUI
     controller.focusedPaneId == pane && controller.selectedTab(inPane: pane)?.id == tab
   }
 
+  func paneIdentifier(_ pane: PaneID) -> String {
+    identifiers[pane.id.uuidString] ?? pane.id.uuidString
+  }
+
   func tab(_ id: TabID) -> PaneTab? { tabs[id.id.uuidString] }
 
   func splitTabBar(

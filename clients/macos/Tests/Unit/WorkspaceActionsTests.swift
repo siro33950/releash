@@ -6,6 +6,29 @@ import XCTest
 @testable import Releash
 
 final class WorkspaceActionsTests: XCTestCase {
+  @MainActor func testSessionLaunchSendsOriginalPaneIdentifierOnlyWhenSpecified() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    try model.panes.restore(
+      .split(
+        id: "split", axis: .horizontal, ratio: 0.5,
+        first: .pane(id: "first", tabs: [], active: nil),
+        second: .pane(id: "second", tabs: [], active: nil)))
+    let second = try XCTUnwrap(model.panes.controller.allPaneIds.last)
+    // When
+    try await model.startSession(provider: "codex", path: "/repo/a", pane: second)
+    try await model.startSession(provider: "codex", path: "/repo/a")
+    // Then
+    let requests = try http.requests("CreateAgentSession").map {
+      try Releash_Client_V1_CreateAgentSessionRequest(serializedBytes: XCTUnwrap($0.message))
+    }
+    XCTAssertEqual(requests.count, 2)
+    XCTAssertEqual(requests[0].paneID, "second")
+    XCTAssertFalse(requests[1].hasPaneID)
+    await model.stop()
+  }
+
   @MainActor func testLaunchFailureDisplaysServerReasonWithoutOpeningTabs() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
