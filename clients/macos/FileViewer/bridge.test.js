@@ -12,6 +12,7 @@ class Element {
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener() {}
+  focus() { this.focused = true; }
 }
 
 async function bridge() {
@@ -44,7 +45,7 @@ async function bridge() {
   });
   vm.runInNewContext(compiled.outputFiles[0].text, {
     window, document: { getElementById: (id) => elements[id], createElement: (name) => new Element(name) },
-    TextEncoder, TextDecoder, console,
+    TextEncoder, TextDecoder, console, queueMicrotask: (callback) => callback(),
   });
   return { window, messages, instances, elements, renderer: () => instances.at(-1) };
 }
@@ -108,25 +109,30 @@ test('threads show comments, collapse resolved threads and send reply and resolv
   ui.window.releashRender({ ...payload(), threads: [thread] });
   const render = ui.renderer().options.renderAnnotation;
   const open = render({ metadata: thread });
-  assert.equal(open.open, true);
-  assert.equal(open.children[0].textContent, 'human');
-  assert.equal(open.children[1].textContent, 'selected deleted line');
+  assert.equal(open.children[0].children[0].children[0].children[1].textContent, 'human');
+  assert.equal(open.children[0].children[0].children[1].innerHTML, '<p>selected deleted line</p>\n');
   const input = open.children.find((element) => element.attributes['aria-label'] === 'Threadへの返信');
   input.value = 'reply body';
-  open.children.find((element) => element.textContent === '返信').onclick();
+  input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'reply', id: 't1', content: 'reply body', requestID: 1 });
   const replied = { ...thread, comments: [...thread.comments, { author: 'human', content: 'reply body' }] };
   ui.window.releashRender({ ...payload(), threads: [replied] });
   const refreshed = render(ui.renderer().input.lineAnnotations[0]);
-  assert.equal(refreshed.children[2].textContent, 'reply body');
-  open.children.find((element) => element.textContent === '解決').onclick();
+  assert.equal(refreshed.children[0].children[1].children[1].innerHTML, '<p>reply body</p>\n');
+  open.children.find((element) => element.textContent === '解決にする').onclick();
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'resolve', id: 't1' });
   ui.window.releashRender({ ...payload(), threads: [{ ...thread, resolved: true }] });
   const resolved = render(ui.renderer().input.lineAnnotations[0]);
-  assert.equal(resolved.open, false);
-  assert.equal(resolved.children[0].textContent, 'human（解決済み）');
+  assert.equal(resolved.children[1].children.length, 0);
+  const toggle = resolved.children[0].children[1];
+  assert.equal(toggle.textContent, '表示');
+  toggle.onclick();
+  assert.equal(toggle.textContent, '隠す');
+  assert.equal(resolved.children[1].children.length, 1);
+  toggle.onclick();
+  assert.equal(resolved.children[1].children.length, 0);
   assert.equal(resolved.children.length, 2);
-  assert.equal(render({ metadata: { ...thread, canResolve: false } }).children.some((e) => e.textContent === '解決'), false);
+  assert.equal(render({ metadata: { ...thread, canResolve: false } }).children.some((e) => e.textContent === '解決にする'), false);
 });
 
 test('changing comparisons recreates the renderer and clears the selection', async () => {
@@ -156,7 +162,7 @@ test('reply drafts survive subscription updates and failed sends, and clear only
   ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
   const refreshed = render();
   assert.equal(input(refreshed).value, 'unsent reply');
-  refreshed.children.find((child) => child.textContent === '返信').onclick();
+  input(refreshed).onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
   const request = ui.messages.at(-1);
   ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
   assert.equal(input(render()).value, 'unsent reply');
@@ -175,7 +181,7 @@ test('accepting a reply preserves text edited while the request was pending', as
   const element = annotation();
   const input = element.children.find((child) => child.tagName === 'textarea');
   input.value = 'sent'; input.oninput();
-  element.children.find((child) => child.textContent === '返信').onclick();
+  input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
   const request = ui.messages.at(-1);
   input.value = 'new draft'; input.oninput();
   ui.window.releashReplyAccepted(request.id, request.requestID);
@@ -203,4 +209,54 @@ test('thread ranges and line selection use the accent color from the app', async
   ui.window.releashRender({ ...next, mode: 'file', threads: [{ id: 'f', line: 7, endLine: 9, comments: [] }] });
   assert.equal(ui.renderer().input.lineAnnotations[0].lineNumber, 9);
   assert.equal(ui.renderer().options.unsafeCSS, ':host{--diffs-bg-selection-override:#112233;--diffs-bg-selection-number-override:#112233}\n[data-line="7"],[data-line="8"],[data-line="9"]{box-shadow:inset 3px 0 #112233;background-color:color-mix(in srgb,var(--diffs-bg) 85%,#112233);}');
+});
+
+
+test('本文のMarkdownは整形しHTMLと危険なURLを実行しない', async () => {
+  const ui = await bridge();
+  const thread = { id: 'markdown', line: 1, comments: [{ author: 'a',
+    content: '# Heading\n\n- item\n\n`code` **bold** ![image](https://example.com/a.png) [link](https://example.com)\n\n<script>alert(1)</script> [bad](javascript:alert(1))' }] };
+  ui.window.releashRender({ ...payload(), threads: [thread] });
+  const card = ui.renderer().options.renderAnnotation({ metadata: thread });
+  const html = card.children[0].children[0].children[1].innerHTML;
+  for (const part of ['<h1>Heading</h1>', '<li>item</li>', '<code>code</code>', '<strong>bold</strong>', '<img src="https://example.com/a.png"', '<a href="https://example.com"', '&lt;script&gt;']) assert.ok(html.includes(part), html);
+  assert.ok(!html.includes('<script>'));
+  assert.ok(!html.includes('href="javascript:'));
+  assert.equal(ui.messages.length, 1);
+});
+
+test('返信はCommand Returnだけで送り空白とIME変換中は送らない', async () => {
+  const ui = await bridge();
+  const thread = { id: 'reply', line: 1, comments: [] };
+  ui.window.releashRender({ ...payload(), threads: [thread] });
+  const input = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
+  input.value = 'reply';
+  input.onkeydown({ key: 'Enter', metaKey: false });
+  input.onkeydown({ key: 'Enter', metaKey: true, isComposing: true });
+  input.value = '  ';
+  input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
+  assert.equal(ui.messages.length, 1);
+});
+
+test('作成カードは範囲末尾に出て入力を保ち作成とキャンセルを送る', async () => {
+  const ui = await bridge();
+  const next = { ...payload(), composer: { line: 1, endLine: 2, side: 'deletions' } };
+  ui.window.releashRender(next);
+  const render = () => ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  assert.equal(ui.renderer().input.lineAnnotations[0].lineNumber, 2);
+  assert.equal(ui.renderer().input.lineAnnotations[0].side, 'deletions');
+  let card = render();
+  assert.equal(card.children[0].focused, true);
+  assert.equal(card.children[2].disabled, true);
+  card.children[0].value = 'draft'; card.children[0].oninput();
+  ui.window.releashRender(next);
+  card = render();
+  assert.equal(card.children[0].value, 'draft');
+  card.children[2].onclick();
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'create', content: 'draft' });
+  card.children[1].onclick();
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'cancelCreate' });
+  ui.window.releashRender(payload());
+  ui.window.releashRender(next);
+  assert.equal(render().children[0].value, '');
 });

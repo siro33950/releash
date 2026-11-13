@@ -55,7 +55,7 @@ final class FileTabPaneTests: XCTestCase {
         XCTAssertEqual(annotations[0]["resolved"] as? Bool, resolved)
         XCTAssertEqual(annotations[0]["canResolve"] as? Bool, true)
         XCTAssertEqual(
-          (annotations[0]["comments"] as? [[String: String]])?.first?["content"], "body")
+          (annotations[0]["comments"] as? [[String: Any]])?.first?["content"] as? String, "body")
       }
     }
   }
@@ -134,6 +134,63 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(model.failure).contains("AppendReviewComment failed"))
     XCTAssertEqual(acceptedReplies, 1)
     await model.stop()
+  }
+
+  @MainActor func test_作成カード_失敗時は本文を保持しキャンセルでは送らない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    view.action(["kind": "select", "line": 2, "endLine": 3])
+    view.startThread()
+    http.state.withLock { $0.failedMethod = "CreateReviewThread" }
+    // When
+    view.action(["kind": "create", "content": "draft"])
+    view.action(["kind": "create", "content": "draft"])
+    try await eventually { model.failure != nil && !view.draft.sending }
+    // Then
+    XCTAssertEqual(http.requests("CreateReviewThread").count, 1)
+    XCTAssertEqual(view.draft.content, "draft")
+    XCTAssertEqual(view.draft.line, 2)
+    XCTAssertNotNil(view.bridgePayload(.init(), .init(), colorScheme: .light)["composer"])
+    view.action(["kind": "cancelCreate"])
+    XCTAssertNil(view.draft.line)
+    XCTAssertNil(view.bridgePayload(.init(), .init(), colorScheme: .light)["composer"])
+    XCTAssertEqual(http.requests("CreateReviewThread").count, 1)
+    await model.stop()
+  }
+
+  @MainActor func test_カードの見出し_Commentと解決者の記録を渡す() throws {
+    // Given
+    var thread = Releash_Client_V1_ReviewThreadDto()
+    thread.target.lineNumber = 1
+    thread.resolve.actor.displayName = "resolver"
+    thread.resolve.resolvedAt = 200
+    thread.comments.items = [
+      .with {
+        $0.author.displayName = "agent"
+        $0.author.kind.value = .agent
+        $0.author.model = "model"
+        $0.createdAt = 100
+        $0.content = "body"
+      }
+    ]
+    let model = AppModel()
+    let base = try pane(model)
+    let view = FileTabPane(
+      model: model, tabID: base.tabID, path: base.path, worktree: base.worktree,
+      threads: .with { $0.threads.items = [thread] })
+    // When
+    let payload = view.bridgePayload(.init(), .init(), colorScheme: .light)
+    let annotation = try XCTUnwrap((payload["threads"] as? [[String: Any]])?.first)
+    let comment = try XCTUnwrap((annotation["comments"] as? [[String: Any]])?.first)
+    // Then
+    XCTAssertEqual(annotation["resolvedBy"] as? String, "resolver")
+    XCTAssertEqual(annotation["resolvedAt"] as? Double, 200)
+    XCTAssertEqual(comment["agent"] as? Bool, true)
+    XCTAssertEqual(comment["author"] as? String, "agent")
+    XCTAssertEqual(comment["model"] as? String, "model")
+    XCTAssertEqual(comment["createdAt"] as? Double, 100)
   }
 
   @MainActor func testImagesUseOnlyPresentSidesAndBinaryShowsReasonAndSize() throws {

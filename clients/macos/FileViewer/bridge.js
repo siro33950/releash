@@ -1,4 +1,5 @@
 import { VirtualizedFile, VirtualizedFileDiff, Virtualizer } from '@pierre/diffs';
+import MarkdownIt from 'markdown-it';
 import { metadata, renderType } from './metadata.js';
 
 const viewport = document.getElementById('viewport');
@@ -14,6 +15,16 @@ let diffMetadata;
 const replies = new Map();
 const replyInputs = new Map();
 let replyVersion = 0;
+let composerContent = '';
+const expanded = new Set();
+const markdown = new MarkdownIt({ html: false });
+const relativeTime = (timestamp) => {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+  for (const [unit, size] of [['年', 31536000], ['日', 86400], ['時間', 3600], ['分', 60]]) {
+    if (seconds >= size) return `${Math.floor(seconds / size)} ${unit}前`;
+  }
+  return 'たった今';
+};
 window.releashReplyAccepted = (id, version) => {
   if (replies.get(id)?.version !== version) return;
   replies.delete(id);
@@ -65,31 +76,98 @@ const threadRangeCSS = (threads, type, accent) => threads.map((thread) => {
 }).join('\n');
 // 行選択の色もアクセントカラーに合わせる。ライブラリの既定は独自の青
 const viewerCSS = (next, type) => [`:host{--diffs-bg-selection-override:${next.accent};--diffs-bg-selection-number-override:${next.accent}}`, threadRangeCSS(next.threads, type, next.accent)].join('\n');
-function annotation({ metadata: thread }) {
-  const element = document.createElement('details');
-  element.open = !thread.resolved;
-  // 見出しは発言者、本文は発言の内容
-  const summary = document.createElement('summary');
-  const author = thread.comments[0]?.author ?? '';
-  summary.textContent = thread.resolved ? `${author}（解決済み）` : author;
-  element.append(summary);
-  for (const comment of thread.comments) {
-    const body = document.createElement('p');
-    body.textContent = comment.content;
-    element.append(body);
+function commentView(comment) {
+  const element = document.createElement('article');
+  const heading = document.createElement('header');
+  const icon = document.createElement('span');
+  icon.className = 'thread-avatar';
+  icon.textContent = comment.agent ? '🤖' : Array.from(comment.author)[0] ?? '';
+  if (comment.agent) {
+    icon.setAttribute('role', 'img');
+    icon.setAttribute('aria-label', 'agent');
   }
+  const name = document.createElement('span');
+  name.textContent = comment.author;
+  heading.append(icon, name);
+  if (comment.model) {
+    const model = document.createElement('span');
+    model.textContent = comment.model;
+    heading.append(model);
+  }
+  const time = document.createElement('time');
+  time.textContent = relativeTime(comment.createdAt);
+  heading.append(time);
+  const body = document.createElement('div');
+  body.className = 'thread-body';
+  body.innerHTML = markdown.render(comment.content);
+  element.append(heading, body);
+  return element;
+}
+function composer(thread) {
+  const element = document.createElement('section');
+  element.className = 'thread-card';
+  const input = document.createElement('textarea');
+  input.placeholder = 'コメントを書く…（Markdown）';
+  input.setAttribute('aria-label', input.placeholder);
+  input.value = composerContent;
+  input.disabled = thread.sending;
+  const create = button('Thread を作る', () => {
+    if (input.value.trim()) send({ kind: 'create', content: input.value });
+  });
+  create.disabled = thread.sending || !input.value.trim();
+  input.oninput = () => {
+    composerContent = input.value;
+    create.disabled = thread.sending || !input.value.trim();
+  };
+  element.append(input, button('キャンセル', () => send({ kind: 'cancelCreate' })), create);
+  queueMicrotask(() => input.focus());
+  return element;
+}
+function annotation({ metadata: thread }) {
+  if (thread.composer) return composer(thread);
+  const element = document.createElement('section');
+  element.className = 'thread-card';
+  const comments = document.createElement('div');
+  const showComments = () => comments.replaceChildren(...thread.comments.map(commentView));
+  if (thread.resolved) {
+    const summary = document.createElement('header');
+    const label = document.createElement('span');
+    label.textContent = `${thread.resolvedBy} が解決にしました · ${relativeTime(thread.resolvedAt)}`;
+    const toggle = button(expanded.has(thread.id) ? '隠す' : '表示', () => {
+      if (expanded.delete(thread.id)) {
+        comments.replaceChildren();
+        toggle.textContent = '表示';
+      } else {
+        expanded.add(thread.id);
+        showComments();
+        toggle.textContent = '隠す';
+      }
+    });
+    summary.append(label, toggle);
+    element.append(summary);
+    if (expanded.has(thread.id)) showComments();
+  } else {
+    expanded.delete(thread.id);
+    showComments();
+  }
+  element.append(comments);
   if (!thread.resolved) {
     const input = document.createElement('textarea');
     input.setAttribute('aria-label', 'Threadへの返信');
+    input.placeholder = '返信を書く…';
     input.value = replies.get(thread.id)?.content ?? '';
     replyInputs.set(thread.id, input);
     input.oninput = () => replies.set(thread.id, { content: input.value, version: ++replyVersion });
-    element.append(input, button('返信', () => {
+    input.onkeydown = (event) => {
+      if (event.key !== 'Enter' || !event.metaKey || event.isComposing) return;
+      event.preventDefault();
+      if (!input.value.trim()) return;
       if (replies.get(thread.id)?.content !== input.value) input.oninput();
       const draft = replies.get(thread.id);
       send({ kind: 'reply', id: thread.id, content: draft.content, requestID: draft.version });
-    }));
-    if (thread.canResolve) element.append(button('解決', () => send({ kind: 'resolve', id: thread.id })));
+    };
+    element.append(input);
+    if (thread.canResolve) element.append(button('解決にする', () => send({ kind: 'resolve', id: thread.id })));
   }
   return element;
 }
@@ -100,6 +178,8 @@ window.releashRender = (next) => {
     diffMetadata = undefined;
   }
   const baseChanged = payload?.base !== next.base;
+  if (!next.composer || !payload?.composer || next.composer.id !== payload.composer.id) composerContent = '';
+  replyInputs.clear();
   payload = next;
   const type = renderType(next);
   const options = {
@@ -122,12 +202,14 @@ window.releashRender = (next) => {
     renderer = type === 'diff' ? new VirtualizedFileDiff(options, virtualizer) : new VirtualizedFile(options, virtualizer);
     mode = type;
   } else renderer.setOptions(options);
+  const annotations = [...next.threads];
+  if (next.composer) annotations.push({ ...next.composer, composer: true });
   if (mode === 'diff' && next.patch) {
     // 注釈は範囲の最後の行の下に出す
-    const lineAnnotations = next.threads.map((thread) => ({ side: thread.endSide ?? thread.side ?? (next.deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line, metadata: thread }));
+    const lineAnnotations = annotations.map((thread) => ({ side: thread.endSide ?? thread.side ?? (next.deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line, metadata: thread }));
     renderer.render({ fileContainer: container, fileDiff: diffMetadata ??= metadata(next), lineAnnotations });
   } else {
-    renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: next.threads.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
+    renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
   }
 };
 send({ kind: 'ready' });

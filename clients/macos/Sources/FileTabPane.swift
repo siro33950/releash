@@ -62,17 +62,7 @@ struct FileTabPane: View {
       if let threadSubscription { model.unsubscribe(threadSubscription) }
     }
     .onChange(of: base) { _, _ in subscribe() }
-    .sheet(isPresented: Binding(get: { draft.line != nil }, set: { if !$0 { draft.line = nil } })) {
-      VStack {
-        Text("Thread作成").font(.headline)
-        TextEditor(text: $draft.content).frame(minWidth: 360, minHeight: 120)
-        HStack {
-          Button("キャンセル") { draft.line = nil }
-          Button("作成", action: createThread).disabled(
-            draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-      }.padding()
-    }
+
   }
   var toolbar: some View {
     HStack(spacing: 4) {
@@ -185,7 +175,7 @@ struct FileTabPane: View {
     _ text: Releash_Client_V1_ReviewTextDiffDto, _ value: Releash_Client_V1_FileTabView,
     colorScheme: ColorScheme
   ) -> [String: Any] {
-    [
+    var result: [String: Any] = [
       "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
@@ -197,8 +187,17 @@ struct FileTabPane: View {
           "id": thread.id, "line": thread.target.lineNumber,
           "resolved": thread.state.value == .resolved,
           "canResolve": thread.canResolve,
-          "comments": thread.comments.items.map {
-            ["author": $0.author.displayName, "content": $0.content]
+          "resolvedBy": thread.resolve.actor.displayName,
+          "resolvedAt": thread.resolve.resolvedAt,
+          "comments": thread.comments.items.map { comment -> [String: Any] in
+            var value: [String: Any] = [
+              "author": comment.author.displayName, "content": comment.content,
+              "agent": comment.author.kind.value == .agent, "createdAt": comment.createdAt,
+            ]
+            if comment.author.kind.value == .agent, comment.author.hasModel {
+              value["model"] = comment.author.model
+            }
+            return value
           },
         ]
         if thread.target.hasEndLine { annotation["endLine"] = thread.target.endLine }
@@ -212,11 +211,32 @@ struct FileTabPane: View {
         return annotation
       },
     ]
+    if let line = draft.line {
+      var composer: [String: Any] = [
+        "line": line, "endLine": draft.endLine ?? line, "id": draft.id.uuidString,
+        "sending": draft.sending,
+      ]
+      if let side = draft.side { composer["side"] = side == .deletions ? "deletions" : "additions" }
+      if let side = draft.endSide {
+        composer["endSide"] = side == .deletions ? "deletions" : "additions"
+      }
+      result["composer"] = composer
+    }
+    return result
   }
   func action(_ message: [String: Any], onReplyAccepted: @escaping () -> Void = {}) {
     guard let kind = message["kind"] as? String, let client = model.client else { return }
     if kind == "select" {
       draft.selection = FileLineSelection(message)
+      return
+    }
+    if kind == "cancelCreate" {
+      draft.line = nil
+      return
+    }
+    if kind == "create" {
+      draft.content = message["content"] as? String ?? ""
+      createThread()
       return
     }
     guard let id = message["id"] as? String else { return }
@@ -244,6 +264,8 @@ struct FileTabPane: View {
   }
   func startThread() {
     guard let selection = draft.selection else { return }
+    guard !draft.sending else { return }
+    draft.id = UUID()
     draft.line = selection.line
     draft.endLine = selection.endLine
     draft.side = selection.side
@@ -251,7 +273,8 @@ struct FileTabPane: View {
     draft.content = ""
   }
   func createThread() {
-    guard let client = model.client, let line = draft.line else { return }
+    guard let client = model.client, let line = draft.line, !draft.sending else { return }
+    guard !draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     var request = Releash_Client_V1_CreateReviewThreadRequest()
     request.worktreeName = worktree
     request.filePath = path
@@ -260,9 +283,12 @@ struct FileTabPane: View {
     if let side = draft.side { request.side.value = side }
     if let endSide = draft.endSide { request.endSide.value = endSide }
     request.content = draft.content
+    let id = draft.id
+    draft.sending = true
     model.perform {
+      defer { draft.sending = false }
       _ = try await client.createReviewThread(request: request, headers: model.headers).result.get()
-      draft.line = nil
+      if draft.id == id { draft.line = nil }
     }
   }
 }
@@ -294,6 +320,8 @@ struct FileLineSelection: Equatable {
 }
 
 @Observable @MainActor final class FileThreadDraft {
+  var id = UUID()
+  var sending = false
   var selection: FileLineSelection?
   var line: UInt32?
   var endLine: UInt32?
@@ -345,6 +373,7 @@ struct FileWebView: NSViewRepresentable {
     weak var web: WKWebView?
     var payload: [String: Any] = [:]
     var ready = false
+    private var composing = false
     var onAction: ([String: Any], @escaping () -> Void) -> Void
     init(model: AppModel, onAction: @escaping ([String: Any], @escaping () -> Void) -> Void) {
       self.model = model
@@ -375,6 +404,10 @@ struct FileWebView: NSViewRepresentable {
     }
     func render() {
       guard ready, !payload.isEmpty else { return }
+      if payload["composer"] != nil, !composing {
+        web?.window?.makeFirstResponder(web)
+      }
+      composing = payload["composer"] != nil
       web?.callAsyncJavaScript(
         "window.releashRender(payload)", arguments: ["payload": payload], in: nil, in: world
       ) { [weak self] result in
@@ -385,6 +418,15 @@ struct FileWebView: NSViewRepresentable {
       _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
       decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
+      if navigationAction.navigationType == .linkActivated {
+        if let url = navigationAction.request.url,
+          ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "")
+        {
+          NSWorkspace.shared.open(url)
+        }
+        decisionHandler(.cancel)
+        return
+      }
       decisionHandler(navigationAction.request.url?.isFileURL == true ? .allow : .cancel)
     }
   }

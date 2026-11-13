@@ -69,7 +69,16 @@ struct ThreadPanelView: View {
       .frame(maxWidth: .infinity).padding(UIStyle.spacing)
       .accessibilityIdentifier("thread-add-general")
     }
-    .textual.imageAttachmentLoader(ThreadImageAttachmentLoader())
+    .environment(
+      \.openURL,
+      OpenURLAction { url in
+        guard ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") else {
+          return .discarded
+        }
+        NSWorkspace.shared.open(url)
+        return .handled
+      }
+    )
     .onAppear {
       subscription = model.subscribe("review-threads", [worktree]) { payload in
         if case .reviewThreads(let value) = payload.value { state.receive(value.items) }
@@ -175,14 +184,6 @@ struct ThreadPanelView: View {
   func receive(_ threads: [Releash_Client_V1_ReviewThreadDto]) {
     self.threads = threads
     checked.formIntersection(threads.map(\.id))
-  }
-}
-
-private struct ThreadImageAttachmentLoader: AttachmentLoader {
-  func attachment(for url: URL, text: String, environment: ColorEnvironmentValues) async throws
-    -> AnyAttachment
-  {
-    throw URLError(.unsupportedURL)
   }
 }
 
