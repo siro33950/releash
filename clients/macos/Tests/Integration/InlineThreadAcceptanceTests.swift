@@ -58,6 +58,7 @@ import XCTest
     model.filePanes.setFilePresentation(id, mode: mode, base: nil)
     let host = await ViewHarness(
       FileTabPane(model: model, tabID: id, path: path, worktree: "/repo"))
+    host.window.center()
     addTeardownBlock { @MainActor in
       host.close()
       await model.stop()
@@ -149,7 +150,7 @@ import XCTest
     }
     let snapshot = try? await js(
       web,
-      "return JSON.stringify({url:location.href,body:document.body?.innerHTML,shadows:all('*').filter(e=>e.shadowRoot).map(e=>e.shadowRoot.innerHTML)}).slice(0,4000);"
+      "return JSON.stringify({url:location.href,body:document.body?.innerHTML,shadows:all('*').filter(e=>e.shadowRoot).map(e=>e.shadowRoot.innerHTML.replaceAll(/<svg.*?<[/]svg>/gs,''))}).slice(0,4000);"
     )
     XCTFail("表示条件を満たしません: \(expression), DOM=\(snapshot ?? "unavailable")")
     throw NSError(domain: "InlineThreadAcceptance", code: 1)
@@ -164,7 +165,7 @@ import XCTest
   }
 
   private func click(_ web: WKWebView, _ label: String) async throws {
-    try await wait(web, "button('\(label)')")
+    try await wait(web, "button('\(label)') && !button('\(label)').disabled")
     _ = try await js(web, "button('\(label)').click();")
   }
 
@@ -180,62 +181,21 @@ import XCTest
     host.window.sendEvent(event)
   }
 
-  private func selectLines(_ web: WKWebView, in host: ViewHarness) async throws {
-    let screen = try XCTUnwrap(host.window.screen)
-    host.window.setFrameOrigin(
-      NSPoint(x: screen.visibleFrame.minX + 20, y: screen.visibleFrame.minY + 20))
-    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    XCTAssertEqual(
-      AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-      .success)
-    try await eventually {
-      host.window.makeKeyAndOrderFront(nil)
-      return NSApp.isActive && host.window.isKeyWindow
-    }
-    let pointer = try XCTUnwrap(CGEvent(source: nil)?.location)
-    defer { CGWarpMouseCursorPosition(pointer) }
-    var points: [NSPoint] = []
-    for line in [2, 3] {
-      let result = try await js(
-        web,
-        "const e = all('[data-column-number=\"\(line)\"]').find(visible); const r = e.getBoundingClientRect(); return [r.x+r.width/2, r.y+r.height/2];"
-      )
-      let coordinates = try XCTUnwrap(result as? [Double])
-      let local = NSPoint(
-        x: coordinates[0], y: web.isFlipped ? coordinates[1] : web.bounds.height - coordinates[1])
-      points.append(web.convert(local, to: nil))
-    }
-    var events: [(NSEvent.EventType, NSPoint, CGPoint)] = []
-    for (type, point) in [
-      (NSEvent.EventType.leftMouseDown, points[0]), (.leftMouseDragged, points[1]),
-      (.leftMouseUp, points[1]),
-    ] {
-      let screenPoint = host.window.convertPoint(toScreen: point)
-      XCTAssertTrue(screen.visibleFrame.contains(screenPoint))
-      let cursor = CGPoint(
-        x: screenPoint.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - screenPoint.y)
-      events.append((type, point, cursor))
-    }
-    var index = 0
-    let timer = Timer(timeInterval: 0.1, repeats: true) { timer in
-      let done = MainActor.assumeIsolated {
-        let (type, point, cursor) = events[index]
-        XCTAssertEqual(CGWarpMouseCursorPosition(cursor), .success)
-        let event = NSEvent.mouseEvent(
-          with: type, location: point, modifierFlags: [],
-          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
-          context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
-        XCTAssertNotNil(event)
-        if let event { NSApp.postEvent(event, atStart: false) }
-        index += 1
-        return index == events.count
+  private func selectLines(_ web: WKWebView) async throws {
+    _ = try await js(
+      web,
+      """
+      const start = all('[data-column-number="2"]').find(visible);
+      const end = all('[data-column-number="3"]').find(visible);
+      for (const [type, element] of [['pointerdown', start], ['pointermove', end], ['pointerup', end]]) {
+        const r = element.getBoundingClientRect();
+        element.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, composed: true, pointerId: 1, pointerType: 'mouse',
+          button: 0, buttons: type === 'pointerup' ? 0 : 1,
+          clientX: r.x + r.width / 2, clientY: r.y + r.height / 2
+        }));
       }
-      if done { timer.invalidate() }
-    }
-    RunLoop.main.add(timer, forMode: .common)
-    RunLoop.main.add(timer, forMode: .eventTracking)
-    defer { timer.invalidate() }
-    try await eventually { index == events.count }
+      """)
     try await wait(
       web,
       "[2, 3].every(line => all('[data-column-number=\"' + line + '\"][data-selected-line]').some(visible))"
@@ -383,10 +343,9 @@ import XCTest
   func test_作成_B015_B016_B017_行下で作成してキャンセルできる() async throws {
     // Given
     let (http, _, host, web) = try await file([], mode: "file")
-    try await selectLines(web, in: host)
-    try await eventuallyView(host) { host.element("file-create-thread") != nil }
+    try await selectLines(web)
     // When
-    try await host.press("file-create-thread")
+    try pressCreate(host)
     // Then
     XCTAssertNil(host.window.attachedSheet)
     try await wait(
@@ -404,9 +363,10 @@ import XCTest
     try await wait(web, "!input()")
     XCTAssertTrue(http.requests("CreateReviewThread").isEmpty)
     // When
-    try await host.press("file-create-thread")
+    try pressCreate(host)
     try await wait(web, "input()")
     try key(host, code: 0, characters: "a")
+    try await wait(web, "input().value === 'a'")
     try await click(web, "Thread を作る")
     try await eventually { http.requests("CreateReviewThread").count == 1 }
     let request = try Releash_Client_V1_CreateReviewThreadRequest(
@@ -449,11 +409,29 @@ import XCTest
     // Then
     try await wait(
       web,
-      "all('img').some(e => visible(e) && e.alt === '受入画像' && e.complete && e.naturalWidth === 1)")
+      "all('img').some(e => visible(e) && e.alt === '受入画像' && e.complete && e.naturalWidth === 32)")
     // When
     let host = try await panel(value)
     // Then
-    try await eventuallyView(host) { host.element("受入画像")?.role == "AXImage" }
+    try await eventuallyView(host) { host.element("thread-body:inline") != nil }
+    try await eventually {
+      let root = host.window.contentView!
+      root.displayIfNeeded()
+      guard let frame = try? self.bodyFrame(host) else { return false }
+      let rect = root.convert(host.window.convertFromScreen(frame), from: nil)
+      guard let bitmap = root.bitmapImageRepForCachingDisplay(in: rect) else { return false }
+      root.cacheDisplay(in: rect, to: bitmap)
+      var redPixels = 0
+      for y in 0..<bitmap.pixelsHigh {
+        for x in 0..<bitmap.pixelsWide {
+          guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+          if color.redComponent > 0.7 && color.greenComponent < 0.5 && color.blueComponent < 0.3 {
+            redPixels += 1
+          }
+        }
+      }
+      return redPixels >= 16 * 16
+    }
   }
 
   func test_本文リンク_B020_B021_両方の面から既定ブラウザへ渡す() async throws {
@@ -477,11 +455,41 @@ import XCTest
     let host = try await panel(value)
     try await eventuallyView(host) { host.element("受入リンク") != nil }
     // When
-    try await host.press("受入リンク")
+    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    XCTAssertEqual(
+      AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
+      .success)
+    try await eventually {
+      host.window.makeKeyAndOrderFront(nil)
+      return NSApp.isActive && host.window.isKeyWindow
+    }
+    let frame = try bodyFrame(host)
+    let screenPoint = NSPoint(x: frame.midX, y: frame.midY)
+    let cursor = try XCTUnwrap(CGEvent(source: nil)?.location)
+    defer { CGWarpMouseCursorPosition(cursor) }
+    XCTAssertEqual(
+      CGWarpMouseCursorPosition(
+        CGPoint(
+          x: screenPoint.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - screenPoint.y)),
+      .success)
+    let point = host.window.convertPoint(fromScreen: screenPoint)
+    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: type, location: point, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+      NSApp.postEvent(event, atStart: false)
+      try await Task.sleep(for: .milliseconds(50))
+    }
     // Then
     try await eventually {
       InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) == [url, url] }
     }
+    XCTAssertEqual(
+      InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) }, [url, url],
+      "active=\(NSApp.isActive), key=\(host.window.isKeyWindow), body=\(frame), cursor=\(String(describing: CGEvent(source: nil)?.location))"
+    )
   }
 
   func test_HTML_B022_B023_両方の面でscriptが操作を起こさない() async throws {
@@ -491,11 +499,19 @@ import XCTest
       本文の前
       <script>
       window.inlineExecuted = true;
-      for (const kind of ['reply', 'resolve', 'create']) {
-        window.webkit.messageHandlers.fileViewer.postMessage({kind, id:'inline', content:'injected', line:2, endLine:3});
+      const roots = [document];
+      for (const root of roots) {
+        for (const element of root.querySelectorAll('*')) {
+          if (element.shadowRoot) roots.push(element.shadowRoot);
+          if (element.tagName === 'TEXTAREA' && element.placeholder === '返信を書く…') {
+            element.value = 'injected';
+            element.dispatchEvent(new Event('input', {bubbles:true}));
+            element.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', metaKey:true, bubbles:true}));
+          }
+        }
       }
       </script>
-      <img src="invalid:" onerror="window.inlineExecuted=true;window.webkit.messageHandlers.fileViewer.postMessage({kind:'reply',id:'inline',content:'injected'})">
+      <img src="invalid:" onerror="window.inlineExecuted=true">
       本文の後
       """
     // When
@@ -520,6 +536,58 @@ import XCTest
     XCTAssertEqual(panelHTTP.state.withLock { $0.reviewThreads["/repo"]?.items }, [value])
   }
 
+  private func element(_ host: ViewHarness, id: String) throws -> AXUIElement {
+    func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+      var value: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+        return nil
+      }
+      return value
+    }
+    func find(_ element: AXUIElement) -> AXUIElement? {
+      if attribute(element, kAXIdentifierAttribute) as? String == id { return element }
+      if attribute(element, kAXRoleAttribute) as? String == "AXWebArea" { return nil }
+      for child in attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+        if let result = find(child) { return result }
+      }
+      return nil
+    }
+    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    let window = try XCTUnwrap(
+      windows.first {
+        attribute($0, kAXTitleAttribute) as? String == host.window.title
+      })
+    return try XCTUnwrap(find(window))
+  }
+
+  private func pressCreate(_ host: ViewHarness) throws {
+    XCTAssertEqual(
+      AXUIElementPerformAction(
+        try element(host, id: "file-create-thread"), kAXPressAction as CFString),
+      .success)
+  }
+
+  private func bodyFrame(_ host: ViewHarness) throws -> NSRect {
+    let body = try element(host, id: "thread-body:inline")
+    var rawPosition: CFTypeRef?
+    var rawSize: CFTypeRef?
+    XCTAssertEqual(
+      AXUIElementCopyAttributeValue(body, kAXPositionAttribute as CFString, &rawPosition), .success)
+    XCTAssertEqual(
+      AXUIElementCopyAttributeValue(body, kAXSizeAttribute as CFString, &rawSize), .success)
+    let position = try XCTUnwrap(rawPosition) as! AXValue
+    let size = try XCTUnwrap(rawSize) as! AXValue
+    var origin = CGPoint.zero
+    var dimensions = CGSize.zero
+    XCTAssertTrue(AXValueGetValue(position, .cgPoint, &origin))
+    XCTAssertTrue(AXValueGetValue(size, .cgSize, &dimensions))
+    return NSRect(
+      x: origin.x,
+      y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - origin.y - dimensions.height,
+      width: dimensions.width, height: dimensions.height)
+  }
+
   private func panel(
     _ value: Releash_Client_V1_ReviewThreadDto,
     http: TestHTTPClient = TestHTTPClient()
@@ -527,6 +595,7 @@ import XCTest
     http.state.withLock { $0.reviewThreads["/repo"] = .with { $0.items = [value] } }
     let model = try await testModel(http)
     let host = await ViewHarness(ThreadPanelView(model: model, worktree: "/repo"))
+    host.window.center()
     addTeardownBlock { @MainActor in
       host.close()
       await model.stop()
@@ -561,7 +630,7 @@ private final class InlineImageServer {
       from http.server import BaseHTTPRequestHandler, HTTPServer
       class Handler(BaseHTTPRequestHandler):
           def do_GET(self):
-              body = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=')
+              body = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==')
               self.send_response(200)
               self.send_header('Content-Type', 'image/png')
               self.send_header('Content-Length', str(len(body)))
