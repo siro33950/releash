@@ -77,13 +77,6 @@ fn test_カード集計_実行木単位で過去の試行と構造nodeとarchive
     assert_eq!(summaries[0].1.node_count(), 3);
     assert_eq!(summaries[0].1.node().title.as_str(), "review");
     assert_eq!(
-        summaries[0].1.session_states().collect::<Vec<_>>(),
-        [
-            WorkspaceNodeStatusClassification::Attention,
-            WorkspaceNodeStatusClassification::Active
-        ]
-    );
-    assert_eq!(
         summaries[0].1.node().status_classification,
         WorkspaceNodeStatusClassification::Attention
     );
@@ -465,7 +458,6 @@ fn test_カード集計_ループ再訪とその子とfanoutの別項目をす�
     let rows = tree.card_executions();
     // Then
     assert_eq!(rows[0].1.node_count(), 11);
-    assert_eq!(rows[0].1.session_states().count(), 8);
     assert_eq!(
         rows[0]
             .1
@@ -608,18 +600,6 @@ fn test_カード集計_delegateの各発火と入れ子の部分木を数える
             rows[0].1.node_count(),
             if kind == NodeKindName::Command { 3 } else { 7 }
         );
-        assert_eq!(
-            rows[0].1.session_states().collect::<Vec<_>>(),
-            if kind == NodeKindName::Command {
-                vec![WorkspaceNodeStatusClassification::Attention]
-            } else {
-                vec![
-                    WorkspaceNodeStatusClassification::Attention,
-                    WorkspaceNodeStatusClassification::Idle,
-                    WorkspaceNodeStatusClassification::Idle,
-                ]
-            }
-        );
     }
 }
 
@@ -720,10 +700,6 @@ fn test_カード集計_retry履歴とその部分木を除き置き換え後の
                 .map(|node| node.node_execution_id.as_deref().unwrap())
                 .collect::<Vec<_>>(),
             expected
-        );
-        assert_eq!(
-            rows[0].1.session_states().collect::<Vec<_>>(),
-            vec![WorkspaceNodeStatusClassification::Active; expected.len() - 1]
         );
     }
 }

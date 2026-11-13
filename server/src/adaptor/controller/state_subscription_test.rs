@@ -986,12 +986,10 @@ mod driver_tests {
                                 branch: "main".into(),
                                 is_main: true,
                                 is_locked: false,
-                                is_merged: false,
                             },
                             deleting: false,
                             dirty_count: Fetched::ready(0),
                             pull_request_error: None,
-                            merged: false,
                             state_pull_request: Some(crate::domain::git_host::PrInfo {
                                 number: self.prs.load(Ordering::SeqCst),
                                 url: String::new(),

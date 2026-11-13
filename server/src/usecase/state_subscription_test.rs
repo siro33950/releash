@@ -941,7 +941,6 @@ async fn test_監視失敗_別購読で検出してもworkspacesの要素へ届�
                     ),
                     deleting: false,
                     dirty_count: Fetched::ready(42),
-                    merged: false,
                     state_pull_request: None,
                     tree: Fetched::default(),
                     pull_request_error: None,

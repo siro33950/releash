@@ -1008,35 +1008,9 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         any_branch(value, |branch| {
             branch.name.as_deref() == Some("pushed-branch")
                 && branch.worktree_path.as_deref() == Some(linked.as_str())
-                && branch.is_merged == Some(true)
         })
     })
     .await;
-    // When / Then: only Refresh rescans the base configuration, which Git watches ignore.
-    for base in [Some("pushed-branch"), None] {
-        let mut config = repository.config().unwrap();
-        match base {
-            Some(base) => config.set_str("releash.base", base).unwrap(),
-            None => config.remove("releash.base").unwrap(),
-        }
-        let result = request(
-            &mut socket,
-            "refresh-workspaces",
-            C::RefreshWorkspaces(wire::RefreshWorkspacesRequest::default()),
-        )
-        .await;
-        assert!(matches!(
-            result,
-            wire::command_result::Command::RefreshWorkspaces(_)
-        ));
-        expect_workspace(&mut states, "manual workspace rescan", |value| {
-            any_branch(value, |branch| {
-                branch.name.as_deref() == Some("pushed-branch")
-                    && branch.is_merged == Some(base.is_none())
-            })
-        })
-        .await;
-    }
     request(
         &mut socket,
         "remove-linked",

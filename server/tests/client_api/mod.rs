@@ -240,7 +240,6 @@ where
             branch: branch.into(),
             is_main: false,
             is_locked: false,
-            is_merged: false,
         })
     }
     fn validate_removal(

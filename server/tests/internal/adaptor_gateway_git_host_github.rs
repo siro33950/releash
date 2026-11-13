@@ -277,8 +277,6 @@ pub(crate) mod tests {
             status.open_for_branch("feat/login").unwrap().url,
             "https://github.com/owner/repo/pull/42"
         );
-        assert!(status.branch_is_merged("feat/done", false));
-        assert!(!status.branch_is_merged("feat/closed", false));
         assert_eq!(status.for_branch("feat/closed").unwrap().number, 44);
         assert_eq!(
             runner.output_calls(),

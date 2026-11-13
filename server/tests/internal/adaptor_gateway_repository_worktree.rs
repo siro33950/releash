@@ -251,7 +251,6 @@ pub fn test_worktree一覧_コミットのないrepositoryも正常に返す() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].branch, "(no commits)");
     assert!(entries[0].is_main);
-    assert!(!entries[0].is_merged);
 }
 
 #[test]
@@ -272,7 +271,6 @@ pub fn test_worktree一覧_baseがあってもコミットのないbranchを正�
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].branch, "(no commits)");
     assert!(entries[0].is_main);
-    assert!(!entries[0].is_merged);
 }
 
 #[test]
@@ -389,7 +387,6 @@ pub(crate) mod worktree_gateway_tests {
     use git2::Repository;
     use git2::WorktreeAddOptions;
     use git2::WorktreePruneOptions;
-    use releashd::test_support::integration::platform::detect_default_branch;
     use releashd::test_support::integration::repository::create_worktree;
     use releashd::test_support::integration::repository::find_main_repo_path;
     use releashd::test_support::integration::repository::get_current_branch;
@@ -717,134 +714,8 @@ pub(crate) mod worktree_gateway_tests {
         assert!(locked_entry.is_locked);
     }
 
-    fn checkout(repo: &Repository, reference: &str) {
-        repo.set_head(reference).unwrap();
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-            .unwrap();
-    }
-
-    fn add_worktree_for_branch(repo: &Repository, parent_dir: &Path, branch_name: &str) {
-        let branch = repo.find_branch(branch_name, BranchType::Local).unwrap();
-        let reference = branch.into_reference();
-        let mut opts = WorktreeAddOptions::new();
-        opts.reference(Some(&reference));
-        let name = format!("wt-{branch_name}");
-        repo.worktree(&name, &parent_dir.join(&name), Some(&opts))
-            .unwrap();
-    }
-
-    fn merge_into_head(repo: &Repository, merged: &git2::Commit<'_>, message: &str) {
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head, merged])
-            .unwrap();
-    }
-
-    fn merged_of(repo_dir: &Path, branch: &str) -> bool {
-        list_worktrees(repo_dir.to_str().unwrap())
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.branch == branch)
-            .unwrap()
-            .is_merged
-    }
-
     #[test]
-    pub fn test_worktree一覧_baseが進んだだけのブランチは未マージ() {
-        // Given: 固有の commit を持たないブランチの後に base が進む
-        let (parent, repo_dir, repo) = create_test_repo_with_parent();
-        create_initial_commit(&repo);
-        create_worktree_helper(&repo, parent.path(), "wt-behind", "feature-behind");
-        add_and_commit(&repo, "after.txt", "after", "commit after branch");
-
-        // When / Then
-        assert!(!merged_of(&repo_dir, "feature-behind"));
-    }
-
-    #[test]
-    pub fn test_worktree一覧_baseと同じ先頭のブランチは未マージ() {
-        // Given
-        let (parent, repo_dir, repo) = create_test_repo_with_parent();
-        create_initial_commit(&repo);
-        create_worktree_helper(&repo, parent.path(), "wt-same", "feature-same");
-
-        // When / Then
-        assert!(!merged_of(&repo_dir, "feature-same"));
-        assert!(!list_worktrees(repo_dir.to_str().unwrap()).unwrap()[0].is_merged);
-    }
-
-    #[test]
-    pub fn test_worktree一覧_固有のcommitを持つブランチは未マージ() {
-        // Given
-        let (parent, repo_dir, repo) = create_test_repo_with_parent();
-        create_initial_commit(&repo);
-        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("feature-unmerged", &head, false).unwrap();
-        checkout(&repo, "refs/heads/feature-unmerged");
-        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
-        checkout(&repo, &format!("refs/heads/{default_branch}"));
-        add_worktree_for_branch(&repo, parent.path(), "feature-unmerged");
-
-        // When / Then
-        assert!(!merged_of(&repo_dir, "feature-unmerged"));
-    }
-
-    #[test]
-    pub fn test_worktree一覧_merge_commit経由で取り込まれたブランチはマージ済み() {
-        // Given
-        let (parent, repo_dir, repo) = create_test_repo_with_parent();
-        create_initial_commit(&repo);
-        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("feature-merged", &head, false).unwrap();
-        checkout(&repo, "refs/heads/feature-merged");
-        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
-        let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        checkout(&repo, &format!("refs/heads/{default_branch}"));
-        add_and_commit(&repo, "main.txt", "main", "main commit");
-        merge_into_head(&repo, &feature_commit, "Merge feature-merged");
-        add_worktree_for_branch(&repo, parent.path(), "feature-merged");
-
-        // When / Then
-        assert!(merged_of(&repo_dir, "feature-merged"));
-    }
-
-    #[test]
-    pub fn test_worktree一覧_releash_baseが指すブランチへの取り込みでマージ済みを判定する() {
-        // Given: develop へ merge 済みで、既定ブランチへは未 merge のブランチ
-        let (parent, repo_dir, repo) = create_test_repo_with_parent();
-        create_initial_commit(&repo);
-        let default_branch = detect_default_branch(&repo).unwrap().unwrap();
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("develop", &head, false).unwrap();
-        checkout(&repo, "refs/heads/develop");
-        add_and_commit(&repo, "dev.txt", "dev", "develop commit");
-        let develop_head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("feature-x", &develop_head, false).unwrap();
-        checkout(&repo, "refs/heads/feature-x");
-        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
-        let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        checkout(&repo, "refs/heads/develop");
-        add_and_commit(&repo, "dev2.txt", "dev2", "develop commit 2");
-        merge_into_head(&repo, &feature_commit, "Merge feature-x into develop");
-        checkout(&repo, &format!("refs/heads/{default_branch}"));
-        add_worktree_for_branch(&repo, parent.path(), "feature-x");
-
-        // When / Then
-        assert!(!merged_of(&repo_dir, "feature-x"));
-        releashd::test_support::integration::repository::set_releash_base(
-            repo_dir.to_str().unwrap(),
-            Some("develop"),
-        )
-        .unwrap();
-        assert!(merged_of(&repo_dir, "feature-x"));
-    }
-
-    #[test]
-    pub fn test_worktree一覧_detached_headのworktreeはブランチ名を括弧で表し未マージ() {
+    pub fn test_worktree一覧_detached_headのworktreeはブランチ名を括弧で表す() {
         // Given
         let (parent, repo_dir, repo) = create_test_repo_with_parent();
         create_initial_commit(&repo);
@@ -862,7 +733,6 @@ pub(crate) mod worktree_gateway_tests {
             .find(|entry| entry.name == "wt-rebase")
             .unwrap();
         assert!(detached.branch.starts_with('('), "{}", detached.branch);
-        assert!(!detached.is_merged);
     }
 
     #[test]

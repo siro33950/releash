@@ -77,7 +77,6 @@ final class SidebarViewTests: XCTestCase {
         execution.isWorkflow = true
         execution.status = "running"
         execution.nodeCount = 3
-        execution.sessionStates = ["running", "pending", "pending"]
         var worktree = Releash_Client_V1_WorkspaceWorktreeList()
         worktree.path = branch.worktreePath
         worktree.executions = [execution]

@@ -310,7 +310,6 @@ mod rescan_tests {
                 branch: format!("scan-{call}"),
                 is_main: true,
                 is_locked: false,
-                is_merged: false,
             }])
         }
 
