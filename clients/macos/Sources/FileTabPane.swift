@@ -62,7 +62,6 @@ struct FileTabPane: View {
       if let threadSubscription { model.unsubscribe(threadSubscription) }
     }
     .onChange(of: base) { _, _ in subscribe() }
-
   }
   var toolbar: some View {
     HStack(spacing: 4) {
@@ -214,7 +213,7 @@ struct FileTabPane: View {
     if let line = draft.line {
       var composer: [String: Any] = [
         "line": line, "endLine": draft.endLine ?? line, "id": draft.id.uuidString,
-        "sending": draft.sending,
+        "sending": draft.sending, "content": draft.content,
       ]
       if let side = draft.side { composer["side"] = side == .deletions ? "deletions" : "additions" }
       if let side = draft.endSide {
@@ -233,6 +232,11 @@ struct FileTabPane: View {
     if kind == "cancelCreate" {
       guard !draft.sending else { return }
       draft.line = nil
+      return
+    }
+    if kind == "editCreate" {
+      guard message["id"] as? String == draft.id.uuidString, !draft.sending else { return }
+      draft.content = message["content"] as? String ?? ""
       return
     }
     if kind == "create" {
@@ -328,7 +332,7 @@ struct FileLineSelection: Equatable {
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
-  var content = ""
+  @ObservationIgnored var content = ""
 }
 
 struct FileWebView: NSViewRepresentable {
@@ -420,11 +424,7 @@ struct FileWebView: NSViewRepresentable {
       decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
       if navigationAction.navigationType == .linkActivated {
-        if let url = navigationAction.request.url,
-          ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "")
-        {
-          NSWorkspace.shared.open(url)
-        }
+        if let url = navigationAction.request.url { openCommentLink(url) }
         decisionHandler(.cancel)
         return
       }

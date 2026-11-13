@@ -72,11 +72,7 @@ struct ThreadPanelView: View {
     .environment(
       \.openURL,
       OpenURLAction { url in
-        guard ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") else {
-          return .discarded
-        }
-        NSWorkspace.shared.open(url)
-        return .handled
+        openCommentLink(url) ? .handled : .discarded
       }
     )
     .onAppear {
@@ -275,4 +271,10 @@ private struct ThreadPanelRow: View {
       }.padding()
     }
   }
+}
+
+@MainActor @discardableResult
+func openCommentLink(_ url: URL, open: (URL) -> Bool = { NSWorkspace.shared.open($0) }) -> Bool {
+  guard ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") else { return false }
+  return open(url)
 }

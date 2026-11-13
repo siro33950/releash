@@ -198,6 +198,54 @@ final class FileTabPaneTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_作成カード_空白だけの本文は作成を送らない() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    view.action(["kind": "select", "line": 2])
+    view.startThread()
+    // When
+    view.action(["kind": "create", "content": " \n\t"])
+    // Then
+    XCTAssertTrue(http.requests("CreateReviewThread").isEmpty)
+    XCTAssertFalse(view.draft.sending)
+    XCTAssertEqual(view.draft.line, 2)
+    await model.stop()
+  }
+
+  @MainActor func test_作成カード_比較基準変更後も入力本文を復元用に渡す() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    view.action(["kind": "select", "line": 2])
+    view.startThread()
+    let id = view.draft.id.uuidString
+    // When
+    view.action(["kind": "editCreate", "id": id, "content": "未送信本文"])
+    view.setPresentation(base: "branch-base")
+    view.subscribe()
+    let payload = view.bridgePayload(.init(), .init(), colorScheme: .light)
+    // Then
+    let composer = try XCTUnwrap(payload["composer"] as? [String: Any])
+    XCTAssertEqual(composer["content"] as? String, "未送信本文")
+    XCTAssertEqual(composer["id"] as? String, id)
+    XCTAssertEqual(payload["base"] as? String, "branch-base")
+    XCTAssertTrue(http.requests("CreateReviewThread").isEmpty)
+    // When
+    view.startThread()
+    view.action(["kind": "editCreate", "id": id, "content": "古いカード"])
+    // Then
+    XCTAssertEqual(view.draft.content, "")
+    // When
+    view.draft.sending = true
+    view.action(["kind": "editCreate", "id": view.draft.id.uuidString, "content": "送信中"])
+    // Then
+    XCTAssertEqual(view.draft.content, "")
+    await model.stop()
+  }
+
   @MainActor func test_カードの見出し_Commentと解決者の記録を渡す() throws {
     // Given
     var thread = Releash_Client_V1_ReviewThreadDto()

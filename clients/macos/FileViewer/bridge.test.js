@@ -15,7 +15,7 @@ class Element {
   focus() { this.focused = true; }
 }
 
-async function bridge() {
+async function bridge(now = Date.now()) {
   const instances = [];
   const messages = [];
   class Renderer {
@@ -45,6 +45,7 @@ async function bridge() {
   });
   vm.runInNewContext(compiled.outputFiles[0].text, {
     window, document: { getElementById: (id) => elements[id], createElement: (name) => new Element(name) },
+    Date: class extends Date { static now() { return now; } },
     TextEncoder, TextDecoder, console, queueMicrotask: (callback) => callback(),
   });
   return { window, messages, instances, elements, renderer: () => instances.at(-1) };
@@ -213,12 +214,15 @@ test('thread ranges and line selection use the accent color from the app', async
 
 
 test('本文のMarkdownは整形しHTMLと危険なURLを実行しない', async () => {
+  // Given
   const ui = await bridge();
   const thread = { id: 'markdown', line: 1, comments: [{ author: 'a',
     content: '# Heading\n\n- item\n\n`code` **bold** ![image](https://example.com/a.png) [link](https://example.com)\n\n<script>alert(1)</script> [bad](javascript:alert(1))' }] };
+  // When
   ui.window.releashRender({ ...payload(), threads: [thread] });
   const card = ui.renderer().options.renderAnnotation({ metadata: thread });
   const html = card.children[0].children[0].children[1].innerHTML;
+  // Then
   for (const part of ['<h1>Heading</h1>', '<li>item</li>', '<code>code</code>', '<strong>bold</strong>', '<img src="https://example.com/a.png"', '<a href="https://example.com"', '&lt;script&gt;']) assert.ok(html.includes(part), html);
   assert.ok(!html.includes('<script>'));
   assert.ok(!html.includes('href="javascript:'));
@@ -226,8 +230,10 @@ test('本文のMarkdownは整形しHTMLと危険なURLを実行しない', async
 });
 
 test('返信はCommand Returnだけで送り空白とIME変換中は送らない', async () => {
+  // Given
   const ui = await bridge();
   const thread = { id: 'reply', line: 1, comments: [] };
+  // When
   ui.window.releashRender({ ...payload(), threads: [thread] });
   const input = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
   input.value = 'reply';
@@ -235,41 +241,138 @@ test('返信はCommand Returnだけで送り空白とIME変換中は送らない
   input.onkeydown({ key: 'Enter', metaKey: true, isComposing: true });
   input.value = '  ';
   input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
+  // Then
   assert.equal(ui.messages.length, 1);
 });
 
 test('作成カードは範囲末尾に出て入力を保ち作成とキャンセルを送る', async () => {
+  // Given
   const ui = await bridge();
   const next = { ...payload(), composer: { line: 1, endLine: 2, side: 'deletions' } };
+  // When
   ui.window.releashRender(next);
   const render = () => ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  // Then
   assert.equal(ui.renderer().input.lineAnnotations[0].lineNumber, 2);
   assert.equal(ui.renderer().input.lineAnnotations[0].side, 'deletions');
   let card = render();
   assert.equal(card.children[0].focused, true);
   assert.equal(card.children[2].disabled, true);
+  // When
   card.children[0].value = 'draft'; card.children[0].oninput();
   ui.window.releashRender(next);
   card = render();
+  // Then
   assert.equal(card.children[0].value, 'draft');
+  // When
   card.children[2].onclick();
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'create', content: 'draft' });
+  // When
   card.children[1].onclick();
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'cancelCreate' });
+  // When
   ui.window.releashRender(payload());
   ui.window.releashRender(next);
+  // Then
   assert.equal(render().children[0].value, '');
 });
 
 
-test('作成カードのキャンセルは送信中だけ無効になる', async () => {
+test('作成カードの入力と作成とキャンセルは送信中だけ無効になる', async () => {
   // Given
   const ui = await bridge();
   for (const sending of [false, true, false]) {
     // When
-    ui.window.releashRender({ ...payload(), composer: { line: 1, sending } });
+    ui.window.releashRender({ ...payload(), composer: { id: 'draft', line: 1, sending, content: 'body' } });
     const card = ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
     // Then
+    assert.equal(card.children[0].disabled, sending);
     assert.equal(card.children[1].disabled, sending);
+    assert.equal(card.children[2].disabled, sending);
   }
+});
+
+test('作成本文をSwiftに渡しWebView再生成後に復元する', async () => {
+  // Given
+  const ui = await bridge();
+  const next = { ...payload(), composer: { id: 'draft', line: 1 } };
+  ui.window.releashRender(next);
+  const input = ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]).children[0];
+  // When
+  input.value = '未送信本文'; input.oninput();
+  // Then
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'editCreate', id: 'draft', content: '未送信本文' });
+  // When
+  const recreated = await bridge();
+  recreated.window.releashRender({ ...next, base: 'branch-base', composer: { ...next.composer, content: ui.messages.at(-1).content } });
+  const card = recreated.renderer().options.renderAnnotation(recreated.renderer().input.lineAnnotations[0]);
+  // Then
+  assert.equal(card.children[0].value, '未送信本文');
+});
+
+test('作成カードの空白だけの本文は送信しない', async () => {
+  // Given
+  const ui = await bridge();
+  ui.window.releashRender({ ...payload(), composer: { id: 'draft', line: 1 } });
+  const card = ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  // When
+  card.children[0].value = ' \n\t'; card.children[0].oninput();
+  card.children[2].onclick();
+  // Then
+  assert.equal(card.children[2].disabled, true);
+  assert.equal(ui.messages.some((message) => message.kind === 'create'), false);
+});
+
+test('解決済みの展開は再描画で保持し未解決に戻ると解除する', async () => {
+  // Given
+  const ui = await bridge();
+  const thread = { id: 't', line: 1, resolved: true, comments: [{ author: 'a', content: 'body' }] };
+  const render = (resolved) => {
+    ui.window.releashRender({ ...payload(), threads: [{ ...thread, resolved }] });
+    return ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  };
+  render(true).children[0].children[1].onclick();
+  // When
+  const expanded = render(true);
+  // Then
+  assert.equal(expanded.children[0].children[1].textContent, '隠す');
+  assert.equal(expanded.children[1].children.length, 1);
+  // When
+  render(false);
+  const collapsed = render(true);
+  // Then
+  assert.equal(collapsed.children[0].children[1].textContent, '表示');
+  assert.equal(collapsed.children[1].children.length, 0);
+});
+
+test('相対時刻は単位境界と未来時刻を表示する', async () => {
+  // Given
+  const now = 1800000000;
+  const ui = await bridge(now * 1000);
+  for (const [seconds, expected] of [[-60, 'たった今'], [59, 'たった今'], [60, '1 分前'], [3599, '59 分前'], [3600, '1 時間前'], [86399, '23 時間前'], [86400, '1 日前'], [31535999, '364 日前'], [31536000, '1 年前']]) {
+    const thread = { id: 't', line: 1, comments: [{ author: 'a', content: '', createdAt: now - seconds }] };
+    // When
+    ui.window.releashRender({ ...payload(), threads: [thread] });
+    const card = ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+    // Then
+    assert.equal(card.children[0].children[0].children[0].children.at(-1).textContent, expected);
+  }
+});
+
+test('注釈DOMを再利用した再描画後も受理した返信欄を空にする', async () => {
+  // Given
+  const ui = await bridge();
+  const next = { ...payload(), threads: [{ id: 't', line: 1, comments: [] }] };
+  ui.window.releashRender(next);
+  const input = ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]).children[1];
+  input.value = 'reply'; input.oninput();
+  input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
+  const request = ui.messages.at(-1);
+  // When
+  ui.window.releashRender(next);
+  ui.window.releashReplyAccepted(request.id, request.requestID);
+  // Then
+  assert.equal(input.value, '');
 });

@@ -117,6 +117,7 @@ function composer(thread) {
   create.disabled = thread.sending || !input.value.trim();
   input.oninput = () => {
     composerContent = input.value;
+    send({ kind: 'editCreate', id: thread.id, content: input.value });
     create.disabled = thread.sending || !input.value.trim();
   };
   const cancel = button('キャンセル', () => send({ kind: 'cancelCreate' }));
@@ -180,8 +181,9 @@ window.releashRender = (next) => {
     diffMetadata = undefined;
   }
   const baseChanged = payload?.base !== next.base;
-  if (!next.composer || !payload?.composer || next.composer.id !== payload.composer.id) composerContent = '';
-  replyInputs.clear();
+  if (!next.composer || !payload?.composer || next.composer.id !== payload.composer.id) composerContent = next.composer?.content ?? '';
+  const openIDs = new Set(next.threads.filter((thread) => !thread.resolved).map((thread) => thread.id));
+  for (const id of replyInputs.keys()) if (!openIDs.has(id)) replyInputs.delete(id);
   payload = next;
   const type = renderType(next);
   const options = {
