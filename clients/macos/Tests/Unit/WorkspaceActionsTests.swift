@@ -6,7 +6,7 @@ import XCTest
 @testable import Releash
 
 final class WorkspaceActionsTests: XCTestCase {
-  @MainActor func testSessionLaunchSendsOriginalPaneIdentifierOnlyWhenSpecified() async throws {
+  @MainActor func test_セッション開始_pane指定時だけ復元元のIDを送る() async throws {
     // Given
     let http = TestHTTPClient()
     let model = try await testModel(http)
@@ -26,6 +26,28 @@ final class WorkspaceActionsTests: XCTestCase {
     XCTAssertEqual(requests.count, 2)
     XCTAssertEqual(requests[0].paneID, "second")
     XCTAssertFalse(requests[1].hasPaneID)
+    await model.stop()
+  }
+
+  @MainActor func test_セッション開始_分割で作ったpaneの保存用IDを送る() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    try model.panes.restore(.pane(id: "first", tabs: [], active: nil))
+    let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
+    model.panes.controller.focusPane(first)
+    guard case .split(_, _, _, _, .pane(let paneID, _, _)) = try model.panes.layout() else {
+      XCTFail("分割したpaneが保存用レイアウトにない")
+      await model.stop()
+      return
+    }
+    // When
+    try await model.startSession(provider: "codex", path: "/repo/a", pane: second)
+    // Then
+    let request = try Releash_Client_V1_CreateAgentSessionRequest(
+      serializedBytes: XCTUnwrap(http.requests("CreateAgentSession").last?.message))
+    XCTAssertEqual(request.paneID, paneID)
     await model.stop()
   }
 

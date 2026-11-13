@@ -82,8 +82,7 @@ struct RootListView: View {
           Button("History…") { history = true }
         }
         IconMenu(title: "開始", image: "plus") {
-          SessionWorkflowMenu(
-            model: model, path: path, workflowPending: model.pendingRoots[path] != nil)
+          SessionWorkflowMenu(model: model, path: path)
         }
       }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
       if model.pendingRoots[path] != nil { ProgressView("Rootの配信を待っています").controlSize(.small) }

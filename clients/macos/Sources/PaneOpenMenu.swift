@@ -7,8 +7,7 @@ struct PaneOpenMenu: View {
   var body: some View {
     IconMenu(title: "開く", image: "plus") {
       if let path = model.selectedWorktree {
-        SessionWorkflowMenu(
-          model: model, path: path, pane: pane, workflowPending: model.pendingRoots[path] != nil)
+        SessionWorkflowMenu(model: model, path: path, pane: pane)
       }
       Button {
         model.panes.open(.terminal, in: pane)
@@ -25,7 +24,6 @@ struct SessionWorkflowMenu: View {
   @Bindable var model: AppModel
   let path: String
   var pane: PaneID? = nil
-  let workflowPending: Bool
 
   var body: some View {
     Menu("Session") {
@@ -37,7 +35,7 @@ struct SessionWorkflowMenu: View {
         }
       }
     }
-    if workflowPending {
+    if model.pendingRoots[path] != nil {
       Button("Workflow", action: {}).disabled(true)
     } else {
       Menu("Workflow") {
