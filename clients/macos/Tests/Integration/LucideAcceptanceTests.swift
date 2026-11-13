@@ -44,7 +44,7 @@ final class LucideAcceptanceTests: XCTestCase {
     defer { host.close() }
     // Then
     for (label, icon) in [
-      ("Repositoryを追加", "folder-plus"), ("再読み込み", "refresh-cw"), ("Worktreeを作成", "plus"),
+      ("Repositoryを追加", "folder-plus"), ("更新", "refresh-cw"), ("Worktreeを作成", "plus"),
     ] { try await assertIcon(icon, in: host, element: label) }
     for (state, icon) in [
       ("main", "house"), ("open", "git-pull-request"), ("draft", "git-pull-request-draft"),
