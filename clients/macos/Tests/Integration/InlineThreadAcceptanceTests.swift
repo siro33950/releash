@@ -227,12 +227,14 @@ import XCTest
         "all('*').some(name => visible(name) && name.textContent === 'Codex' && all('*').some(model => visible(model) && model.textContent === 'acceptance-model' && model.getBoundingClientRect().left >= name.getBoundingClientRect().right && Math.abs(model.getBoundingClientRect().top - name.getBoundingClientRect().top) < 12))"
       )
       try await check(
-        web, "!all('[slot] *').some(e => visible(e) && /^(2|3|2[–-]3)$/.test(e.textContent.trim()))"
+        web,
+        "!all('[slot]').filter(visible).some(e => /(?:^|[^0-9])[23](?![0-9])/.test(e.innerText.replaceAll('3 分前', '')))"
       )
       try await check(web, "agentIcon()")
       try await check(web, "input()?.placeholder === '返信を書く…' && button('解決にする')")
       try await check(
-        web, "!all('[slot]').filter(visible).some(e => /acceptance\\.rs|@@|old/.test(e.innerText))")
+        web,
+        "!all('[slot]').filter(visible).some(e => /acceptance\\.rs|@@|old|new/.test(e.innerText))")
       try await check(
         web,
         "all('[data-line=\"3\"]').filter(visible).some(line => all('[slot]').some(card => visible(card) && card.innerText.includes('先の本文') && card.getBoundingClientRect().top >= line.getBoundingClientRect().bottom - 1 && all('[data-line=\"4\"]').filter(visible).some(next => card.getBoundingClientRect().bottom <= next.getBoundingClientRect().top + 1)))"
@@ -459,6 +461,15 @@ import XCTest
     let host = try await panel(value)
     try await eventually { self.findElement(host, name: "受入リンク") != nil }
     // When
+    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    XCTAssertEqual(
+      AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
+      .success)
+    host.center()
+    try await eventually {
+      host.makeKeyAndOrderFront(nil)
+      return NSApp.isActive && host.isKeyWindow
+    }
     let link = try XCTUnwrap(findElement(host, name: "受入リンク"))
     var role: CFTypeRef?
     XCTAssertEqual(
@@ -466,6 +477,13 @@ import XCTest
     XCTAssertEqual(role as? String, "AXLink")
     let frame = try elementFrame(link)
     let screenPoint = NSPoint(x: frame.midX, y: frame.midY)
+    let cursor = try XCTUnwrap(CGEvent(source: nil)?.location)
+    defer { CGWarpMouseCursorPosition(cursor) }
+    XCTAssertEqual(
+      CGWarpMouseCursorPosition(
+        CGPoint(
+          x: screenPoint.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - screenPoint.y)),
+      .success)
     let point = host.convertPoint(fromScreen: screenPoint)
     for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
       let event = try XCTUnwrap(
@@ -473,8 +491,8 @@ import XCTest
           with: type, location: point, modifierFlags: [],
           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.windowNumber,
           context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
-      host.sendEvent(event)
-      await Task.yield()
+      NSApp.postEvent(event, atStart: false)
+      try await Task.sleep(for: .milliseconds(50))
     }
     // Then
     try await eventually {
