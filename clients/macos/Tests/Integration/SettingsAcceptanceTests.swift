@@ -7,7 +7,7 @@ import XCTest
 @testable import Releash
 
 final class SettingsAcceptanceTests: XCTestCase {
-  @MainActor func test_B001_B002_設定の自然サイズと左ナビゲーションから右ページへ切り替える() async throws {
+  @MainActor func test_設定画面_B001_B002_設定の自然サイズと左ナビゲーションから右ページへ切り替える() async throws {
     // Given
     let model = try await testModel(TestHTTPClient())
     let view = NSHostingView(rootView: SettingsView(model: model))
@@ -39,7 +39,7 @@ final class SettingsAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B003_B015_Generalのまとまりと左右の行と説明() async throws {
+  @MainActor func test_一般設定_B003_B015_Generalのまとまりと左右の行と説明() async throws {
     // Given
     let model = try await testModel(TestHTTPClient())
     let host = await ViewHarness(SettingsView(model: model), size: NSSize(width: 1024, height: 800))
@@ -69,7 +69,9 @@ final class SettingsAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B004_B008_B009_B017_Repository一覧から詳細とNotionのLabelsを表示して戻る() async throws {
+  @MainActor func test_リポジトリ設定_B004_B008_B009_B017_Repository一覧から詳細とNotionのLabelsを表示して戻る()
+    async throws
+  {
     // Given
     let http = TestHTTPClient()
     http.state.withLock {
@@ -153,7 +155,7 @@ final class SettingsAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B010_B018_Providersのまとまりと説明と末尾の再確認() async throws {
+  @MainActor func test_プロバイダー設定_B010_B018_Providersのまとまりと説明と末尾の再確認() async throws {
     // Given
     let http = TestHTTPClient()
     http.state.withLock { $0.providerAvailability = testProviderAvailability() }
@@ -186,7 +188,7 @@ final class SettingsAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B011_B012_B013_B020_Workflowsの印と診断と詳細の往復() async throws {
+  @MainActor func test_ワークフロー設定_B011_B012_B013_B020_Workflowsの印と診断と詳細の往復() async throws {
     // Given
     let http = TestHTTPClient()
     testWorkflowSettings(http)
@@ -272,7 +274,7 @@ final class SettingsAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B014_B019_Systemの四つのまとまりと説明() async throws {
+  @MainActor func test_システム設定_B014_B019_Systemの四つのまとまりと説明() async throws {
     // Given
     let model = try await testModel(TestHTTPClient())
     let host = await ViewHarness(SettingsView(model: model), size: NSSize(width: 1024, height: 800))
@@ -303,7 +305,7 @@ final class SettingsAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B016_Terminal起動コマンドの確定値を開き直して表示する() async throws {
+  @MainActor func test_設定の永続化_B016_Terminal起動コマンドの確定値を開き直して表示する() async throws {
     // Given
     let http = TestHTTPClient()
     let model = try await testModel(http)
