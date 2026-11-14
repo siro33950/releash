@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use crate::domain::git::{repository_names, RepositoryNameSource, Worktree};
+use crate::domain::git::{repository_names, GitError, RepositoryNameSource, Worktree};
 use crate::domain::git_host::{PrInfo, PrStatus};
 use crate::domain::workspace_tree::WorkspaceTree;
 use crate::usecase::{
     fetched::Fetched, git_host::GitHostUsecase, git_usecase::GitUsecase,
-    repo_paths_usecase::RepoPathsUsecase, repository_state::RepositoryStateService,
-    workflow::WorkflowUsecase,
+    repo_paths_usecase::RepoPathsUsecase, repository_error::UsecaseError,
+    repository_state::RepositoryStateService, workflow::WorkflowUsecase,
 };
 
 /// Workspaces の購読で配信する値。持ち主から集めた値を、そのまま並べる。
@@ -76,15 +76,18 @@ impl WorkspaceListUsecase {
         }
     }
 
-    pub async fn read(&self) -> Result<WorkspaceList, crate::domain::failure::TechnicalFailure> {
+    /// Workspaces の一覧を読む。origin の読み取りの失敗は、そのまま返す。
+    pub async fn read(&self) -> Result<WorkspaceList, UsecaseError> {
         let usecase = self.clone();
         let repositories =
             crate::common::operation_context::spawn_blocking(move || usecase.repository_values())
                 .await
-                .map_err(|error| crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                })?;
+                .map_err(|error| {
+                    GitError::Technical(crate::domain::failure::TechnicalFailure {
+                        nature: crate::domain::failure::TechnicalFailureNature::Other,
+                        message: error.to_string(),
+                    })
+                })??;
         let worktree_paths = repositories
             .iter()
             .flat_map(|repository| repository.worktrees.value.iter().flatten())
@@ -97,20 +100,19 @@ impl WorkspaceListUsecase {
         Ok(compose(repositories, trees))
     }
 
-    fn repository_values(&self) -> Vec<RepositoryValues> {
+    fn repository_values(&self) -> Result<Vec<RepositoryValues>, UsecaseError> {
         let paths = self.repositories.get();
         let sources = paths
             .iter()
-            .map(|path| RepositoryNameSource {
-                path: path.clone(),
-                origin_url: self.repository.origin_url(path).unwrap_or_else(|error| {
-                    log::warn!("workspace repository origin read failed for {path}: {error}");
-                    None
-                }),
+            .map(|path| {
+                Ok(RepositoryNameSource {
+                    path: path.clone(),
+                    origin_url: self.repository.origin_url(path)?,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, UsecaseError>>()?;
         let names = repository_names(&sources);
-        paths
+        Ok(paths
             .into_iter()
             .zip(names)
             .map(|(path, name)| {
@@ -137,7 +139,7 @@ impl WorkspaceListUsecase {
                     worktrees,
                 }
             })
-            .collect()
+            .collect())
     }
 
     /// 全 Repository の worktree の並びと変更の状態を読み直し、PR を取り直す。

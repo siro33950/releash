@@ -16,6 +16,7 @@ impl GitHubRepository {
         let host = authority
             .rsplit_once('@')
             .map_or(authority, |(_, host)| host);
+        let host = host.split_once(':').map_or(host, |(host, _port)| host);
         if !host.eq_ignore_ascii_case("github.com") {
             return None;
         }
@@ -34,7 +35,7 @@ impl GitHubRepository {
 pub struct RepositoryNameSource {
     /// Repository のパス。
     pub path: String,
-    /// origin の URL。origin が無い、または読めなかったときは `None`。
+    /// origin の URL。origin が無いときは `None`。
     pub origin_url: Option<String>,
 }
 
