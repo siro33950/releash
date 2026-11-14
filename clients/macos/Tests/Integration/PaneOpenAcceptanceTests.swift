@@ -62,43 +62,129 @@ final class PaneOpenAcceptanceTests: XCTestCase {
 
   @MainActor func test_B004_Sessionは押したpaneで選択される() async throws {
     // Given
-    let (http, model) = try await setup()
-    let host = await ViewHarness(WorkspacePaneView(model: model))
-    defer { host.close() }
-    // When
-    try await menu(host, button: "開く", selection: ["Session", "Codex"], rightmost: true)
-    try await eventually { !http.requests("CreateAgentSession").isEmpty }
-    // Then
-    let request = try Releash_Client_V1_CreateAgentSessionRequest(
-      serializedBytes: XCTUnwrap(http.requests("CreateAgentSession").last?.message))
-    XCTAssertEqual(request.provider, "codex")
-    XCTAssertEqual(request.workspaceIdentity, "/repo/a")
-    XCTAssertEqual(request.worktreePath, "/repo/a")
-    XCTAssertEqual(request.paneID, "second")
-    try await eventually { model.pendingSaves["/repo/a"] == nil }
-    var state = Releash_Client_V1_StatePayload()
-    state.workspaceState.value.version = 1
-    state.workspaceState.value.paneLayout =
+    let temporary = try FileManager.default.temporaryDirectory.resourceValues(forKeys: [
+      .canonicalPathKey
+    ])
+    let root = URL(fileURLWithPath: try XCTUnwrap(temporary.canonicalPath))
+      .appendingPathComponent(UUID().uuidString)
+    let data = root.appendingPathComponent("data")
+    let repo = root.appendingPathComponent("repo")
+    for directory in [data, repo] {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    let daemon = Process()
+    defer {
+      if daemon.isRunning {
+        daemon.terminate()
+        daemon.waitUntilExit()
+      }
+      try? FileManager.default.removeItem(at: root)
+    }
+    for arguments in [
+      ["init", "-b", "main"],
+      [
+        "-c", "user.name=Acceptance", "-c", "user.email=test@example.invalid", "-c",
+        "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial",
+      ],
+    ] {
+      let git = Process()
+      git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+      git.arguments = arguments
+      git.currentDirectoryURL = repo
+      git.standardOutput = FileHandle.nullDevice
+      git.standardError = FileHandle.nullDevice
+      try git.run()
+      git.waitUntilExit()
+      XCTAssertEqual(git.terminationStatus, 0)
+    }
+    let helpers = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers")
+    let provider = root.appendingPathComponent("claude")
+    let cliPath = helpers.appendingPathComponent("releash").path.replacingOccurrences(
+      of: "'", with: "'\"'\"'")
+    try """
+    #!/bin/sh
+    if [ "$1" = --version ]; then echo 'claude 1.0.0'; exit; fi
+    printf '{"session_id":"provider-%s","transcript_path":"provider://fixture/%s","hook_event_name":"SessionStart"}' "$RELEASH_SESSION_ID" "$RELEASH_SESSION_ID" | '\(cliPath)' hook receive --provider claude || exit 90
+    exec /bin/cat
+
+    """.write(to: provider, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: provider.path)
+    daemon.executableURL = helpers.appendingPathComponent("releashd")
+    daemon.arguments = ["--data-dir", data.path]
+    daemon.currentDirectoryURL = repo
+    var environment = ProcessInfo.processInfo.environment
+    environment["RELEASH_DATA_DIR"] = data.path
+    environment["RELEASH_WORKFLOWS_DIR"] = data.appendingPathComponent("workflows").path
+    environment["SHELL"] = "/bin/sh"
+    daemon.environment = environment
+    daemon.standardInput = FileHandle.nullDevice
+    daemon.standardOutput = FileHandle.nullDevice
+    daemon.standardError = FileHandle.nullDevice
+    try daemon.run()
+    let discovery = data.appendingPathComponent("client-api.json")
+    try await eventually { FileManager.default.fileExists(atPath: discovery.path) }
+    let status = try JSONSerialization.data(withJSONObject: [
+      "running": true, "compatibility": "compatible", "release_compatibility": "compatible",
+      "discovery_file": discovery.path,
+    ])
+    let model = AppModel(
+      cli: CLI(executable: helpers.appendingPathComponent("releash"), run: { _, _ in status }))
+    await model.start()
+    try await eventually { model.connected }
+    let client = try XCTUnwrap(model.client)
+    var configure = Releash_Client_V1_UpdateProviderExecutableRequest()
+    configure.provider = "claude"
+    configure.executable = provider.path
+    _ = try await client.updateProviderExecutable(request: configure, headers: model.headers).result
+      .get()
+    var add = Releash_Client_V1_AddRepoPathRequest()
+    add.path = repo.path
+    _ = try await client.addRepoPath(request: add, headers: model.headers).result.get()
+    var save = Releash_Client_V1_SaveWorkspaceStateRequest()
+    save.worktreeName = repo.path
+    save.state.version = 1
+    save.state.etag = "0"
+    save.state.paneLayout =
       PaneLayout.split(
         id: "split", axis: .horizontal, ratio: 0.5,
         first: .pane(id: "first", tabs: [], active: nil),
         second: .pane(
-          id: "second",
-          tabs: [
-            PaneTab(id: "session-agent-session", kind: .session, agentSessionID: "agent-session")
-          ], active: nil)
+          id: "second", tabs: [PaneTab(id: "existing-terminal", kind: .terminal)],
+          active: "existing-terminal")
       ).message
-    state.workspaceState.value.etag = "1"
-    http.state.withLock { $0.layouts["/repo/a"] = state.workspaceState.value }
-    try http.publish(state, target: "workspace-state")
-    try await eventuallyView(host) {
-      host.element("terminal:agent-session") != nil && host.element("Accepted Session") != nil
+    _ = try await client.saveWorkspaceState(request: save, headers: model.headers).result.get()
+    model.selectWorktree(repo.path)
+    try await eventually { model.layoutLoaded && model.panes.controller.allPaneIds.count == 2 }
+    model.panes.controller.focusPane(try XCTUnwrap(model.panes.controller.allPaneIds.first))
+    let host = await ViewHarness(WorkspacePaneView(model: model))
+    defer { host.close() }
+    // When
+    try await menu(host, button: "開く", selection: ["Session", "Claude"], rightmost: true)
+    // Then
+    func sessions() -> [Releash_Client_V1_WorkspaceNode] {
+      model.repositories.flatMap(\.worktrees.items).filter { $0.path == repo.path }
+        .flatMap(\.snapshot.nodes.items).compactMap {
+          guard case .node(let node) = $0.variant, node.hasSessionID else { return nil }
+          return node
+        }
     }
-    let tab = try XCTUnwrap(PaneOpenScreen.elements(host, named: "Accepted Session").first)
-    let terminal = try XCTUnwrap(
-      PaneOpenScreen.elements(host, named: "terminal:agent-session").first)
+    let deadline = ContinuousClock.now + .seconds(45)
+    while sessions().isEmpty && model.failure == nil && ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let session = try XCTUnwrap(
+      sessions().first, model.failure ?? "Session was not delivered to the selected worktree")
+    XCTAssertEqual(session.provider.value, .claude)
+    try await eventuallyView(host) {
+      host.element("terminal:" + session.sessionID) != nil && host.element(session.title) != nil
+    }
+    let tab = try XCTUnwrap(
+      PaneOpenScreen.elements(host, named: session.title).first {
+        PaneOpenScreen.attribute($0, kAXRoleAttribute) as? String == kAXButtonRole
+      })
     XCTAssertGreaterThan(try PaneOpenScreen.x(tab), host.window.frame.midX)
-    XCTAssertGreaterThanOrEqual(try PaneOpenScreen.x(terminal), host.window.frame.midX)
+    XCTAssertEqual(PaneOpenScreen.attribute(tab, kAXSelectedAttribute) as? Bool, true)
+
     await model.stop()
   }
 
@@ -176,7 +262,10 @@ final class PaneOpenAcceptanceTests: XCTestCase {
     try await eventuallyView(host) { host.texts().contains("Rootの配信を待っています") }
     // When / Then
     try await menu(host, button: "開く") { menu in
-      XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == "Workflow" }).isEnabled)
+      let index = try XCTUnwrap(menu.items.firstIndex { $0.title == "Workflow" })
+      XCTAssertEqual(index, 1)
+      XCTAssertFalse(menu.items[index].isEnabled)
+      XCTAssertNil(menu.items[index].submenu)
     }
     await model.stop()
   }
