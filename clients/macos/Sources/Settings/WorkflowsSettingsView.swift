@@ -36,14 +36,12 @@ struct WorkflowsSettingsView: View {
               NavigationLink(value: WorkflowSettingsRoute.workflow(workflow.name)) {
                 VStack(alignment: .leading) {
                   Text(workflow.name).font(.headline)
-                  Text(workflow.description_p)
                   HStack {
                     if workflow.builtin { Text("builtin") }
                     if workflow.isRunning { Text("実行中") }
                     DiagnosticCounts(
                       summary: state.diagnostics.workflowSummaries.entries[workflow.name])
                   }.foregroundStyle(.secondary)
-                  if workflow.hasReadError { Text(workflow.readError) }
                 }
               }
               .accessibilityIdentifier("settings-workflow-\(workflow.name)")
@@ -53,7 +51,6 @@ struct WorkflowsSettingsView: View {
               NavigationLink(value: WorkflowSettingsRoute.facet(facet.kind, facet.key)) {
                 VStack(alignment: .leading) {
                   Text(facet.key).font(.headline)
-                  Text(facet.description_p)
                   HStack {
                     if facet.builtin { Text("builtin") }
                     DiagnosticCounts(

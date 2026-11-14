@@ -4,7 +4,7 @@ import XCTest
 @testable import Releash
 
 final class SettingsWorkflowsTests: XCTestCase {
-  @MainActor func test_Workflows一覧_購読の各欄と診断件数と読み取りエラーを表示する() async throws {
+  @MainActor func test_Workflows一覧_名前と印を表示し購読更新に追従する() async throws {
     // Given
     let http = TestHTTPClient()
     testWorkflowSettings(http)
@@ -16,12 +16,12 @@ final class SettingsWorkflowsTests: XCTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-workflow-01_author-spec")?.label
-        == "01_author-spec, 利用者の定義, 実行中, error: 1"
+        == "01_author-spec, 実行中, error: 1"
     }
     XCTAssertEqual(
       host.element("settings-workflow-builtin-flow")?.label,
-      "builtin-flow, 組み込みの定義, builtin")
-    XCTAssertEqual(host.element("settings-workflow-broken")?.label, "broken, 定義を読み取れません")
+      "builtin-flow, builtin")
+    XCTAssertEqual(host.element("settings-workflow-broken")?.label, "broken")
     XCTAssertNotNil(host.element("error: 0"))
     XCTAssertNotNil(host.element("info: 0"))
     // When
@@ -37,7 +37,7 @@ final class SettingsWorkflowsTests: XCTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-workflow-01_author-spec")?.label
-        == "01_author-spec, 一覧の更新, builtin, 実行中, error: 7"
+        == "01_author-spec, builtin, 実行中, error: 7"
     }
     // When
     http.state.withLock { $0.failedMethod = "OpenWorkflowDirectoryInEditor" }
@@ -219,11 +219,11 @@ final class SettingsWorkflowsTests: XCTestCase {
     try await host.press("Facet")
     // Then
     try await eventuallyView(host) {
-      host.element("settings-facet-policy-coding")?.label == "coding, 共有Facetの説明, error: 3"
+      host.element("settings-facet-policy-coding")?.label == "coding, error: 3"
     }
     XCTAssertEqual(
       host.element("settings-facet-policy-builtin-facet")?.label,
-      "builtin-facet, 組み込みFacet, builtin")
+      "builtin-facet, builtin")
     for kind in ["knowledge", "instruction", "policy"] {
       // When
       try await host.press(kind)
