@@ -887,6 +887,7 @@ tokio::sync::mpsc::unbounded_channel().0, releashd::test_support::integration::w
 
     let result = usecase
         .launch_standalone(AgentSessionLaunchRequest {
+            pane: None,
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -975,6 +976,7 @@ tokio::sync::mpsc::unbounded_channel().0, releashd::test_support::integration::w
 
     let result = usecase
         .launch_standalone(AgentSessionLaunchRequest {
+            pane: None,
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1068,6 +1070,7 @@ tokio::sync::mpsc::unbounded_channel().0, releashd::test_support::integration::w
 
     let result = usecase
         .launch_standalone(AgentSessionLaunchRequest {
+            pane: None,
             workspace: WorkspaceIdentity::new("/repo"),
             worktree_path: "/repo/worktree".to_string(),
             provider: ProviderKind::Codex,
@@ -1257,6 +1260,7 @@ tokio::sync::mpsc::unbounded_channel().0, Arc::new(Trees(error.clone())),releash
             usecase
                 .clone()
                 .launch_standalone_selection(AgentSessionLaunchRequest {
+                    pane: None,
                     workspace: WorkspaceIdentity::new("/repo"),
                     worktree_path: "/repo/worktree".into(),
                     provider: ProviderKind::Claude,
@@ -1353,6 +1357,7 @@ pub async fn test_agent_session_launch_pty起動中のsessionをgcしない() {
     let launching = tokio::spawn(async move {
         launch
             .launch_standalone(AgentSessionLaunchRequest {
+                pane: None,
                 workspace: WorkspaceIdentity::new("/repo"),
                 worktree_path: "/repo/worktree".to_string(),
                 provider: ProviderKind::Claude,

@@ -113,7 +113,7 @@ activated, releashd::test_support::integration::workspace::TestWorkspaceTreeRepo
     use releashd::test_support::integration::repository::WorkspaceStateRepository;
     let (_, saved) = workspace_states.read("/repo").await.unwrap();
     let mut expected = releashd::test_support::integration::platform::WorkspaceState::default();
-    expected.add_session_tab(launched.session().id(), "node-1");
+    expected.add_session_tab(launched.session().id(), "node-1", None);
     assert_eq!(saved, Some(expected));
     armed.notified().await;
     assert_eq!(Arc::strong_count(&usecase), 1);

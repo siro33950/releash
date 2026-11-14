@@ -76,6 +76,7 @@ impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
                         rows: *rows,
                         cols: *cols,
                         caller_request_id: format!("{request_id}:{path}"),
+                        pane: None,
                     })
                     .await?;
             }

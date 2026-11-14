@@ -81,24 +81,7 @@ struct RootListView: View {
         IconMenu(title: "その他", image: "ellipsis") {
           Button("History…") { history = true }
         }
-        IconMenu(title: "開始", image: "plus") {
-          Menu("New Session") {
-            ForEach(model.providers, id: \.value) { provider in
-              Button(provider.displayName) {
-                model.perform {
-                  try await model.startSession(provider: provider.wireName, path: path)
-                }
-              }
-            }
-          }
-          Menu("New Workflow") {
-            ForEach(model.workflows, id: \.name) { workflow in
-              Button(workflow.name) {
-                model.perform { try await model.startWorkflow(name: workflow.name, path: path) }
-              }
-            }
-          }.disabled(model.pendingRoots[path] != nil)
-        }
+        SessionWorkflowMenu(model: model, path: path)
       }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
       if model.pendingRoots[path] != nil { ProgressView("Rootの配信を待っています").controlSize(.small) }
       VSplitView {

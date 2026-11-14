@@ -1160,7 +1160,7 @@ fn test_workspace購読payload_設定未保存のsession配置を転送する() 
     use crate::domain::workspace_state::WorkspaceState;
     // Given
     let mut state = WorkspaceState::default();
-    state.add_session_tab("session", "node");
+    state.add_session_tab("session", "node", None);
     // When
     let actual = payload(&StateValue::WorkspaceState(
         crate::domain::local_event::StreamVersion::zero(),

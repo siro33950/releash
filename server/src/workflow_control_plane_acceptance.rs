@@ -936,6 +936,7 @@ launch_retention: crate::adaptor::controller::agent_session_launch_retention::ru
                 rows: 24,
                 cols: 80,
                 caller_request_id: caller_request_id.to_string(),
+                pane: None,
             })
             .await
             .map(|session| session.session().id().to_string())

@@ -39,7 +39,7 @@ async fn test_workspace状態保存_設定未保存のsession配置を再起動�
         directory.path().into(),
     );
     let mut state = WorkspaceState::default();
-    state.add_session_tab("session", "node");
+    state.add_session_tab("session", "node", None);
     // When
     let (version, _) = store.read("worktree").await.unwrap();
     store

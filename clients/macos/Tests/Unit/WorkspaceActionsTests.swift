@@ -6,6 +6,106 @@ import XCTest
 @testable import Releash
 
 final class WorkspaceActionsTests: XCTestCase {
+  @MainActor func test_セッション開始_pane指定時だけ復元元のIDを送る() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectWorktree("/repo/a")
+    try await eventually { model.layoutLoaded }
+    try model.panes.restore(
+      .split(
+        id: "split", axis: .horizontal, ratio: 0.5,
+        first: .pane(id: "first", tabs: [], active: nil),
+        second: .pane(id: "second", tabs: [], active: nil)))
+    let second = try XCTUnwrap(model.panes.controller.allPaneIds.last)
+    // When
+    try await model.startSession(provider: "codex", path: "/repo/a", pane: second)
+    try await model.startSession(provider: "codex", path: "/repo/a")
+    // Then
+    let requests = try http.requests("CreateAgentSession").map {
+      try Releash_Client_V1_CreateAgentSessionRequest(serializedBytes: XCTUnwrap($0.message))
+    }
+    XCTAssertEqual(requests.count, 2)
+    XCTAssertEqual(requests[0].paneID, "second")
+    XCTAssertFalse(requests[1].hasPaneID)
+    await model.stop()
+  }
+
+  @MainActor func test_セッション開始_分割で作ったpaneの保存用IDを送る() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    model.selectWorktree("/repo/a")
+    try await eventually { model.layoutLoaded }
+    try model.panes.restore(.pane(id: "first", tabs: [], active: nil))
+    let first = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+    let second = try XCTUnwrap(model.panes.controller.splitPane(first, orientation: .vertical))
+    model.panes.controller.focusPane(first)
+    guard case .split(_, _, _, _, .pane(let paneID, _, _)) = try model.panes.layout() else {
+      XCTFail("分割したpaneが保存用レイアウトにない")
+      await model.stop()
+      return
+    }
+    http.state.withLock { $0.deferSave = true }
+    // When
+    let launch = Task {
+      try await model.startSession(provider: "codex", path: "/repo/a", pane: second)
+    }
+    try await eventually { http.state.withLock { $0.pendingSave != nil } }
+    // Then
+    XCTAssertTrue(http.requests("CreateAgentSession").isEmpty)
+    let release = try XCTUnwrap(
+      http.state.withLock { state in
+        let callback = state.pendingSave
+        state.pendingSave = nil
+        state.deferSave = false
+        return callback
+      })
+    let saved = try http.state.withLock { try XCTUnwrap($0.layouts["/repo/a"]).serializedData() }
+    release(
+      HTTPResponse(
+        code: .ok, headers: ["content-type": ["application/proto"]], message: saved, trailers: [:],
+        error: nil, tracingInfo: .init(httpStatus: 200)))
+    try await launch.value
+    // Then
+    let request = try Releash_Client_V1_CreateAgentSessionRequest(
+      serializedBytes: XCTUnwrap(http.requests("CreateAgentSession").last?.message))
+    XCTAssertEqual(request.paneID, paneID)
+    await model.stop()
+  }
+
+  @MainActor func test_セッション開始_配置の保存失敗時は作成せず成功後に再試行できる() async throws {
+    for code in [Code.internalError, .aborted] {
+      // Given
+      let http = TestHTTPClient()
+      let model = try await testModel(http)
+      model.selectWorktree("/repo/a")
+      try await eventually { model.layoutLoaded }
+      let pane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+      _ = try XCTUnwrap(model.panes.controller.splitPane(pane, orientation: .vertical))
+      model.savePaneLayout()
+      http.state.withLock {
+        $0.failedMethod = "SaveWorkspaceState"
+        $0.failedMethodCode = code
+      }
+      try await eventually { model.pendingSaves["/repo/a"] == nil }
+      // When
+      do {
+        try await model.startSession(provider: "codex", path: "/repo/a", pane: pane)
+        XCTFail("配置の保存失敗時にSessionを作成した")
+      } catch {
+        // Then
+        XCTAssertEqual((error as? ConnectError)?.code, code)
+      }
+      XCTAssertTrue(http.requests("CreateAgentSession").isEmpty)
+      http.state.withLock { $0.failedMethod = nil }
+      let retryPane = try XCTUnwrap(model.panes.controller.allPaneIds.first)
+      try await model.startSession(provider: "codex", path: "/repo/a", pane: retryPane)
+      XCTAssertEqual(http.requests("CreateAgentSession").count, 1)
+      await model.stop()
+    }
+  }
+
   @MainActor func testLaunchFailureDisplaysServerReasonWithoutOpeningTabs() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)

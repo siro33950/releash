@@ -318,7 +318,7 @@ async fn test_session追従_事実の順に更新して保存通知し空の事�
     // Then
     let (version, saved) = repository.read("workspace").await.unwrap();
     let mut expected = WorkspaceState::default();
-    expected.add_session_tab("session", "session");
+    expected.add_session_tab("session", "session", None);
     assert_eq!(saved, Some(expected.clone()));
     assert_eq!(
         changes.try_recv().unwrap(),
@@ -403,11 +403,91 @@ async fn test_session追従_対象外の事実だけなら配置を読まず対�
     let (version, saved) = repository.read("workspace").await.unwrap();
     assert_eq!(version.value(), 1);
     let mut expected = WorkspaceState::default();
-    expected.add_session_tab("session", "session");
+    expected.add_session_tab("session", "session", None);
     assert_eq!(saved, Some(expected));
     assert_eq!(
         changes.try_recv().unwrap(),
         StateChangeSource::WorkspaceState("workspace".into())
+    );
+    assert!(changes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn test_sessionタブ追加_指定paneへ保存し対象workspaceの購読へ通知する() {
+    use crate::domain::agent_session::aggregates::AgentSessionTreeLocation;
+    use crate::domain::workspace_state::value_objects::pane_layout::{PaneLayoutView, SplitAxis};
+    // Given
+    let session = AgentSession::create(
+        "session",
+        WorkspaceIdentity::new("workspace"),
+        "/repo",
+        crate::domain::provider_lifecycle::ProviderKind::Codex,
+        AgentSessionTreeLocation::session_tree_root("session").unwrap(),
+    )
+    .unwrap();
+    let repository = Arc::new(MemoryWorkspaceStateRepository::default());
+    let publisher = crate::test_support::state_subscription::test_subscriptions();
+    let mut changes = crate::test_support::state_subscription::changes(&publisher);
+    let usecase = SessionTabsUsecase::new(
+        repository.clone(),
+        Arc::new(Trees {
+            tree: None,
+            calls: Default::default(),
+        }),
+        publisher,
+    );
+    let first = PaneLayout::pane("first".into(), vec![], None).unwrap();
+    repository
+        .save(
+            "workspace",
+            WorkspaceState {
+                panes: Some(
+                    PaneLayout::split(
+                        "split".into(),
+                        SplitAxis::Horizontal,
+                        0.5,
+                        first.clone(),
+                        PaneLayout::pane("second".into(), vec![], None).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                ..WorkspaceState::default()
+            },
+            crate::domain::local_event::StreamVersion::zero(),
+        )
+        .await
+        .unwrap();
+    // When
+    usecase.add_session(&session, Some("second")).await.unwrap();
+    // Then
+    let (version, saved) = repository.read("workspace").await.unwrap();
+    let saved = saved.unwrap();
+    let PaneLayoutView::Split {
+        first: actual,
+        second,
+        ..
+    } = saved.panes.as_ref().unwrap().view()
+    else {
+        panic!("split")
+    };
+    assert_eq!(actual, &first);
+    let PaneLayoutView::Pane { tabs, .. } = second.view() else {
+        panic!("pane")
+    };
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0].kind, PaneTabKind::Session);
+    assert_eq!(tabs[0].agent_session_id.as_deref(), Some("session"));
+    assert_eq!(
+        changes.try_recv().unwrap(),
+        StateChangeSource::WorkspaceState("workspace".into())
+    );
+    assert!(changes.try_recv().is_err());
+    // When
+    usecase.add_session(&session, Some("first")).await.unwrap();
+    // Then
+    assert_eq!(
+        repository.read("workspace").await.unwrap(),
+        (version, Some(saved))
     );
     assert!(changes.try_recv().is_err());
 }

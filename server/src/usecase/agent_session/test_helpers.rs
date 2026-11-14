@@ -897,6 +897,7 @@ impl AgentSessionHistoryGateway for FixedHistory {
 #[cfg(test)]
 pub fn idempotent_launch_request(caller_request_id: &str) -> AgentSessionLaunchRequest {
     AgentSessionLaunchRequest {
+        pane: None,
         workspace: WorkspaceIdentity::new("/repo"),
         worktree_path: "/repo/.worktrees/feature".to_string(),
         provider: ProviderKind::Claude,

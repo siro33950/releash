@@ -694,6 +694,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
         &mut socket,
         "session",
         C::CreateAgentSession(wire::CreateAgentSessionRequest {
+            pane_id: None,
             workspace_identity: Some(worktree.into()),
             worktree_path: Some(worktree.into()),
             provider: Some("claude".into()),

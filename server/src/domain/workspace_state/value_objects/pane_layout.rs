@@ -55,10 +55,15 @@ pub enum PaneLayoutView<'a> {
 }
 
 impl PaneLayout {
+    /// Session のタブを配置に持たせる。
+    /// その Session のタブが既にあれば何も変えない。同じ Node の Session 未確定の Session タブがあれば、それに関連付ける。
+    /// どちらも無ければ、タブを追加する。追加する先は ID が `pane` の pane である。
+    /// `pane` が `None` か、配置に無い pane のときは、先頭の pane（分割の最初の側をたどった先の pane）に追加する。
     pub(in crate::domain::workspace_state) fn add_session_tab(
         &mut self,
         session_id: &str,
         node_id: &str,
+        pane: Option<&str>,
     ) {
         if self.contains_session(session_id) || self.bind_pending_session(session_id, node_id) {
             return;
@@ -67,12 +72,29 @@ impl PaneLayout {
         while self.contains_id(&id) {
             id.push('-');
         }
-        self.append_tab(PaneTab {
+        let tab = PaneTab {
             id,
             kind: PaneTabKind::Session,
             node_id: None,
             agent_session_id: Some(session_id.into()),
-        });
+        };
+        if let Some(target) = pane.and_then(|id| self.find_pane_mut(id)) {
+            target.append_tab(tab);
+        } else {
+            self.append_tab(tab);
+        }
+    }
+
+    fn find_pane_mut(&mut self, target: &str) -> Option<&mut Self> {
+        if matches!(&self.0, PaneLayoutNode::Pane { id, .. } if id == target) {
+            return Some(self);
+        }
+        match &mut self.0 {
+            PaneLayoutNode::Split { first, second, .. } => first
+                .find_pane_mut(target)
+                .or_else(|| second.find_pane_mut(target)),
+            PaneLayoutNode::Pane { .. } => None,
+        }
     }
 
     fn append_tab(&mut self, tab: PaneTab) {
