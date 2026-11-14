@@ -360,7 +360,7 @@ async fn test_repository一覧_登録順にoriginを読み一覧全体で決め�
     });
     let usecase = repository_list(&paths, git.clone());
     // When
-    let repositories = usecase.repository_values();
+    let repositories = usecase.read().await.unwrap().repositories;
     // Then
     assert_eq!(*git.origin_url_calls.lock(), paths);
     assert_eq!(
@@ -377,7 +377,7 @@ async fn test_repository一覧_登録順にoriginを読み一覧全体で決め�
 }
 
 #[tokio::test]
-async fn test_repository一覧_origin読取失敗をフォルダ名にして後続の取得も続ける() {
+async fn test_repository一覧_originがなければフォルダ名にして後続も返す() {
     // Given
     let paths = ["/z-local", "/work/shared", "/a-local", "/work/articles"];
     let git = Arc::new(crate::usecase::test_helpers::FakeRepo {
@@ -386,12 +386,7 @@ async fn test_repository一覧_origin読取失敗をフォルダ名にして後�
                 "/z-local".into(),
                 Ok(Some("https://github.com/first/shared.git".into())),
             ),
-            (
-                "/work/shared".into(),
-                Err(crate::domain::git::GitError::External(
-                    "origin read failed".into(),
-                )),
-            ),
+            ("/work/shared".into(), Ok(None)),
             (
                 "/a-local".into(),
                 Ok(Some("git@github.com:second/unique.git".into())),
@@ -403,7 +398,7 @@ async fn test_repository一覧_origin読取失敗をフォルダ名にして後�
     });
     let usecase = repository_list(&paths, git.clone());
     // When
-    let repositories = usecase.repository_values();
+    let repositories = usecase.read().await.unwrap().repositories;
     // Then
     assert_eq!(*git.origin_url_calls.lock(), paths);
     assert_eq!(
@@ -418,4 +413,72 @@ async fn test_repository一覧_origin読取失敗をフォルダ名にして後�
             ("/work/articles", "articles"),
         ]
     );
+}
+
+#[tokio::test]
+async fn test_repository一覧_origin読取失敗をそのまま返す() {
+    // Given
+    let git = Arc::new(crate::usecase::test_helpers::FakeRepo {
+        origins: [
+            ("/work/first".into(), Ok(None)),
+            (
+                "/work/failed".into(),
+                Err(GitError::External("origin read failed".into())),
+            ),
+        ]
+        .into(),
+        ..Default::default()
+    });
+    let usecase = repository_list(&["/work/first", "/work/failed"], git);
+    // When
+    let result = usecase.read().await;
+    // Then
+    assert!(matches!(
+        result,
+        Err(UsecaseError::Repository(GitError::External(message)))
+            if message == "origin read failed"
+    ));
+}
+
+#[tokio::test]
+async fn test_一覧の読取_収集処理の失敗を空の一覧に変えない() {
+    // Given
+    struct PanickingPaths;
+    impl crate::domain::git::RepoPathsRepository for PanickingPaths {
+        fn get(&self) -> Vec<String> {
+            panic!("repository collection failed")
+        }
+    }
+    impl crate::domain::app_config::AppConfigRepository for PanickingPaths {
+        fn load(
+            &self,
+        ) -> Result<crate::domain::app_config::AppConfig, crate::domain::app_config::AppConfigError>
+        {
+            unreachable!()
+        }
+        fn save(
+            &self,
+            _: crate::domain::app_config::AppConfig,
+        ) -> Result<(), crate::domain::app_config::AppConfigError> {
+            unreachable!()
+        }
+    }
+    let mut usecase = repository_list(&[], Arc::default());
+    usecase.repositories = Arc::new(RepoPathsUsecase::new(
+        Arc::new(PanickingPaths),
+        Arc::new(PanickingPaths),
+        crate::test_support::state_subscription::test_subscriptions(),
+        Default::default(),
+    ));
+    // When
+    let error = usecase.read().await.unwrap_err();
+    // Then
+    let UsecaseError::Repository(GitError::Technical(error)) = error else {
+        panic!("expected repository technical failure: {error:?}");
+    };
+    assert_eq!(
+        error.nature,
+        crate::domain::failure::TechnicalFailureNature::Other
+    );
+    assert!(error.message.contains("repository collection failed"));
 }

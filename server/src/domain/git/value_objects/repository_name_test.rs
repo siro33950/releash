@@ -8,6 +8,8 @@ fn test_githubのorigin_各接続形式からownerと名前を読む() {
         "https://github.com/siro33950/releash",
         "git@github.com:siro33950/releash.git",
         "ssh://git@github.com/siro33950/releash.git",
+        "ssh://git@github.com:22/siro33950/releash.git",
+        "https://github.com:443/siro33950/releash.git",
     ] {
         // When
         let repository = GitHubRepository::from_origin_url(url);
@@ -29,6 +31,7 @@ fn test_githubのorigin_別ホストとリポジトリを指さない値を拒�
     for url in [
         "https://gitlab.com/user/repo.git",
         "https://github.com.example.com/user/repo.git",
+        "ssh://git@github.com.example.com:22/user/repo.git",
         "https://example.com/github.com/user/repo.git",
         "https://github.com@example.com/user/repo.git",
         "git@example.com:user/repo.git",
