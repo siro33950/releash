@@ -43,5 +43,22 @@ final class SourceControlBadgeTests: XCTestCase {
     try await eventuallyView(host) { host.element("99") != nil }
     model.selectedWorktree = "/repo/missing"
     try await eventuallyView(host) { host.element("99") == nil }
+    model.repositories.append(
+      .with {
+        $0.path = "/other"
+        $0.branches.items = [
+          .with {
+            $0.worktreePath = "/other/feature"
+            $0.dirtyCount = 3
+          }
+        ]
+      })
+    model.selectWorktree("/other/feature")
+    try await eventuallyView(host) { host.element("3") != nil }
+    model.selectWorktree("/repo/feature")
+    try await eventuallyView(host) { host.element("99") != nil && host.element("3") == nil }
+    model.deselectWorktree("/repo/feature")
+    try await eventuallyView(host) { host.element("99") == nil }
+    await model.stop()
   }
 }

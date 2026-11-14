@@ -76,10 +76,7 @@ private struct SourceControlBadge: View {
   let model: AppModel
 
   private var label: String? {
-    guard let path = model.selectedWorktree,
-      let branch = model.repositories.lazy.flatMap({ $0.branches.items }).first(where: {
-        $0.worktreePath == path
-      }),
+    guard let branch = model.selectedBranch,
       branch.hasDirtyCount, !branch.hasDirtyCountError, branch.dirtyCount > 0
     else { return nil }
     return branch.dirtyCount > 99 ? "99+" : String(branch.dirtyCount)

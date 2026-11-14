@@ -8,9 +8,14 @@ import SwiftProtobuf
 @MainActor @Observable final class AppModel {
   let updater = AppUpdater()
   var pendingRoots: [String: String] = [:]
-  var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = []
+  var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = [] {
+    didSet { updateSelectedBranch() }
+  }
   var collapsed: [String: Bool] = [:]
-  var selectedWorktree: String?
+  var selectedWorktree: String? {
+    didSet { updateSelectedBranch() }
+  }
+  private(set) var selectedBranch: Releash_Client_V1_WorkspaceBranch?
   var layout: PaneLayout = .empty()
   var panes = PaneWorkspace()
   /// 右カラムのファイルタブの領域。
@@ -441,6 +446,16 @@ import SwiftProtobuf
   private func resetWorkspaceReadErrors() {
     if case .workspace = displayedFailure { displayedFailure = nil }
     workspaceReadErrors = [:]
+  }
+
+  private func updateSelectedBranch() {
+    guard let path = selectedWorktree else {
+      selectedBranch = nil
+      return
+    }
+    selectedBranch = repositories.lazy.flatMap({ $0.branches.items }).first {
+      $0.worktreePath == path
+    }
   }
 
   func selectWorktree(_ path: String) {
