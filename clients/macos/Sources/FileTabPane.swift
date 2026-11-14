@@ -28,7 +28,7 @@ struct FileTabPane: View {
         case .textDiff(let text):
           FileWebView(
             payload: bridgePayload(text, value, colorScheme: colorScheme), model: model,
-            onAction: { message, accepted in action(message, onReplyAccepted: accepted) }
+            onAction: { message, accepted in action(message, onReplyCompleted: accepted) }
           )
           .accessibilityIdentifier("file-content")
         case .image(let image):
@@ -223,7 +223,7 @@ struct FileTabPane: View {
     }
     return result
   }
-  func action(_ message: [String: Any], onReplyAccepted: @escaping () -> Void = {}) {
+  func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
     guard let kind = message["kind"] as? String, let client = model.client else { return }
     if kind == "select" {
       draft.selection = FileLineSelection(message)
@@ -252,9 +252,14 @@ struct FileTabPane: View {
         request.worktreeName = worktree
         request.threadID = id
         request.content = message["content"] as? String ?? ""
-        _ = try await client.appendReviewComment(request: request, headers: model.headers).result
-          .get()
-        onReplyAccepted()
+        do {
+          _ = try await client.appendReviewComment(request: request, headers: model.headers).result
+            .get()
+          onReplyCompleted(true)
+        } catch {
+          onReplyCompleted(false)
+          throw error
+        }
       case "resolve":
         var request = Releash_Client_V1_ResolveReviewThreadRequest()
         request.worktreeName = worktree
@@ -270,12 +275,14 @@ struct FileTabPane: View {
   func startThread() {
     guard let selection = draft.selection else { return }
     guard !draft.sending else { return }
-    draft.id = UUID()
+    if draft.line == nil {
+      draft.id = UUID()
+      draft.content = ""
+    }
     draft.line = selection.line
     draft.endLine = selection.endLine
     draft.side = selection.side
     draft.endSide = selection.endSide
-    draft.content = ""
   }
   func createThread() {
     guard let client = model.client, let line = draft.line, !draft.sending else { return }
@@ -338,7 +345,7 @@ struct FileLineSelection: Equatable {
 struct FileWebView: NSViewRepresentable {
   let payload: [String: Any]
   let model: AppModel
-  let onAction: ([String: Any], @escaping () -> Void) -> Void
+  let onAction: ([String: Any], @escaping (Bool) -> Void) -> Void
   func makeCoordinator() -> Coordinator { Coordinator(model: model, onAction: onAction) }
   func makeNSView(context: Context) -> WKWebView {
     let configuration = WKWebViewConfiguration()
@@ -379,8 +386,8 @@ struct FileWebView: NSViewRepresentable {
     var payload: [String: Any] = [:]
     var ready = false
     private var composing = false
-    var onAction: ([String: Any], @escaping () -> Void) -> Void
-    init(model: AppModel, onAction: @escaping ([String: Any], @escaping () -> Void) -> Void) {
+    var onAction: ([String: Any], @escaping (Bool) -> Void) -> Void
+    init(model: AppModel, onAction: @escaping ([String: Any], @escaping (Bool) -> Void) -> Void) {
       self.model = model
       self.onAction = onAction
     }
@@ -392,13 +399,13 @@ struct FileWebView: NSViewRepresentable {
         ready = true
         render()
       } else {
-        onAction(value) { [weak self] in
+        onAction(value) { [weak self] accepted in
           guard let self, let id = value["id"] as? String,
             let requestID = value["requestID"] as? NSNumber
           else { return }
           web?.callAsyncJavaScript(
-            "window.releashReplyAccepted(id, requestID)",
-            arguments: ["id": id, "requestID": requestID], in: nil, in: world
+            "window.releashReplyAccepted(id, requestID, accepted)",
+            arguments: ["id": id, "requestID": requestID, "accepted": accepted], in: nil, in: world
           ) { [weak self] result in
             if case .failure(let error) = result {
               self?.model.failure = error.localizedDescription

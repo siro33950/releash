@@ -13,6 +13,7 @@ let payload;
 let selected;
 let diffMetadata;
 const replies = new Map();
+const pendingReplies = new Map();
 const replyInputs = new Map();
 let replyVersion = 0;
 let composerContent = '';
@@ -25,7 +26,9 @@ const relativeTime = (timestamp) => {
   }
   return 'たった今';
 };
-window.releashReplyAccepted = (id, version) => {
+window.releashReplyAccepted = (id, version, accepted = true) => {
+  if (pendingReplies.get(id) === version) pendingReplies.delete(id);
+  if (!accepted) return;
   if (replies.get(id)?.version !== version) return;
   replies.delete(id);
   const input = replyInputs.get(id);
@@ -162,11 +165,12 @@ function annotation({ metadata: thread }) {
     replyInputs.set(thread.id, input);
     input.oninput = () => replies.set(thread.id, { content: input.value, version: ++replyVersion });
     input.onkeydown = (event) => {
-      if (event.key !== 'Enter' || !event.metaKey || event.isComposing) return;
+      if (event.key !== 'Enter' || !event.metaKey || event.isComposing || event.repeat) return;
       event.preventDefault();
-      if (!input.value.trim()) return;
+      if (!input.value.trim() || pendingReplies.has(thread.id)) return;
       if (replies.get(thread.id)?.content !== input.value) input.oninput();
       const draft = replies.get(thread.id);
+      pendingReplies.set(thread.id, draft.version);
       send({ kind: 'reply', id: thread.id, content: draft.content, requestID: draft.version });
     };
     element.append(input);

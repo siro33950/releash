@@ -66,7 +66,9 @@ final class FileTabPaneTests: XCTestCase {
     let view = try pane(model)
     view.openInEditor()
     var acceptedReplies = 0
-    view.action(["kind": "reply", "id": "thread", "content": "reply body"]) { acceptedReplies += 1 }
+    view.action(["kind": "reply", "id": "thread", "content": "reply body"]) { accepted in
+      if accepted { acceptedReplies += 1 }
+    }
     view.action(["kind": "resolve", "id": "thread"])
     view.action([
       "kind": "select", "line": NSNumber(value: 2), "endLine": NSNumber(value: 3),
@@ -129,10 +131,15 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertEqual(added.side.value, .additions)
     XCTAssertEqual(added.lineNumber, 4)
     http.state.withLock { $0.failedMethod = "AppendReviewComment" }
-    view.action(["kind": "reply", "id": "thread", "content": "failure"]) { acceptedReplies += 1 }
+    var replyResult: Bool?
+    view.action(["kind": "reply", "id": "thread", "content": "failure"]) { accepted in
+      replyResult = accepted
+      if accepted { acceptedReplies += 1 }
+    }
     try await eventually { model.failure != nil }
     XCTAssertTrue(try XCTUnwrap(model.failure).contains("AppendReviewComment failed"))
     XCTAssertEqual(acceptedReplies, 1)
+    XCTAssertEqual(replyResult, false)
     await model.stop()
   }
 
@@ -235,14 +242,18 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertTrue(http.requests("CreateReviewThread").isEmpty)
     // When
     view.startThread()
-    view.action(["kind": "editCreate", "id": id, "content": "古いカード"])
+    XCTAssertEqual(view.draft.id.uuidString, id)
+    XCTAssertEqual(view.draft.content, "未送信本文")
+    view.action(["kind": "select", "line": 5])
+    view.startThread()
     // Then
-    XCTAssertEqual(view.draft.content, "")
+    XCTAssertEqual(view.draft.line, 5)
+    XCTAssertEqual(view.draft.content, "未送信本文")
     // When
     view.draft.sending = true
     view.action(["kind": "editCreate", "id": view.draft.id.uuidString, "content": "送信中"])
     // Then
-    XCTAssertEqual(view.draft.content, "")
+    XCTAssertEqual(view.draft.content, "未送信本文")
     await model.stop()
   }
 

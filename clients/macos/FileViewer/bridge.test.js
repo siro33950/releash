@@ -376,3 +376,26 @@ test('注釈DOMを再利用した再描画後も受理した返信欄を空に�
   // Then
   assert.equal(input.value, '');
 });
+
+test('返信は長押しと送信中の連打を防ぎ失敗後に再送できる', async () => {
+  const ui = await bridge();
+  ui.window.releashRender({ ...payload(), threads: [{ id: 't1', line: 2, comments: [] }] });
+  const render = () => ui.renderer().options.renderAnnotation(ui.renderer().input.lineAnnotations[0]);
+  let input = render().children.find((child) => child.tagName === 'textarea');
+  input.value = 'reply'; input.oninput();
+  const key = { key: 'Enter', metaKey: true, preventDefault() {} };
+  const count = () => ui.messages.filter((message) => message.kind === 'reply').length;
+  input.onkeydown({ ...key, repeat: true });
+  assert.equal(count(), 0);
+  input.onkeydown(key);
+  const request = ui.messages.at(-1);
+  input = render().children.find((child) => child.tagName === 'textarea');
+  input.onkeydown(key);
+  assert.equal(count(), 1);
+  ui.window.releashReplyAccepted(request.id, request.requestID, false);
+  assert.equal(input.value, 'reply');
+  input.onkeydown(key);
+  assert.equal(count(), 2);
+  ui.window.releashReplyAccepted(request.id, request.requestID, true);
+  assert.equal(input.value, '');
+});
