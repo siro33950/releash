@@ -1,0 +1,12 @@
+id: macos-test-user-input-simulation
+valid:
+  - 'let location = CGEvent(source: nil)?.location'
+  - 'view.scrollWheel(with: event)'
+  - 'NSApp.postEvent(event, atStart: false)'
+  - 'AXUIElementPerformAction(element, kAXPressAction as CFString)'
+invalid:
+  - 'CGWarpMouseCursorPosition(point)'
+  - 'XCTAssertEqual(CGWarpMouseCursorPosition(step.1), .success)'
+  - 'CGDisplayMoveCursorToPoint(CGMainDisplayID(), point)'
+  - 'event.post(tap: .cghidEventTap)'
+  - 'CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)'

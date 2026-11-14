@@ -29,6 +29,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 変更内容に応じて、着手前に次を確認する。
 
 - Rust を変更する場合は、対象レイヤーの規約と `docs/architecture/TEST.md` を読む。
+- テストを書く・変える場合は、`docs/architecture/TEST.md` を読む。
 - ドメインの型・規則・状態所有を変更する場合は、`docs/glossary/DOMAIN.md` を読む。
 - workflow 定義構文を変更する場合は、`docs/glossary/WORKFLOW.md` と対象 spec を読む。
 - 振る舞いを変更する場合は、対象 spec の requirements / behavior / design を確認する。
@@ -187,7 +188,7 @@ rustup component add llvm-tools-preview
 
 ## テスト方針
 
-Rust テストの配置、命名、レイヤー別の必須／柔軟、モック方針は `docs/architecture/TEST.md` を正とする。
+テストの種類、配置、確かめ方と、Rust テストの命名、レイヤー別の必須／柔軟、モック方針は `docs/architecture/TEST.md` を正とする。
 
 ## コーディング規約
 
