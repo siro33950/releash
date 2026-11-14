@@ -260,77 +260,6 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     return titles(node)
   }
 
-  @MainActor private func drag(
-    from source: CGPoint, to destination: CGPoint, in host: ViewHarness
-  ) async throws {
-    let pointer = try XCTUnwrap(CGEvent(source: nil)?.location)
-    addTeardownBlock { CGWarpMouseCursorPosition(pointer) }
-    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    XCTAssertEqual(
-      AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-      .success)
-    try await eventually {
-      host.window.makeKeyAndOrderFront(nil)
-      return NSApp.isActive && NSApp.keyWindow === host.window
-    }
-    let screenHeight = try XCTUnwrap(NSScreen.screens.first).frame.maxY
-    let visible = try XCTUnwrap(host.window.screen).visibleFrame
-    for point in [source, destination] {
-      XCTAssertTrue(
-        visible.contains(CGPoint(x: point.x, y: screenHeight - point.y)), "画面外の入力: \(point)")
-    }
-    let pasteboard = NSPasteboard(name: .drag)
-    let before = pasteboard.changeCount
-    print(
-      "drag begin from=\(source) to=\(destination) window=\(host.window.frame) pointer=\(NSEvent.mouseLocation)"
-    )
-    let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) {
-      event in
-      print(
-        "drag delivered type=\(event.type) point=\(event.locationInWindow) window=\(event.windowNumber)"
-      )
-      return event
-    }
-    defer { if let monitor { NSEvent.removeMonitor(monitor) } }
-    let steps: [(NSEvent.EventType, CGPoint)] =
-      [(.leftMouseDown, source)]
-      + (1...20).map { step in
-        (
-          .leftMouseDragged,
-          CGPoint(
-            x: source.x + (destination.x - source.x) * Double(step) / 20,
-            y: source.y + (destination.y - source.y) * Double(step) / 20)
-        )
-      } + [(.leftMouseUp, destination)]
-    var index = 0
-    let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
-      let done = MainActor.assumeIsolated {
-        let step = steps[index]
-        XCTAssertEqual(CGWarpMouseCursorPosition(step.1), .success)
-        let event = NSEvent.mouseEvent(
-          with: step.0,
-          location: host.window.convertPoint(
-            fromScreen: NSPoint(x: step.1.x, y: screenHeight - step.1.y)),
-          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-          windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
-          clickCount: 1, pressure: step.0 == .leftMouseUp ? 0 : 1)
-        XCTAssertNotNil(event)
-        index += 1
-        if let event { NSApp.postEvent(event, atStart: false) }
-        return index == steps.count
-      }
-      if done { timer.invalidate() }
-    }
-    RunLoop.main.add(timer, forMode: .common)
-    RunLoop.main.add(timer, forMode: .eventTracking)
-    defer { timer.invalidate() }
-    try await eventually { index == steps.count }
-    print(
-      "drag end pasteboard=\(before)->\(pasteboard.changeCount) types=\(pasteboard.types ?? []) pointer=\(NSEvent.mouseLocation)"
-    )
-    await host.refresh()
-  }
-
   @MainActor private func files(
     _ names: [String] = ["first.rs", "second.rs"], center: Bool = false,
     additionalFiles: [String] = []
@@ -348,14 +277,17 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     return (http, model, host)
   }
 
-  @MainActor private func splitFiles(in host: ViewHarness) async throws {
-    try await host.press("first.rs")
-    try await eventuallyView(host) { host.element("file-content") != nil }
-    let source = try tabFrame("first.rs", in: host)
-    let area = try frame("file-content", in: host)
-    try await drag(
-      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: area.midX, y: area.maxY - 3),
-      in: host)
+  @MainActor private func splitFiles(_ model: AppModel, in host: ViewHarness) async throws {
+    guard case .pane(_, let tabs, _) = try model.filePanes.layout() else {
+      return XCTFail("分割前のタブ領域が 1 つでない")
+    }
+    let first = try XCTUnwrap(tabs.first { $0.title == "first.rs" })
+    let rest = tabs.filter { $0.id != first.id }
+    try model.filePanes.restore(
+      .split(
+        id: UUID().uuidString, axis: .vertical, ratio: 0.5,
+        first: .pane(id: UUID().uuidString, tabs: rest, active: rest.first?.id),
+        second: .pane(id: UUID().uuidString, tabs: [first], active: first.id)))
     try await eventuallyView(host) { (try? self.strip("first.rs", in: host)) == ["first.rs"] }
   }
 
@@ -410,45 +342,11 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_ファイルタブ_b004_端へのドラッグで領域を分割する() async throws {
-    // Given
-    let (_, model, host) = try await files()
-    defer { host.close() }
-    // When
-    try await splitFiles(in: host)
-    // Then
-    XCTAssertEqual(try strip("first.rs", in: host), ["first.rs"])
-    XCTAssertEqual(try strip("second.rs", in: host), ["second.rs"])
-    await model.stop()
-  }
-
-  @MainActor func test_ファイルタブ_b005_別の領域のタブ列へ移す() async throws {
-    // Given
-    let (_, model, host) = try await files(additionalFiles: ["third.rs"])
-    defer { host.close() }
-    try await splitFiles(in: host)
-    try await host.press("first.rs")
-    try await clickRow("third.rs", in: host)
-    try await eventuallyView(host) { (try? self.strip("first.rs", in: host).count) == 2 }
-    // When
-    let source = try tabFrame("third.rs", in: host)
-    let target = try tabFrame("second.rs", in: host)
-    try await drag(
-      from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.midX, y: target.midY),
-      in: host)
-    // Then
-    try await eventuallyView(host) {
-      Set((try? self.strip("second.rs", in: host)) ?? []) == ["second.rs", "third.rs"]
-    }
-    XCTAssertEqual(try strip("first.rs", in: host), ["first.rs"])
-    await model.stop()
-  }
-
   @MainActor func test_ファイルタブ_b006_フォーカスのある領域へ開く() async throws {
     // Given
     let (_, model, host) = try await files(additionalFiles: ["third.rs"])
     defer { host.close() }
-    try await splitFiles(in: host)
+    try await splitFiles(model, in: host)
     try await host.press("first.rs")
     let other = try strip("second.rs", in: host)
     // When
@@ -478,54 +376,6 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
     XCTAssertEqual(AXUIElementPerformAction(tab, close as CFString), .success)
     // Then
     try await eventuallyView(host) { (try? self.strip("second.rs", in: host)) == ["second.rs"] }
-    await model.stop()
-  }
-
-  @MainActor func test_ファイルタブ_b008_同じ列の後ろへ並べ替える() async throws {
-    // Given
-    let (_, model, host) = try await files()
-    defer { host.close() }
-    XCTAssertEqual(try strip("first.rs", in: host), ["first.rs", "second.rs"])
-    let source = try tabFrame("first.rs", in: host)
-    let target = try tabFrame("second.rs", in: host)
-    // When
-    try await drag(
-      from: CGPoint(x: source.midX, y: source.midY),
-      to: CGPoint(x: target.maxX + 15, y: target.midY), in: host
-    )
-    // Then
-    try await eventuallyView(host) {
-      (try? self.strip("first.rs", in: host)) == ["second.rs", "first.rs"]
-    }
-    await model.stop()
-  }
-
-  @MainActor func test_ファイルタブ_b009_b010_中央との間では移動しない() async throws {
-    // Given
-    let (_, model, host) = try await files(["first.rs"], center: true)
-    defer { host.close() }
-    let pane = try XCTUnwrap(model.panes.controller.focusedPaneId)
-    model.panes.open(.terminal, in: pane)
-    try await eventuallyView(host) { host.element("Terminal 1") != nil }
-    let file = try tabFrame("first.rs", in: host)
-    let terminal = try frame("Terminal 1", in: host, role: kAXButtonRole)
-    // When / Then
-    for (source, target) in [(file, terminal), (terminal, file)] {
-      try await drag(
-        from: CGPoint(x: source.midX, y: source.midY), to: CGPoint(x: target.midX, y: target.midY),
-        in: host)
-      // Observe through subsequent event-loop turns so a delayed drop cannot pass unnoticed.
-      let deadline = ContinuousClock.now.advanced(by: .seconds(1))
-      repeat {
-        try await Task.sleep(for: .milliseconds(20))
-        await host.refresh()
-        XCTAssertEqual(try strip("first.rs", in: host), ["first.rs"])
-        XCTAssertEqual(try strip("Terminal 1", in: host), ["Terminal 1"])
-        XCTAssertGreaterThan(
-          try tabFrame("first.rs", in: host).minX,
-          try tabFrame("Terminal 1", in: host).maxX)
-      } while ContinuousClock.now < deadline
-    }
     await model.stop()
   }
 
@@ -577,32 +427,6 @@ final class FileWorkspaceAcceptanceTests: XCTestCase {
       try await eventuallyView(host) {
         host.element("file:first.rs") != nil && host.element("file-path") != nil
           && (try? self.strip("first.rs", in: host)) == ["first.rs"]
-      }
-    }
-    await model.stop()
-  }
-
-  @MainActor func test_ファイル面_b031_境界を動かすと一覧とタブ領域の幅が変わる() async throws {
-    // Given
-    let (_, model, host) = try await panel()
-    defer { host.close() }
-    let split = try XCTUnwrap(
-      views(try XCTUnwrap(host.window.contentView), of: NSSplitView.self)
-        .first { $0.isVertical && $0.arrangedSubviews.count == 2 })
-    for offset in [60.0, -60.0] {
-      let left = split.arrangedSubviews[0].frame.width
-      let right = split.arrangedSubviews[1].frame.width
-      let local = NSPoint(
-        x: split.arrangedSubviews[0].frame.maxX + split.dividerThickness / 2, y: split.bounds.midY)
-      let screen = host.window.convertPoint(toScreen: split.convert(local, to: nil))
-      let source = CGPoint(
-        x: screen.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - screen.y)
-      // When
-      try await drag(from: source, to: CGPoint(x: source.x + offset, y: source.y), in: host)
-      // Then
-      try await eventuallyView(host) {
-        (split.arrangedSubviews[0].frame.width - left) * offset > 0
-          && (split.arrangedSubviews[1].frame.width - right) * offset < 0
       }
     }
     await model.stop()

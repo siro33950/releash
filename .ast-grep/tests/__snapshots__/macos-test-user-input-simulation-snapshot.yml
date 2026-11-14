@@ -1,0 +1,32 @@
+id: macos-test-user-input-simulation
+snapshots:
+  CGDisplayMoveCursorToPoint(CGMainDisplayID(), point):
+    labels:
+    - source: CGDisplayMoveCursorToPoint(CGMainDisplayID(), point)
+      style: primary
+      start: 0
+      end: 52
+  ? 'CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)'
+  : labels:
+    - source: 'CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)'
+      style: primary
+      start: 0
+      end: 129
+  CGWarpMouseCursorPosition(point):
+    labels:
+    - source: CGWarpMouseCursorPosition(point)
+      style: primary
+      start: 0
+      end: 32
+  XCTAssertEqual(CGWarpMouseCursorPosition(step.1), .success):
+    labels:
+    - source: CGWarpMouseCursorPosition(step.1)
+      style: primary
+      start: 15
+      end: 48
+  'event.post(tap: .cghidEventTap)':
+    labels:
+    - source: 'event.post(tap: .cghidEventTap)'
+      style: primary
+      start: 0
+      end: 31

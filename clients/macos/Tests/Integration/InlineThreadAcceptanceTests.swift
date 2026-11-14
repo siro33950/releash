@@ -440,7 +440,7 @@ import XCTest
     }
   }
 
-  func test_本文リンク_B020_B021_両方の面から既定ブラウザへ渡す() async throws {
+  func test_本文リンク_B020_ファイルタブから既定ブラウザへ渡す() async throws {
     // Given
     let original = try XCTUnwrap(
       class_getInstanceMethod(NSWorkspace.self, #selector(NSWorkspace.open(_:))))
@@ -458,50 +458,6 @@ import XCTest
     _ = try await js(web, "all('a').find(e => e.textContent === '受入リンク').click();")
     // Then
     try await eventually { InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) == [url] } }
-    let host = try await panel(value)
-    try await eventually { self.findElement(host, name: "受入リンク") != nil }
-    // When
-    let application = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    XCTAssertEqual(
-      AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-      .success)
-    host.center()
-    try await eventually {
-      host.makeKeyAndOrderFront(nil)
-      return NSApp.isActive && host.isKeyWindow
-    }
-    let link = try XCTUnwrap(findElement(host, name: "受入リンク"))
-    var role: CFTypeRef?
-    XCTAssertEqual(
-      AXUIElementCopyAttributeValue(link, kAXRoleAttribute as CFString, &role), .success)
-    XCTAssertEqual(role as? String, "AXLink")
-    let frame = try elementFrame(link)
-    let screenPoint = NSPoint(x: frame.midX, y: frame.midY)
-    let cursor = try XCTUnwrap(CGEvent(source: nil)?.location)
-    defer { CGWarpMouseCursorPosition(cursor) }
-    XCTAssertEqual(
-      CGWarpMouseCursorPosition(
-        CGPoint(
-          x: screenPoint.x, y: try XCTUnwrap(NSScreen.screens.first).frame.maxY - screenPoint.y)),
-      .success)
-    let point = host.convertPoint(fromScreen: screenPoint)
-    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-      let event = try XCTUnwrap(
-        NSEvent.mouseEvent(
-          with: type, location: point, modifierFlags: [],
-          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.windowNumber,
-          context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
-      NSApp.postEvent(event, atStart: false)
-      try await Task.sleep(for: .milliseconds(50))
-    }
-    // Then
-    try await eventually {
-      InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) == [url, url] }
-    }
-    XCTAssertEqual(
-      InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) }, [url, url],
-      "link=\(frame), window=\(host.frame), point=\(point)"
-    )
   }
 
   func test_HTML_B022_B023_両方の面でscriptが操作を起こさない() async throws {

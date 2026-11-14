@@ -37,6 +37,7 @@ Nx の `test` target は単体と統合を、`e2e` target は振る舞いを実�
 
 macOS のテストは、通信や操作の境界を差し替えて状態・入出力を確かめるものを単体に置く。
 実ウィンドウ、アクセシビリティ、terminal の描画、アプリ bundle やファイルの読み書きとの接続を検証するものは統合に置く。
+実カーソルの移動や OS への入力イベントの投稿でユーザの操作を模した確認は、振る舞いテスト（XCUITest）だけで行う。単体テストと統合テストでは行わない。
 共通のテスト補助は `clients/macos/Tests/Shared/` に置く。
 FileViewer の JavaScript 単体テストは `macos:test-unit` に含める。
 

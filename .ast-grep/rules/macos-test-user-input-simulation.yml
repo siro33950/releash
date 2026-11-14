@@ -1,0 +1,12 @@
+id: macos-test-user-input-simulation
+language: Swift
+severity: error
+message: ユーザの操作を模した確認は振る舞いテスト（clients/macos/UITests）に書いてください
+files:
+  - clients/macos/Tests/**/*.swift
+rule:
+  any:
+    - pattern: 'CGWarpMouseCursorPosition($$$)'
+    - pattern: 'CGDisplayMoveCursorToPoint($$$)'
+    - pattern: '$EVENT.post(tap: $$$)'
+    - pattern: '$EVENT?.post(tap: $$$)'
