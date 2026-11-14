@@ -81,9 +81,7 @@ struct RootListView: View {
         IconMenu(title: "その他", image: "ellipsis") {
           Button("History…") { history = true }
         }
-        IconMenu(title: "開始", image: "plus") {
-          SessionWorkflowMenu(model: model, path: path)
-        }
+        SessionWorkflowMenu(model: model, path: path)
       }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
       if model.pendingRoots[path] != nil { ProgressView("Rootの配信を待っています").controlSize(.small) }
       VSplitView {
