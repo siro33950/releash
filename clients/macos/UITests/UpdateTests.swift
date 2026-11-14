@@ -94,7 +94,7 @@ import XCTest
       XCTAssertFalse(
         FileManager.default.fileExists(
           atPath: fixture.directory.appendingPathComponent("feed-requested").path))
-      XCTAssertFalse(app.buttons["更新"].exists)
+      XCTAssertFalse(app.buttons["footer-update"].exists)
       XCTAssertFalse(app.windows["SUUpdateAlert"].exists)
       try await Task.sleep(for: .milliseconds(100))
     }
@@ -238,23 +238,23 @@ import XCTest
     }
     // Then
     XCTAssertEqual(try update.installedVersion(), update.currentVersion)
-    XCTAssertTrue(app.buttons["更新"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.buttons["footer-update"].waitForExistence(timeout: 10))
     XCTAssertTrue(app.staticTexts[update.updatedVersion].exists)
-    XCTAssertFalse(app.buttons["更新"].isEnabled)
+    XCTAssertFalse(app.buttons["footer-update"].isEnabled)
     app.descendants(matching: .statusItem)["Releash"].click()
     XCTAssertTrue(check.waitForExistence(timeout: 10))
     XCTAssertFalse(check.isEnabled)
     app.typeKey(.escape, modifierFlags: [])
     XCTAssertTrue(app.state == .runningForeground || app.state == .runningBackground)
     try Data().write(to: fixture.directory.appendingPathComponent("release-download"))
-    try await waitUntil { self.app.buttons["更新"].isEnabled }
+    try await waitUntil { self.app.buttons["footer-update"].isEnabled }
     XCTAssertEqual(try update.installedVersion(), update.currentVersion)
     XCTAssertEqual(
       NSRunningApplication.runningApplications(withBundleIdentifier: update.identifier)
         .map(\.processIdentifier), [originalProcess])
     // When
     if immediately {
-      app.buttons["更新"].click()
+      app.buttons["footer-update"].click()
       let install = app.windows["SUUpdateAlert"].buttons["SPUUserUpdateChoiceInstall"]
       XCTAssertTrue(install.waitForExistence(timeout: 15), app.debugDescription)
       XCTAssertTrue(

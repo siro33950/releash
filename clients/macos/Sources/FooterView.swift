@@ -29,6 +29,7 @@ struct FooterView: View {
           Text(version)
           Button("更新") { model.updater.checkForUpdates() }
             .disabled(!model.updater.canCheckForUpdates)
+            .accessibilityIdentifier("footer-update")
         }
         if let info = model.daemonInfo {
           let serverLabel =
