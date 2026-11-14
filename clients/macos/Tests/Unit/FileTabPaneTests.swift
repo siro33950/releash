@@ -60,6 +60,17 @@ final class FileTabPaneTests: XCTestCase {
     }
   }
 
+  @MainActor func test_返信_未接続でも失敗を通知する() throws {
+    // Given
+    let model = AppModel()
+    let view = try pane(model)
+    var results: [Bool] = []
+    // When
+    view.action(["kind": "reply", "id": "thread", "content": "本文"]) { results.append($0) }
+    // Then
+    XCTAssertEqual(results, [false])
+  }
+
   @MainActor func testFileActionsSendTargetAndThreadInputAndReportRPCFailure() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)

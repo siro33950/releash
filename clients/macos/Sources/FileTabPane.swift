@@ -224,7 +224,11 @@ struct FileTabPane: View {
     return result
   }
   func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
-    guard let kind = message["kind"] as? String, let client = model.client else { return }
+    guard let kind = message["kind"] as? String else { return }
+    guard let client = model.client else {
+      if kind == "reply" { onReplyCompleted(false) }
+      return
+    }
     if kind == "select" {
       draft.selection = FileLineSelection(message)
       return
