@@ -7,7 +7,7 @@ extension Releash_Client_V1_WorkspaceRepositoryList {
 struct SidebarView: View {
   @Bindable var model: AppModel
   @Binding var creating: Bool
-  @State private var sidebarWidth = UIStyle.sidebarWidth
+  var sidebarWidth = UIStyle.sidebarWidth
   func repositoryFailure(_ repository: Releash_Client_V1_WorkspaceRepositoryList) -> String? {
     repository.status.hasError ? repository.status.error : nil
   }
@@ -92,16 +92,13 @@ struct SidebarView: View {
       .padding(.horizontal, UIStyle.spacing)
       .frame(height: UIStyle.tabBarHeight)
     }
-    .onGeometryChange(for: CGFloat.self) {
-      $0.size.width
-    } action: {
-      sidebarWidth = $0
-    }
   }
 
 }
 
 struct WorktreeCard: View {
+  private static let minimumRowHeight = NSLayoutManager().defaultLineHeight(
+    for: .preferredFont(forTextStyle: .callout))
   @Bindable var model: AppModel
   let repository: Releash_Client_V1_WorkspaceRepositoryList
   let branch: Releash_Client_V1_WorkspaceBranch
@@ -158,7 +155,7 @@ struct WorktreeCard: View {
         }
       }
       .frame(
-        minHeight: NSLayoutManager().defaultLineHeight(for: .preferredFont(forTextStyle: .callout)),
+        minHeight: Self.minimumRowHeight,
         alignment: .topLeading
       )
       .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)

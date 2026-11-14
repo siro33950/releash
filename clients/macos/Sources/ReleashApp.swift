@@ -70,7 +70,7 @@ struct RootView: View {
               + (rightPanelExpanded ? UIStyle.rightPanelMinimumWidth : UIStyle.collapsedPanelWidth),
             initialLeadingWidth: UIStyle.sidebarWidth
           ) {
-            SidebarView(model: model, creating: $creating)
+            SidebarView(model: model, creating: $creating, sidebarWidth: sidebarWidth)
               .frame(maxHeight: .infinity)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.width
