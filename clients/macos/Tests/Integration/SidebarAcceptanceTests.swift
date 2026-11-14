@@ -212,6 +212,20 @@ final class SidebarAcceptanceTests: XCTestCase {
         $0.status = "active"
       }
     ]
+    for index in [1, 3] {
+      let execution = try XCTUnwrap(repo.worktrees.items[index].executions.first)
+      repo.worktrees.items[index].snapshot.nodes.items = [
+        .with {
+          $0.node.id = execution.id
+          $0.node.executionID = execution.id
+          $0.node.sessionID = execution.id
+          $0.node.title = execution.title
+          $0.node.status.value = .active
+          $0.node.contentKind.value = .session
+          $0.node.provider.value = index == 1 ? .codex : .claude
+        }
+      ]
+    }
     model.repositories = [repo]
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
@@ -242,8 +256,11 @@ final class SidebarAcceptanceTests: XCTestCase {
     XCTAssertTrue(host.element("worktree:session")?.label.contains("Session title") == true)
     XCTAssertTrue(
       host.element("worktree:workflow")?.label.contains("Workflow title · 3 nodes") == true)
-    for provider in ["Claude", "Codex"] {
-      XCTAssertFalse(host.element("worktree:session")?.label.contains(provider) == true)
+    for name in ["session", "deleting"] {
+      let card = try XCTUnwrap(host.element("worktree:" + name))
+      for provider in ["Claude", "Codex"] {
+        XCTAssertFalse(card.label.contains(provider), "Session card: \(card.label)")
+      }
     }
     let sessionStyle = try textStyle("Session title", in: host, rect: sessionCard)
     let workflowStyle = try textStyle("Workflow title", in: host, rect: workflowCard)
@@ -402,44 +419,53 @@ final class SidebarAcceptanceTests: XCTestCase {
         mouseCursorPosition: previous, mouseButton: .left)?.post(tap: .cghidEventTap)
     }
     let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    XCTAssertEqual(
-      AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-      .success)
-    try await eventually {
-      host.window.makeKeyAndOrderFront(nil)
-      return NSApp.isActive && host.window.isKeyWindow
-    }
     host.window.acceptsMouseMovedEvents = true
     let point = CGPoint(x: screen.midX, y: screen.midY)
-    let visible = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
-    for position in [CGPoint(x: point.x - 40, y: point.y), point] {
-      XCTAssertEqual(CGWarpMouseCursorPosition(position), .success)
-      let event = try XCTUnwrap(
-        CGEvent(
-          mouseEventSource: nil, mouseType: .mouseMoved,
-          mouseCursorPosition: position, mouseButton: .left))
-      event.post(tap: .cghidEventTap)
-      let localEvent = try XCTUnwrap(
-        NSEvent.mouseEvent(
-          with: .mouseMoved,
-          location: host.window.convertPoint(
-            fromScreen: NSPoint(
-              x: position.x, y: try XCTUnwrap(NSScreen.screens.first).frame.height - position.y)),
-          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-          windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
-          clickCount: 0, pressure: 0))
-      NSApp.postEvent(localEvent, atStart: false)
-      try await Task.sleep(for: .milliseconds(100))
-    }
-    try await eventually {
-      NSApp.windows.contains {
-        $0 !== host.window && $0.isVisible && !visible.contains(ObjectIdentifier($0))
+    var displayedTooltip: NSWindow?
+    for attempt in 1...3 {
+      XCTAssertEqual(
+        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
+        .success)
+      try await eventually {
+        host.window.makeKeyAndOrderFront(nil)
+        return NSApp.isActive && host.window.isKeyWindow
       }
+      let visible = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
+      for position in [CGPoint(x: point.x - 40, y: point.y), point] {
+        XCTAssertEqual(CGWarpMouseCursorPosition(position), .success)
+        let event = try XCTUnwrap(
+          CGEvent(
+            mouseEventSource: nil, mouseType: .mouseMoved,
+            mouseCursorPosition: position, mouseButton: .left))
+        event.post(tap: .cghidEventTap)
+        let localEvent = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: host.window.convertPoint(
+              fromScreen: NSPoint(
+                x: position.x, y: try XCTUnwrap(NSScreen.screens.first).frame.height - position.y)),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 0, pressure: 0))
+        NSApp.postEvent(localEvent, atStart: false)
+        try await Task.sleep(for: .milliseconds(100))
+      }
+      var lostFocus = false
+      try await eventually {
+        lostFocus = lostFocus || !NSApp.isActive || !host.window.isKeyWindow
+        if lostFocus { return true }
+        displayedTooltip = NSApp.windows.first {
+          $0 !== host.window && $0.isVisible && !visible.contains(ObjectIdentifier($0))
+        }
+        return displayedTooltip != nil
+      }
+      if !lostFocus { break }
+      displayedTooltip = nil
+      print("Warning tooltip hover interrupted by focus loss (attempt \(attempt)/3)")
     }
     let tooltip = try XCTUnwrap(
-      NSApp.windows.first {
-        $0 !== host.window && $0.isVisible && !visible.contains(ObjectIdentifier($0))
-      })
+      displayedTooltip,
+      "Warning tooltip was not observed with the test app active and its window key")
     let content = try XCTUnwrap(tooltip.contentView)
     let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
     content.cacheDisplay(in: content.bounds, to: bitmap)
