@@ -105,8 +105,15 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(|path| WatchRequirement::Files(path, StateChangeSource::ProviderHistory))
                 .collect(),
+            Self::ReviewThreads(path) => vec![
+                WatchRequirement::Git(path.clone()),
+                WatchRequirement::Files(path.clone(), StateChangeSource::Worktree(path.clone())),
+                WatchRequirement::Files(
+                    review_comments_dir.into(),
+                    StateChangeSource::ReviewComments(None),
+                ),
+            ],
             Self::FileThreads(..)
-            | Self::ReviewThreads(_)
             | Self::ReviewSessionThreads(..)
             | Self::ReviewWorktreeThreads(..)
             | Self::ReviewSessionThread(..)
@@ -183,6 +190,7 @@ impl SubscriptionTarget {
                 | Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
+                | Self::ReviewThreads(p)
                 | Self::ReleashBase(p) => paths.contains(p),
                 _ => false,
             },
@@ -196,6 +204,7 @@ impl SubscriptionTarget {
                 Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
+                | Self::ReviewThreads(p)
                 | Self::NodeDetail(p, _)
                 | Self::SessionHistory(p, _) => p == path,
                 _ => false,

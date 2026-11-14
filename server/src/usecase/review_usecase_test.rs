@@ -680,4 +680,132 @@ mod tests {
                 .contains(&format!("matches:{original_source:?}")));
         }
     }
+
+    fn thread(id: &str, file_path: Option<&str>, line_number: Option<u32>) -> Thread {
+        Thread {
+            id: id.into(),
+            worktree_name: "/repo".into(),
+            target: crate::domain::comment::Target {
+                file_path: file_path.map(Into::into),
+                line_number,
+                end_line: None,
+                side: None,
+                end_side: None,
+            },
+            state: crate::domain::comment::State::Open,
+            comments: Vec::new(),
+            resolve: None,
+            created_at: 0.0,
+            updated_at: 0.0,
+            version: 1,
+            can_resolve: true,
+        }
+    }
+
+    #[test]
+    fn test_Threadの差分_baseとの差分から対象行を添えファイルは一度だけ読む() {
+        // Given
+        let code = Arc::new(
+            FakeReviewCode::new()
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::BranchBaseTip,
+                    present_text("a\n"),
+                )
+                .with_source_bytes(
+                    "/repo/file.rs",
+                    ReviewContentSource::WorkingTree,
+                    present_text("a\nb\n"),
+                )
+                .with_diff_result(
+                    "a\n",
+                    "a\nb\n",
+                    DiffHunksResultDto {
+                        hunks: vec![HunkDto {
+                            old_start: 1,
+                            old_lines: 1,
+                            new_start: 1,
+                            new_lines: 2,
+                            lines: vec![" a".into(), "+b".into()],
+                        }],
+                    },
+                ),
+        );
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![])),
+            code.clone(),
+        );
+        // When
+        let value = usecase
+            .threads_with_excerpts(
+                "/repo",
+                vec![
+                    thread("added", Some("file.rs"), Some(2)),
+                    thread("first", Some("file.rs"), Some(1)),
+                    thread("general", None, None),
+                ],
+            )
+            .unwrap();
+        // Then
+        assert_eq!(
+            value[0].1,
+            vec![
+                ExcerptLine {
+                    line: DiffLine::Context {
+                        old: 1,
+                        new: 1,
+                        text: "a".into()
+                    },
+                    targeted: false
+                },
+                ExcerptLine {
+                    line: DiffLine::Addition {
+                        new: 2,
+                        text: "b".into()
+                    },
+                    targeted: true
+                },
+            ]
+        );
+        assert_eq!(value[1].1.len(), 1);
+        assert!(value[2].1.is_empty());
+        assert_eq!(code.reads.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_Threadの差分_文字にできないファイルと無いファイルには空を添える() {
+        // Given
+        let code = FakeReviewCode::new()
+            .with_source_bytes(
+                "/repo/data.bin",
+                ReviewContentSource::WorkingTree,
+                ReviewSideBytes::Present(vec![0, 1, 2]),
+            )
+            .with_source_bytes(
+                "/repo/image.png",
+                ReviewContentSource::WorkingTree,
+                present_text("png"),
+            );
+        let usecase = usecase_with_code(vec![], code);
+        // When
+        let value = usecase
+            .threads_with_excerpts(
+                "/repo",
+                vec![
+                    thread("binary", Some("data.bin"), Some(1)),
+                    thread("image", Some("image.png"), Some(1)),
+                    thread("missing", Some("missing.rs"), Some(1)),
+                ],
+            )
+            .unwrap();
+        // Then
+        assert!(value.iter().all(|(_, excerpt)| excerpt.is_empty()));
+        assert_eq!(
+            value
+                .iter()
+                .map(|(thread, _)| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["binary", "image", "missing"]
+        );
+    }
 }

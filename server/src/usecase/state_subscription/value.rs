@@ -50,6 +50,13 @@ pub enum StateValue {
     FileTab(crate::usecase::code_dto::FileTabViewDto),
     FileThreads(Vec<crate::domain::comment::Thread>),
     ReviewThreads(Vec<crate::domain::comment::Thread>),
+    /// Thread と、その対象の行の差分。
+    ThreadExcerpts(
+        Vec<(
+            crate::domain::comment::Thread,
+            Vec<crate::domain::comment::ExcerptLine>,
+        )>,
+    ),
     WorkflowExecution(Option<crate::domain::workflow::ExecutionTree>),
     WorkflowOutput(Option<crate::usecase::workflow::WorkflowGetOutputResult>),
     ReviewSessionThreads(Option<Vec<crate::domain::comment::Thread>>),

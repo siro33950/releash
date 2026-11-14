@@ -1,5 +1,7 @@
 mod entites;
 pub use entites::{Author, AuthorKind, Comment, LineSide, Resolve, State, Target, Thread};
+mod excerpt;
+pub use excerpt::ExcerptLine;
 mod repository;
 pub(crate) use repository::ThreadRepository;
 

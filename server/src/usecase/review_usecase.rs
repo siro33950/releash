@@ -11,6 +11,8 @@ use crate::domain::code::{
 };
 
 use crate::domain::code::value_objects::review::ReviewPresentation;
+use crate::domain::code::value_objects::DiffLine;
+use crate::domain::comment::{ExcerptLine, Thread};
 
 use super::code_dto::{
     DiffHunksResultDto, HunkDto, ReviewBinaryDto, ReviewFileViewDto, ReviewImageDto,
@@ -197,16 +199,112 @@ impl ReviewUsecase {
         base: &str,
     ) -> Result<super::code_dto::FileTabViewDto, CodeUsecaseError> {
         use super::code_dto::FileTabViewDto;
-        let base = ReviewBase::parse(base)?;
+        let sides = self.read_sides(worktree_path, path, ReviewBase::parse(base)?)?;
+        let initial_mode = ReviewPresentation::initial_file_mode(
+            self.code
+                .review_working_tree_matches_source(&sides.file_path, sides.original.source)?,
+        );
+        let mut dto = FileTabViewDto {
+            view: binary_view(
+                &sides.relative_path,
+                sides.original.metadata,
+                sides.modified.metadata,
+            ),
+            initial_mode,
+            patch: String::new(),
+        };
+        match sides.presentation() {
+            ReviewPresentation::Image => {
+                let mime = review_blob_mime_for_path(&sides.relative_path);
+                dto.view = ReviewFileViewDto::Image(ReviewImageDto {
+                    original_url: side_data_url(&sides.original_bytes, mime),
+                    modified_url: side_data_url(&sides.modified_bytes, mime),
+                    path: sides.relative_path,
+                });
+            }
+            ReviewPresentation::Binary => {}
+            ReviewPresentation::Text => {
+                let (original, modified, hunks) = self.text_diff(&sides)?;
+                dto.patch = crate::domain::code::services::file_hunk::patch(
+                    &sides.relative_path,
+                    &hunks,
+                    &original,
+                    &modified,
+                );
+                dto.view = ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
+                    source: text_source(&sides.original_bytes, &sides.modified_bytes),
+                    path: sides.relative_path,
+                    original,
+                    modified,
+                });
+            }
+        }
+        Ok(dto)
+    }
+
+    /// Thread ごとに、対象の行とその前の数行の差分を添える。
+    ///
+    /// 差分は、ブランチの base から作業ツリーまでを比べる。
+    /// 対象が行を持たない Thread と、対象のファイルを文字の差分にできない Thread には、空を添える。
+    pub fn threads_with_excerpts(
+        &self,
+        worktree_path: &str,
+        threads: Vec<Thread>,
+    ) -> Result<Vec<(Thread, Vec<ExcerptLine>)>, CodeUsecaseError> {
+        let mut diffs = std::collections::HashMap::<String, Vec<DiffLine>>::new();
+        threads
+            .into_iter()
+            .map(|thread| {
+                let excerpt = match (&thread.target.file_path, thread.target.line_number) {
+                    (Some(path), Some(_)) => {
+                        if !diffs.contains_key(path) {
+                            diffs.insert(path.clone(), self.file_diff_lines(worktree_path, path)?);
+                        }
+                        thread.target.excerpt(&diffs[path])
+                    }
+                    _ => Vec::new(),
+                };
+                Ok((thread, excerpt))
+            })
+            .collect()
+    }
+
+    /// ブランチの base から作業ツリーまでの、ファイル全体の差分。文字の差分にできないファイルでは空。
+    fn file_diff_lines(
+        &self,
+        worktree_path: &str,
+        path: &str,
+    ) -> Result<Vec<DiffLine>, CodeUsecaseError> {
+        let sides = match self.read_sides(worktree_path, path, ReviewBase::BranchBase) {
+            Ok(sides) => sides,
+            Err(CodeUsecaseError::Code(CodeError::Rule(_))) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        if sides.presentation() != ReviewPresentation::Text {
+            return Ok(Vec::new());
+        }
+        let (_, modified, hunks) = self.text_diff(&sides)?;
+        Ok(crate::domain::code::services::file_diff::lines(
+            &hunks, &modified,
+        ))
+    }
+
+    /// 比べる 2 つの側の内容を読む。どちらの側にもファイルが無ければ失敗する。
+    fn read_sides(
+        &self,
+        worktree_path: &str,
+        path: &str,
+        base: ReviewBase,
+    ) -> Result<ReviewSides, CodeUsecaseError> {
         let relative_path = resolve_review_target(worktree_path, path)?;
         let file_path = self.code.file_target(worktree_path, &relative_path)?;
-        let original_source =
+        let original =
             self.code
                 .select_review_side_source(&file_path, ReviewBlobSide::Original, base)?;
-        let modified_source =
+        let modified =
             self.code
                 .select_review_side_source(&file_path, ReviewBlobSide::Modified, base)?;
-        if original_source.metadata.is_missing() && modified_source.metadata.is_missing() {
+        if original.metadata.is_missing() && modified.metadata.is_missing() {
             return Err(CodeError::Rule(format!("file target not found: {relative_path}")).into());
         }
         let binary_attribute =
@@ -219,72 +317,67 @@ impl ReviewUsecase {
             } else {
                 false
             };
-        let initial_mode = ReviewPresentation::initial_file_mode(
-            self.code
-                .review_working_tree_matches_source(&file_path, original_source.source)?,
-        );
         let (original_bytes, modified_bytes) = if binary_attribute {
             (ReviewSideBytes::Missing, ReviewSideBytes::Missing)
         } else {
             (
                 self.code
-                    .read_review_source_bytes(&file_path, original_source.source)?,
+                    .read_review_source_bytes(&file_path, original.source)?,
                 self.code
-                    .read_review_source_bytes(&file_path, modified_source.source)?,
+                    .read_review_source_bytes(&file_path, modified.source)?,
             )
         };
-        let mut dto = FileTabViewDto {
-            view: binary_view(
-                &relative_path,
-                original_source.metadata,
-                modified_source.metadata,
-            ),
-            initial_mode,
-            patch: String::new(),
-        };
-        if ReviewPresentation::classify(&relative_path, false, &original_bytes, &modified_bytes)
-            == ReviewPresentation::Image
-        {
-            let mime = review_blob_mime_for_path(&relative_path);
-            dto.view = ReviewFileViewDto::Image(ReviewImageDto {
-                path: relative_path,
-                original_url: side_data_url(&original_bytes, mime),
-                modified_url: side_data_url(&modified_bytes, mime),
-            });
-            return Ok(dto);
-        }
-        if ReviewPresentation::classify(
-            &relative_path,
-            binary_attribute,
-            &original_bytes,
-            &modified_bytes,
-        ) == ReviewPresentation::Binary
-        {
-            return Ok(dto);
-        }
-        let original = decode_side_text(&original_bytes)?;
-        let modified = decode_side_text(&modified_bytes)?;
-        let hunks = self
-            .code
-            .compute_diff_hunks(&original, &modified, Some(&relative_path))?;
-        let hunks: Vec<_> = hunks.hunks.iter().map(hunk_dto_to_domain).collect();
-        dto.patch = crate::domain::code::services::file_hunk::patch(
-            &relative_path,
-            &hunks,
-            &original,
-            &modified,
-        );
-        dto.view = ReviewFileViewDto::TextDiff(ReviewTextDiffDto {
-            path: relative_path,
-            source: text_source(&original_bytes, &modified_bytes),
+        Ok(ReviewSides {
+            relative_path,
+            file_path,
             original,
             modified,
-        });
-        Ok(dto)
+            binary_attribute,
+            original_bytes,
+            modified_bytes,
+        })
+    }
+
+    /// 文字として読める 2 つの側の全文と、その差分の hunk。
+    fn text_diff(
+        &self,
+        sides: &ReviewSides,
+    ) -> Result<(String, String, Vec<Hunk>), CodeUsecaseError> {
+        let original = decode_side_text(&sides.original_bytes)?;
+        let modified = decode_side_text(&sides.modified_bytes)?;
+        let hunks = self
+            .code
+            .compute_diff_hunks(&original, &modified, Some(&sides.relative_path))?
+            .hunks
+            .iter()
+            .map(hunk_dto_to_domain)
+            .collect();
+        Ok((original, modified, hunks))
     }
 
     fn snapshot(&self, worktree_path: &str) -> Result<Arc<RepositorySnapshot>, CodeUsecaseError> {
         self.repository_state.snapshot(worktree_path)
+    }
+}
+
+struct ReviewSides {
+    relative_path: String,
+    file_path: String,
+    original: SelectedReviewSide,
+    modified: SelectedReviewSide,
+    binary_attribute: bool,
+    original_bytes: ReviewSideBytes,
+    modified_bytes: ReviewSideBytes,
+}
+
+impl ReviewSides {
+    fn presentation(&self) -> ReviewPresentation {
+        ReviewPresentation::classify(
+            &self.relative_path,
+            self.binary_attribute,
+            &self.original_bytes,
+            &self.modified_bytes,
+        )
     }
 }
 

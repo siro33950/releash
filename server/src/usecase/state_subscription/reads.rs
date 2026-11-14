@@ -378,16 +378,22 @@ impl WorkspaceStateReads {
                 let threads = self.comments.list_threads(&self.data_dir, path, Some(crate::domain::comment::ReviewThreadFilter { file: Some(file.clone()), ..Default::default() }), crate::domain::comment::Author::human()).map_err(error)?;
                 StateValue::FileThreads(threads)
             }
-            T::ReviewThreads(name) => StateValue::ReviewThreads(
-                self.comments
+            T::ReviewThreads(name) => {
+                let threads = self
+                    .comments
                     .list_threads(
                         &self.data_dir,
                         name,
                         None,
                         crate::domain::comment::Author::human(),
                     )
-                    .map_err(error)?,
-            ),
+                    .map_err(error)?;
+                StateValue::ThreadExcerpts(
+                    self.review
+                        .threads_with_excerpts(name, threads)
+                        .map_err(error)?,
+                )
+            }
             T::Workflow(name) => {
                 StateValue::Workflow(self.workflow.get_workflow(name).map_err(error)?)
             }

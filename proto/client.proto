@@ -1937,10 +1937,30 @@ message StatePayload {
     ProviderUsageSnapshot provider_usage = 70;
     ExecutionOverviewDto execution_overview = 76;
     FilteredFilesSnapshot filtered_files = 77;
+    ThreadExcerptsSnapshot thread_excerpts = 78;
   }
 }
 message FileThreadsSnapshot {
   ListReviewThreadDto threads = 1;
+}
+// worktree の Thread と、その対象の行の差分。購読の対象 `review-threads` で届く。
+message ThreadExcerptsSnapshot {
+  repeated ThreadExcerpt items = 1;
+}
+message ThreadExcerpt {
+  ReviewThreadDto thread = 1;
+  // 対象の行と、その前の数行の差分。ブランチの base から作業ツリーまでを比べる。
+  // 対象が行を持たない Thread と、対象の行を差分から求められない Thread では空。
+  repeated ThreadDiffLine lines = 2;
+}
+message ThreadDiffLine {
+  // 変更前の側の行番号。変更後だけにある行には無い。
+  optional uint32 old_line = 1;
+  // 変更後の側の行番号。変更前だけにある行には無い。
+  optional uint32 new_line = 2;
+  string text = 3;
+  // Thread の対象の行か。
+  bool targeted = 4;
 }
 message DirectoryEntry {
   string path = 1;

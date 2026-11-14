@@ -42,6 +42,15 @@ enum UIStyle {
   static let sidebarSelectionText = Color(nsColor: .alternateSelectedControlTextColor)
   static let iconButtonCornerRadius: CGFloat = 5
   static let iconButtonHover = Color(nsColor: .quaternarySystemFill)
+  static let cardCornerRadius: CGFloat = 6
+  static let avatarSize: CGFloat = 20
+  static let commentInputLines = 6
+  static let diffLineNumberWidth: CGFloat = 32
+  static let diffSignWidth: CGFloat = 16
+  static let diffTargetMarkerWidth: CGFloat = 3
+  static let diffTintOpacity = 0.15
+  static let diffAddition = Color.green
+  static let diffDeletion = Color.red
   static let attention = Color.yellow
   static let active = Color.blue
   static let idle = Color.green

@@ -69,19 +69,22 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
     let usecase = fixture.subscriptions.clone().with_reads(
         Arc::new(fixture.reads.clone()),
         Some(Arc::new(
-            releashd::test_support::integration::platform::WatcherUsecase::new(None, files.clone()),
+            releashd::test_support::integration::platform::WatcherUsecase::new(
+                Some(fixture.repository_state.clone()),
+                files.clone(),
+            ),
         )),
         vec![],
         String::new(),
     );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
-    let target = SubscriptionTarget::ReviewThreads("repository".into()).to_string();
+    let target = SubscriptionTarget::ReviewThreads(fixture.path.clone()).to_string();
     // When
     start_read(&usecase, "client", &target).await.unwrap();
     // Then
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ReviewThreads(vec![])))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value))) if same(&value, StateValue::ThreadExcerpts(vec![])))
     );
     stream.next().await;
     let requirement = WatchRequirement::Files(
@@ -98,7 +101,7 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
         .comments
         .create_thread(
             &fixture.reads.data_dir,
-            "repository",
+            &fixture.path,
             releashd::test_support::integration::platform::ReviewActor::human(),
             releashd::test_support::integration::platform::ReviewTarget {
                 file_path: None,
@@ -111,7 +114,7 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
         )
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ReviewThreads(vec![thread.into()])))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ThreadExcerpts(vec![(thread, vec![])])))
     );
     stop_read(&usecase, "client", &target).await.unwrap();
     assert!(usecase.test_watches().is_empty());

@@ -1314,3 +1314,80 @@ fn test_ファイル一覧配信_直下一覧と絞込結果が同じgit状態�
         assert!(files.truncated);
     }
 }
+
+#[test]
+fn test_thread一覧購読_対象行の差分を行番号と対象の印を付けて転送する() {
+    use crate::domain::code::value_objects::DiffLine;
+    use crate::domain::comment::{Author, Comment, ExcerptLine, State, Target, Thread};
+    // Given
+    let thread = Thread {
+        id: "thread".into(),
+        worktree_name: "/repo".into(),
+        target: Target {
+            file_path: Some("file.rs".into()),
+            line_number: Some(3),
+            end_line: None,
+            side: None,
+            end_side: None,
+        },
+        state: State::Open,
+        comments: vec![Comment {
+            id: "comment".into(),
+            thread_id: "thread".into(),
+            author: Author::human(),
+            content: "content".into(),
+            created_at: 1.0,
+        }],
+        resolve: None,
+        created_at: 1.0,
+        updated_at: 1.0,
+        version: 1,
+        can_resolve: true,
+    };
+    let value = StateValue::ThreadExcerpts(vec![(
+        thread,
+        vec![
+            ExcerptLine {
+                line: DiffLine::Deletion {
+                    old: 3,
+                    text: "old".into(),
+                },
+                targeted: false,
+            },
+            ExcerptLine {
+                line: DiffLine::Addition {
+                    new: 3,
+                    text: "new".into(),
+                },
+                targeted: true,
+            },
+        ],
+    )]);
+    // When
+    let payload = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::ThreadExcerpts(snapshot)) = payload.value else {
+        panic!("expected thread excerpts");
+    };
+    assert_eq!(
+        snapshot.items[0].thread.as_ref().unwrap().id.as_deref(),
+        Some("thread")
+    );
+    assert_eq!(
+        snapshot.items[0].lines,
+        vec![
+            wire::ThreadDiffLine {
+                old_line: Some(3),
+                new_line: None,
+                text: "old".into(),
+                targeted: false,
+            },
+            wire::ThreadDiffLine {
+                old_line: None,
+                new_line: Some(3),
+                text: "new".into(),
+                targeted: true,
+            },
+        ]
+    );
+}
