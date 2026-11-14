@@ -5,7 +5,6 @@ import Foundation
 import SwiftProtobuf
 import SwiftUI
 import Synchronization
-import Vision
 import XCTest
 
 @testable import Releash
@@ -602,19 +601,4 @@ func testWorkflowSettings(_ http: TestHTTPClient) {
       ]
     }
   }
-}
-
-func cpuTextRecognitionRequest() throws -> VNRecognizeTextRequest {
-  let request = VNRecognizeTextRequest()
-  request.recognitionLanguages = ["en-US"]
-  request.usesLanguageCorrection = false
-  for (stage, devices) in try request.supportedComputeStageDevices {
-    let cpu = try XCTUnwrap(
-      devices.first { device in
-        if case .cpu = device { return true }
-        return false
-      })
-    request.setComputeDevice(cpu, for: stage)
-  }
-  return request
 }
