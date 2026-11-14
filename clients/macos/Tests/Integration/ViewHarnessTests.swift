@@ -3,6 +3,42 @@ import SwiftUI
 import XCTest
 
 @MainActor final class ViewHarnessTests: XCTestCase {
+  @Observable fileprivate final class ButtonState {
+    var visible = false
+    var presses = 0
+  }
+
+  private struct DelayedButton: View {
+    var state: ButtonState
+
+    var body: some View {
+      VStack {
+        if state.visible {
+          Button("遅延ボタン") { state.presses += 1 }
+        }
+      }
+    }
+  }
+
+  func test_ボタン操作_要素の表示を待って一度だけ押す() async throws {
+    // Given
+    let state = ButtonState()
+    let host = await ViewHarness(DelayedButton(state: state))
+    defer { host.close() }
+    XCTAssertNil(host.element("遅延ボタン"))
+    var started = false
+    // When
+    let press = Task {
+      started = true
+      try await host.press("遅延ボタン")
+    }
+    try await eventually { started }
+    state.visible = true
+    try await press.value
+    // Then
+    XCTAssertEqual(state.presses, 1)
+  }
+
   private final class MenuButton: NSButton, NSMenuDelegate {
     var onSelection: (Bool) -> Void = { _ in }
     private var menuClosed = false

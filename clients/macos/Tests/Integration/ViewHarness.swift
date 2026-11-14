@@ -93,12 +93,14 @@ struct ViewElement {
     snapshot.map { "\($0.role)#\($0.identifier)[\($0.label)|\($0.value)]" }.joined(separator: " ")
   }
   func press(_ name: String, file: StaticString = #filePath, line: UInt = #line) async throws {
-    await refresh()
-    let element = try XCTUnwrap(
+    func target() -> ViewElement? {
       snapshot.first {
         ($0.identifier == name || $0.label == name || $0.value == name)
           && $0.actions.contains(kAXPressAction)
-      }, file: file, line: line)
+      }
+    }
+    try await eventuallyView(self, { target() != nil }, file: file, line: line)
+    let element = try XCTUnwrap(target(), file: file, line: line)
     let result = AXUIElementPerformAction(element.reference, kAXPressAction as CFString).rawValue
     XCTAssertEqual(result, AXError.success.rawValue, file: file, line: line)
     await refresh()
