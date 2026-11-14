@@ -7,6 +7,7 @@ extension Releash_Client_V1_WorkspaceRepositoryList {
 struct SidebarView: View {
   @Bindable var model: AppModel
   @Binding var creating: Bool
+  @State private var sidebarWidth = UIStyle.sidebarWidth
   func repositoryFailure(_ repository: Releash_Client_V1_WorkspaceRepositoryList) -> String? {
     repository.status.hasError ? repository.status.error : nil
   }
@@ -62,11 +63,15 @@ struct SidebarView: View {
                 .foregroundStyle(.secondary)
               Spacer()
               if let error = repositoryFailure(repository) {
-                CardIcon(image: Image("triangle-alert"))
-                  .foregroundStyle(.secondary).help(error)
-                  .overlay { WarningTooltip(message: error).allowsHitTesting(false) }
+                WarningBadge(message: error)
+                  .padding(.trailing, UIStyle.rowSpacing)
               }
             }
+            // 開閉ボタンの出現で警告が移動しないよう、その幅を常に空ける。
+            .frame(
+              width: max(0, sidebarWidth - UIStyle.spacing * 2 - UIStyle.iconButtonWidth),
+              alignment: .leading
+            )
             .selectionDisabled()
           }
         }
@@ -86,6 +91,11 @@ struct SidebarView: View {
       }
       .padding(.horizontal, UIStyle.spacing)
       .frame(height: UIStyle.tabBarHeight)
+    }
+    .onGeometryChange(for: CGFloat.self) {
+      $0.size.width
+    } action: {
+      sidebarWidth = $0
     }
   }
 
@@ -113,15 +123,13 @@ struct WorktreeCard: View {
         Text(branch.name).fontWeight(.medium).lineLimit(1)
         Spacer()
         if branch.hasPrState {
-          CardIcon(image: Image(prIcon(branch.prState)))
-            .foregroundStyle(prColor(branch.prState))
+          let appearance = prAppearance(branch.prState)
+          CardIcon(image: Image(appearance.icon))
+            .foregroundStyle(appearance.color)
             .help("PR #\(branch.prStateNumber): \(branch.prState)")
         }
         if let warning {
-          CardIcon(image: Image("triangle-alert"))
-            .foregroundStyle(.secondary)
-            .help(warning)
-            .overlay { WarningTooltip(message: warning).allowsHitTesting(false) }
+          WarningBadge(message: warning)
         }
       }
       VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
@@ -148,10 +156,11 @@ struct WorktreeCard: View {
             }
           }
         }
-        if !branch.isDeleting && (worktree?.executions.isEmpty ?? true) {
-          Text(" ").hidden().accessibilityHidden(true)
-        }
       }
+      .frame(
+        minHeight: NSLayoutManager().defaultLineHeight(for: .preferredFont(forTextStyle: .callout)),
+        alignment: .topLeading
+      )
       .padding(.leading, UIStyle.cardIconWidth + UIStyle.rowSpacing)
     }
     .font(.callout)
@@ -178,21 +187,12 @@ struct WorktreeCard: View {
     return messages.isEmpty ? nil : messages.joined(separator: "\n")
   }
 
-  private func prColor(_ value: String) -> Color {
+  private func prAppearance(_ value: String) -> (icon: String, color: Color) {
     switch value {
-    case "open": .green
-    case "draft": .gray
-    case "merged": .purple
-    default: .red
-    }
-  }
-
-  private func prIcon(_ value: String) -> String {
-    switch value {
-    case "open": "git-pull-request"
-    case "draft": "git-pull-request-draft"
-    case "merged": "git-merge"
-    default: "git-pull-request-closed"
+    case "open": ("git-pull-request", .green)
+    case "draft": ("git-pull-request-draft", .gray)
+    case "merged": ("git-merge", .purple)
+    default: ("git-pull-request-closed", .red)
     }
   }
   func remove() {
@@ -205,6 +205,22 @@ struct WorktreeCard: View {
       _ = try await client.removeWorktree(request: request, headers: model.headers).result.get()
       model.deselectWorktree(request.worktreePath)
     }
+  }
+}
+
+private struct WarningBadge: View {
+  let message: String
+
+  var body: some View {
+    CardIcon(image: Image("triangle-alert"))
+      .foregroundStyle(.secondary)
+      // List 内でもクリックを透過して表示するため、ツールチップは AppKit が持つ。
+      .accessibilityHint(message)
+      .overlay {
+        WarningTooltip(message: message)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
   }
 }
 

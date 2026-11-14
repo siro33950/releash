@@ -51,6 +51,16 @@ final class WorktreeWarningTests: XCTestCase {
           mouseEventSource: nil, mouseType: .mouseMoved,
           mouseCursorPosition: point, mouseButton: .left))
       event.post(tap: .cghidEventTap)
+      let localEvent = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .mouseMoved,
+          location: host.window.convertPoint(
+            fromScreen:
+              NSPoint(x: point.x, y: desktop.height - point.y)),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
+          clickCount: 0, pressure: 0))
+      NSApp.postEvent(localEvent, atStart: false)
     }
     defer { try? move(previous) }
     let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
@@ -93,5 +103,7 @@ final class WorktreeWarningTests: XCTestCase {
     XCTAssertFalse(actual.contains("Old failure"))
     try await host.press("worktree:feature")
     XCTAssertEqual(model.selectedWorktree, "/repo/feature")
+    try move(CGPoint(x: point.x - 40, y: point.y))
+    try await eventually { (try? displayedText()) == nil }
   }
 }

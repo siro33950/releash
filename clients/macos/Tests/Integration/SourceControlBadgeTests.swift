@@ -37,7 +37,11 @@ final class SourceControlBadgeTests: XCTestCase {
     model.repositories[0].branches.items[0].clearDirtyCountError()
     model.repositories[0].branches.items[0].dirtyCount = 2
     try await eventuallyView(host) { host.element("2") != nil }
-    model.selectedWorktree = "/repo/missing"
+    model.repositories = []
     try await eventuallyView(host) { host.element("2") == nil }
+    model.repositories = [repository]
+    try await eventuallyView(host) { host.element("99") != nil }
+    model.selectedWorktree = "/repo/missing"
+    try await eventuallyView(host) { host.element("99") == nil }
   }
 }
