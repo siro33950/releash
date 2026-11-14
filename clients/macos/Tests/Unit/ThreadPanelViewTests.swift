@@ -5,6 +5,32 @@ import XCTest
 @testable import Releash
 
 final class ThreadPanelViewTests: XCTestCase {
+  @MainActor func test_Commentリンク_許可したschemeだけ外部で開き起動結果を返す() throws {
+    for (address, allowed) in [
+      ("https://example.com", true), ("HTTP://example.com", true),
+      ("mailto:user@example.com", true), ("file:///tmp/test", false),
+      ("javascript:alert(1)", false), ("tel:123", false), ("relative", false),
+    ] {
+      // Given
+      let url = try XCTUnwrap(URL(string: address))
+      var opened: [URL] = []
+      // When
+      let handled = openCommentLink(url) {
+        opened.append($0)
+        return true
+      }
+      // Then
+      XCTAssertEqual(handled, allowed)
+      XCTAssertEqual(opened, allowed ? [url] : [])
+    }
+    // Given
+    let url = try XCTUnwrap(URL(string: "https://example.com"))
+    // When
+    let handled = openCommentLink(url) { _ in false }
+    // Then
+    XCTAssertFalse(handled)
+  }
+
   func test_Thread行_位置と件数と最終発言と解決済みを表示する() {
     // Given
     var thread = testReviewThread("thread")

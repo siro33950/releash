@@ -69,7 +69,12 @@ struct ThreadPanelView: View {
       .frame(maxWidth: .infinity).padding(UIStyle.spacing)
       .accessibilityIdentifier("thread-add-general")
     }
-    .textual.imageAttachmentLoader(ThreadImageAttachmentLoader())
+    .environment(
+      \.openURL,
+      OpenURLAction { url in
+        openCommentLink(url) ? .handled : .discarded
+      }
+    )
     .onAppear {
       subscription = model.subscribe("review-threads", [worktree]) { payload in
         if case .reviewThreads(let value) = payload.value { state.receive(value.items) }
@@ -178,14 +183,6 @@ struct ThreadPanelView: View {
   }
 }
 
-private struct ThreadImageAttachmentLoader: AttachmentLoader {
-  func attachment(for url: URL, text: String, environment: ColorEnvironmentValues) async throws
-    -> AnyAttachment
-  {
-    throw URLError(.unsupportedURL)
-  }
-}
-
 extension Releash_Client_V1_ReviewThreadDto {
   var isResolved: Bool { state.value == .resolved }
   var locationLabel: String {
@@ -274,4 +271,10 @@ private struct ThreadPanelRow: View {
       }.padding()
     }
   }
+}
+
+@MainActor @discardableResult
+func openCommentLink(_ url: URL, open: (URL) -> Bool = { NSWorkspace.shared.open($0) }) -> Bool {
+  guard ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") else { return false }
+  return open(url)
 }

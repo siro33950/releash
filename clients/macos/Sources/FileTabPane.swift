@@ -28,7 +28,7 @@ struct FileTabPane: View {
         case .textDiff(let text):
           FileWebView(
             payload: bridgePayload(text, value, colorScheme: colorScheme), model: model,
-            onAction: { message, accepted in action(message, onReplyAccepted: accepted) }
+            onAction: { message, accepted in action(message, onReplyCompleted: accepted) }
           )
           .accessibilityIdentifier("file-content")
         case .image(let image):
@@ -62,17 +62,6 @@ struct FileTabPane: View {
       if let threadSubscription { model.unsubscribe(threadSubscription) }
     }
     .onChange(of: base) { _, _ in subscribe() }
-    .sheet(isPresented: Binding(get: { draft.line != nil }, set: { if !$0 { draft.line = nil } })) {
-      VStack {
-        Text("Thread作成").font(.headline)
-        TextEditor(text: $draft.content).frame(minWidth: 360, minHeight: 120)
-        HStack {
-          Button("キャンセル") { draft.line = nil }
-          Button("作成", action: createThread).disabled(
-            draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-      }.padding()
-    }
   }
   var toolbar: some View {
     HStack(spacing: 4) {
@@ -185,7 +174,7 @@ struct FileTabPane: View {
     _ text: Releash_Client_V1_ReviewTextDiffDto, _ value: Releash_Client_V1_FileTabView,
     colorScheme: ColorScheme
   ) -> [String: Any] {
-    [
+    var result: [String: Any] = [
       "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
@@ -197,8 +186,17 @@ struct FileTabPane: View {
           "id": thread.id, "line": thread.target.lineNumber,
           "resolved": thread.state.value == .resolved,
           "canResolve": thread.canResolve,
-          "comments": thread.comments.items.map {
-            ["author": $0.author.displayName, "content": $0.content]
+          "resolvedBy": thread.resolve.actor.displayName,
+          "resolvedAt": thread.resolve.resolvedAt,
+          "comments": thread.comments.items.map { comment -> [String: Any] in
+            var value: [String: Any] = [
+              "author": comment.author.displayName, "content": comment.content,
+              "agent": comment.author.kind.value == .agent, "createdAt": comment.createdAt,
+            ]
+            if comment.author.kind.value == .agent, comment.author.hasModel {
+              value["model"] = comment.author.model
+            }
+            return value
           },
         ]
         if thread.target.hasEndLine { annotation["endLine"] = thread.target.endLine }
@@ -212,11 +210,42 @@ struct FileTabPane: View {
         return annotation
       },
     ]
+    if let line = draft.line {
+      var composer: [String: Any] = [
+        "line": line, "endLine": draft.endLine ?? line, "id": draft.id.uuidString,
+        "sending": draft.sending, "content": draft.content,
+      ]
+      if let side = draft.side { composer["side"] = side == .deletions ? "deletions" : "additions" }
+      if let side = draft.endSide {
+        composer["endSide"] = side == .deletions ? "deletions" : "additions"
+      }
+      result["composer"] = composer
+    }
+    return result
   }
-  func action(_ message: [String: Any], onReplyAccepted: @escaping () -> Void = {}) {
-    guard let kind = message["kind"] as? String, let client = model.client else { return }
+  func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
+    guard let kind = message["kind"] as? String else { return }
+    guard let client = model.client else {
+      if kind == "reply" { onReplyCompleted(false) }
+      return
+    }
     if kind == "select" {
       draft.selection = FileLineSelection(message)
+      return
+    }
+    if kind == "cancelCreate" {
+      guard !draft.sending else { return }
+      draft.line = nil
+      return
+    }
+    if kind == "editCreate" {
+      guard message["id"] as? String == draft.id.uuidString, !draft.sending else { return }
+      draft.content = message["content"] as? String ?? ""
+      return
+    }
+    if kind == "create" {
+      draft.content = message["content"] as? String ?? ""
+      createThread()
       return
     }
     guard let id = message["id"] as? String else { return }
@@ -227,9 +256,14 @@ struct FileTabPane: View {
         request.worktreeName = worktree
         request.threadID = id
         request.content = message["content"] as? String ?? ""
-        _ = try await client.appendReviewComment(request: request, headers: model.headers).result
-          .get()
-        onReplyAccepted()
+        do {
+          _ = try await client.appendReviewComment(request: request, headers: model.headers).result
+            .get()
+          onReplyCompleted(true)
+        } catch {
+          onReplyCompleted(false)
+          throw error
+        }
       case "resolve":
         var request = Releash_Client_V1_ResolveReviewThreadRequest()
         request.worktreeName = worktree
@@ -244,14 +278,19 @@ struct FileTabPane: View {
   }
   func startThread() {
     guard let selection = draft.selection else { return }
+    guard !draft.sending else { return }
+    if draft.line == nil {
+      draft.id = UUID()
+      draft.content = ""
+    }
     draft.line = selection.line
     draft.endLine = selection.endLine
     draft.side = selection.side
     draft.endSide = selection.endSide
-    draft.content = ""
   }
   func createThread() {
-    guard let client = model.client, let line = draft.line else { return }
+    guard let client = model.client, let line = draft.line, !draft.sending else { return }
+    guard !draft.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     var request = Releash_Client_V1_CreateReviewThreadRequest()
     request.worktreeName = worktree
     request.filePath = path
@@ -260,9 +299,12 @@ struct FileTabPane: View {
     if let side = draft.side { request.side.value = side }
     if let endSide = draft.endSide { request.endSide.value = endSide }
     request.content = draft.content
+    let id = draft.id
+    draft.sending = true
     model.perform {
+      defer { draft.sending = false }
       _ = try await client.createReviewThread(request: request, headers: model.headers).result.get()
-      draft.line = nil
+      if draft.id == id { draft.line = nil }
     }
   }
 }
@@ -294,18 +336,20 @@ struct FileLineSelection: Equatable {
 }
 
 @Observable @MainActor final class FileThreadDraft {
+  var id = UUID()
+  var sending = false
   var selection: FileLineSelection?
   var line: UInt32?
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
-  var content = ""
+  @ObservationIgnored var content = ""
 }
 
 struct FileWebView: NSViewRepresentable {
   let payload: [String: Any]
   let model: AppModel
-  let onAction: ([String: Any], @escaping () -> Void) -> Void
+  let onAction: ([String: Any], @escaping (Bool) -> Void) -> Void
   func makeCoordinator() -> Coordinator { Coordinator(model: model, onAction: onAction) }
   func makeNSView(context: Context) -> WKWebView {
     let configuration = WKWebViewConfiguration()
@@ -345,8 +389,9 @@ struct FileWebView: NSViewRepresentable {
     weak var web: WKWebView?
     var payload: [String: Any] = [:]
     var ready = false
-    var onAction: ([String: Any], @escaping () -> Void) -> Void
-    init(model: AppModel, onAction: @escaping ([String: Any], @escaping () -> Void) -> Void) {
+    private var composing = false
+    var onAction: ([String: Any], @escaping (Bool) -> Void) -> Void
+    init(model: AppModel, onAction: @escaping ([String: Any], @escaping (Bool) -> Void) -> Void) {
       self.model = model
       self.onAction = onAction
     }
@@ -358,13 +403,13 @@ struct FileWebView: NSViewRepresentable {
         ready = true
         render()
       } else {
-        onAction(value) { [weak self] in
+        onAction(value) { [weak self] accepted in
           guard let self, let id = value["id"] as? String,
             let requestID = value["requestID"] as? NSNumber
           else { return }
           web?.callAsyncJavaScript(
-            "window.releashReplyAccepted(id, requestID)",
-            arguments: ["id": id, "requestID": requestID], in: nil, in: world
+            "window.releashReplyAccepted(id, requestID, accepted)",
+            arguments: ["id": id, "requestID": requestID, "accepted": accepted], in: nil, in: world
           ) { [weak self] result in
             if case .failure(let error) = result {
               self?.model.failure = error.localizedDescription
@@ -375,6 +420,10 @@ struct FileWebView: NSViewRepresentable {
     }
     func render() {
       guard ready, !payload.isEmpty else { return }
+      if payload["composer"] != nil, !composing {
+        web?.window?.makeFirstResponder(web)
+      }
+      composing = payload["composer"] != nil
       web?.callAsyncJavaScript(
         "window.releashRender(payload)", arguments: ["payload": payload], in: nil, in: world
       ) { [weak self] result in
@@ -385,6 +434,11 @@ struct FileWebView: NSViewRepresentable {
       _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
       decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
+      if navigationAction.navigationType == .linkActivated {
+        if let url = navigationAction.request.url { openCommentLink(url) }
+        decisionHandler(.cancel)
+        return
+      }
       decisionHandler(navigationAction.request.url?.isFileURL == true ? .allow : .cancel)
     }
   }

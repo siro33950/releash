@@ -2,7 +2,15 @@
   "name": "releash-file-viewer",
   "private": true,
   "type": "module",
-  "scripts": { "build": "node build.mjs", "test": "node --test" },
-  "dependencies": { "@pierre/diffs": "1.5.2" },
-  "devDependencies": { "esbuild": "0.25.12" }
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@pierre/diffs": "1.5.2",
+    "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
 }

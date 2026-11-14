@@ -127,32 +127,6 @@ final class ThreadPanelViewTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_Thread本文と返信_画像を取得せずaltを表示する() async throws {
-    // Given
-    ThreadImageURLProtocol.requested.isInverted = true
-    XCTAssertTrue(URLProtocol.registerClass(ThreadImageURLProtocol.self))
-    defer { URLProtocol.unregisterClass(ThreadImageURLProtocol.self) }
-    let http = TestHTTPClient()
-    var thread = testReviewThread("images")
-    thread.comments.items[0].content = "![本文の画像](https://thread-image.invalid/body.png)"
-    var reply = thread.comments.items[0]
-    reply.id = "reply"
-    reply.content = "![返信の画像](https://thread-image.invalid/reply.png)"
-    thread.comments.items.append(reply)
-    http.state.withLock { $0.reviewThreads["/repo"] = .with { $0.items = [thread] } }
-    let model = try await testModel(http)
-    let host = await ViewHarness(ThreadPanelView(model: model, worktree: "/repo"))
-    // When
-    try await eventuallyView(host) { host.texts().contains("本文の画像") }
-    try await host.press("thread-history:images")
-    // Then
-    try await eventuallyView(host) { host.texts().contains("返信の画像") }
-    let result = await XCTWaiter.fulfillment(of: [ThreadImageURLProtocol.requested], timeout: 0.5)
-    XCTAssertEqual(result, .completed)
-    host.close()
-    await model.stop()
-  }
-
   @MainActor func test_実行木購読_生きている送り先が無くなると送信できない() async throws {
     // Given
     let http = TestHTTPClient()
@@ -206,21 +180,4 @@ final class ThreadPanelViewTests: XCTestCase {
     host.close()
     await model.stop()
   }
-}
-
-private final class ThreadImageURLProtocol: URLProtocol, @unchecked Sendable {
-  static let requested = XCTestExpectation(description: "Threadの画像URLを読み込まない")
-
-  override class func canInit(with request: URLRequest) -> Bool {
-    request.url?.host == "thread-image.invalid"
-  }
-
-  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-  override func startLoading() {
-    Self.requested.fulfill()
-    client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
-  }
-
-  override func stopLoading() {}
 }
