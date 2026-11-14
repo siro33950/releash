@@ -45,7 +45,8 @@ THEN その Workflow の Node が起動した Session のタブは、Node 面の
 
 GIVEN 開発者が Workflow を始め、その実行の Root がまだ Node 面に届いていない
 WHEN 開発者が同じ worktree で中央の「+」を押す
-THEN 「Workflow ▸」は押せない状態で表示される
+THEN メニューは、「Workflow ▸」の位置に「Workflow」を押せない状態で表示する
+AND 「Workflow」は Workflow の一覧を表示しない
 
 ## 要件IDとBehavior IDの対応表
 

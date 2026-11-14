@@ -78,7 +78,7 @@ Non-goals:
 - R-004: 開発者が中央の「+」の「Session ▸」から provider を選ぶと、選択中の worktree でその provider の Session が始まる。その Session のタブは、その「+」を押した pane に開き、その pane で選択された状態になる。フォーカスが別の pane にあっても、「+」を押した pane に開く。
 - R-005: 開発者が中央の「+」の「Workflow ▸」から Workflow を選ぶと、選択中の worktree でその Workflow が始まり、その実行木が Node 面に増える。右カラムの表示は切り替わらない。
 - R-006: 中央の「+」から始めた Workflow でタブが開く pane は、Node 面の「+」から同じ Workflow を始めたときと同じである。「+」を押した pane がどれであっても変わらない。
-- R-007: 中央の「+」の「Workflow ▸」は、選択中の worktree に配信を待っている Root がある間、押せない。
+- R-007: 選択中の worktree に配信を待っている Root がある間、中央の「+」のメニューは、「Workflow ▸」の位置に「Workflow」を押せない項目として表示する。この「Workflow」は Workflow の一覧を表示しない。
 
 # Assumptions
 
