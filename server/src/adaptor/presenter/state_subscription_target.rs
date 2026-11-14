@@ -120,7 +120,22 @@ impl SubscriptionTarget {
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
             )),
             ("file-threads", [path, file]) => Ok(Self::FileThreads((*path).into(), (*file).into())),
-            ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
+            ("review-threads", [name, base, threads @ ..]) => {
+                let mut ids = Vec::new();
+                for thread in threads {
+                    match thread.split_once('=') {
+                        Some(("thread", id)) if !id.is_empty() => ids.push(id.into()),
+                        _ => return Err(SubscriptionError::InvalidId),
+                    }
+                }
+                ids.sort();
+                ids.dedup();
+                Ok(Self::ReviewThreads(
+                    (*name).into(),
+                    ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
+                    ids,
+                ))
+            }
             ("workflow-execution", [id]) => Ok(Self::WorkflowExecution((*id).into())),
             ("node-artifact", [id]) => Ok(Self::NodeArtifact((*id).into())),
             ("workflow-output", [id, node]) => {
@@ -230,7 +245,11 @@ impl SubscriptionTarget {
                 vec![p.clone(), file.clone(), base.as_str().into()],
             ),
             Self::FileThreads(p, file) => ("file-threads", vec![p.clone(), file.clone()]),
-            Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
+            Self::ReviewThreads(name, base, threads) => {
+                let mut args = vec![name.clone(), base.as_str().into()];
+                args.extend(threads.iter().map(|id| format!("thread={id}")));
+                ("review-threads", args)
+            }
             Self::WorkflowExecution(id) => ("workflow-execution", vec![id.clone()]),
             Self::NodeArtifact(id) => ("node-artifact", vec![id.clone()]),
             Self::WorkflowOutput(id, node) => ("workflow-output", vec![id.clone(), node.clone()]),

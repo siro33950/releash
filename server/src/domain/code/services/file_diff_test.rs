@@ -82,3 +82,69 @@ fn test_ファイル全体の差分_差分が無ければ全行が両方にあ�
     // Then
     assert_eq!(value, vec![context(1, 1, "a"), context(2, 2, "b")]);
 }
+
+#[test]
+fn test_ファイル全体の差分_複数のhunkをまたいで行番号を引き継ぐ() {
+    // Given
+    let modified = "A\nb\nc\nd\ne\nF\nG\n";
+    let hunks = [
+        hunk(1, 1, &["-a", "+A", " b"]),
+        hunk(5, 5, &[" e", "-f", "+F", "+G"]),
+    ];
+    // When
+    let value = lines(&hunks, modified);
+    // Then
+    assert_eq!(
+        value,
+        vec![
+            DiffLine::Deletion {
+                old: 1,
+                text: "a".into()
+            },
+            DiffLine::Addition {
+                new: 1,
+                text: "A".into()
+            },
+            context(2, 2, "b"),
+            context(3, 3, "c"),
+            context(4, 4, "d"),
+            context(5, 5, "e"),
+            DiffLine::Deletion {
+                old: 6,
+                text: "f".into()
+            },
+            DiffLine::Addition {
+                new: 6,
+                text: "F".into()
+            },
+            DiffLine::Addition {
+                new: 7,
+                text: "G".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn test_ファイル全体の差分_hunkの行の行末の復帰を除く() {
+    // Given
+    let modified = "a\r\nB\r\n";
+    let hunks = [hunk(1, 1, &[" a\r", "-b\r", "+B\r"])];
+    // When
+    let value = lines(&hunks, modified);
+    // Then
+    assert_eq!(
+        value,
+        vec![
+            context(1, 1, "a"),
+            DiffLine::Deletion {
+                old: 2,
+                text: "b".into()
+            },
+            DiffLine::Addition {
+                new: 2,
+                text: "B".into()
+            },
+        ]
+    );
+}

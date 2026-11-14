@@ -43,10 +43,12 @@ enum UIStyle {
   static let iconButtonCornerRadius: CGFloat = 5
   static let iconButtonHover = Color(nsColor: .quaternarySystemFill)
   static let cardCornerRadius: CGFloat = 6
+  static let badgeCornerRadius: CGFloat = 3
   static let avatarSize: CGFloat = 20
   static let commentInputLines = 6
   static let diffLineNumberWidth: CGFloat = 32
   static let diffSignWidth: CGFloat = 16
+  static let diffLineSpacing: CGFloat = 2
   static let diffTargetMarkerWidth: CGFloat = 3
   static let diffTintOpacity = 0.15
   static let diffAddition = Color.green

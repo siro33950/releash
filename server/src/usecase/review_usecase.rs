@@ -12,7 +12,8 @@ use crate::domain::code::{
 
 use crate::domain::code::value_objects::review::ReviewPresentation;
 use crate::domain::code::value_objects::DiffLine;
-use crate::domain::comment::{ExcerptLine, Thread};
+use crate::domain::comment::{ExcerptLine, State, Thread};
+use crate::domain::failure::WorkFailure;
 
 use super::code_dto::{
     DiffHunksResultDto, HunkDto, ReviewBinaryDto, ReviewFileViewDto, ReviewImageDto,
@@ -244,38 +245,50 @@ impl ReviewUsecase {
 
     /// Thread ごとに、対象の行とその前の数行の差分を添える。
     ///
-    /// 差分は、ブランチの base から作業ツリーまでを比べる。
-    /// 対象が行を持たない Thread と、対象のファイルを文字の差分にできない Thread には、空を添える。
+    /// - 差分を添えるのは、未解決の Thread と、`requested` に ID がある Thread である。ほかの Thread には空を添える。
+    /// - 対象が行を持たない Thread と、対象のファイルを文字の差分にできない Thread には、空を添える。
+    /// - ファイルの読み取りに技術的に失敗した Thread には、その失敗を添える。ほかのファイルの Thread には影響しない。
     pub fn threads_with_excerpts(
         &self,
         worktree_path: &str,
+        base: ReviewBase,
         threads: Vec<Thread>,
-    ) -> Result<Vec<(Thread, Vec<ExcerptLine>)>, CodeUsecaseError> {
-        let mut diffs = std::collections::HashMap::<String, Vec<DiffLine>>::new();
+        requested: &[String],
+    ) -> Vec<(Thread, Result<Vec<ExcerptLine>, WorkFailure>)> {
+        let mut diffs =
+            std::collections::HashMap::<String, Result<Vec<DiffLine>, WorkFailure>>::new();
         threads
             .into_iter()
             .map(|thread| {
+                let wanted = thread.state == State::Open || requested.contains(&thread.id);
                 let excerpt = match (&thread.target.file_path, thread.target.line_number) {
-                    (Some(path), Some(_)) => {
-                        if !diffs.contains_key(path) {
-                            diffs.insert(path.clone(), self.file_diff_lines(worktree_path, path)?);
-                        }
-                        thread.target.excerpt(&diffs[path])
-                    }
-                    _ => Vec::new(),
+                    (Some(path), Some(_)) if wanted => diffs
+                        .entry(path.clone())
+                        .or_insert_with(|| {
+                            self.file_diff_lines(worktree_path, path, base)
+                                .map_err(|error| WorkFailure {
+                                    kind: (&error).into(),
+                                    message: error.to_string(),
+                                })
+                        })
+                        .as_ref()
+                        .map(|diff| thread.target.excerpt(diff))
+                        .map_err(Clone::clone),
+                    _ => Ok(Vec::new()),
                 };
-                Ok((thread, excerpt))
+                (thread, excerpt)
             })
             .collect()
     }
 
-    /// ブランチの base から作業ツリーまでの、ファイル全体の差分。文字の差分にできないファイルでは空。
+    /// 比較の基準から作業ツリーまでの、ファイル全体の差分。文字の差分にできないファイルでは空。
     fn file_diff_lines(
         &self,
         worktree_path: &str,
         path: &str,
+        base: ReviewBase,
     ) -> Result<Vec<DiffLine>, CodeUsecaseError> {
-        let sides = match self.read_sides(worktree_path, path, ReviewBase::BranchBase) {
+        let sides = match self.read_sides(worktree_path, path, base) {
             Ok(sides) => sides,
             Err(CodeUsecaseError::Code(CodeError::Rule(_))) => return Ok(Vec::new()),
             Err(error) => return Err(error),

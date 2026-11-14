@@ -173,7 +173,7 @@ fn test_ファイルthread購読_該当worktreeのcomment変更だけを受け�
 #[test]
 fn test_thread一覧購読_該当worktreeのcommentとファイルとgitの変化を受ける() {
     // Given
-    let target = SubscriptionTarget::ReviewThreads("/repo".into());
+    let target = SubscriptionTarget::ReviewThreads("/repo".into(), ReviewBase::Head, vec![]);
     // When / Then
     assert!(target.affected_by(&StateChangeSource::ReviewComments(Some("/repo".into()))));
     assert!(target.affected_by(&StateChangeSource::ReviewComments(None)));

@@ -944,7 +944,12 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
                 .any(|comment| comment.content.as_deref() == Some("production comment"))
         })
     };
-    let mut threads = subscribe_state(&socket, "review-threads", vec![worktree.into()]).await;
+    let mut threads = subscribe_state(
+        &socket,
+        "review-threads",
+        vec![worktree.into(), "head".into()],
+    )
+    .await;
     expect_state(&mut threads, "initial review threads", |value| matches!(value, wire::state_payload::Value::ThreadExcerpts(list) if !has_production_comment(list))).await;
     request(
         &mut socket,

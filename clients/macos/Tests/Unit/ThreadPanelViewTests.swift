@@ -110,6 +110,11 @@ final class ThreadPanelViewTests: XCTestCase {
     state.drafts = ["open": "返信の下書き"]
     // Then
     XCTAssertEqual(state.selectedIDs, ["open", "resolved"])
+    XCTAssertEqual(state.expandedResolvedIDs, ["resolved"])
+    // When
+    state.expanded.insert("open")
+    // Then
+    XCTAssertEqual(state.expandedResolvedIDs, ["resolved"])
     // When
     state.receive(testThreadExcerpts([resolved]).items)
     // Then
@@ -117,6 +122,30 @@ final class ThreadPanelViewTests: XCTestCase {
     XCTAssertEqual(state.checked, ["resolved"])
     XCTAssertEqual(state.expanded, ["resolved"])
     XCTAssertTrue(state.drafts.isEmpty)
+  }
+
+  @MainActor func test_購読の引数_基準に続けて開いた解決済みのThreadを並べ状態はworktreeごとに保つ() {
+    // Given
+    let defaults = UserDefaults.standard
+    let saved = defaults.object(forKey: "diffBase")
+    defer { defaults.set(saved, forKey: "diffBase") }
+    defaults.set("branch-base", forKey: "diffBase")
+    let model = AppModel()
+    let view = ThreadPanelView(model: model, worktree: "/repo")
+    view.state.receive(
+      testThreadExcerpts([
+        testReviewThread("b", resolved: true), testReviewThread("a", resolved: true),
+        testReviewThread("open"),
+      ]).items)
+    // Then
+    XCTAssertEqual(view.subscriptionArguments, ["/repo", "branch-base"])
+    // When
+    view.state.expanded = ["b", "a"]
+    // Then
+    XCTAssertEqual(
+      view.subscriptionArguments, ["/repo", "branch-base", "thread=a", "thread=b"])
+    XCTAssertTrue(ThreadPanelView(model: model, worktree: "/repo").state === view.state)
+    XCTAssertFalse(ThreadPanelView(model: model, worktree: "/other").state === view.state)
   }
 
   @MainActor func test_送り先_選択worktreeの子孫を含むliveのSessionだけを表示する() {

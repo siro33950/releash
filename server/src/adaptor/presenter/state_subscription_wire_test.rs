@@ -1316,7 +1316,7 @@ fn test_ファイル一覧配信_直下一覧と絞込結果が同じgit状態�
 }
 
 #[test]
-fn test_thread一覧購読_対象行の差分を行番号と対象の印を付けて転送する() {
+fn test_thread一覧購読_対象行の差分と読めなかった理由を転送する() {
     use crate::domain::code::value_objects::DiffLine;
     use crate::domain::comment::{Author, Comment, ExcerptLine, State, Target, Thread};
     // Given
@@ -1344,25 +1344,40 @@ fn test_thread一覧購読_対象行の差分を行番号と対象の印を付�
         version: 1,
         can_resolve: true,
     };
-    let value = StateValue::ThreadExcerpts(vec![(
-        thread,
-        vec![
-            ExcerptLine {
-                line: DiffLine::Deletion {
-                    old: 3,
-                    text: "old".into(),
+    let broken = Thread {
+        id: "broken".into(),
+        ..thread.clone()
+    };
+    let value = StateValue::ThreadExcerpts(vec![
+        (
+            broken,
+            Err(crate::domain::failure::WorkFailure {
+                kind: crate::domain::failure::Failure::Technical(
+                    crate::domain::failure::TechnicalFailureNature::Other,
+                ),
+                message: "read failed".into(),
+            }),
+        ),
+        (
+            thread,
+            Ok(vec![
+                ExcerptLine {
+                    line: DiffLine::Deletion {
+                        old: 3,
+                        text: "old".into(),
+                    },
+                    targeted: false,
                 },
-                targeted: false,
-            },
-            ExcerptLine {
-                line: DiffLine::Addition {
-                    new: 3,
-                    text: "new".into(),
+                ExcerptLine {
+                    line: DiffLine::Addition {
+                        new: 3,
+                        text: "new".into(),
+                    },
+                    targeted: true,
                 },
-                targeted: true,
-            },
-        ],
-    )]);
+            ]),
+        ),
+    ]);
     // When
     let payload = payload(&value).unwrap();
     // Then
@@ -1371,10 +1386,17 @@ fn test_thread一覧購読_対象行の差分を行番号と対象の印を付�
     };
     assert_eq!(
         snapshot.items[0].thread.as_ref().unwrap().id.as_deref(),
+        Some("broken")
+    );
+    assert!(snapshot.items[0].lines.is_empty());
+    assert_eq!(snapshot.items[0].read_error.as_deref(), Some("read failed"));
+    assert_eq!(
+        snapshot.items[1].thread.as_ref().unwrap().id.as_deref(),
         Some("thread")
     );
+    assert_eq!(snapshot.items[1].read_error, None);
     assert_eq!(
-        snapshot.items[0].lines,
+        snapshot.items[1].lines,
         vec![
             wire::ThreadDiffLine {
                 old_line: Some(3),

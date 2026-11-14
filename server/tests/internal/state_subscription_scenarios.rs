@@ -79,7 +79,9 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
     );
     let mut stream = Box::pin(usecase.open("client".into()).unwrap());
     stream.next().await;
-    let target = SubscriptionTarget::ReviewThreads(fixture.path.clone()).to_string();
+    let target = SubscriptionTarget::from_parts("review-threads", &[&fixture.path, "head"])
+        .unwrap()
+        .to_string();
     // When
     start_read(&usecase, "client", &target).await.unwrap();
     // Then
@@ -114,7 +116,7 @@ pub async fn test_review_threads購読_comment操作で再配信し最後の停�
         )
         .unwrap();
     assert!(
-        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ThreadExcerpts(vec![(thread, vec![])])))
+        matches!(stream.next().await, Some(StateSubscriptionEvent::Item(_, Event::Change(_, _, value))) if same(&value, StateValue::ThreadExcerpts(vec![(thread, Ok(vec![]))])))
     );
     stop_read(&usecase, "client", &target).await.unwrap();
     assert!(usecase.test_watches().is_empty());

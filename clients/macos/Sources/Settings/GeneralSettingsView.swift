@@ -32,7 +32,9 @@ struct GeneralSettingsView: View {
           Text("HEAD").tag("head")
           Text("Branch base").tag("branch-base")
         } label: {
-          SettingsLabel(title: "Diff base の既定", description: "ファイルタブで差分を開いたときに、最初に比べる相手です。")
+          SettingsLabel(
+            title: "Diff base の既定",
+            description: "ファイルタブで差分を開いたときに、最初に比べる相手です。Thread 面の差分も、この相手と比べます。")
         }
         .accessibilityIdentifier("settings-diff-base")
       }

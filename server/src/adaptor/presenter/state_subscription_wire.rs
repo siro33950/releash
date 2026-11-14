@@ -94,12 +94,13 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::ThreadExcerpts(items) => wire::state_payload::Value::ThreadExcerpts(wire::ThreadExcerptsSnapshot {
                 items: items.iter().map(|(thread, lines)| Ok(wire::ThreadExcerpt {
                     thread: Some(crate::adaptor::presenter::client::value(thread.clone())?),
-                    lines: lines.iter().map(|line| wire::ThreadDiffLine {
+                    lines: lines.iter().flatten().map(|line| wire::ThreadDiffLine {
                         old_line: line.line.old_number(),
                         new_line: line.line.new_number(),
                         text: line.line.text().into(),
                         targeted: line.targeted,
                     }).collect(),
+                    read_error: lines.as_ref().err().map(|failure| failure.message.clone()),
                 })).collect::<Result<_, wire::CommandFailure>>().map_err(crate::adaptor::presenter::connect::command_error)?,
             }),
             StateValue::WorkflowExecution(value) => wire::state_payload::Value::WorkflowExecution(wire::NullableWorkflowExecutionView {

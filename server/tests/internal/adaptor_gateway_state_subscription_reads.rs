@@ -34,7 +34,7 @@ pub async fn test_購読読取の境界_非同期queryと外部更新不要の�
 pub async fn test_購読読取の境界_review対象とcomment置き場を内側へ委譲する() {
     let fixture = crate::state_subscription_reads::Fixture::new();
     let reads = StateSubscriptionReads(fixture.reads.clone());
-    let target = SubscriptionTarget::ReviewThreads("repository".into());
+    let target = SubscriptionTarget::from_parts("review-threads", &["repository", "head"]).unwrap();
     let expected = fixture.reads.read(&target).await.unwrap();
     assert_eq!(reads.read(&target).await.unwrap(), expected);
     assert_eq!(

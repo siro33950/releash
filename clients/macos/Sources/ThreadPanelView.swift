@@ -5,9 +5,10 @@ import Textual
 struct ThreadPanelView: View {
   var model: AppModel
   let worktree: String
-  @State var state = ThreadPanelState()
+  @AppStorage("diffBase") private var diffBase = "head"
   @State private var subscription: UUID?
 
+  var state: ThreadPanelState { model.threadPanelState(worktree) }
   var sessionNodes: [Releash_Client_V1_WorkspaceNode] {
     Self.sessionNodes(
       model.repositories.flatMap(\.worktrees.items).first { $0.path == worktree }?.snapshot.nodes
@@ -15,6 +16,10 @@ struct ThreadPanelView: View {
   }
   var openSessions: [Releash_Client_V1_WorkspaceNode] {
     sessionNodes.filter { $0.processPresence.value == .live }
+  }
+  /// 購読の引数。worktree、差分の比較の基準、解決済みでも差分を求める Thread を並べる。
+  var subscriptionArguments: [String] {
+    [worktree, diffBase] + state.expandedResolvedIDs.map { "thread=\($0)" }
   }
 
   var body: some View {
@@ -45,14 +50,19 @@ struct ThreadPanelView: View {
         openCommentLink(url) ? .handled : .discarded
       }
     )
-    .onAppear {
-      subscription = model.subscribe("review-threads", [worktree]) { payload in
-        if case .threadExcerpts(let value) = payload.value { state.receive(value.items) }
-      }
-    }
+    .onAppear { subscribe() }
+    .onChange(of: subscriptionArguments) { _, _ in subscribe() }
     .onDisappear {
       if let subscription { model.unsubscribe(subscription) }
       subscription = nil
+    }
+  }
+
+  private func subscribe() {
+    if let subscription { model.unsubscribe(subscription) }
+    let state = state
+    subscription = model.subscribe("review-threads", subscriptionArguments) { payload in
+      if case .threadExcerpts(let value) = payload.value { state.receive(value.items) }
     }
   }
 
@@ -83,6 +93,7 @@ struct ThreadPanelView: View {
 
   private func card(_ item: Releash_Client_V1_ThreadExcerpt) -> some View {
     let id = item.thread.id
+    let state = state
     return ThreadCard(
       item: item,
       checked: Binding(
@@ -96,14 +107,14 @@ struct ThreadPanelView: View {
   }
 
   private var generalComposer: some View {
-    VStack(alignment: .leading, spacing: 0) {
+    @Bindable var state = state
+    return VStack(alignment: .leading, spacing: 0) {
       Text("General に追加").fontWeight(.semibold).padding(UIStyle.spacing)
       Divider()
       HStack(alignment: .bottom, spacing: UIStyle.spacing) {
-        TextField("コメントを書く…（Markdown）", text: $state.generalDraft, axis: .vertical)
-          .lineLimit(1...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
-          .onSubmit(addGeneral)
-          .accessibilityIdentifier("thread-general-content")
+        CommentField(
+          placeholder: "コメントを書く…（Markdown）", text: $state.generalDraft,
+          identifier: "thread-general-content", submit: addGeneral)
         Button("追加", action: addGeneral)
           .disabled(state.generalDraft.isBlank || state.creatingGeneral)
           .accessibilityIdentifier("thread-general-create")
@@ -129,6 +140,7 @@ struct ThreadPanelView: View {
 
   /// 書きかけの返信を送る。送れたら、その間に書き足されていない限り入力欄を空にする。
   func sendReply(_ id: String) {
+    let state = state
     let content = state.drafts[id, default: ""]
     guard !content.isBlank, state.sending.insert(id).inserted else { return }
     reply(to: id, content: content) { accepted in
@@ -139,6 +151,7 @@ struct ThreadPanelView: View {
 
   /// 書きかけの本文で General の Thread を作る。作れたら、その間に書き足されていない限り入力欄を空にする。
   func addGeneral() {
+    let state = state
     let content = state.generalDraft
     guard !content.isBlank, !state.creatingGeneral else { return }
     state.creatingGeneral = true
@@ -208,6 +221,7 @@ struct ThreadPanelView: View {
   }
 }
 
+/// Thread 面の状態。面を離れても保つので、worktree ごとに `AppModel` が持つ。
 @Observable @MainActor final class ThreadPanelState {
   var items: [Releash_Client_V1_ThreadExcerpt] = []
   var checked: Set<String> = []
@@ -220,6 +234,10 @@ struct ThreadPanelView: View {
   var openItems: [Releash_Client_V1_ThreadExcerpt] { items.filter { !$0.thread.isResolved } }
   var resolvedItems: [Releash_Client_V1_ThreadExcerpt] { items.filter(\.thread.isResolved) }
   var selectedIDs: [String] { items.map(\.thread.id).filter(checked.contains) }
+  /// カードの形に開いている解決済みの Thread の ID。購読の引数にするので順を固定する。
+  var expandedResolvedIDs: [String] {
+    resolvedItems.map(\.thread.id).filter(expanded.contains).sorted()
+  }
 
   func receive(_ items: [Releash_Client_V1_ThreadExcerpt]) {
     self.items = items
@@ -282,6 +300,23 @@ extension View {
   }
 }
 
+/// Markdown の Comment を書く欄。Return で送り、⌥Return で改行する。
+///
+/// 入力に合わせて `UIStyle.commentInputLines` 行まで伸び、それを超えると中でスクロールする。
+struct CommentField: View {
+  let placeholder: String
+  @Binding var text: String
+  let identifier: String
+  let submit: () -> Void
+
+  var body: some View {
+    TextField(placeholder, text: $text, axis: .vertical)
+      .lineLimit(1...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
+      .onSubmit(submit)
+      .accessibilityIdentifier(identifier)
+  }
+}
+
 private struct ThreadCard: View {
   let item: Releash_Client_V1_ThreadExcerpt
   @Binding var checked: Bool
@@ -312,7 +347,12 @@ private struct ThreadCard: View {
         }
       }
       .padding(UIStyle.spacing)
-      if !item.lines.isEmpty {
+      if item.hasReadError {
+        Divider()
+        Text("差分を読めません: \(item.readError)").font(.caption).foregroundStyle(.secondary)
+          .textSelection(.enabled).padding(UIStyle.spacing)
+          .accessibilityIdentifier("thread-diff-error:\(thread.id)")
+      } else if !item.lines.isEmpty {
         Divider()
         ThreadDiffView(threadID: thread.id, lines: item.lines)
       }
@@ -328,15 +368,15 @@ private struct ThreadCard: View {
         ResolutionLabel(thread: thread).padding(UIStyle.spacing)
       } else {
         HStack(alignment: .bottom, spacing: UIStyle.spacing) {
-          TextField("返信を書く…", text: $draft, axis: .vertical)
-            .lineLimit(1...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
-            .onSubmit(reply)
-            .accessibilityIdentifier("thread-reply-content:\(thread.id)")
+          CommentField(
+            placeholder: "返信を書く…", text: $draft,
+            identifier: "thread-reply-content:\(thread.id)", submit: reply)
           if !draft.isBlank {
             Button("返信", action: reply).disabled(sending)
               .accessibilityIdentifier("thread-reply-send:\(thread.id)")
           }
-          Button("解決にする", action: resolve).disabled(!thread.canResolve)
+          Button("解決にする", action: resolve).disabled(!thread.canResolve || !draft.isBlank)
+            .help(draft.isBlank ? "" : "書きかけの返信を送るか消すと、解決にできます")
             .accessibilityIdentifier("thread-resolve:\(thread.id)")
         }
         .padding(UIStyle.spacing)
@@ -375,7 +415,7 @@ private struct ResolutionLabel: View {
 
   var body: some View {
     HStack(spacing: UIStyle.spacing) {
-      CardIcon(image: Image("circle-check")).foregroundStyle(UIStyle.idle)
+      CardIcon(image: Image("circle-check")).foregroundStyle(.secondary)
         .accessibilityLabel("解決済み")
         .accessibilityIdentifier("thread-resolved:\(thread.id)")
       if let location {
@@ -410,7 +450,7 @@ private struct ThreadDiffView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(.secondary)
-        .padding(.vertical, UIStyle.statusSpacing / 2)
+        .padding(.vertical, UIStyle.diffLineSpacing)
         .background(line.tint)
         .overlay(alignment: .leading) {
           if line.targeted {
@@ -481,8 +521,7 @@ private struct ThreadCommentView: View {
             Text(comment.author.model).font(.caption2).foregroundStyle(.secondary)
               .padding(.horizontal, UIStyle.rowSpacing)
               .overlay(
-                RoundedRectangle(cornerRadius: UIStyle.iconButtonCornerRadius).strokeBorder(
-                  .separator)
+                RoundedRectangle(cornerRadius: UIStyle.badgeCornerRadius).strokeBorder(.separator)
               )
               .accessibilityIdentifier("thread-comment-model:\(comment.id)")
           }
