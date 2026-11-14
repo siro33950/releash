@@ -138,9 +138,13 @@ final class SidebarAcceptanceTests: XCTestCase {
       let card = try frame("worktree:" + name, in: host)
       let firstRight = NSRect(
         x: card.midX, y: card.minY, width: card.width / 2, height: card.height / 2)
-      try await assertIcon(icon, in: host, rect: firstRight, color: color)
+      let prIcon = try await assertIcon(icon, in: host, rect: firstRight, color: color)
       XCTAssertEqual(card.height, empty.height, accuracy: 1)
-      if name == "warning" { try await assertIcon("triangle-alert", in: host, rect: firstRight) }
+      if name == "warning" {
+        let warningIcon = try await assertIcon("triangle-alert", in: host, rect: firstRight)
+        XCTAssertEqual(prIcon.midY, warningIcon.midY, accuracy: 1)
+        XCTAssertTrue(prIcon.maxX <= warningIcon.minX || warningIcon.maxX <= prIcon.minX)
+      }
       XCTAssertFalse(host.element("worktree:" + name)?.label.contains("3 changes") == true)
       XCTAssertFalse(try containsIcon("circle-check", in: host, rect: card))
     }
@@ -279,15 +283,14 @@ final class SidebarAcceptanceTests: XCTestCase {
       return (delta * delta).sum() > 0.01
     }
     XCTAssertGreaterThan(ink.count, 8, "The deleting row must display a progress mark")
-    _ = try textStyle(
+    let executionText = try textStyle(
       "Deleting session", in: host,
       rect: NSRect(
         x: deleting.minX, y: deleting.minY + deleting.height * 2 / 3,
-        width: deleting.width, height: deleting.height / 3))
-    let label = try XCTUnwrap(host.element("worktree:deleting")).label
-    XCTAssertLessThan(
-      try XCTUnwrap(label.range(of: "削除中")).lowerBound,
-      try XCTUnwrap(label.range(of: "Deleting session")).lowerBound)
+        width: deleting.width, height: deleting.height / 3)
+    ).rect
+    XCTAssertLessThan(deletingText.midY, executionText.midY)
+    XCTAssertLessThanOrEqual(deletingText.maxY, executionText.minY)
     let blank = try raster(
       in: host,
       rect: NSRect(
@@ -596,11 +599,11 @@ final class SidebarAcceptanceTests: XCTestCase {
     return view.convert(host.window.convertFromScreen(screen), from: nil)
   }
 
-  @MainActor private func assertIcon(
+  @discardableResult @MainActor private func assertIcon(
     _ name: String, in host: ViewHarness, element: String? = nil, rect: NSRect? = nil,
     sizes: [Int] = Array(10...20), color: Color? = nil,
     file: StaticString = #filePath, line: UInt = #line
-  ) async throws {
+  ) async throws -> NSRect {
     if let element { try await eventuallyView(host, { host.element(element) != nil }) }
     let view = try XCTUnwrap(host.window.contentView)
     host.window.appearance = NSAppearance(named: .aqua)
@@ -633,8 +636,13 @@ final class SidebarAcceptanceTests: XCTestCase {
       attachment.lifetime = .keepAlways
       add(attachment)
     }
-    XCTAssertNotNil(
+    let found = try XCTUnwrap(
       match, "\(name), \(element ?? "view"), sizes=\(sizes)", file: file, line: line)
+    let scale = CGFloat(bitmap.pixelsWide) / region.width
+    return view.convert(
+      NSRect(
+        x: region.minX + found.minX / scale, y: region.minY + found.minY / scale,
+        width: found.width / scale, height: found.height / scale), from: captureView)
   }
 
 }
