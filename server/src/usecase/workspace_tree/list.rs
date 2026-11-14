@@ -258,10 +258,6 @@ mod list_tests;
 
 #[cfg(feature = "test-support")]
 impl WorkspaceListUsecase {
-    pub fn test_replace_repositories(&mut self, repositories: Arc<RepoPathsUsecase>) {
-        self.repositories = repositories;
-    }
-
     pub fn test_replace_repository_state(&mut self, repository_state: Arc<RepositoryStateService>) {
         self.repository_state = repository_state;
     }
