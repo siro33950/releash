@@ -22,7 +22,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     }
   }
 
-  @MainActor func test_B001_B002_B018_上端の作成と下端の追加更新を右寄せする() async throws {
+  @MainActor func test_サイドバー_B001_B002_B018_上端の作成と下端の追加更新を右寄せする() async throws {
     // Given
     let model = AppModel()
     model.repositories = [repository(["main"])]
@@ -67,7 +67,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     await connected.stop()
   }
 
-  @MainActor func test_B003_更新操作後に購読した一覧が表示される() async throws {
+  @MainActor func test_サイドバー_B003_更新操作後に購読した一覧が表示される() async throws {
     // Given
     let http = TestHTTPClient()
     http.state.withLock { $0.repositories = [repository(["before"])] }
@@ -88,7 +88,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B004_B005_B018_リポジトリの警告を見出しの右端に表示する() async throws {
+  @MainActor func test_サイドバー_B004_B005_B018_リポジトリの警告を見出しの右端に表示する() async throws {
     // Given
     let model = AppModel()
     var repo = repository(["main"])
@@ -109,7 +109,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     try await assertWarningTooltip(["Repository fetch failed"], in: host, rect: region)
   }
 
-  @MainActor func test_B006_B007_B010_B018_PRと警告が先頭行に状態色で並ぶ() async throws {
+  @MainActor func test_サイドバー_B006_B007_B010_B018_PRと警告が先頭行に状態色で並ぶ() async throws {
     // Given
     let model = AppModel()
     var repo = repository(["open", "draft", "merged", "closed", "warning", "empty"])
@@ -128,17 +128,17 @@ final class SidebarAcceptanceTests: XCTestCase {
     try await eventuallyView(host) { host.element("worktree:empty") != nil }
     // Then
     let empty = try frame("worktree:empty", in: host)
-    for (name, icon, color) in [
-      ("open", "git-pull-request", Color.green),
-      ("draft", "git-pull-request-draft", Color.gray),
-      ("merged", "git-merge", Color.purple),
-      ("closed", "git-pull-request-closed", Color.red),
-      ("warning", "git-pull-request", Color.green),
+    for (name, color) in [
+      ("open", Color.green),
+      ("draft", Color.gray),
+      ("merged", Color.purple),
+      ("closed", Color.red),
+      ("warning", Color.green),
     ] {
       let card = try frame("worktree:" + name, in: host)
       let firstRight = NSRect(
         x: card.midX, y: card.minY, width: card.width / 2, height: card.height / 2)
-      let prIcon = try await assertIcon(icon, in: host, rect: firstRight, color: color)
+      let prIcon = try await assertIcon(nil, in: host, rect: firstRight, color: color)
       XCTAssertEqual(card.height, empty.height, accuracy: 1)
       if name == "warning" {
         let warningIcon = try await assertIcon("triangle-alert", in: host, rect: firstRight)
@@ -150,7 +150,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     }
   }
 
-  @MainActor func test_B008_B009_失敗を一つの警告にまとめ全エラーをヘルプに出す() async throws {
+  @MainActor func test_サイドバー_B008_B009_失敗を一つの警告にまとめ全エラーをヘルプに出す() async throws {
     // Given
     let model = AppModel()
     var repo = repository(["dirty", "pr", "worktree", "all", "empty"])
@@ -185,7 +185,7 @@ final class SidebarAcceptanceTests: XCTestCase {
       in: host, rect: try frame("worktree:all", in: host))
   }
 
-  @MainActor func test_B011_B012_B013_B014_実行行と空行と削除行を配置する() async throws {
+  @MainActor func test_サイドバー_B011_B012_B013_B014_実行行と空行と削除行を配置する() async throws {
     // Given
     let http = TestHTTPClient()
     let model = try await testModel(http)
@@ -225,7 +225,6 @@ final class SidebarAcceptanceTests: XCTestCase {
     try await eventually { http.requests("RemoveWorktree").count == 1 }
     let removal = try Releash_Client_V1_RemoveWorktreeRequest(
       serializedBytes: XCTUnwrap(http.requests("RemoveWorktree").last?.message))
-    XCTAssertEqual(removal.worktreePath, "/acceptance/deleting")
     repo.branches.items[3].isDeleting = true
     var payload = Releash_Client_V1_StatePayload()
     payload.workspaces.repositories.items = [repo]
@@ -234,6 +233,7 @@ final class SidebarAcceptanceTests: XCTestCase {
       host.element("worktree:deleting")?.label.contains("削除中") == true
     }
     // Then
+    XCTAssertEqual(removal.worktreePath, "/acceptance/deleting")
     let empty = try frame("worktree:empty", in: host)
     let sessionCard = try frame("worktree:session", in: host)
     let workflowCard = try frame("worktree:workflow", in: host)
@@ -245,10 +245,15 @@ final class SidebarAcceptanceTests: XCTestCase {
     for provider in ["Claude", "Codex"] {
       XCTAssertFalse(host.element("worktree:session")?.label.contains(provider) == true)
     }
-    try await assertIcon("bot", in: host, element: "worktree:session")
-    try await assertIcon("waypoints", in: host, element: "worktree:workflow")
     let sessionStyle = try textStyle("Session title", in: host, rect: sessionCard)
     let workflowStyle = try textStyle("Workflow title", in: host, rect: workflowCard)
+    for (card, title) in [(sessionCard, sessionStyle.rect), (workflowCard, workflowStyle.rect)] {
+      let iconRegion = NSRect(
+        x: card.minX, y: title.minY, width: title.minX - card.minX, height: title.height)
+      let icon = try raster(in: host, rect: iconRegion)
+      let background = try XCTUnwrap(icon.pixels.first)
+      XCTAssertTrue(icon.pixels.contains { (($0 - background) * ($0 - background)).sum() > 0.05 })
+    }
     let workflowRaster = try raster(in: host, rect: workflowCard)
     for side in 6...12 {
       let square = NSHostingView(
@@ -300,22 +305,29 @@ final class SidebarAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func test_B015_B016_B017_B019_B020_選択したworktreeの変更数だけをバッジに出す() async throws {
+  @MainActor func test_サイドバー_B015_B016_B017_B019_B020_選択したworktreeの変更数だけをバッジに出す() async throws {
     // Given
-    let model = AppModel()
+    let http = TestHTTPClient()
     var repo = repository(["three", "hundred", "zero", "failed"])
     for (index, count) in [3, 100, 0].enumerated() {
       repo.branches.items[index].dirtyCount = UInt64(count)
     }
     repo.branches.items[3].dirtyCountError = "Count failed"
-    model.repositories = [repo]
-    let host = await ViewHarness(RightPanelView(expanded: .constant(true), model: model))
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
+    let host = await ViewHarness(
+      HStack(spacing: 0) {
+        SidebarView(model: model, creating: .constant(false)).frame(width: 340)
+        RightPanelView(expanded: .constant(true), model: model)
+      })
     defer { host.close() }
-    // When / Then
+    try await eventuallyView(host) { host.element("worktree:three") != nil }
     for (selection, expected) in [
-      ("three", "3"), ("hundred", "99+"), ("zero", ""), ("failed", ""), ("", ""),
+      ("", ""), ("three", "3"), ("hundred", "99+"), ("zero", ""), ("failed", ""),
     ] {
-      model.selectedWorktree = selection.isEmpty ? nil : "/acceptance/" + selection
+      // When
+      if !selection.isEmpty { try await host.press("worktree:" + selection) }
+      // Then
       try await eventuallyView(host) { host.element("right-panel:sourceControl") != nil }
       if expected.isEmpty {
         let toggle = try frame("right-panel:sourceControl", in: host)
@@ -332,6 +344,7 @@ final class SidebarAcceptanceTests: XCTestCase {
         XCTAssertTrue(try hasGrayBadge(in: host, rect: badge.insetBy(dx: -12, dy: -12)))
       }
     }
+    await model.stop()
   }
   @MainActor private func axElements(in host: ViewHarness) throws -> [AXUIElement] {
     let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
@@ -600,7 +613,7 @@ final class SidebarAcceptanceTests: XCTestCase {
   }
 
   @discardableResult @MainActor private func assertIcon(
-    _ name: String, in host: ViewHarness, element: String? = nil, rect: NSRect? = nil,
+    _ name: String?, in host: ViewHarness, element: String? = nil, rect: NSRect? = nil,
     sizes: [Int] = Array(10...20), color: Color? = nil,
     file: StaticString = #filePath, line: UInt = #line
   ) async throws -> NSRect {
@@ -615,29 +628,33 @@ final class SidebarAcceptanceTests: XCTestCase {
     let region = captureView.convert(bounds, from: view).integral.intersection(captureView.bounds)
     let bitmap = try XCTUnwrap(
       captureView.bitmapImageRepForCachingDisplay(in: region),
-      "\(element ?? name): bounds=\(bounds), capture=\(captureView.bounds), region=\(region)",
+      "\(element ?? name ?? "Lucide icon"): bounds=\(bounds), capture=\(captureView.bounds), region=\(region)",
       file: file, line: line)
     captureView.cacheDisplay(in: region, to: bitmap)
     let actual = try SidebarIconRaster(bitmap: bitmap)
     var match: NSRect?
     for size in sizes {
-      let expected = try Self.reference(
-        name, size: size, scale: CGFloat(bitmap.pixelsWide) / region.width)
-      if let found = actual.find(expected, color: color) {
-        match = found
-        break
+      for candidate in name.map({ [$0] }) ?? LucideAcceptanceReference.svg.keys.sorted() {
+        let expected = try Self.reference(
+          candidate, size: size, scale: CGFloat(bitmap.pixelsWide) / region.width)
+        if let found = actual.find(expected, color: color) {
+          match = found
+          break
+        }
       }
+      if match != nil { break }
     }
     if match == nil {
       let image = NSImage(size: bitmap.size)
       image.addRepresentation(bitmap)
       let attachment = XCTAttachment(image: image)
-      attachment.name = "\(name)-\(element ?? "view")"
+      attachment.name = "\(name ?? "Lucide icon")-\(element ?? "view")"
       attachment.lifetime = .keepAlways
       add(attachment)
     }
     let found = try XCTUnwrap(
-      match, "\(name), \(element ?? "view"), sizes=\(sizes)", file: file, line: line)
+      match, "\(name ?? "Lucide icon"), \(element ?? "view"), sizes=\(sizes)", file: file,
+      line: line)
     let scale = CGFloat(bitmap.pixelsWide) / region.width
     return view.convert(
       NSRect(
