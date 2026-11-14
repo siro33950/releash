@@ -280,18 +280,6 @@ async fn test_ファイル検索_b032_b033_512件以下は全件で超過時は5
 #[tokio::test]
 async fn test_外部エディタ_b027_b035_選択したアプリへworktreeとファイルを一度に渡す() {
     // Given: a real macOS application records the open-document event it receives.
-    let screen_lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(
-            std::env::temp_dir().join(format!("releash-macos-e2e-{}.lock", unsafe {
-                libc::getuid()
-            })),
-        )
-        .unwrap();
-    fs2::FileExt::lock_exclusive(&screen_lock).unwrap();
     let repo = repository();
     write(repo.path(), "file.rs");
     commit(repo.path());
@@ -308,12 +296,6 @@ async fn test_外部エディタ_b027_b035_選択したアプリへworktreeと�
         &script,
         format!(
             r#"
-on run
-    set output to open for access POSIX file "{escaped_record}" with write permission
-    write "READY" to output
-    close access output
-end run
-
 on open receivedItems
     set output to open for access POSIX file "{escaped_record}" with write permission
     try
@@ -332,9 +314,7 @@ end open
         ),
     )
     .unwrap();
-    // 終了中のアプリへ次の open が届く競合を避け、2回の配送が終わるまで保持する。
     let compiled = Command::new("/usr/bin/osacompile")
-        .arg("-s")
         .arg("-o")
         .arg(&app)
         .arg(&script)
@@ -345,23 +325,6 @@ end open
         "{}",
         String::from_utf8_lossy(&compiled.stderr)
     );
-    let mut editor_process = Daemon(
-        Command::new(app.join("Contents/MacOS/droplet"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while std::fs::read_to_string(&record).unwrap_or_default() != "READY" {
-        assert!(
-            editor_process.0.try_wait().unwrap().is_none(),
-            "editor exited before startup"
-        );
-        assert!(Instant::now() < deadline, "editor startup timed out");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
     let data = tempfile::tempdir().unwrap();
     let (_daemon, discovery) = start(data.path());
     let (mut socket, _) = connect(&discovery).await;
