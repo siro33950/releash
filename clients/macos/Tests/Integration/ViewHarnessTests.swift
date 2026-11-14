@@ -3,11 +3,6 @@ import SwiftUI
 import XCTest
 
 @MainActor final class ViewHarnessTests: XCTestCase {
-  private final class FocusWindow: NSWindow {
-    var allowsKey = false
-    override var canBecomeKey: Bool { allowsKey }
-  }
-
   private final class MenuButton: NSButton, NSMenuDelegate {
     var onSelection: (Bool) -> Void = { _ in }
     private var menuClosed = false
@@ -40,78 +35,6 @@ import XCTest
     }
 
     func updateNSView(_ nsView: MenuButton, context: Context) {}
-  }
-
-  func test_ホバー_開始待機が一度失敗しても次の試行で成功する() async throws {
-    // Given
-    let window = FocusWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
-      styleMask: [.titled], backing: .buffered, defer: false)
-    let host = await ViewHarness(Text("Hover"), window: window)
-    defer { host.close() }
-    let restore = Task { @MainActor in
-      try await Task.sleep(for: .milliseconds(5200))
-      window.allowsKey = true
-      host.window.makeKeyAndOrderFront(nil)
-    }
-    defer { restore.cancel() }
-    let frame = host.window.frame
-    let height = try XCTUnwrap(NSScreen.screens.first).frame.height
-    // When
-    let observed = try await host.hover(at: CGPoint(x: frame.midX, y: height - frame.midY)) {
-      true
-    }
-    // Then
-    XCTAssertTrue(observed)
-  }
-
-  func test_ホバー_フォーカスを失った三回の履歴をエラーに残す() async throws {
-    // Given
-    let host = await ViewHarness(Text("Hover"))
-    defer { host.close() }
-    let other = await ViewHarness(Text("Other"))
-    defer { other.close() }
-    var observations = 0
-    let frame = host.window.frame
-    let height = try XCTUnwrap(NSScreen.screens.first).frame.height
-    // When
-    do {
-      let _: Bool = try await host.hover(at: CGPoint(x: frame.midX, y: height - frame.midY)) {
-        observations += 1
-        other.window.makeKeyAndOrderFront(nil)
-        return true
-      }
-      XCTFail("Focus loss must discard the observation")
-    } catch {
-      // Then
-      XCTAssertEqual(observations, 3)
-      for attempt in 1...3 {
-        XCTAssertTrue(
-          error.localizedDescription.contains("attempt \(attempt)/3: focus lost"),
-          error.localizedDescription)
-      }
-    }
-  }
-
-  func test_ホバー_フォーカスを保ったまま表示されなければ再試行しない() async throws {
-    // Given
-    let host = await ViewHarness(Text("Hover"))
-    defer { host.close() }
-    let frame = host.window.frame
-    let height = try XCTUnwrap(NSScreen.screens.first).frame.height
-    // When
-    do {
-      let _: Bool = try await host.hover(at: CGPoint(x: frame.midX, y: height - frame.midY)) {
-        nil
-      }
-      XCTFail("Missing observation must time out")
-    } catch {
-      // Then
-      XCTAssertTrue(
-        error.localizedDescription.contains("attempt 1/3: observation timed out"),
-        error.localizedDescription)
-      XCTAssertFalse(error.localizedDescription.contains("attempt 2/3"), error.localizedDescription)
-    }
   }
 
   func test_メニュー操作_表示要求が先に完了しても項目の表示を待って選択する() async throws {

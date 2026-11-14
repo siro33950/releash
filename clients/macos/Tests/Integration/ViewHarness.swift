@@ -22,16 +22,13 @@ struct ViewElement {
   private var menuTracking = false
   private var menuSelection: (menu: NSMenu, index: Int)?
   init<V: View>(
-    _ view: V, size: NSSize = NSSize(width: 1000, height: 700), window: NSWindow? = nil
+    _ view: V, size: NSSize = NSSize(width: 1000, height: 700)
   ) async {
-    existingWindows = Set(NSApp.windows.filter { $0 !== window }.map(ObjectIdentifier.init))
-    self.window =
-      window
-      ?? NSWindow(
-        contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered,
-        defer: false)
+    existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+    window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered,
+      defer: false)
     super.init()
-    let window = self.window
     window.isReleasedWhenClosed = false
     window.title = "ViewHarness-" + UUID().uuidString
     let host = NSHostingView(rootView: view)
@@ -48,74 +45,6 @@ struct ViewElement {
       window.close()
     }
   }
-  func movePointer(to point: CGPoint) throws {
-    let desktop = try XCTUnwrap(NSScreen.screens.first).frame
-    XCTAssertEqual(CGWarpMouseCursorPosition(point), .success)
-    let event = try XCTUnwrap(
-      CGEvent(
-        mouseEventSource: nil, mouseType: .mouseMoved,
-        mouseCursorPosition: point, mouseButton: .left))
-    event.post(tap: .cghidEventTap)
-    let localEvent = try XCTUnwrap(
-      NSEvent.mouseEvent(
-        with: .mouseMoved,
-        location: window.convertPoint(fromScreen: NSPoint(x: point.x, y: desktop.height - point.y)),
-        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-        windowNumber: window.windowNumber, context: nil, eventNumber: 1,
-        clickCount: 0, pressure: 0))
-    NSApp.postEvent(localEvent, atStart: false)
-  }
-
-  func hover<Value>(at point: CGPoint, observe: () throws -> Value?) async throws -> Value {
-    let previous = try XCTUnwrap(CGEvent(source: nil)?.location)
-    defer { try? movePointer(to: previous) }
-    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    window.acceptsMouseMovedEvents = true
-    var history: [String] = []
-    for attempt in 1...3 {
-      XCTAssertEqual(
-        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-        .success)
-      let focusDeadline = ContinuousClock.now + .seconds(5)
-      window.makeKeyAndOrderFront(nil)
-      while !(NSApp.isActive && window.isKeyWindow) && ContinuousClock.now < focusDeadline {
-        try await Task.sleep(for: .milliseconds(5))
-        window.makeKeyAndOrderFront(nil)
-      }
-      guard NSApp.isActive && window.isKeyWindow else {
-        history.append("attempt \(attempt)/3: focus acquisition timed out")
-        continue
-      }
-      try movePointer(to: CGPoint(x: point.x - 40, y: point.y))
-      try await Task.sleep(for: .milliseconds(100))
-      try movePointer(to: point)
-      let deadline = ContinuousClock.now + .seconds(5)
-      while NSApp.isActive && window.isKeyWindow {
-        let value = try observe()
-        guard NSApp.isActive && window.isKeyWindow else { break }
-        if let value { return value }
-        if ContinuousClock.now >= deadline {
-          history.append("attempt \(attempt)/3: observation timed out")
-          throw hoverFailure(history)
-        }
-        try await Task.sleep(for: .milliseconds(5))
-      }
-      history.append(
-        "attempt \(attempt)/3: focus lost (active=\(NSApp.isActive), key=\(window.isKeyWindow), frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleURL?.path ?? "none"), keyWindow=\(NSApp.keyWindow?.title ?? "none"))"
-      )
-    }
-    throw hoverFailure(history)
-  }
-
-  private func hoverFailure(_ history: [String]) -> NSError {
-    NSError(
-      domain: "ViewHarness.Hover", code: 1,
-      userInfo: [
-        NSLocalizedDescriptionKey:
-          "Hover observation failed: " + history.joined(separator: "; ") + "\n" + debugDump()
-      ])
-  }
-
   func refresh() async { readSnapshot() }
   private func readSnapshot() {
     snapshot = {
