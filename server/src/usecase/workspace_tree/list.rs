@@ -82,12 +82,7 @@ impl WorkspaceListUsecase {
         let repositories =
             crate::common::operation_context::spawn_blocking(move || usecase.repository_values())
                 .await
-                .map_err(|error| {
-                    GitError::Technical(crate::domain::failure::TechnicalFailure {
-                        nature: crate::domain::failure::TechnicalFailureNature::Other,
-                        message: error.to_string(),
-                    })
-                })??;
+                .map_err(|error| GitError::Technical(error.into()))??;
         let worktree_paths = repositories
             .iter()
             .flat_map(|repository| repository.worktrees.value.iter().flatten())
