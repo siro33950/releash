@@ -359,6 +359,7 @@ impl Fixture {
             ), comments.clone(),
         ));
         let reads = WorkspaceStateReads {
+            comment_images: Arc::new(releashd::test_support::integration::subscriptions::HttpCommentImageQuery::default()),
             daemon: releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
                 releashd::test_support::integration::daemon::serving(),
             ),

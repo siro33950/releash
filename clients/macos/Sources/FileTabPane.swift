@@ -343,6 +343,8 @@ struct FileWebView: NSViewRepresentable {
   func makeNSView(context: Context) -> WKWebView {
     let configuration = WKWebViewConfiguration()
     let handler = context.coordinator
+    configuration.setURLSchemeHandler(
+      CommentImageSchemeHandler(model: model), forURLScheme: "releash-comment-image")
     configuration.userContentController.add(
       handler, contentWorld: handler.world, name: "fileViewer")
     let web = WKWebView(frame: .zero, configuration: configuration)

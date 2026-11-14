@@ -1929,7 +1929,13 @@ message StatePayload {
     ProviderUsageSnapshot provider_usage = 70;
     ExecutionOverviewDto execution_overview = 76;
     FilteredFilesSnapshot filtered_files = 77;
+    CommentImageSnapshot comment_image = 78;
   }
+}
+// Comment 本文の URL からサーバが取得した画像。
+message CommentImageSnapshot {
+  bytes data = 1;
+  string media_type = 2;
 }
 message FileThreadsSnapshot {
   ListReviewThreadDto threads = 1;

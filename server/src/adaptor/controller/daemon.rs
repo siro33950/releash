@@ -672,6 +672,9 @@ pub async fn compose(
                     workspace_state: dependencies.workspace_state_store.clone().unwrap(),
                     review: review_usecase_for_reads,
                     comments: review_comment_usecase_for_reads,
+                    comment_images: Arc::new(
+                        adaptor::gateway::comment_image::HttpCommentImageQuery::default(),
+                    ),
                     session_comments: session_review_usecase,
                     data_dir: reads_data_dir,
                     review_comments_dir,

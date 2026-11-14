@@ -18,6 +18,12 @@ let replyVersion = 0;
 let composerContent = '';
 const expanded = new Set();
 const markdown = new MarkdownIt({ html: false });
+const renderImage = markdown.renderer.rules.image;
+markdown.renderer.rules.image = (tokens, index, options, env, renderer) => {
+  const token = tokens[index];
+  token.attrSet('src', `releash-comment-image://image?url=${encodeURIComponent(token.attrGet('src'))}`);
+  return renderImage(tokens, index, options, env, renderer);
+};
 const relativeTime = (timestamp) => {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
   for (const [unit, size] of [['年', 31536000], ['日', 86400], ['時間', 3600], ['分', 60]]) {

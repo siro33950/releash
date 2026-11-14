@@ -223,7 +223,7 @@ test('本文のMarkdownは整形しHTMLと危険なURLを実行しない', async
   const card = ui.renderer().options.renderAnnotation({ metadata: thread });
   const html = card.children[0].children[0].children[1].innerHTML;
   // Then
-  for (const part of ['<h1>Heading</h1>', '<li>item</li>', '<code>code</code>', '<strong>bold</strong>', '<img src="https://example.com/a.png"', '<a href="https://example.com"', '&lt;script&gt;']) assert.ok(html.includes(part), html);
+  for (const part of ['<h1>Heading</h1>', '<li>item</li>', '<code>code</code>', '<strong>bold</strong>', '<img src="releash-comment-image://image?url=https%3A%2F%2Fexample.com%2Fa.png"', '<a href="https://example.com"', '&lt;script&gt;']) assert.ok(html.includes(part), html);
   assert.ok(!html.includes('<script>'));
   assert.ok(!html.includes('href="javascript:'));
   assert.equal(ui.messages.length, 1);

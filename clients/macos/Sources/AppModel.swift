@@ -67,6 +67,7 @@ import SwiftProtobuf
   @ObservationIgnored private var callbacks:
     [String: [UUID: (Releash_Client_V1_StatePayload) -> Void]] =
       [:]
+  @ObservationIgnored private var subscriptionFailures: [UUID: (Error) -> Void] = [:]
   @ObservationIgnored private var subscriberKeys: [UUID: String] = [:]
   @ObservationIgnored private var lastPayloads: [String: Releash_Client_V1_StatePayload] = [:]
   @ObservationIgnored private var groupSubscriptions: [String: UUID] = [:]
@@ -182,11 +183,13 @@ import SwiftProtobuf
   }
   @discardableResult func subscribe(
     _ target: String, _ args: [String] = [],
+    onFailure: ((Error) -> Void)? = nil,
     onValue: @escaping (Releash_Client_V1_StatePayload) -> Void
   ) -> UUID {
     let key = subscriptionKey(target, args)
     let id = UUID()
     subscriberKeys[id] = key
+    subscriptionFailures[id] = onFailure
     callbacks[key, default: [:]][id] = onValue
     desiredTargets[key] = (target, args)
     if let payload = lastPayloads[key] { onValue(payload) }
@@ -198,6 +201,7 @@ import SwiftProtobuf
   }
   func unsubscribe(_ subscriber: UUID) {
     guard let key = subscriberKeys.removeValue(forKey: subscriber) else { return }
+    subscriptionFailures.removeValue(forKey: subscriber)
     callbacks[key]?.removeValue(forKey: subscriber)
     guard callbacks[key]?.isEmpty == true else { return }
     desiredTargets.removeValue(forKey: key)
@@ -211,6 +215,9 @@ import SwiftProtobuf
       _ = try await client.stopStateSubscription(request: request, headers: self.headers).result
         .get()
     }
+  }
+  private func notifySubscriptionFailure(_ error: Error, key: String) {
+    for id in callbacks[key]?.keys ?? [:].keys { subscriptionFailures[id]?(error) }
   }
   private func receive(_ payload: Releash_Client_V1_StatePayload, key: String) {
     var cached = payload
@@ -263,6 +270,7 @@ import SwiftProtobuf
       request.subscriptionID = reservation.id
       _ = try await client.startStateSubscription(request: request, headers: headers).result.get()
     } catch {
+      notifySubscriptionFailure(error, key: key)
       if subscriptionIDs.key(for: reservation.id) == key {
         targets.removeValue(forKey: key)
         _ = subscriptionIDs.remove(key)
@@ -338,6 +346,9 @@ import SwiftProtobuf
                 receive(change.payload, key: key)
               }
             } else if case .failure(let error) = event.event {
+              if let key = subscriptionIDs.key(for: event.subscriptionID) {
+                notifySubscriptionFailure(CLIFailure(message: error.message), key: key)
+              }
               if subscriptionIDs.key(for: event.subscriptionID)
                 == subscriptionKey("provider-hook-health", [])
               {

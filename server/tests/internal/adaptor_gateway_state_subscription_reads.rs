@@ -85,3 +85,37 @@ pub async fn test_notion購読読取_タスクの外部更新の後に未設定�
     assert!(result.value.is_none());
     assert!(released.is_err());
 }
+
+#[tokio::test]
+async fn test_comment画像購読_サーバが取得した画像を状態として返す() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Given
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/image", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.read(&mut [0; 4096]).await.unwrap();
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\n\r\npng!",
+            )
+            .await
+            .unwrap();
+    });
+    let fixture = crate::state_subscription_reads::Fixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    // When
+    let result = reads
+        .read(&SubscriptionTarget::CommentImage(url))
+        .await
+        .unwrap();
+    // Then
+    let releashd::test_support::integration::subscriptions::StateValue::CommentImage(image) =
+        result
+    else {
+        panic!("image missing")
+    };
+    assert_eq!(image.data, b"png!");
+    assert_eq!(image.media_type, "image/png");
+    server.await.unwrap();
+}

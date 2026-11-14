@@ -4,6 +4,7 @@ pub(crate) mod app_data_gc;
 pub(crate) mod application_lifecycle;
 pub(crate) mod code;
 pub(crate) mod comment;
+pub(crate) mod comment_image;
 pub(crate) mod daemon;
 pub(crate) mod external_editor;
 pub(crate) mod git_host;

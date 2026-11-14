@@ -1313,3 +1313,20 @@ fn test_ファイル一覧配信_直下一覧と絞込結果が同じgit状態�
         assert!(files.truncated);
     }
 }
+
+#[test]
+fn test_comment画像配信_画像データと媒体型をconnectへ渡す() {
+    // Given
+    let image = crate::usecase::comment_image::CommentImageDto {
+        data: vec![1, 2, 3],
+        media_type: "image/png".into(),
+    };
+    // When
+    let value = payload(&StateValue::CommentImage(image.clone())).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::CommentImage(value)) = value.value else {
+        panic!("image payload missing")
+    };
+    assert_eq!(value.data, image.data);
+    assert_eq!(value.media_type, image.media_type);
+}
