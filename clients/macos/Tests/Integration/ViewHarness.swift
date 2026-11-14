@@ -90,7 +90,8 @@ struct ViewElement {
         try await Task.sleep(for: .milliseconds(5))
       }
       history.append(
-        "attempt \(attempt)/3: focus lost (active=\(NSApp.isActive), key=\(window.isKeyWindow))")
+        "attempt \(attempt)/3: focus lost (active=\(NSApp.isActive), key=\(window.isKeyWindow), frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleURL?.path ?? "none"), keyWindow=\(NSApp.keyWindow?.title ?? "none"))"
+      )
     }
     throw hoverFailure(history)
   }
