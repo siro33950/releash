@@ -21,12 +21,17 @@ struct ViewElement {
   private var trackingMenu: NSMenu?
   private var menuTracking = false
   private var menuSelection: (menu: NSMenu, index: Int)?
-  init<V: View>(_ view: V, size: NSSize = NSSize(width: 1000, height: 700)) async {
-    existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
-    window = NSWindow(
-      contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered,
-      defer: false)
+  init<V: View>(
+    _ view: V, size: NSSize = NSSize(width: 1000, height: 700), window: NSWindow? = nil
+  ) async {
+    existingWindows = Set(NSApp.windows.filter { $0 !== window }.map(ObjectIdentifier.init))
+    self.window =
+      window
+      ?? NSWindow(
+        contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered,
+        defer: false)
     super.init()
+    let window = self.window
     window.isReleasedWhenClosed = false
     window.title = "ViewHarness-" + UUID().uuidString
     let host = NSHostingView(rootView: view)

@@ -3,6 +3,11 @@ import SwiftUI
 import XCTest
 
 @MainActor final class ViewHarnessTests: XCTestCase {
+  private final class FocusWindow: NSWindow {
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
+  }
+
   private final class MenuButton: NSButton, NSMenuDelegate {
     var onSelection: (Bool) -> Void = { _ in }
     private var menuClosed = false
@@ -39,13 +44,14 @@ import XCTest
 
   func test_ホバー_開始待機が一度失敗しても次の試行で成功する() async throws {
     // Given
-    let host = await ViewHarness(Text("Hover"))
+    let window = FocusWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    let host = await ViewHarness(Text("Hover"), window: window)
     defer { host.close() }
-    host.window.styleMask = [.borderless]
-    host.window.resignKey()
     let restore = Task { @MainActor in
       try await Task.sleep(for: .milliseconds(5200))
-      host.window.styleMask = [.titled]
+      window.allowsKey = true
       host.window.makeKeyAndOrderFront(nil)
     }
     defer { restore.cancel() }

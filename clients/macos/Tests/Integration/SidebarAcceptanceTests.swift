@@ -432,9 +432,7 @@ final class SidebarAcceptanceTests: XCTestCase {
       let content = try XCTUnwrap(tooltip.contentView)
       let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
       content.cacheDisplay(in: content.bounds, to: bitmap)
-      let request = VNRecognizeTextRequest()
-      request.recognitionLanguages = ["en-US"]
-      request.usesLanguageCorrection = false
+      let request = try cpuTextRecognitionRequest()
       try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
       let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
         .joined(separator: " ")
@@ -542,9 +540,7 @@ final class SidebarAcceptanceTests: XCTestCase {
     let region = rect.integral.intersection(view.bounds)
     let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: region))
     view.cacheDisplay(in: region, to: bitmap)
-    let request = VNRecognizeTextRequest()
-    request.recognitionLanguages = ["en-US"]
-    request.usesLanguageCorrection = false
+    let request = try cpuTextRecognitionRequest()
     try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
     return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
       .joined(separator: " ")
