@@ -4,6 +4,34 @@ import XCTest
 @testable import Releash
 
 final class RootViewTests: XCTestCase {
+  @MainActor func test_作成ボタン_中央クリックで作成画面を開く() async throws {
+    // Given
+    let model = try await testModel(TestHTTPClient())
+    let host = await ViewHarness(RootView(model: model))
+    defer { host.close() }
+    try await eventuallyView(host) { host.element("Worktreeを作成") != nil }
+    let content = try XCTUnwrap(host.window.contentView)
+    let inset = UIStyle.windowPadding + UIStyle.tabBarHeight / 2
+    let point = content.convert(
+      NSPoint(
+        x: UIStyle.windowPadding + UIStyle.sidebarWidth - UIStyle.spacing
+          - UIStyle.iconButtonWidth / 2,
+        y: content.isFlipped ? inset : content.bounds.height - inset), to: nil)
+    // When
+    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+      NSApp.postEvent(
+        try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 1, pressure: 0)), atStart: false)
+    }
+    // Then
+    try await eventuallyView(host) { host.element("新しいWorktree") != nil }
+    await model.stop()
+  }
+
   @MainActor func testColumnDividersAllowWideRightPanelAndKeepCenterAndSidebarLimits() async throws
   {
     let model = try await testModel(TestHTTPClient())

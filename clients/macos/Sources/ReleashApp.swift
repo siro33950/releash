@@ -168,7 +168,7 @@ struct RootView: View {
       }
       .padding(.horizontal, UIStyle.padding)
       .frame(height: UIStyle.tabBarHeight)
-      .frame(width: UIStyle.sidebarWidth)
+      .frame(width: sidebarWidth - UIStyle.iconButtonWidth - UIStyle.spacing)
     }
     .background(Color(nsColor: .controlBackgroundColor))
     .clipShape(RoundedRectangle(cornerRadius: UIStyle.contentCornerRadius))

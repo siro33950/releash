@@ -37,6 +37,28 @@ import XCTest
     func updateNSView(_ nsView: MenuButton, context: Context) {}
   }
 
+  func test_ホバー_開始待機が一度失敗しても次の試行で成功する() async throws {
+    // Given
+    let host = await ViewHarness(Text("Hover"))
+    defer { host.close() }
+    host.window.styleMask = [.borderless]
+    host.window.resignKey()
+    let restore = Task { @MainActor in
+      try await Task.sleep(for: .milliseconds(5200))
+      host.window.styleMask = [.titled]
+      host.window.makeKeyAndOrderFront(nil)
+    }
+    defer { restore.cancel() }
+    let frame = host.window.frame
+    let height = try XCTUnwrap(NSScreen.screens.first).frame.height
+    // When
+    let observed = try await host.hover(at: CGPoint(x: frame.midX, y: height - frame.midY)) {
+      true
+    }
+    // Then
+    XCTAssertTrue(observed)
+  }
+
   func test_ホバー_フォーカスを失った三回の履歴をエラーに残す() async throws {
     // Given
     let host = await ViewHarness(Text("Hover"))

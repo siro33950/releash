@@ -71,9 +71,15 @@ struct ViewElement {
       XCTAssertEqual(
         AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
         .success)
-      try await eventually {
-        self.window.makeKeyAndOrderFront(nil)
-        return NSApp.isActive && self.window.isKeyWindow
+      let focusDeadline = ContinuousClock.now + .seconds(5)
+      window.makeKeyAndOrderFront(nil)
+      while !(NSApp.isActive && window.isKeyWindow) && ContinuousClock.now < focusDeadline {
+        try await Task.sleep(for: .milliseconds(5))
+        window.makeKeyAndOrderFront(nil)
+      }
+      guard NSApp.isActive && window.isKeyWindow else {
+        history.append("attempt \(attempt)/3: focus acquisition timed out")
+        continue
       }
       try movePointer(to: CGPoint(x: point.x - 40, y: point.y))
       try await Task.sleep(for: .milliseconds(100))
