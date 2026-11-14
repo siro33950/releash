@@ -212,6 +212,34 @@ fn test_git設定_親ディレクトリごと削除されたファイルでもba
     );
 }
 
+#[test]
+fn test_base解決_remoteの名前を付けた名前とoriginにだけあるブランチ名を解決する() {
+    // Given
+    let (_dir, repo) = create_test_repo();
+    create_initial_commit(&repo);
+    let root = repo.workdir().unwrap().to_str().unwrap().to_owned();
+    let head = repo.head().unwrap().target().unwrap();
+    repo.reference(
+        "refs/remotes/origin/topic",
+        head,
+        true,
+        "test remote branch",
+    )
+    .unwrap();
+    // When / Then
+    for name in ["origin/topic", "topic"] {
+        assert_eq!(
+            resolve_base_commit_oid(&root, name).unwrap(),
+            Some(head.to_string()),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        resolve_base_commit_oid(&root, "origin/missing").unwrap(),
+        None
+    );
+}
+
 fn config_repository() -> releashd::test_support::integration::settings::AppConfig {
     releashd::test_support::integration::settings::AppConfig::new(
         Default::default(),

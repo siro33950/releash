@@ -9,6 +9,14 @@ mod branch_tests {
     }
 
     #[test]
+    fn test_worktreeのbase候補_ローカルとoriginのリモートだけ選べる() {
+        // Given / When / Then
+        assert!(Branch::local("main").is_worktree_base());
+        assert!(Branch::remote("origin/main").is_worktree_base());
+        assert!(!Branch::remote("upstream/main").is_worktree_base());
+    }
+
+    #[test]
     fn test_ブランチ生成_ローカルとリモートの区別() {
         assert!(!Branch::local("main").is_remote);
         assert!(Branch::remote("feature").is_remote);

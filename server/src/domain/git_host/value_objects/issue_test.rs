@@ -25,22 +25,63 @@ fn test_issue絞り込み_labelとmilestoneを同時に満たすものを選ぶ(
     assert!(IssueFilter::default().matches(&issue));
     assert!(IssueFilter {
         labels: vec!["bug".into()],
-        milestone: Some("v1".into())
+        milestone: Some("v1".into()),
+        search: None,
     }
     .matches(&issue));
     assert!(!IssueFilter {
         labels: vec!["feature".into()],
-        milestone: None
+        milestone: None,
+        search: None,
     }
     .matches(&issue));
     assert!(!IssueFilter {
         labels: vec![],
-        milestone: Some("v2".into())
+        milestone: Some("v2".into()),
+        search: None,
     }
     .matches(&issue));
     assert!(!IssueFilter {
         labels: vec!["bug".into(), "feature".into()],
-        milestone: None
+        milestone: None,
+        search: None,
+    }
+    .matches(&issue));
+}
+
+#[test]
+fn test_issue絞り込み_検索語をタイトルか番号に含むものを選ぶ() {
+    // Given
+    let issue = IssueInfo {
+        number: 2125,
+        title: "Worktree のダイアログ".into(),
+        state: "open".into(),
+        url: "url".into(),
+        author: PrAuthor {
+            login: "author".into(),
+        },
+        created_at: "date".into(),
+        updated_at: "date".into(),
+        labels: vec![IssueLabel {
+            name: "bug".into(),
+            color: "red".into(),
+        }],
+        assignees: vec![],
+        body: "body".into(),
+        milestone: None,
+    };
+    let search = |input: &str| IssueFilter {
+        search: crate::domain::search_term::SearchTerm::new(input),
+        ..Default::default()
+    };
+    // When / Then
+    assert!(search("worktree").matches(&issue));
+    assert!(search("#2125").matches(&issue));
+    assert!(search("212").matches(&issue));
+    assert!(!search("body").matches(&issue));
+    assert!(!IssueFilter {
+        labels: vec!["feature".into()],
+        ..search("worktree")
     }
     .matches(&issue));
 }

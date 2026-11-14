@@ -77,6 +77,12 @@ impl GitHostUsecase {
         result
     }
 
+    /// 期限内に取れた Issue の一覧を持っているか。取得に失敗した状態は、持っていない扱いにする。
+    pub(crate) fn has_fresh_issues(&self, repo_path: &str) -> bool {
+        let cached = self.issue_cache.result(repo_path);
+        cached.value.is_some() && cached.error.is_none()
+    }
+
     pub(crate) async fn get_filtered_issues(
         &self,
         repo_path: &str,

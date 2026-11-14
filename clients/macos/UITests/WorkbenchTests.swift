@@ -245,38 +245,27 @@ final class WorkbenchTests: XCTestCase {
 
   }
 
-  @MainActor func testCreateWorktreeAndStartSession() async throws {
+  @MainActor func testCreateWorktreeFromBranch() async throws {
     try await fixture.startServer()
-    _ = try await fixture.repository("creation-repository")
-    let repository = fixture.directory.appendingPathComponent("creation-repository")
+    let repository = try await fixture.repository("creation-repository")
+    try fixture.process(
+      URL(fileURLWithPath: "/usr/bin/git"), ["branch", "created-branch"], at: repository)
     launch()
     app.buttons["Worktreeを作成"].click()
-    let picker = app.descendants(matching: .any)["repository-picker"].firstMatch
-    XCTAssertTrue(picker.waitForExistence(timeout: 10), app.debugDescription)
-    picker.click()
-    app.menuItems[repository.path].click()
-    app.disclosureTriangles["Advanced"].coordinate(
-      withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)
-    ).click()
-    let branch = app.descendants(matching: .any)["new-branch-field"].firstMatch
+    let base = app.popUpButtons["base-branch-picker"]
+    let selected = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", "main"), object: base)
+    XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 10), .completed, app.debugDescription)
+    XCTAssertEqual(app.popUpButtons["repository-picker"].value as? String, "creation-repository")
+    let search = app.textFields["worktree-source-search"]
+    search.click()
+    search.typeText("created")
+    let branch = app.checkBoxes["worktree-source-item:branch:created-branch"]
     XCTAssertTrue(branch.waitForExistence(timeout: 10), app.debugDescription)
     branch.click()
-    branch.typeText("created-branch")
-    app.sheets.firstMatch.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -250)
-    app.radioButtons["Session"].click()
-    let provider = app.descendants(matching: .any)["provider-picker"].firstMatch
-    XCTAssertTrue(provider.waitForExistence(timeout: 10), app.debugDescription)
-    provider.click()
-    provider.menuItems["Claude"].click()
     app.buttons["作成"].click()
     let card = app.buttons["worktree:created-branch"]
     XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription)
-    let started = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "label CONTAINS %@", "Session,"), object: card)
-    XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 30), .completed, app.debugDescription)
-    XCTAssertTrue(card.label.contains("Session,"), card.label)
-    try await fixture.waitForLiveSession(
-      repository: repository, branch: "created-branch", provider: .claude)
   }
 }
 

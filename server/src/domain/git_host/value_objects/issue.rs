@@ -33,6 +33,8 @@ pub struct IssueInfo {
 pub struct IssueFilter {
     pub labels: Vec<String>,
     pub milestone: Option<String>,
+    /// タイトルか `#番号` に含まれる検索語。
+    pub search: Option<crate::domain::search_term::SearchTerm>,
 }
 
 impl IssueFilter {
@@ -45,6 +47,9 @@ impl IssueFilter {
                     .milestone
                     .as_ref()
                     .is_some_and(|milestone| &milestone.title == wanted)
+            })
+            && self.search.as_ref().is_none_or(|term| {
+                term.matches(&issue.title) || term.matches(&format!("#{}", issue.number))
             })
     }
 }

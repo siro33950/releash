@@ -69,15 +69,16 @@ pub(super) fn discover_repo(path: &std::path::Path) -> Result<git2::Repository, 
     }
 }
 
-/// 開いた repo で base 名 → local（`refs/heads/<name>`）→ remote
-/// （`refs/remotes/origin/<name>`）の順に ref を解決し、base コミットの OID を返す。
-/// いずれの ref も実在しない場合は `None`。
+/// 開いた repo で base 名 → local（`refs/heads/<name>`）→ remote の名前を付けた名前
+/// （`origin/main` なら `refs/remotes/origin/main`）→ origin（`refs/remotes/origin/<name>`）
+/// の順に ref を解決し、base コミットの OID を返す。いずれの ref も実在しない場合は `None`。
 fn resolve_base_ref_oid(
     repo: &git2::Repository,
     base_name: &str,
 ) -> Result<Option<git2::Oid>, GitError> {
     for reference in [
         format!("refs/heads/{base_name}"),
+        format!("refs/remotes/{base_name}"),
         format!("refs/remotes/origin/{base_name}"),
     ] {
         let Some(object) =

@@ -2,8 +2,10 @@ use super::{Branch, GitError, RepositoryStatusScan, Worktree};
 
 /// Git のブランチ、作業ツリー、履歴を操作するドメインサービス。
 pub trait GitService: Send + Sync {
-    /// repository のブランチを列挙する。
+    /// repository のブランチを列挙する。リモートのブランチは `origin/main` のように remote の名前を付けて返す。
     fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, GitError>;
+    /// repository のデフォルトブランチの名前を返す。決められないときは `None`。
+    fn default_branch(&self, repo_path: &str) -> Result<Option<String>, GitError>;
     /// 現在のブランチ、またはブランチが無い状態の表示を返す。
     fn current(&self, repo_path: &str) -> Result<String, GitError>;
     /// 指定したブランチを作成し、そのブランチに切り替える。
@@ -62,7 +64,8 @@ pub trait GitService: Send + Sync {
     /// unborn / 解決不可は `None`。ref 存在検証・merge-base 計算は行わない。
     fn resolve_current_base_branch(&self, path_hint: &str) -> Result<Option<String>, GitError>;
     /// `path_hint` 配下のリポジトリで `base_name` の ref（local `refs/heads/<name>` →
-    /// remote `refs/remotes/origin/<name>` の順）を解決し、base コミットの OID(hex) を返す。
+    /// remote の名前を付けた `refs/remotes/<name>` → `refs/remotes/origin/<name>` の順）を解決し、
+    /// base コミットの OID(hex) を返す。
     /// ref が実在しない場合は `None`。base ref → コミット OID の解決ルールを所有し、
     /// 呼び出し側（`code` ドメインの merge-base 計算）が ref 解決を重複実装しないようにする。
     fn resolve_base_commit_oid(

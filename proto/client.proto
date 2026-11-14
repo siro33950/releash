@@ -314,23 +314,11 @@ message RepositoryGroupState {
   bool collapsed = 1;
 }
 message CreateWorktreesRequest {
+  reserved 4, 5;
+  reserved "session", "workflow";
   string repo_path = 1;
   repeated string branches = 2;
   optional string base_branch = 3;
-  oneof launch {
-    WorktreeSessionLaunch session = 4;
-    WorktreeWorkflowLaunch workflow = 5;
-  }
-}
-message WorktreeSessionLaunch {
-  string provider = 1;
-  uint32 rows = 2;
-  uint32 cols = 3;
-  string request_id = 4;
-}
-message WorktreeWorkflowLaunch {
-  string name = 1;
-  optional string request = 2;
 }
 
 message DeleteAgentSessionRequest {
@@ -1867,6 +1855,10 @@ message ListWorkspaceRepositoryList {
   repeated WorkspaceRepositoryList items = 1;
 }
 
+// Issue の一覧。購読の対象 `issues` で届く。
+// 購読の引数は、Repository の path に続けて、`label=<Label の名前>`、`milestone=<Milestone の名前>`、
+// `search=<検索語>` のうち指定するものを並べる。検索語は、タイトルか `#<番号>` に含むものを選ぶ。
+// `labels` と `milestones` は、絞り込む前の Issue から求めた絞り込みの選択肢。
 message IssuesSnapshot {
   repeated string labels = 3;
   repeated string milestones = 4;
@@ -1881,6 +1873,31 @@ message NotionReadFailure {
 message NotionTasksSnapshot {
   optional NotionTaskPageView page = 1;
   optional NotionReadFailure read_error = 2;
+}
+// Repository の Notion の設定で Labels に選んだプロパティと、その選択肢。
+// 購読の対象 `notion-label-options` で届く。引数は Repository の path。
+message NotionLabelOptionsSnapshot {
+  repeated NotionLabelOption options = 1;
+  optional NotionReadFailure read_error = 2;
+}
+message NotionLabelOption {
+  // プロパティの名前。`notion-tasks` の `labels=` の鍵に使う。
+  string property_name = 1;
+  repeated NotionLabelChoice choices = 2;
+}
+message NotionLabelChoice {
+  // 画面に出す名前。
+  string label = 1;
+  // `notion-tasks` の `labels=` に渡す値。
+  string value = 2;
+}
+// 新しい worktree のブランチを作る元にできるブランチ。購読の対象 `worktree-bases` で届く。
+// 引数は Repository の path。
+message WorktreeBasesSnapshot {
+  // ローカルのブランチと、`origin/` で始まるリモートのブランチの名前。
+  repeated string branches = 1;
+  // デフォルトブランチの名前。決められないときは無い。
+  optional string default_branch = 2;
 }
 
 message OpenStateStreamRequest { string client_id = 1; }
@@ -1906,9 +1923,13 @@ message StatePayload {
     AgentSessionHistoryPageDto session_history = 7;
     ListAgentSessionProviderDto providers = 8;
     ListBranchDto branches = 9;
+    // worktree が無いローカルのブランチ。購読の対象 `available-branches` で届く。
+    // 購読の引数は、Repository の path。続けて `search=<検索語>` を渡すと、名前に検索語を含むブランチに絞る。
     ListBranchStatus branch_status = 11;
     IssuesSnapshot issues = 13;
     NotionTasksSnapshot notion_tasks = 60;
+    NotionLabelOptionsSnapshot notion_label_options = 61;
+    WorktreeBasesSnapshot worktree_bases = 79;
 
     NullableWorkspaceStateDto workspace_state = 17;
     ListReviewThreadDto review_threads = 32;

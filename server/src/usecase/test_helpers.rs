@@ -40,6 +40,7 @@ pub type WorktreeCreation = (String, String, bool, Option<String>);
 #[derive(Default)]
 pub struct FakeRepo {
     pub current_branch: String,
+    pub default_branch: Option<String>,
     pub origin_url: Option<String>,
     pub origins: std::collections::HashMap<String, Result<Option<String>, GitError>>,
     pub origin_error: Option<GitError>,
@@ -115,6 +116,9 @@ impl WorktreeExecutionArchiver for FakeRepo {
 impl GitService for FakeRepo {
     fn list_branches(&self, _repo_path: &str) -> Result<Vec<Branch>, GitError> {
         Ok(self.branches.clone())
+    }
+    fn default_branch(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
+        Ok(self.default_branch.clone())
     }
     fn current(&self, _repo_path: &str) -> Result<String, GitError> {
         if let Some(stopped) = self.stop_current_branch {

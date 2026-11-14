@@ -321,25 +321,20 @@ final class WorkspaceActionsTests: XCTestCase {
     await model.stop()
   }
 
-  @MainActor func testCreationInputClosureAndFailureUseSelectedBranchesAndLaunch() async throws {
+  @MainActor func testCreationInputClosureAndFailureUseSelectedBranches() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     var form = CreateWorktreeForm()
     var dismissed = false
     XCTAssertFalse(form.canSubmit)
     form.repository = "/repo"
-    form.branch = "  "
     form.submit(model: model) { dismissed = true }
     XCTAssertFalse(form.canSubmit)
     XCTAssertFalse(dismissed)
     XCTAssertTrue(http.requests("CreateWorktrees").isEmpty)
+    form.selected.set(.issue(1205), branch: "feat/issues/1205", selected: true)
     form.selected.set(.issue(1204), branch: "feat/issues/1204", selected: true)
-    form.selected.set(.branch("1204"), branch: "1204", selected: true)
-    form.baseBranch = "main"
-    form.launch = "workflow"
-    XCTAssertFalse(form.canSubmit)
-    form.workflow = "review"
-    form.requestText = "check changes"
+    form.baseBranch = "origin/main"
     XCTAssertTrue(form.canSubmit)
     http.state.withLock { $0.deferCreation = true }
     form.submit(model: model) { dismissed = true }
@@ -349,32 +344,22 @@ final class WorkspaceActionsTests: XCTestCase {
     let request = try Releash_Client_V1_CreateWorktreesRequest(
       serializedBytes: XCTUnwrap(http.requests("CreateWorktrees").last?.message))
     XCTAssertEqual(request.repoPath, "/repo")
-    XCTAssertEqual(request.baseBranch, "main")
-    XCTAssertEqual(request.branches, ["1204", "feat/issues/1204"])
-    guard case .workflow(let workflow) = request.launch else { return XCTFail("Missing workflow") }
-    XCTAssertEqual(workflow.name, "review")
-    XCTAssertEqual(workflow.request, "check changes")
+    XCTAssertEqual(request.baseBranch, "origin/main")
+    XCTAssertEqual(request.branches, ["feat/issues/1204", "feat/issues/1205"])
     let completion = http.state.withLock { state in
       let completion = state.pendingCreation
       state.pendingCreation = nil
       state.deferCreation = false
       return completion
     }
-    completion?(TestHTTPClient.failure("creation or launch failed"))
-    try await eventually { model.failure?.contains("creation or launch failed") == true }
-    form.launch = "session"
-    form.provider = "codex"
+    completion?(TestHTTPClient.failure("creation failed"))
+    try await eventually { model.failure?.contains("creation failed") == true }
+    form.baseBranch = ""
     form.submit(model: model) {}
     try await eventually { http.requests("CreateWorktrees").count == 2 }
-    let sessionRequest = try Releash_Client_V1_CreateWorktreesRequest(
+    let headRequest = try Releash_Client_V1_CreateWorktreesRequest(
       serializedBytes: XCTUnwrap(http.requests("CreateWorktrees").last?.message))
-    guard case .session(let session) = sessionRequest.launch else {
-      return XCTFail("Missing session")
-    }
-    XCTAssertEqual(session.provider, "codex")
-    XCTAssertEqual(session.rows, UIStyle.terminalRows)
-    XCTAssertEqual(session.cols, UIStyle.terminalColumns)
-    XCTAssertFalse(session.requestID.isEmpty)
+    XCTAssertFalse(headRequest.hasBaseBranch)
     await model.stop()
   }
 }

@@ -1066,6 +1066,60 @@ fn test_notion購読配信_タスクの前の一覧と取得の失敗を共に�
 }
 
 #[test]
+fn test_notion購読配信_ラベルの前の選択肢と取得の失敗を共に送る() {
+    // Given
+    let value = StateValue::NotionLabelOptions(crate::usecase::fetched::Fetched {
+        value: Some(vec![crate::domain::notion::NotionLabelOption {
+            property_name: "Assignee".into(),
+            choices: vec![crate::domain::notion::NotionLabelChoice {
+                label: "Alice".into(),
+                value: "user-1".into(),
+            }],
+        }]),
+        error: Some(crate::usecase::notion::error::NotionUsecaseError::Notion(
+            crate::domain::notion::NotionError::ApiError("offline".into()),
+        )),
+    });
+    // When
+    let result = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::NotionLabelOptions(snapshot)) = result.value else {
+        panic!()
+    };
+    assert_eq!(
+        snapshot.options,
+        [wire::NotionLabelOption {
+            property_name: "Assignee".into(),
+            choices: vec![wire::NotionLabelChoice {
+                label: "Alice".into(),
+                value: "user-1".into(),
+            }],
+        }]
+    );
+    assert_eq!(snapshot.read_error.unwrap().code, 9);
+}
+
+#[test]
+fn test_worktreeのbase候補の配信_ブランチの名前とデフォルトブランチを送る() {
+    // Given
+    let value = StateValue::WorktreeBases(
+        vec![
+            crate::domain::git::Branch::local("main"),
+            crate::domain::git::Branch::remote("origin/main"),
+        ],
+        Some("main".into()),
+    );
+    // When
+    let result = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::WorktreeBases(snapshot)) = result.value else {
+        panic!()
+    };
+    assert_eq!(snapshot.branches, ["main", "origin/main"]);
+    assert_eq!(snapshot.default_branch.as_deref(), Some("main"));
+}
+
+#[test]
 fn test_購読payload_提出済みoutputの全フィールドを保持する() {
     // Given
     let output = crate::usecase::workflow::WorkflowGetOutputResult::Submitted {

@@ -20,6 +20,11 @@ impl Branch {
         !self.is_remote && excluded != Some(self.name.as_str())
     }
 
+    /// 新しい worktree のブランチを作る元にできるか。ローカルのブランチと、origin のリモートのブランチが当たる。
+    pub fn is_worktree_base(&self) -> bool {
+        !self.is_remote || self.name.starts_with("origin/")
+    }
+
     pub fn local(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),

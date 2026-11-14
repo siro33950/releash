@@ -30,12 +30,20 @@ pub enum StateValue {
     Branches(Vec<BranchDto>),
     /// ブランチと、その worktree があるか。
     BranchStatus(Vec<(crate::domain::git::Branch, bool)>),
+    /// 新しい worktree のブランチを作る元にできるブランチと、デフォルトブランチ。
+    WorktreeBases(Vec<crate::domain::git::Branch>, Option<String>),
     Issues(
         crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,
     ),
     NotionTasks(
         crate::usecase::fetched::Fetched<
             crate::domain::notion::NotionTaskPage,
+            crate::usecase::notion::error::NotionUsecaseError,
+        >,
+    ),
+    NotionLabelOptions(
+        crate::usecase::fetched::Fetched<
+            Vec<crate::domain::notion::NotionLabelOption>,
             crate::usecase::notion::error::NotionUsecaseError,
         >,
     ),
