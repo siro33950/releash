@@ -22,6 +22,8 @@ final class SettingsWorkflowsTests: XCTestCase {
       host.element("settings-workflow-builtin-flow")?.label,
       "builtin-flow, 組み込みの定義, builtin")
     XCTAssertEqual(host.element("settings-workflow-broken")?.label, "broken, 定義を読み取れません")
+    XCTAssertNotNil(host.element("error: 0"))
+    XCTAssertNotNil(host.element("info: 0"))
     // When
     var payload = Releash_Client_V1_StatePayload()
     payload.workflows = http.state.withLock { $0.workflows }
@@ -148,6 +150,41 @@ final class SettingsWorkflowsTests: XCTestCase {
     XCTAssertTrue(host.texts().contains("組み込みの定義"))
     XCTAssertTrue(host.texts().contains("組み込みの情報"))
     XCTAssertNil(host.element("settings-open-workflow-in-editor"))
+    await model.stop()
+  }
+
+  @MainActor func test_詳細間の移動後_戻るボタンで一覧に戻る() async throws {
+    // Given
+    let http = TestHTTPClient()
+    testWorkflowSettings(http)
+    let model = try await testModel(http)
+    let host = await ViewHarness(WorkflowsSettingsView(model: model))
+    defer { host.close() }
+    try await eventuallyView(host) { host.element("settings-workflow-01_author-spec") != nil }
+    // When
+    try await host.press("settings-workflow-01_author-spec")
+    try await eventuallyView(host) { host.element("settings-workflow-node-review") != nil }
+    try await host.press("settings-workflow-node-review")
+    try await eventuallyView(host) { host.element("policy: coding") != nil }
+    try await host.press("policy: coding")
+    try await eventuallyView(host) {
+      host.element("settings-facet-usage-01_author-spec-review") != nil
+    }
+    try await host.press("戻る")
+    // Then
+    try await eventuallyView(host) { host.element("settings-workflow-01_author-spec") != nil }
+    // When
+    try await host.press("Facet")
+    try await eventuallyView(host) { host.element("settings-facet-policy-coding") != nil }
+    try await host.press("settings-facet-policy-coding")
+    try await eventuallyView(host) {
+      host.element("settings-facet-usage-01_author-spec-review") != nil
+    }
+    try await host.press("settings-facet-usage-01_author-spec-review")
+    try await eventuallyView(host) { host.element("settings-workflow-node-review") != nil }
+    try await host.press("戻る")
+    // Then
+    try await eventuallyView(host) { host.element("settings-facet-policy-coding") != nil }
     await model.stop()
   }
 

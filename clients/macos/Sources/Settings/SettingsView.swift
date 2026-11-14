@@ -42,7 +42,7 @@ struct SettingsView: View {
         Spacer()
       }
       .padding(UIStyle.spacing)
-      .frame(width: 200)
+      .frame(width: UIStyle.settingsSidebarWidth)
       .background(.bar)
       Divider()
       Group {
@@ -56,7 +56,7 @@ struct SettingsView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .frame(width: 1024, height: 800)
+    .frame(width: UIStyle.settingsWidth, height: UIStyle.settingsHeight)
   }
 }
 
@@ -72,5 +72,21 @@ struct SettingsLabel: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
+  }
+}
+
+struct SettingsDetailHeader<Actions: View>: View {
+  let title: String
+  let back: () -> Void
+  @ViewBuilder var actions: () -> Actions
+
+  var body: some View {
+    HStack {
+      Button("戻る", action: back)
+      Text(title).font(.title2)
+      Spacer()
+      actions()
+    }
+    .padding()
   }
 }

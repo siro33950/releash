@@ -10,12 +10,7 @@ struct RepositoriesSettingsView: View {
       if let selected = state.selected,
         let repository = model.repositories.first(where: { $0.path == selected.path })
       {
-        HStack {
-          Button("戻る") { state.selected = nil }
-          Text(repository.name).font(.title2)
-          Spacer()
-        }
-        .padding()
+        SettingsDetailHeader(title: repository.name, back: { state.selected = nil }) {}
         RepositorySettingsView(model: model, state: selected).id(selected.path)
       } else {
         List(model.repositories, id: \.path) { repository in
