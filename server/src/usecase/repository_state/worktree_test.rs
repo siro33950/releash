@@ -108,7 +108,6 @@ fn main_worktree(path: &str) -> Worktree {
         branch: "main".to_string(),
         is_main: true,
         is_locked: false,
-        is_merged: false,
     }
 }
 

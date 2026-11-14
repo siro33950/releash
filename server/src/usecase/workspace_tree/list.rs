@@ -28,8 +28,6 @@ pub struct WorkspaceListWorktree {
     pub worktree: Worktree,
     pub deleting: bool,
     pub dirty_count: Fetched<usize>,
-    /// PR の状態を合わせた merge 済み。
-    pub merged: bool,
     pub state_pull_request: Option<PrInfo>,
     pub tree: Fetched<WorkspaceTree>,
     pub pull_request_error: Option<crate::domain::failure::WorkFailure>,
@@ -218,15 +216,6 @@ fn compose(
                                 .map(|values| {
                                     let branch = values.worktree.branch.as_str();
                                     WorkspaceListWorktree {
-                                        merged: pull_requests.value.as_ref().map_or(
-                                            values.worktree.is_merged,
-                                            |prs| {
-                                                prs.branch_is_merged(
-                                                    branch,
-                                                    values.worktree.is_merged,
-                                                )
-                                            },
-                                        ),
                                         state_pull_request: pull_requests
                                             .value
                                             .as_ref()

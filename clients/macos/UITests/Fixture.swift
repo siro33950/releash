@@ -214,10 +214,10 @@ final class Fixture: Sendable {
         let worktree = repo.worktrees.items.first(where: { $0.path == created.worktreePath }),
         worktree.executions.count == 1,
         let execution = worktree.executions.first,
-        !execution.isWorkflow, execution.provider.value == provider,
+        !execution.isWorkflow,
         worktree.snapshot.nodes.items.count == 1,
         case .node(let node) = worktree.snapshot.nodes.items.first?.variant,
-        node.processPresence.value == .live
+        node.provider.value == provider, node.processPresence.value == .live
       else { return false }
       return true
     }

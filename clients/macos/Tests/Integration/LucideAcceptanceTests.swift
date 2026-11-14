@@ -20,7 +20,6 @@ final class LucideAcceptanceTests: XCTestCase {
       branch.name = state
       branch.worktreePath = "/icons/" + state
       branch.isMainWorktree = state == "main"
-      branch.isMerged = state == "merged"
       if state != "main" { branch.prState = state }
       repository.branches.items.append(branch)
       var worktree = Releash_Client_V1_WorkspaceWorktreeList()
@@ -45,7 +44,7 @@ final class LucideAcceptanceTests: XCTestCase {
     defer { host.close() }
     // Then
     for (label, icon) in [
-      ("Repositoryを追加", "folder-plus"), ("再読み込み", "refresh-cw"), ("Worktreeを作成", "plus"),
+      ("Repositoryを追加", "folder-plus"), ("更新", "refresh-cw"), ("Worktreeを作成", "plus"),
     ] { try await assertIcon(icon, in: host, element: label) }
     for (state, icon) in [
       ("main", "house"), ("open", "git-pull-request"), ("draft", "git-pull-request-draft"),
@@ -56,7 +55,6 @@ final class LucideAcceptanceTests: XCTestCase {
         try await assertIcon("git-branch", in: host, element: "worktree:" + state)
       }
     }
-    try await assertIcon("circle-check", in: host, element: "worktree:merged")
     try await assertIcon("bot", in: host, element: "worktree:main", color: .blue)
     try await assertIcon("waypoints", in: host, element: "worktree:main")
   }

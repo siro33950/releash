@@ -21,7 +21,9 @@ struct ViewElement {
   private var trackingMenu: NSMenu?
   private var menuTracking = false
   private var menuSelection: (menu: NSMenu, index: Int)?
-  init<V: View>(_ view: V, size: NSSize = NSSize(width: 1000, height: 700)) async {
+  init<V: View>(
+    _ view: V, size: NSSize = NSSize(width: 1000, height: 700)
+  ) async {
     existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
     window = NSWindow(
       contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered,

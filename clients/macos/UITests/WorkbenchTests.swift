@@ -272,7 +272,7 @@ final class WorkbenchTests: XCTestCase {
     let card = app.buttons["worktree:created-branch"]
     XCTAssertTrue(card.waitForExistence(timeout: 30), app.debugDescription)
     let started = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "label CONTAINS %@", "Claude"), object: card)
+      predicate: NSPredicate(format: "label CONTAINS %@", "Session,"), object: card)
     XCTAssertEqual(XCTWaiter.wait(for: [started], timeout: 30), .completed, app.debugDescription)
     XCTAssertTrue(card.label.contains("Session,"), card.label)
     try await fixture.waitForLiveSession(

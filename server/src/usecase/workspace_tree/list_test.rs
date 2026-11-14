@@ -1,20 +1,19 @@
 use super::*;
 use crate::domain::git_host::{PrInfo, PrStatus};
 
-fn worktree(path: &str, branch: &str, is_merged: bool) -> Worktree {
+fn worktree(path: &str, branch: &str) -> Worktree {
     Worktree {
         name: branch.to_string(),
         path: path.to_string(),
         branch: branch.to_string(),
         is_main: false,
         is_locked: false,
-        is_merged,
     }
 }
 
-fn values(path: &str, branch: &str, is_merged: bool) -> WorktreeValues {
+fn values(path: &str, branch: &str) -> WorktreeValues {
     WorktreeValues {
-        worktree: worktree(path, branch, is_merged),
+        worktree: worktree(path, branch),
         deleting: false,
         dirty_count: Fetched::ready(0),
     }
@@ -37,15 +36,15 @@ fn failure(message: &str) -> crate::domain::failure::WorkFailure {
 }
 
 #[test]
-fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
+fn test_一覧の合成_prの状態でpr情報を決める() {
     // Given
     let repositories = vec![RepositoryValues {
         path: "/a".into(),
         name: "repository".into(),
         worktrees: Fetched::ready(vec![
-            values("/a", "open", false),
-            values("/a/merged", "merged", false),
-            values("/a/git", "git-merged", true),
+            values("/a", "open"),
+            values("/a/merged", "merged"),
+            values("/a/no-pr", "no-pr"),
         ]),
         pull_requests: Fetched::ready(PrStatus {
             open_prs: Vec::from([(
@@ -88,42 +87,35 @@ fn test_一覧の合成_prの状態でpr情報とmerge済みを決める() {
             draft: false,
         })
     );
-    assert!(!rows[0].merged);
-    assert!(rows[1].merged);
+    assert!(rows[2].state_pull_request.is_none());
     assert_eq!(
         rows[1].state_pull_request.as_ref().unwrap().state,
         crate::domain::git_host::PrState::Merged
     );
-    assert!(rows[2].merged);
 }
 
 #[test]
-fn test_一覧の合成_prが未取得ならworktreeのmerge済みをそのまま使う() {
+fn test_一覧の合成_prが未取得ならpr情報を未設定にする() {
     // Given
     let repositories = vec![RepositoryValues {
         path: "/a".into(),
         name: "repository".into(),
-        worktrees: Fetched::ready(vec![
-            values("/a", "main", false),
-            values("/a/git", "git-merged", true),
-        ]),
+        worktrees: Fetched::ready(vec![values("/a", "main")]),
         pull_requests: Fetched::default(),
     }];
 
     // When
-    let list = compose(repositories, vec![Fetched::default(); 2]);
+    let list = compose(repositories, vec![Fetched::default()]);
 
     // Then
     let rows = list.repositories[0].worktrees.value.as_ref().unwrap();
-    assert!(!rows[0].merged);
-    assert!(rows[1].merged);
     assert!(rows.iter().all(|row| row.state_pull_request.is_none()));
 }
 
 #[test]
 fn test_一覧の合成_読めているworktreeの並び順に実行木を割り当て失敗と削除中を保つ() {
     // Given
-    let mut deleting = values("/a/two", "two", false);
+    let mut deleting = values("/a/two", "two");
     deleting.deleting = true;
     deleting.dirty_count = Fetched::ready(3);
     let repositories = vec![
@@ -131,7 +123,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
             path: "/a".into(),
             name: "owner/a".into(),
             worktrees: Fetched {
-                value: Some(vec![values("/a", "one", false), deleting]),
+                value: Some(vec![values("/a", "one"), deleting]),
                 error: Some(failure("scan failed")),
             },
             pull_requests: Fetched::default(),
@@ -148,7 +140,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
         RepositoryValues {
             path: "/c".into(),
             name: "c".into(),
-            worktrees: Fetched::ready(vec![values("/c", "three", false)]),
+            worktrees: Fetched::ready(vec![values("/c", "three")]),
             pull_requests: Fetched::default(),
         },
     ];
@@ -195,7 +187,7 @@ fn test_一覧の合成_読めているworktreeの並び順に実行木を割り
 #[test]
 fn test_一覧の合成_未コミット数とprの読取失敗を未設定と区別する() {
     // Given
-    let mut row = values("/repo", "main", false);
+    let mut row = values("/repo", "main");
     row.dirty_count = Fetched {
         value: None,
         error: Some(failure("scan failed")),
@@ -246,7 +238,7 @@ fn test_一覧の合成_完了済みprとopenのprを別々に保持する() {
             vec![RepositoryValues {
                 path: "/repo".into(),
                 name: "repository".into(),
-                worktrees: Fetched::ready(vec![values("/repo", "feature", false)]),
+                worktrees: Fetched::ready(vec![values("/repo", "feature")]),
                 pull_requests: Fetched::ready(PrStatus {
                     open_prs: Default::default(),
                     completed_prs: [("feature".into(), completed.clone())].into(),

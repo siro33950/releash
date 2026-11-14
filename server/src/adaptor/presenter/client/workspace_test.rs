@@ -657,11 +657,9 @@ fn worktree_row(path: &str, branch: &str, tree: Fetched<WorkspaceTree>) -> Works
             branch: branch.to_string(),
             is_main: path == "/repo",
             is_locked: false,
-            is_merged: false,
         },
         deleting: false,
         dirty_count: Fetched::ready(0),
-        merged: false,
         state_pull_request: None,
         pull_request_error: None,
         tree,
@@ -700,7 +698,6 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
     );
     feature.deleting = true;
     feature.dirty_count = Fetched::ready(3);
-    feature.merged = true;
     let list = WorkspaceList {
         repositories: vec![
             WorkspaceListRepository {
@@ -752,7 +749,6 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_deleting": false,
                             "worktree_path": "/repo",
                             "dirty_count": 0, "dirty_count_error": null, "pull_request_error": null,
-                            "is_merged": false,
                             "prState": "open",
                             "prStateNumber": 7,
                             "removalRequiresForce": false,
@@ -763,7 +759,6 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                             "is_deleting": true,
                             "worktree_path": "/repo-worktrees/feature",
                             "dirty_count": 3, "dirty_count_error": null, "pull_request_error": null,
-                            "is_merged": true,
                             "removalRequiresForce": true,
                         }
                     ],
@@ -1015,7 +1010,7 @@ fn test_pr状態の転送_初回失敗と取得後の失敗を区別する() {
 }
 
 #[test]
-fn test_実行サマリー_providerと行とsessionの状態を配信する() {
+fn test_実行サマリー_行の状態とnode数を配信する() {
     // Given
     let execution = session_execution("session", "session");
     let mut root = tree_owner("session");
@@ -1047,15 +1042,7 @@ fn test_実行サマリー_providerと行とsessionの状態を配信する() {
     let wire = worktree(&row).unwrap();
     let summary = &wire.executions[0];
     // Then
-    assert_eq!(
-        summary
-            .provider
-            .as_ref()
-            .and_then(|provider| provider.value),
-        Some(wire::agent_session_provider_dto::Value::Codex as i32)
-    );
     assert_eq!(summary.status, "active");
-    assert_eq!(summary.session_states, ["active", "idle"]);
     assert_eq!(summary.node_count, 2);
     assert!(!summary.is_workflow);
 }
@@ -1077,46 +1064,6 @@ fn test_pr状態の転送_完了済みprは既存のopen用フィールドに含
         // Then
         assert_eq!(branch.pr_state.as_deref(), Some(expected));
         assert_eq!(branch.pr_state_number, Some(42));
-    }
-}
-
-#[test]
-fn test_sessionカード_providerを正しいenumで配信する() {
-    // Given
-    for (provider, expected) in [
-        (
-            ProviderKind::Claude,
-            wire::agent_session_provider_dto::Value::Claude,
-        ),
-        (
-            ProviderKind::Codex,
-            wire::agent_session_provider_dto::Value::Codex,
-        ),
-    ] {
-        let mut execution = session_execution("session", "session");
-        execution.session = Some(
-            AgentSession::create(
-                "session",
-                WorkspaceIdentity::new("/repo"),
-                "/repo",
-                provider,
-                AgentSessionTreeLocation::session_tree_root("session").unwrap(),
-            )
-            .unwrap(),
-        );
-        let mut tree = WorkspaceTree::restore("/repo", vec![tree_owner("session")]).unwrap();
-        tree.record_executions(vec![execution]);
-        let row = worktree_row("/repo", "main", Fetched::ready(tree));
-        // When
-        let card = worktree(&row).unwrap();
-        // Then
-        assert_eq!(
-            card.executions[0]
-                .provider
-                .as_ref()
-                .and_then(|provider| provider.value),
-            Some(expected as i32)
-        );
     }
 }
 

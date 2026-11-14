@@ -48,7 +48,6 @@ pub fn worktree(path: &str, branch: &str, is_main: bool) -> Worktree {
         branch: branch.to_string(),
         is_main,
         is_locked: false,
-        is_merged: false,
     }
 }
 
