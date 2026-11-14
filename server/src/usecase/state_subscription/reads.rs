@@ -173,7 +173,6 @@ pub struct WorkspaceStateReads {
     pub workspace_state: Arc<dyn WorkspaceStateRepository>,
     pub review: Arc<ReviewUsecase>,
     pub comments: Arc<ReviewCommentUsecase>,
-    pub comment_images: Arc<dyn crate::usecase::comment_image::CommentImageQuery>,
     pub session_comments: Arc<crate::usecase::comment::SessionReviewUsecase>,
     pub data_dir: PathBuf,
     pub review_comments_dir: PathBuf,
@@ -190,14 +189,6 @@ impl WorkspaceStateReads {
     pub async fn read(&self, target: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
         use SubscriptionTarget as T;
         match target {
-            T::CommentImage(url) => {
-                return self
-                    .comment_images
-                    .image(url)
-                    .await
-                    .map(StateValue::CommentImage)
-                    .map_err(error)
-            }
             T::ExecutionOverview => {
                 return self
                     .workflow
@@ -445,7 +436,6 @@ impl WorkspaceStateReads {
             }
             T::ExecutionOverview | T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
             | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_) | T::FilteredIssues(..)
-            | T::CommentImage(_)
             | T::Terminal(_)
             | T::Workspaces
             | T::Workflows

@@ -87,7 +87,6 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
             StateValue::FileThreads(threads) => wire::state_payload::Value::FileThreads(wire::FileThreadsSnapshot {
                 threads: Some(crate::adaptor::presenter::client::value(threads.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
             }),
-            StateValue::CommentImage(value) => wire::state_payload::Value::CommentImage(wire::CommentImageSnapshot { data: value.data.clone(), media_type: value.media_type.clone() }),
             StateValue::ReviewThreads(value) => wire::state_payload::Value::ReviewThreads(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,

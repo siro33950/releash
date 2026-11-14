@@ -14,8 +14,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
         use SubscriptionTarget as T;
         if matches!(
             target,
-            T::CommentImage(_)
-                | T::ExecutionOverview
+            T::ExecutionOverview
                 | T::DaemonInfo
                 | T::WorkflowExecution(_)
                 | T::WorkflowOutput(..)

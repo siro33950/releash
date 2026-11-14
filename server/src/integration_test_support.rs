@@ -727,7 +727,6 @@ pub mod subscriptions {
     pub use crate::test_support::state_subscription::scan_driver;
     pub use crate::test_support::state_subscription::take_changes;
 
-    pub use crate::adaptor::gateway::comment_image::HttpCommentImageQuery;
     pub use crate::usecase::state_subscription::reads::StateReadError;
     pub use crate::usecase::state_subscription::reads::StateReadFailure;
     pub use crate::usecase::state_subscription::reads::StateSubscriptionRead;

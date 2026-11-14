@@ -29,7 +29,6 @@ pub enum SubscriptionTarget {
     FileTab(String, String, ReviewBase),
     FileThreads(String, String),
     ReviewThreads(String),
-    CommentImage(String),
     WorkflowExecution(String),
     WorkflowOutput(String, String),
     NodeArtifact(String),

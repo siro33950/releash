@@ -69,7 +69,6 @@ struct ThreadPanelView: View {
       .frame(maxWidth: .infinity).padding(UIStyle.spacing)
       .accessibilityIdentifier("thread-add-general")
     }
-    .textual.imageAttachmentLoader(CommentImageAttachmentLoader(model: model))
     .environment(
       \.openURL,
       OpenURLAction { url in

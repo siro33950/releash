@@ -50,7 +50,6 @@ pub enum StateValue {
     FileTab(crate::usecase::code_dto::FileTabViewDto),
     FileThreads(Vec<crate::domain::comment::Thread>),
     ReviewThreads(Vec<crate::domain::comment::Thread>),
-    CommentImage(crate::usecase::comment_image::CommentImageDto),
     WorkflowExecution(Option<crate::domain::workflow::ExecutionTree>),
     WorkflowOutput(Option<crate::usecase::workflow::WorkflowGetOutputResult>),
     ReviewSessionThreads(Option<Vec<crate::domain::comment::Thread>>),

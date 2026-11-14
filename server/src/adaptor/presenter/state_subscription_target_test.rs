@@ -411,16 +411,3 @@ fn test_絞込購読_空条件と不正な順序と重複と未知の条件を�
         assert_eq!(result, Err(SubscriptionError::InvalidId), "{args:?}");
     }
 }
-
-#[test]
-fn test_comment画像購読_urlを引数として往復する() {
-    // Given
-    let url = "https://example.com/画像.png?q=1&x=2";
-    // When
-    let target = SubscriptionTarget::from_parts("comment-image", &[url]).unwrap();
-    // Then
-    assert_eq!(target, SubscriptionTarget::CommentImage(url.into()));
-    assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
-    assert!(SubscriptionTarget::from_parts("comment-image", &[]).is_err());
-    assert!(SubscriptionTarget::from_parts("comment-image", &[url, url]).is_err());
-}
