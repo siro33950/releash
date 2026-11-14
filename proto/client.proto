@@ -353,8 +353,6 @@ message ListEditorInfoDto {
 }
 
 message DiagnosticReport {
-  reserved 5;
-  reserved "total";
   optional ListDiagnosticItem items = 1 [json_name = "items", (json_required) = true];
   optional MapDiagnosticSummary workflow_summaries = 2 [json_name = "workflow_summaries", (json_required) = true];
   optional MapDiagnosticSummary facet_summaries = 3 [json_name = "facet_summaries", (json_required) = true];
@@ -1841,8 +1839,6 @@ message WorkspaceWorktreeList {
   optional ListWorkspaceWorkflowHistoryItem workflow_history = 4 [json_name = "workflowHistory", (json_required) = true];
 }
 message WorkspaceRepositoryList {
-  reserved 5;
-  reserved "name";
   optional string path = 1 [json_name = "path", (json_required) = true];
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
   optional ListWorkspaceBranch branches = 3 [json_name = "branches", (json_required) = true];
