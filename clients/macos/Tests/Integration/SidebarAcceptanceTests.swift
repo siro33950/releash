@@ -24,8 +24,9 @@ final class SidebarAcceptanceTests: XCTestCase {
 
   @MainActor func test_サイドバー_B001_B002_B018_上端の作成と下端の追加更新を右寄せする() async throws {
     // Given
-    let model = AppModel()
-    model.repositories = [repository(["main"])]
+    let http = TestHTTPClient()
+    http.state.withLock { $0.repositories = [repository(["main"])] }
+    let model = try await testModel(http)
     // When
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
@@ -56,15 +57,13 @@ final class SidebarAcceptanceTests: XCTestCase {
     ] {
       try await assertIcon(icon, in: host, element: label)
     }
-    let connected = try await testModel(TestHTTPClient())
-    connected.repositories = model.repositories
-    let root = await ViewHarness(RootView(model: connected))
+    let root = await ViewHarness(RootView(model: model))
     defer { root.close() }
     try await eventuallyView(root) { root.element("Worktreeを作成") != nil }
     XCTAssertEqual(
       try frame("Worktreeを作成", in: root).midY,
       try frame("閉じる", in: root).midY, accuracy: 1)
-    await connected.stop()
+    await model.stop()
   }
 
   @MainActor func test_サイドバー_B003_更新操作後に購読した一覧が表示される() async throws {
@@ -90,10 +89,11 @@ final class SidebarAcceptanceTests: XCTestCase {
 
   @MainActor func test_サイドバー_B004_B005_B018_リポジトリの警告を見出しの右端に表示する() async throws {
     // Given
-    let model = AppModel()
+    let http = TestHTTPClient()
     var repo = repository(["main"])
     repo.status.error = "Repository fetch failed"
-    model.repositories = [repo]
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
     // When
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
@@ -107,11 +107,12 @@ final class SidebarAcceptanceTests: XCTestCase {
     try await assertIcon("triangle-alert", in: host, rect: region)
     XCTAssertFalse(host.texts().contains("Repository fetch failed"))
     try await assertWarningTooltip(["Repository fetch failed"], in: host, rect: region)
+    await model.stop()
   }
 
   @MainActor func test_サイドバー_B006_B007_B010_B018_PRと警告が先頭行に状態色で並ぶ() async throws {
     // Given
-    let model = AppModel()
+    let http = TestHTTPClient()
     var repo = repository(["open", "draft", "merged", "closed", "warning", "empty"])
     for index in 0..<5 {
       repo.branches.items[index].prState = index == 4 ? "open" : repo.branches.items[index].name
@@ -119,7 +120,8 @@ final class SidebarAcceptanceTests: XCTestCase {
       repo.branches.items[index].dirtyCount = 3
     }
     repo.branches.items[4].dirtyCountError = "Dirty count failed"
-    model.repositories = [repo]
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
     // When
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
@@ -146,18 +148,21 @@ final class SidebarAcceptanceTests: XCTestCase {
         XCTAssertTrue(prIcon.maxX <= warningIcon.minX || warningIcon.maxX <= prIcon.minX)
       }
       XCTAssertFalse(host.element("worktree:" + name)?.label.contains("3 changes") == true)
+      XCTAssertFalse(try renderedText(in: host, rect: card).contains("3 changes"))
       XCTAssertFalse(try containsIcon("circle-check", in: host, rect: card))
     }
+    await model.stop()
   }
 
   @MainActor func test_サイドバー_B008_B009_失敗を一つの警告にまとめ全エラーをヘルプに出す() async throws {
     // Given
-    let model = AppModel()
+    let http = TestHTTPClient()
     var repo = repository(["dirty", "pr", "worktree", "all", "empty"])
     for index in [0, 3] { repo.branches.items[index].dirtyCountError = "Dirty fetch failed" }
     for index in [1, 3] { repo.branches.items[index].pullRequestError = "PR fetch failed" }
     for index in [2, 3] { repo.worktrees.items[index].status.error = "Worktree fetch failed" }
-    model.repositories = [repo]
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
     // When
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
@@ -173,8 +178,10 @@ final class SidebarAcceptanceTests: XCTestCase {
       try await assertIcon("triangle-alert", in: host, rect: firstRight)
       XCTAssertEqual(try iconCount("triangle-alert", in: host, rect: card), 1)
       XCTAssertEqual(card.height, empty.height, accuracy: 1)
+      let rendered = try renderedText(in: host, rect: card)
       for text in ["Changes unavailable", "PR unavailable", "Worktree fetch failed"] {
         XCTAssertFalse(host.element("worktree:" + name)?.label.contains(text) == true)
+        XCTAssertFalse(rendered.contains(text), "Rendered card: \(rendered)")
       }
     }
     try await assertWarningTooltip(
@@ -183,12 +190,12 @@ final class SidebarAcceptanceTests: XCTestCase {
         "Worktree fetch failed",
       ],
       in: host, rect: try frame("worktree:all", in: host))
+    await model.stop()
   }
 
   @MainActor func test_サイドバー_B011_B012_B013_B014_実行行と空行と削除行を配置する() async throws {
     // Given
     let http = TestHTTPClient()
-    let model = try await testModel(http)
     var repo = repository(["empty", "session", "workflow", "deleting"])
     let session = Releash_Client_V1_WorktreeExecutionSummary.with {
       $0.id = "session"
@@ -226,7 +233,8 @@ final class SidebarAcceptanceTests: XCTestCase {
         }
       ]
     }
-    model.repositories = [repo]
+    http.state.withLock { $0.repositories = [repo] }
+    let model = try await testModel(http)
     let host = await ViewHarness(
       SidebarView(model: model, creating: .constant(false)),
       size: NSSize(width: 340, height: 1000))
@@ -258,8 +266,10 @@ final class SidebarAcceptanceTests: XCTestCase {
       host.element("worktree:workflow")?.label.contains("Workflow title · 3 nodes") == true)
     for name in ["session", "deleting"] {
       let card = try XCTUnwrap(host.element("worktree:" + name))
+      let rendered = try renderedText(in: host, rect: frame("worktree:" + name, in: host))
       for provider in ["Claude", "Codex"] {
         XCTAssertFalse(card.label.contains(provider), "Session card: \(card.label)")
+        XCTAssertFalse(rendered.contains(provider), "Rendered session card: \(rendered)")
       }
     }
     let sessionStyle = try textStyle("Session title", in: host, rect: sessionCard)
@@ -574,6 +584,21 @@ final class SidebarAcceptanceTests: XCTestCase {
       }
     }
     return false
+  }
+
+  @MainActor private func renderedText(in host: ViewHarness, rect: NSRect) throws -> String {
+    let view = try XCTUnwrap(host.window.contentView)
+    view.layoutSubtreeIfNeeded()
+    host.window.displayIfNeeded()
+    let region = rect.integral.intersection(view.bounds)
+    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: region))
+    view.cacheDisplay(in: region, to: bitmap)
+    let request = VNRecognizeTextRequest()
+    request.recognitionLanguages = ["en-US"]
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+    return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+      .joined(separator: " ")
   }
 
   @MainActor private func textStyle(_ text: String, in host: ViewHarness, rect: NSRect) throws
