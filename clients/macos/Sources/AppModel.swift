@@ -86,6 +86,7 @@ import SwiftProtobuf
   @ObservationIgnored private(set) var headers: Headers = [:]
   @ObservationIgnored var pendingSaves: [String: Int] = [:]
   @ObservationIgnored private var saves: [String: Task<Void, Never>] = [:]
+  @ObservationIgnored private var saveFailures: [String: any Error] = [:]
   @ObservationIgnored private var etags: [String: String] = [:]
   @ObservationIgnored private var pendingSessionSelections: [String: String] = [:]
   @ObservationIgnored private var staleSaves: Set<String> = []
@@ -548,7 +549,7 @@ import SwiftProtobuf
     guard layoutLoaded, let path = selectedWorktree, let client else { return }
     let previous = layout
     edit(&layout)
-    guard layout != previous else { return }
+    guard layout != previous || saveFailures[path] != nil else { return }
     var state = workspaceState
     state.paneLayout = layout.message
     workspaceState = state
@@ -566,9 +567,14 @@ import SwiftProtobuf
           let saved = try await client.saveWorkspaceState(request: request, headers: headers)
             .result.get()
           etags[path] = saved.etag
+          saveFailures.removeValue(forKey: path)
         } catch let error as ConnectError where error.code == .aborted {
+          saveFailures[path] = error
           staleSaves.insert(path)
-        } catch { failure = failureMessage(error) }
+        } catch {
+          saveFailures[path] = error
+          failure = failureMessage(error)
+        }
       }
       pendingSaves[path, default: 0] -= 1
       if pendingSaves[path] == 0 {
@@ -769,7 +775,16 @@ extension AppModel {
     guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
     var request = Releash_Client_V1_CreateAgentSessionRequest()
     request.provider = provider
-    if let pane { request.paneID = panes.paneIdentifier(pane) }
+    if let pane {
+      guard selectedWorktree == path, layoutLoaded else {
+        throw CLIFailure(message: "対象のworktreeの配置が読み込まれていません")
+      }
+      request.paneID = panes.paneIdentifier(pane)
+      let current = try panes.layout()
+      editLayout { $0 = current }
+      while let save = saves[path] { await save.value }
+      if let error = saveFailures[path] { throw error }
+    }
     request.workspaceIdentity = path
     request.worktreePath = path
     request.rows = UIStyle.terminalRows
