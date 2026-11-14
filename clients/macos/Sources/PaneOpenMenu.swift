@@ -36,7 +36,7 @@ struct SessionWorkflowMenu: View {
       }
     }
     if model.pendingRoots[path] != nil {
-      Button("Workflow", action: {}).disabled(true)
+      Text("Workflow")
     } else {
       Menu("Workflow") {
         ForEach(model.workflows, id: \.name) { workflow in

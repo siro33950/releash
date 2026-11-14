@@ -116,22 +116,32 @@ final class SessionTabTests: XCTestCase {
       let other = PaneTab(id: "other", kind: .session, agentSessionID: "other")
       let added = PaneTab(
         id: "session-agent-session", kind: .session, agentSessionID: "agent-session")
+      func split(_ tabs: [PaneTab]) -> PaneLayout {
+        .split(
+          id: "split", axis: .horizontal, ratio: 0.5,
+          first: .pane(id: "first", tabs: [], active: nil),
+          second: .pane(id: "second", tabs: tabs, active: other.id))
+      }
       var payload = Releash_Client_V1_StatePayload()
       payload.workspaceState.value.paneLayout =
-        PaneLayout.pane(id: "pane", tabs: [other], active: other.id).message
+        split([other]).message
       payload.workspaceState.value.etag = "1"
       http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
       try http.publish(payload, target: "workspace-state")
       try await eventually { model.panes.controller.allTabIds.count == 1 }
+      let target = try XCTUnwrap(
+        model.panes.controller.allPaneIds.first { model.panes.paneIdentifier($0) == "second" })
+      let first = try XCTUnwrap(
+        model.panes.controller.allPaneIds.first { model.panes.paneIdentifier($0) == "first" })
+      model.panes.controller.focusPane(first)
       func selectedSession() -> String? {
-        guard let pane = model.panes.controller.allPaneIds.first,
-          let tab = model.panes.controller.selectedTab(inPane: pane)?.id
+        guard let tab = model.panes.controller.selectedTab(inPane: target)?.id
         else { return nil }
         return model.panes.tab(tab)?.agentSessionID
       }
       func pushAdded() throws {
         payload.workspaceState.value.paneLayout =
-          PaneLayout.pane(id: "pane", tabs: [other, added], active: other.id).message
+          split([other, added]).message
         payload.workspaceState.value.etag = "2"
         http.state.withLock { $0.layouts["/repo"] = payload.workspaceState.value }
         try http.publish(payload, target: "workspace-state")
@@ -142,7 +152,7 @@ final class SessionTabTests: XCTestCase {
       }
       let saves = http.requests("SaveWorkspaceState").count
       // When: 起動の応答が届く
-      try await model.startSession(provider: "codex", path: "/repo")
+      try await model.startSession(provider: "codex", path: "/repo", pane: target)
       if !pushFirst {
         // Then: 画面はタブを作らず、保存もせず、選択も変えない
         XCTAssertEqual(model.panes.controller.allTabIds.count, 1)
@@ -158,7 +168,8 @@ final class SessionTabTests: XCTestCase {
         guard let data = http.requests("SaveWorkspaceState").last?.message,
           let saved = try? Releash_Client_V1_SaveWorkspaceStateRequest(serializedBytes: data),
           let layout = try? PaneLayout(saved.state.paneLayout),
-          case .pane(_, _, let active) = layout
+          case .split(_, _, _, _, let second) = layout,
+          case .pane(_, _, let active) = second
         else { return false }
         return active == added.id
       }
