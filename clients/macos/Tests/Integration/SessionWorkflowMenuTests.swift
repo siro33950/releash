@@ -5,6 +5,24 @@ import XCTest
 @testable import Releash
 
 final class SessionWorkflowMenuTests: XCTestCase {
+  @MainActor func test_NodeのWorkflowメニュー_Root配信待ちでは一覧を表示せず無効になる() async throws {
+    // Given
+    let model = AppModel()
+    model.workflows = [.with { $0.name = "pending-flow" }]
+    model.pendingRoots["/repo/a"] = "pending-root"
+    let host = await ViewHarness(SessionWorkflowMenu(model: model, path: "/repo/a"))
+    defer { host.close() }
+    // When
+    try await MenuHarness().open(
+      press: { try await host.press("開始") },
+      inspect: { menu in
+        // Then
+        let workflow = try XCTUnwrap(menu.items.first { $0.title == "Workflow" })
+        XCTAssertFalse(workflow.isEnabled)
+        XCTAssertNil(workflow.submenu)
+      })
+  }
+
   @MainActor func test_Sessionメニュー_provider一覧と選択をpane付きで送る() async throws {
     // Given
     let http = TestHTTPClient()
@@ -17,13 +35,13 @@ final class SessionWorkflowMenuTests: XCTestCase {
     defer { host.close() }
     for (index, provider) in model.providers.enumerated() {
       // When
-      try await SessionMenuHarness().open(
-        host, button: "開く", selection: ["Session", provider.displayName]
-      ) { menu in
-        let submenu = try XCTUnwrap(menu.items.first { $0.title == "Session" }?.submenu)
-        submenu.update()
-        XCTAssertEqual(submenu.items.map(\.title), model.providers.map(\.displayName))
-      }
+      try await MenuHarness().open(
+        selection: ["Session", provider.displayName], press: { try await host.press("開く") },
+        inspect: { menu in
+          let submenu = try XCTUnwrap(menu.items.first { $0.title == "Session" }?.submenu)
+          submenu.update()
+          XCTAssertEqual(submenu.items.map(\.title), model.providers.map(\.displayName))
+        })
       // Then
       try await eventually {
         http.requests("CreateAgentSession").count == index + 1
@@ -54,10 +72,13 @@ final class SessionWorkflowMenuTests: XCTestCase {
       let host = await ViewHarness(PaneOpenMenu(model: model, pane: second))
       defer { host.close() }
       // When
-      try await SessionMenuHarness().open(host, button: "開く", selection: ["Terminal"]) { menu in
-        XCTAssertEqual(
-          menu.items.map(\.title), path == nil ? ["Terminal"] : ["Session", "Workflow", "Terminal"])
-      }
+      try await MenuHarness().open(
+        selection: ["Terminal"], press: { try await host.press("開く") },
+        inspect: { menu in
+          XCTAssertEqual(
+            menu.items.map(\.title),
+            path == nil ? ["Terminal"] : ["Session", "Workflow", "Terminal"])
+        })
       // Then
       try await eventually { model.panes.controller.tabs(inPane: second).count == 1 }
       XCTAssertTrue(model.panes.controller.tabs(inPane: first).isEmpty)
@@ -65,79 +86,4 @@ final class SessionWorkflowMenuTests: XCTestCase {
       XCTAssertEqual(model.panes.tab(selected.id)?.kind, .terminal)
     }
   }
-}
-
-@MainActor private final class SessionMenuHarness: NSObject {
-  private var trackingMenu: NSMenu?
-  private var chosen: (NSMenu, Int)?
-  private var inspected = false
-  private var tracking = false
-  private var failure: Error?
-
-  func open(
-    _ host: ViewHarness, button: String, selection: [String] = [],
-    inspect: @escaping @MainActor (NSMenu) throws -> Void = { _ in }
-  ) async throws {
-    trackingMenu = nil
-    NotificationCenter.default.addObserver(
-      self, selector: #selector(menuBegan(_:)),
-      name: NSMenu.didBeginTrackingNotification, object: nil)
-    NotificationCenter.default.addObserver(
-      self, selector: #selector(menuEnded(_:)),
-      name: NSMenu.didEndTrackingNotification, object: nil)
-    chosen = nil
-    inspected = false
-    tracking = false
-    failure = nil
-    let timer = Timer(timeInterval: 0.05, repeats: true) { [self] timer in
-      let handled = MainActor.assumeIsolated {
-        guard let menu = trackingMenu else { return false }
-        defer {
-          menu.cancelTracking()
-          inspected = true
-        }
-        do {
-          try inspect(menu)
-          var current = menu
-          for (offset, title) in selection.enumerated() {
-            let index = try XCTUnwrap(current.items.firstIndex { $0.title == title })
-            if offset == selection.count - 1 {
-              XCTAssertTrue(current.items[index].isEnabled)
-              chosen = (current, index)
-            } else {
-              current = try XCTUnwrap(current.items[index].submenu)
-              current.update()
-            }
-          }
-        } catch { failure = error }
-        return true
-      }
-      if handled { timer.invalidate() }
-    }
-    RunLoop.main.add(timer, forMode: .common)
-    RunLoop.main.add(timer, forMode: .eventTracking)
-    defer {
-      timer.invalidate()
-      NotificationCenter.default.removeObserver(
-        self, name: NSMenu.didBeginTrackingNotification, object: nil)
-      NotificationCenter.default.removeObserver(
-        self, name: NSMenu.didEndTrackingNotification, object: nil)
-      trackingMenu = nil
-    }
-    try await host.press(button)
-    try await eventually { inspected && !tracking }
-    if let failure { throw failure }
-    if let (menu, index) = chosen { menu.performActionForItem(at: index) }
-  }
-
-  @MainActor @objc private func menuBegan(_ notification: Notification) {
-    if trackingMenu == nil {
-      trackingMenu = notification.object as? NSMenu
-      tracking = true
-    }
-  }
-  @objc private func menuEnded(_ notification: Notification) {
-    if notification.object as? NSMenu === trackingMenu { tracking = false }
-  }
-
 }
