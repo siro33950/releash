@@ -25,19 +25,25 @@ struct SettingsView: View {
   }
 
   var body: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: UIStyle.rowSpacing) {
+    HStack(spacing: 0) {
+      VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
         ForEach(Tab.allCases, id: \.self) { tab in
           Toggle(isOn: Binding(get: { selected == tab }, set: { if $0 { selected = tab } })) {
             CardLabel(title: tab.rawValue, image: tab.icon)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(UIStyle.spacing)
           }
           .toggleStyle(IconToggleStyle())
           .frame(height: UIStyle.tabBarHeight)
+          .accessibilityIdentifier("settings-navigation-\(tab.rawValue)")
           .accessibilityLabel(tab.rawValue)
           .accessibilityAddTraits(selected == tab ? .isSelected : [])
         }
+        Spacer()
       }
       .padding(UIStyle.spacing)
+      .frame(width: UIStyle.settingsSidebarWidth)
+      .background(.bar)
       Divider()
       Group {
         switch selected {
@@ -50,6 +56,37 @@ struct SettingsView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .frame(width: UIStyle.createDialogWidth, height: UIStyle.createDialogHeight)
+    .frame(width: UIStyle.settingsWidth, height: UIStyle.settingsHeight)
+  }
+}
+
+struct SettingsLabel: View {
+  let title: String
+  let description: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text(title)
+      Text(description)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+}
+
+struct SettingsDetailHeader<Actions: View>: View {
+  let title: String
+  let back: () -> Void
+  @ViewBuilder var actions: () -> Actions
+
+  var body: some View {
+    HStack {
+      Button("戻る", action: back)
+      Text(title).font(.title2)
+      Spacer()
+      actions()
+    }
+    .padding()
   }
 }

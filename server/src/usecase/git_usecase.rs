@@ -101,6 +101,13 @@ impl GitUsecase {
         Ok(self.git.status_scan(repo_path)?)
     }
 
+    // ── origin（読み取り） ──
+
+    /// repository の origin の URL を返す。repository を開けない、または origin が無いときは `None`。
+    pub fn origin_url(&self, repo_path: &str) -> Result<Option<String>, UsecaseError> {
+        Ok(self.git.origin_url(repo_path)?)
+    }
+
     // ── worktree（読み取り） ──
 
     pub fn get_main_repo_path(&self, any_path: &str) -> Result<String, UsecaseError> {

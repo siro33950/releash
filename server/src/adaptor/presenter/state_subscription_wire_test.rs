@@ -710,6 +710,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                 facet_usage: Default::default(),
             }),
             W::Diagnostics(wire::DiagnosticReport {
+                total: Some(wire::DiagnosticSummary { error_count: Some(0), info_count: Some(0) }),
                 items: Some(Default::default()),
                 workflow_summaries: Some(Default::default()),
                 facet_summaries: Some(Default::default()),

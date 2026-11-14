@@ -32,6 +32,10 @@ impl GitService for GitGateway {
         status::get_repository_status_scan(repo_path)
     }
 
+    fn origin_url(&self, repo_path: &str) -> Result<Option<String>, GitError> {
+        crate::adaptor::gateway::git_host::discovery::get_origin_url(repo_path).map_err(Into::into)
+    }
+
     fn find_main_repo_path(&self, path: &str) -> Result<Option<String>, GitError> {
         worktree::find_main_repo_path(path)
     }

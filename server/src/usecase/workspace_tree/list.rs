@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use crate::domain::git::Worktree;
+use crate::domain::git::{repository_names, GitError, RepositoryNameSource, Worktree};
 use crate::domain::git_host::{PrInfo, PrStatus};
 use crate::domain::workspace_tree::WorkspaceTree;
 use crate::usecase::{
     fetched::Fetched, git_host::GitHostUsecase, git_usecase::GitUsecase,
-    repo_paths_usecase::RepoPathsUsecase, repository_state::RepositoryStateService,
-    workflow::WorkflowUsecase,
+    repo_paths_usecase::RepoPathsUsecase, repository_error::UsecaseError,
+    repository_state::RepositoryStateService, workflow::WorkflowUsecase,
 };
 
 /// Workspaces の購読で配信する値。持ち主から集めた値を、そのまま並べる。
@@ -18,6 +18,8 @@ pub struct WorkspaceList {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceListRepository {
     pub path: String,
+    /// Repository の名前。登録された Repository の並びから `repository_names` が決める。
+    pub name: String,
     pub worktrees: Fetched<Vec<WorkspaceListWorktree>>,
 }
 
@@ -36,6 +38,7 @@ pub struct WorkspaceListWorktree {
 /// 1 つの Repository について、持ち主から集めた値。
 struct RepositoryValues {
     path: String,
+    name: String,
     worktrees: Fetched<Vec<WorktreeValues>>,
     pull_requests: Fetched<PrStatus>,
 }
@@ -73,15 +76,13 @@ impl WorkspaceListUsecase {
         }
     }
 
-    pub async fn read(&self) -> Result<WorkspaceList, crate::domain::failure::TechnicalFailure> {
+    /// Workspaces の一覧を読む。origin の読み取りの失敗は、そのまま返す。
+    pub async fn read(&self) -> Result<WorkspaceList, UsecaseError> {
         let usecase = self.clone();
         let repositories =
             crate::common::operation_context::spawn_blocking(move || usecase.repository_values())
                 .await
-                .map_err(|error| crate::domain::failure::TechnicalFailure {
-                    nature: crate::domain::failure::TechnicalFailureNature::Other,
-                    message: error.to_string(),
-                })?;
+                .map_err(|error| GitError::Technical(error.into()))??;
         let worktree_paths = repositories
             .iter()
             .flat_map(|repository| repository.worktrees.value.iter().flatten())
@@ -94,11 +95,22 @@ impl WorkspaceListUsecase {
         Ok(compose(repositories, trees))
     }
 
-    fn repository_values(&self) -> Vec<RepositoryValues> {
-        self.repositories
-            .get()
-            .into_iter()
+    fn repository_values(&self) -> Result<Vec<RepositoryValues>, UsecaseError> {
+        let paths = self.repositories.get();
+        let sources = paths
+            .iter()
             .map(|path| {
+                Ok(RepositoryNameSource {
+                    path: path.clone(),
+                    origin_url: self.repository.origin_url(path)?,
+                })
+            })
+            .collect::<Result<Vec<_>, UsecaseError>>()?;
+        let names = repository_names(&sources);
+        Ok(paths
+            .into_iter()
+            .zip(names)
+            .map(|(path, name)| {
                 let scanned = self.repository_state.worktrees(&path);
                 let root = self.repository_state.repository_root(&path).ok();
                 let worktrees = Fetched {
@@ -118,10 +130,11 @@ impl WorkspaceListUsecase {
                 RepositoryValues {
                     pull_requests: self.git_host.pr_status_result(&path),
                     path,
+                    name,
                     worktrees,
                 }
             })
-            .collect()
+            .collect())
     }
 
     /// 全 Repository の worktree の並びと変更の状態を読み直し、PR を取り直す。
@@ -196,6 +209,7 @@ fn compose(
                 let pull_requests = repository.pull_requests;
                 WorkspaceListRepository {
                     path: repository.path,
+                    name: repository.name,
                     worktrees: Fetched {
                         error: repository.worktrees.error,
                         value: repository.worktrees.value.map(|worktrees| {
@@ -239,10 +253,6 @@ mod list_tests;
 
 #[cfg(feature = "test-support")]
 impl WorkspaceListUsecase {
-    pub fn test_replace_repositories(&mut self, repositories: Arc<RepoPathsUsecase>) {
-        self.repositories = repositories;
-    }
-
     pub fn test_replace_repository_state(&mut self, repository_state: Arc<RepositoryStateService>) {
         self.repository_state = repository_state;
     }

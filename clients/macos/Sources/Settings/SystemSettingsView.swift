@@ -24,7 +24,7 @@ struct SystemSettingsView: View {
             get: { model.updater.acceptsNightly },
             set: { model.updater.acceptsNightly = $0 })
         ) {
-          Text("nightly アップデートを受け入れる").accessibilityHidden(true)
+          SettingsLabel(title: "nightly アップデートを受け入れる", description: "毎日作られる開発中の版も、更新の対象にします。")
         }
         .accessibilityLabel("nightly アップデートを受け入れる")
       }
@@ -38,11 +38,12 @@ struct SystemSettingsView: View {
         .disabled(!model.connected || state.settings == nil || state.saving.contains(.login))
         .accessibilityIdentifier("settings-auto-launch")
         Toggle(
-          "最小化状態で起動",
           isOn: Binding(
             get: { state.settings?.startMinimized ?? false },
             set: { value in Task { await state.updateStartMinimized(value, model: model) } })
-        )
+        ) {
+          SettingsLabel(title: "最小化状態で起動", description: "ログイン時に起動したときは、ウィンドウを開きません。")
+        }
         .disabled(
           !model.connected || state.settings?.autoLaunch != true
             || state.saving.contains(.minimized)
@@ -60,7 +61,7 @@ struct SystemSettingsView: View {
             .accessibilityIdentifier("settings-login-registration-reason")
         }
       }
-      Section("CLIの設置") {
+      Section("CLI の設置") {
         Text("/usr/local/bin/releash")
           .textSelection(.enabled)
         if let installation = state.cliInstallation {
@@ -88,19 +89,22 @@ struct SystemSettingsView: View {
       }
       Section("Telemetry") {
         Toggle(
-          "Performance telemetry",
           isOn: Binding(
             get: { state.settings?.performanceTelemetry ?? false },
             set: { value in Task { await state.updatePerformanceTelemetry(value, model: model) } })
-        )
+        ) {
+          SettingsLabel(
+            title: "Performance telemetry", description: "サーバの動作の計測値（metrics と traces）を送ります。")
+        }
         .disabled(!model.connected || state.settings == nil || state.saving.contains(.performance))
         .accessibilityIdentifier("settings-performance-telemetry")
         Toggle(
-          "Crash reporting",
           isOn: Binding(
             get: { state.settings?.crashReporting ?? false },
             set: { value in Task { await state.updateCrashReporting(value, model: model) } })
-        )
+        ) {
+          SettingsLabel(title: "Crash reporting", description: "異常終了したときに、その記録を送ります。")
+        }
         .disabled(!model.connected || state.settings == nil || state.saving.contains(.crash))
         .accessibilityIdentifier("settings-crash-reporting")
       }

@@ -181,6 +181,10 @@ impl<F> GitService for BranchStub<F>
 where
     F: Fn(&str) -> Result<String, GitError> + Send + Sync,
 {
+    fn origin_url(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
+        Ok(None)
+    }
+
     fn current(&self, repo_path: &str) -> Result<String, GitError> {
         (self.0)(repo_path)
     }

@@ -1,11 +1,94 @@
 import AppKit
 import ApplicationServices
+import Connect
 import SwiftUI
 import XCTest
 
 @testable import Releash
 
 final class SettingsRepositoriesTests: XCTestCase {
+  @MainActor func test_Notion初回購読待ち_無効中は接続せず復元後の入力で成功したLabelsを保持する() async throws {
+    // Given
+    let http = TestHTTPClient()
+    http.state.withLock {
+      $0.deferredInitialTargets = ["notion-config"]
+      $0.deferNotionValidation = true
+    }
+    let model = try await testModel(http)
+    let state = RepositorySettingsState(path: "/repo")
+    let host = await ViewHarness(RepositorySettingsView(model: model, state: state))
+    defer { host.close() }
+    try await eventuallyView(host) {
+      host.element("settings-notion-validate")?.enabled == false
+        && http.state.withLock { $0.subscriptions.contains { $0.target == "notion-config" } }
+    }
+    // When
+    try await host.press("settings-notion-validate")
+    var payload = Releash_Client_V1_StatePayload()
+    payload.notionConfig.value.apiToken = "saved-token"
+    payload.notionConfig.value.databaseID = "saved-database"
+    try http.publish(payload, target: "notion-config", args: ["/repo"])
+    // Then
+    try await eventuallyView(host) {
+      host.element("settings-notion-database")?.value == "saved-database"
+        && host.element("settings-notion-validate")?.enabled == true
+    }
+    XCTAssertTrue(http.requests("ValidateNotionConfig").isEmpty)
+    XCTAssertNil(state.validation)
+    XCTAssertNotNil(host.element("保存済みです。接続テストでpropertyを選択できます"))
+    XCTAssertNil(host.element("settings-notion-label-Status"))
+    // When
+    try await host.press("settings-notion-validate")
+    try await eventually { http.state.withLock { $0.pendingNotionValidation != nil } }
+    let request = try Releash_Client_V1_ValidateNotionConfigRequest(
+      serializedBytes: XCTUnwrap(http.requests("ValidateNotionConfig").last?.message))
+    XCTAssertEqual(request.apiToken, "saved-token")
+    XCTAssertEqual(request.databaseID, "saved-database")
+    let result = Releash_Client_V1_NotionValidationResultView.with {
+      $0.status.value = .configured
+      $0.properties.items = [
+        .with {
+          $0.name = "Name"
+          $0.propertyType = "title"
+        },
+        .with {
+          $0.name = "Status"
+          $0.propertyType = "status"
+        },
+      ]
+    }
+    let completion = try XCTUnwrap(http.state.withLock { $0.pendingNotionValidation })
+    completion(
+      HTTPResponse(
+        code: .ok, headers: ["content-type": ["application/proto"]],
+        message: try result.serializedData(), trailers: [:], error: nil,
+        tracingInfo: .init(httpStatus: 200)))
+    // Then
+    try await eventuallyView(host) {
+      state.validation == result && state.saving.isEmpty
+        && host.element("settings-notion-label-Name")?.enabled == true
+        && host.element("settings-notion-label-Status")?.enabled == true
+    }
+    XCTAssertEqual(http.requests("ValidateNotionConfig").count, 1)
+    XCTAssertEqual(state.apiToken, request.apiToken)
+    XCTAssertEqual(state.databaseID, request.databaseID)
+    XCTAssertEqual(host.element("settings-notion-label-Name")?.role, kAXCheckBoxRole)
+    XCTAssertEqual(host.element("settings-notion-label-Status")?.role, kAXCheckBoxRole)
+    XCTAssertNotNil(host.element("接続に成功しました"))
+    // When
+    payload.notionConfig.value.propertyMapping.title = "Name"
+    try http.publish(payload, target: "notion-config", args: ["/repo"])
+    // Then
+    try await eventuallyView(host) {
+      state.mapping.title == "Name"
+        && host.element("settings-notion-label-Name")?.enabled == true
+        && host.element("settings-notion-label-Status")?.enabled == true
+    }
+    XCTAssertEqual(state.validation, result)
+    XCTAssertNotNil(host.element("接続に成功しました"))
+    await model.stop()
+  }
+
   @MainActor func test_Repository選択_購読の一覧から選んだRepositoryの設定を表示する() async throws {
     // Given
     let http = TestHTTPClient()
@@ -18,11 +101,12 @@ final class SettingsRepositoriesTests: XCTestCase {
     let host = await ViewHarness(RepositoriesSettingsView(model: model))
     defer { host.close() }
     // Then
-    try await eventuallyView(host) { host.element("settings-base-branch")?.value == "main" }
+    try await eventuallyView(host) { host.element("/first") != nil }
+    XCTAssertNil(host.element("settings-base-branch"))
     XCTAssertNotNil(host.element("/first"))
     XCTAssertNotNil(host.element("/second"))
     // When
-    try await host.selectRow("/second")
+    try await host.press("settings-repository-/second")
     // Then
     try await eventuallyView(host) { host.element("settings-base-branch")?.value == "develop" }
     // When
@@ -31,13 +115,16 @@ final class SettingsRepositoriesTests: XCTestCase {
     try http.publish(payload, target: "workspaces")
     // Then
     try await eventuallyView(host) {
-      host.element("/second") == nil && host.element("settings-base-branch")?.value == "main"
+      host.element("/second") == nil && host.element("/first") != nil
+        && host.element("settings-base-branch") == nil
     }
     // When
     payload.workspaces.repositories.items = []
     try http.publish(payload, target: "workspaces")
     // Then
-    try await eventuallyView(host) { host.element("リポジトリを選択してください") != nil }
+    try await eventuallyView(host) {
+      host.element("settings-repositories") != nil && host.element("/first") == nil
+    }
     await model.stop()
   }
 
@@ -48,6 +135,8 @@ final class SettingsRepositoriesTests: XCTestCase {
     let model = try await testModel(http)
     let host = await ViewHarness(RepositoriesSettingsView(model: model))
     defer { host.close() }
+    try await eventuallyView(host) { host.element("/repo") != nil }
+    try await host.press("settings-repository-/repo")
     try await eventuallyView(host) { host.element("settings-remove-repository") != nil }
     // When
     try await host.press("settings-remove-repository")
@@ -212,7 +301,7 @@ final class SettingsRepositoriesTests: XCTestCase {
     let host = await ViewHarness(SettingsView(model: model))
     defer { host.close() }
     try await host.press("Repositories")
-    try await host.selectRow("/second")
+    try await host.press("settings-repository-/second")
     try await eventuallyView(host) { host.element("settings-notion-database")?.enabled == true }
     try await host.focusTextField(index: 0)
     let tokenEditor = try XCTUnwrap(host.window.firstResponder as? NSTextView)

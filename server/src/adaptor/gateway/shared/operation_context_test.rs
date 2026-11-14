@@ -20,14 +20,25 @@ fn test_停止理由_技術的な失敗の性質とメッセージを保持す�
     }
 }
 
-#[tokio::test]
-async fn test_taskの失敗_取り消しとpanicの性質を区別する() {
+#[test]
+fn test_taskの失敗_取り消しとpanicの性質を区別する() {
     // Given
-    let task = tokio::spawn(std::future::pending::<()>());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let (release, wait) = std::sync::mpsc::channel();
+    let occupying = crate::common::operation_context::spawn_blocking(move || wait.recv().unwrap());
+    let task = crate::common::operation_context::spawn_blocking(|| ());
     task.abort();
-    let cancelled = task.await.unwrap_err();
-    let panicked = tokio::spawn(async { panic!("task failed") })
-        .await
+    release.send(()).unwrap();
+    runtime.block_on(occupying).unwrap();
+    let cancelled = runtime.block_on(task).unwrap_err();
+    let panicked = runtime
+        .block_on(crate::common::operation_context::spawn_blocking(|| {
+            panic!("task failed")
+        }))
         .unwrap_err();
     // When / Then
     for (error, nature) in [
@@ -35,7 +46,10 @@ async fn test_taskの失敗_取り消しとpanicの性質を区別する() {
         (panicked, TechnicalFailureNature::Other),
     ] {
         let message = error.to_string();
-        let failure = TechnicalFailure::from(error);
+        let failure = crate::domain::git::GitError::Technical(error.into());
+        let crate::domain::git::GitError::Technical(failure) = failure else {
+            panic!("expected technical failure");
+        };
         assert_eq!(failure.nature, nature);
         assert_eq!(failure.message, message);
     }

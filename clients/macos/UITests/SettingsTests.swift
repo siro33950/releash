@@ -21,7 +21,7 @@ final class SettingsTests: XCTestCase {
     app.launch()
     XCTAssertTrue(app.buttons["Worktreeを作成"].waitForExistence(timeout: 30), app.debugDescription)
     app.typeKey(",", modifierFlags: .command)
-    let general = app.checkBoxes["General"]
+    let general = app.checkBoxes["settings-navigation-General"]
     XCTAssertTrue(general.waitForExistence(timeout: 10), app.debugDescription)
     general.click()
     let field = app.textFields["settings-terminal-command"]
@@ -54,9 +54,9 @@ final class SettingsTests: XCTestCase {
     app.launch()
     XCTAssertTrue(app.buttons["Worktreeを作成"].waitForExistence(timeout: 30), app.debugDescription)
     app.typeKey(",", modifierFlags: .command)
-    let tab = app.checkBoxes["Workflows"]
-    XCTAssertTrue(tab.waitForExistence(timeout: 10), app.debugDescription)
-    tab.click()
+    let navigation = app.checkBoxes["settings-navigation-Workflows"]
+    XCTAssertTrue(navigation.waitForExistence(timeout: 10), app.debugDescription)
+    navigation.click()
     let row = app.descendants(matching: .any)["settings-workflow-01_author-spec"].firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
     row.click()

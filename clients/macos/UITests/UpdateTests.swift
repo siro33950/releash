@@ -102,7 +102,7 @@ import XCTest
 
   @MainActor private func openSystemSettings() {
     app.typeKey(",", modifierFlags: .command)
-    let system = app.checkBoxes["System"]
+    let system = app.checkBoxes["settings-navigation-System"]
     XCTAssertTrue(system.waitForExistence(timeout: 10), app.debugDescription)
     system.click()
   }

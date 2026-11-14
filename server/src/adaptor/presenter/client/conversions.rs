@@ -213,6 +213,7 @@ impl TryFrom<crate::adaptor::presenter::workflow_wire::DiagnosticReport>
         value: crate::adaptor::presenter::workflow_wire::DiagnosticReport,
     ) -> Result<Self, String> {
         Ok(Self {
+            total: Some(cv(value.total())?),
             items: Some(cv(value.items)?),
             workflow_summaries: Some(cv(value.workflow_summaries)?),
             facet_summaries: Some(cv(value.facet_summaries)?),

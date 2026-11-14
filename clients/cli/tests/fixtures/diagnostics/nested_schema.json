@@ -17,6 +17,10 @@
       "workflow_name": "invalid-nested-array-schema"
     }
   ],
+  "total": {
+    "error_count": 1,
+    "info_count": 0
+  },
   "workflow_summaries": {
     "invalid-nested-array-schema": {
       "error_count": 1,

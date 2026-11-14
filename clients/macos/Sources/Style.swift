@@ -16,6 +16,9 @@ enum UIStyle {
   static let dividerWidth: CGFloat = 1
   static let dividerCursorWidth: CGFloat = 8
   static let sidebarMaximumWidth: CGFloat = 400
+  static let settingsWidth: CGFloat = 1024
+  static let settingsHeight: CGFloat = 800
+  static let settingsSidebarWidth: CGFloat = 200
   static let createDialogWidth: CGFloat = 560
   static let createDialogHeight: CGFloat = 560
   static let selectionListHeight: CGFloat = 160

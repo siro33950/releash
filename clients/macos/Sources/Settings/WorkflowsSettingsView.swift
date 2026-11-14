@@ -10,11 +10,12 @@ private enum WorkflowSettingsRoute: Hashable {
 struct WorkflowsSettingsView: View {
   var model: AppModel
   @State var state = WorkflowsSettingsState()
+  @State private var path: [WorkflowSettingsRoute] = []
   @State private var mode = "定義"
   @State private var kind = "policy"
 
   var body: some View {
-    NavigationStack {
+    NavigationStack(path: $path) {
       VStack {
         Picker("表示", selection: $mode) {
           Text("定義").tag("定義")
@@ -35,15 +36,12 @@ struct WorkflowsSettingsView: View {
               NavigationLink(value: WorkflowSettingsRoute.workflow(workflow.name)) {
                 VStack(alignment: .leading) {
                   Text(workflow.name).font(.headline)
-                  Text(workflow.description_p)
                   HStack {
                     if workflow.builtin { Text("builtin") }
                     if workflow.isRunning { Text("実行中") }
-                    Text(String(describing: workflow.sourceFormat.value))
                     DiagnosticCounts(
                       summary: state.diagnostics.workflowSummaries.entries[workflow.name])
                   }.foregroundStyle(.secondary)
-                  if workflow.hasReadError { Text(workflow.readError) }
                 }
               }
               .accessibilityIdentifier("settings-workflow-\(workflow.name)")
@@ -53,7 +51,6 @@ struct WorkflowsSettingsView: View {
               NavigationLink(value: WorkflowSettingsRoute.facet(facet.kind, facet.key)) {
                 VStack(alignment: .leading) {
                   Text(facet.key).font(.headline)
-                  Text(facet.description_p)
                   HStack {
                     if facet.builtin { Text("builtin") }
                     DiagnosticCounts(
@@ -71,13 +68,17 @@ struct WorkflowsSettingsView: View {
         }
         .disabled(!model.connected || state.saving.contains(.directory))
         .accessibilityIdentifier("settings-open-workflows-directory")
+        DiagnosticCounts(summary: state.diagnostics.total, includesInfo: true)
+          .foregroundStyle(.secondary)
         WorkflowSettingsFailure(failure: state.failure)
       }
       .padding()
       .navigationDestination(for: WorkflowSettingsRoute.self) { route in
         switch route {
-        case .workflow(let name): WorkflowSettingsDetail(model: model, name: name)
-        case .facet(let kind, let key): FacetSettingsDetail(model: model, kind: kind, key: key)
+        case .workflow(let name):
+          WorkflowSettingsDetail(model: model, name: name, back: { path.removeAll() })
+        case .facet(let kind, let key):
+          FacetSettingsDetail(model: model, kind: kind, key: key, back: { path.removeAll() })
         }
       }
     }
@@ -93,32 +94,37 @@ struct WorkflowsSettingsView: View {
 private struct WorkflowSettingsDetail: View {
   var model: AppModel
   let name: String
+  let back: () -> Void
   @State private var state = WorkflowsSettingsState()
 
   var body: some View {
-    Form {
-      if let workflow = state.workflow, workflow.hasValue {
-        Section {
-          Text(workflow.value.description_p)
-          if !workflow.value.builtin {
-            Button("外部エディタで開く") { Task { await state.openWorkflow(name, model) } }
-              .disabled(!model.connected || state.saving.contains(.workflow))
-              .accessibilityIdentifier("settings-open-workflow-in-editor")
-          }
+    VStack(spacing: 0) {
+      SettingsDetailHeader(title: name, back: back) {
+        if state.workflow?.hasValue == true && state.workflow?.value.builtin == false {
+          Button("外部エディタで開く") { Task { await state.openWorkflow(name, model) } }
+            .disabled(!model.connected || state.saving.contains(.workflow))
+            .accessibilityIdentifier("settings-open-workflow-in-editor")
         }
       }
-      WorkflowDiagnostics(items: state.diagnostics.items.items.filter { $0.workflowName == name })
-      if let workflow = state.workflow, workflow.hasValue {
-        Section("Node") {
-          ForEach(workflow.value.nodes.items, id: \.name) { node in
-            WorkflowNodeRow(node: node)
+      Form {
+        if let workflow = state.workflow, workflow.hasValue {
+          Section {
+            Text(workflow.value.description_p)
           }
         }
+        WorkflowDiagnostics(items: state.diagnostics.items.items.filter { $0.workflowName == name })
+        if let workflow = state.workflow, workflow.hasValue {
+          Section("Node") {
+            ForEach(workflow.value.nodes.items, id: \.name) { node in
+              WorkflowNodeRow(node: node)
+            }
+          }
+        }
+        WorkflowSettingsFailure(failure: state.failure)
       }
-      WorkflowSettingsFailure(failure: state.failure)
+      .formStyle(.grouped)
     }
-    .formStyle(.grouped)
-    .navigationTitle(name)
+    .navigationBarBackButtonHidden(true)
     .onAppear {
       state.subscribe(model)
       state.selectWorkflow(name, model)
@@ -131,39 +137,46 @@ private struct FacetSettingsDetail: View {
   var model: AppModel
   let kind: String
   let key: String
+  let back: () -> Void
   @State private var state = WorkflowsSettingsState()
 
   var body: some View {
-    Form {
-      Section {
-        LabeledContent("key", value: key)
-        LabeledContent("種類", value: kind)
-        if let facet = state.facets.items.first(where: { $0.key == key && $0.kind == kind }) {
-          Text(facet.description_p)
-          if !facet.builtin {
-            Button("外部エディタで開く") { Task { await state.openFacet(kind, key, model) } }
-              .disabled(!model.connected || state.saving.contains(.facet))
-              .accessibilityIdentifier("settings-open-facet-in-editor")
-          }
+    VStack(spacing: 0) {
+      SettingsDetailHeader(title: "\(kind) / \(key)", back: back) {
+        if state.facets.items.first(where: { $0.key == key && $0.kind == kind })?.builtin == false {
+          Button("外部エディタで開く") { Task { await state.openFacet(kind, key, model) } }
+            .disabled(!model.connected || state.saving.contains(.facet))
+            .accessibilityIdentifier("settings-open-facet-in-editor")
         }
       }
-      WorkflowDiagnostics(
-        items: state.diagnostics.items.items.filter { $0.facetKind == kind && $0.facetKey == key })
-      Section("参照元") {
-        ForEach(
-          Array((state.diagnostics.facetUsage.entries["\(kind)/\(key)"]?.items ?? []).enumerated()),
-          id: \.offset
-        ) { _, usage in
-          NavigationLink(value: WorkflowSettingsRoute.workflow(usage.workflowName)) {
-            Text("\(usage.workflowName) / \(usage.nodeName) / \(usage.slot)")
+      Form {
+        Section {
+          LabeledContent("key", value: key)
+          LabeledContent("種類", value: kind)
+          if let facet = state.facets.items.first(where: { $0.key == key && $0.kind == kind }) {
+            Text(facet.description_p)
           }
-          .accessibilityIdentifier("settings-facet-usage-\(usage.workflowName)-\(usage.nodeName)")
         }
+        WorkflowDiagnostics(
+          items: state.diagnostics.items.items.filter { $0.facetKind == kind && $0.facetKey == key }
+        )
+        Section("参照元") {
+          ForEach(
+            Array(
+              (state.diagnostics.facetUsage.entries["\(kind)/\(key)"]?.items ?? []).enumerated()),
+            id: \.offset
+          ) { _, usage in
+            NavigationLink(value: WorkflowSettingsRoute.workflow(usage.workflowName)) {
+              Text("\(usage.workflowName) / \(usage.nodeName) / \(usage.slot)")
+            }
+            .accessibilityIdentifier("settings-facet-usage-\(usage.workflowName)-\(usage.nodeName)")
+          }
+        }
+        WorkflowSettingsFailure(failure: state.failure)
       }
-      WorkflowSettingsFailure(failure: state.failure)
+      .formStyle(.grouped)
     }
-    .formStyle(.grouped)
-    .navigationTitle(key)
+    .navigationBarBackButtonHidden(true)
     .onAppear {
       state.subscribe(model)
       state.selectFacetKind(kind, model)
@@ -234,10 +247,14 @@ private struct WorkflowNodeRow: View {
 
 private struct DiagnosticCounts: View {
   let summary: Releash_Client_V1_DiagnosticSummary?
+  var includesInfo = false
+
   var body: some View {
     if let summary {
-      if summary.errorCount > 0 { Text("error: \(summary.errorCount)") }
-      if summary.infoCount > 0 { Text("info: \(summary.infoCount)") }
+      HStack {
+        if includesInfo || summary.errorCount > 0 { Text("error: \(summary.errorCount)") }
+        if includesInfo { Text("info: \(summary.infoCount)") }
+      }
     }
   }
 }

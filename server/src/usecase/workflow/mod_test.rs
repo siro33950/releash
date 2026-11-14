@@ -464,3 +464,7 @@ fn test_facet一覧_指定した種類でqueryのdtoを返す() {
         }]
     );
 }
+
+pub(crate) fn empty_usecase() -> WorkflowUsecase {
+    Fixture::new().usecase
+}

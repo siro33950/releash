@@ -629,3 +629,37 @@ pub async fn test_repository更新_操作成功後だけ購読へ通知する() 
     // Then
     assert!(changes.try_recv().is_err());
 }
+
+#[test]
+fn test_origin取得_指定パスを渡しurlの有無を返す() {
+    // Given
+    for origin_url in [Some("git@github.com:user/repo.git".to_string()), None] {
+        let fake = Arc::new(FakeRepo {
+            origin_url: origin_url.clone(),
+            ..Default::default()
+        });
+        // When
+        let result = usecase(fake.clone()).origin_url("/requested");
+        // Then
+        assert_eq!(result.unwrap(), origin_url);
+        assert_eq!(*fake.origin_url_calls.lock(), ["/requested"]);
+    }
+}
+
+#[test]
+fn test_origin取得_取得失敗を呼び出し元へ返す() {
+    // Given
+    let fake = Arc::new(FakeRepo {
+        origin_error: Some(crate::domain::git::GitError::External(
+            "origin read failed".into(),
+        )),
+        ..Default::default()
+    });
+    // When
+    let result = usecase(fake.clone()).origin_url("/requested");
+    // Then
+    assert!(
+        matches!(result, Err(UsecaseError::Repository(crate::domain::git::GitError::External(message))) if message == "origin read failed")
+    );
+    assert_eq!(*fake.origin_url_calls.lock(), ["/requested"]);
+}

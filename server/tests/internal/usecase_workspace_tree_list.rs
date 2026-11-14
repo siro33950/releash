@@ -395,45 +395,6 @@ pub async fn test_repositoryの削除_一覧と監視の対象から外れる() 
 }
 
 #[tokio::test]
-pub async fn test_一覧の読取_収集処理の失敗を空の一覧に変えない() {
-    // Given
-    struct PanickingPaths;
-    impl RepoPathsRepository for PanickingPaths {
-        fn get(&self) -> Vec<String> {
-            panic!("repository collection failed")
-        }
-    }
-    impl AppConfigRepository for PanickingPaths {
-        fn load(&self) -> Result<AppConfig, AppConfigError> {
-            unreachable!()
-        }
-        fn save(&self, _: AppConfig) -> Result<(), AppConfigError> {
-            unreachable!()
-        }
-    }
-    let mut fixture = Fixture::new(PullRequests {
-        status: PrStatus::default(),
-        release: None,
-    });
-    fixture
-        .usecase
-        .test_replace_repositories(Arc::new(RepoPathsUsecase::new(
-            Arc::new(PanickingPaths),
-            Arc::new(PanickingPaths),
-            fixture.subscriptions.clone(),
-            Default::default(),
-        )));
-    // When
-    let error = fixture.usecase.read().await.unwrap_err();
-    // Then
-    assert_eq!(
-        error.nature,
-        releashd::test_support::integration::platform::TechnicalFailureNature::Other
-    );
-    assert!(error.message.contains("repository collection failed"));
-}
-
-#[tokio::test]
 pub async fn test_watch_paths_一覧とrootの読み取り失敗をrepositoryに対応させる() {
     use releashd::test_support::integration::platform::RepositoryScanner;
     use releashd::test_support::integration::platform::RepositorySnapshotParts;

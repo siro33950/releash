@@ -224,4 +224,4 @@ pub(crate) mod test_helpers;
 
 #[cfg(test)]
 #[path = "mod_test.rs"]
-mod mod_tests;
+pub(crate) mod mod_tests;
