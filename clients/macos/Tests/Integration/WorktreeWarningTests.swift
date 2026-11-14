@@ -82,29 +82,6 @@ final class WorktreeWarningTests: XCTestCase {
     let bounds = host.window.convertToScreen(target.convert(target.bounds, to: nil))
     let desktop = try XCTUnwrap(NSScreen.screens.first).frame
     let point = CGPoint(x: bounds.midX, y: desktop.height - bounds.midY)
-    let previous = try XCTUnwrap(CGEvent(source: nil)?.location)
-    func move(_ point: CGPoint) throws {
-      XCTAssertEqual(CGWarpMouseCursorPosition(point), .success)
-      let event = try XCTUnwrap(
-        CGEvent(
-          mouseEventSource: nil, mouseType: .mouseMoved,
-          mouseCursorPosition: point, mouseButton: .left))
-      event.post(tap: .cghidEventTap)
-      let localEvent = try XCTUnwrap(
-        NSEvent.mouseEvent(
-          with: .mouseMoved,
-          location: host.window.convertPoint(
-            fromScreen:
-              NSPoint(x: point.x, y: desktop.height - point.y)),
-          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-          windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
-          clickCount: 0, pressure: 0))
-      NSApp.postEvent(localEvent, atStart: false)
-    }
-    defer { try? move(previous) }
-    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    host.window.acceptsMouseMovedEvents = true
-
     // Then
     func displayedText() throws -> String? {
       guard
@@ -121,32 +98,7 @@ final class WorktreeWarningTests: XCTestCase {
       return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
         .joined(separator: " ")
     }
-    var text: String?
-    for attempt in 1...3 {
-      XCTAssertEqual(
-        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-        .success
-      )
-      try await eventually {
-        host.window.makeKeyAndOrderFront(nil)
-        return NSApp.isActive && host.window.isKeyWindow
-      }
-      try move(CGPoint(x: point.x - 40, y: point.y))
-      try await Task.sleep(for: .milliseconds(100))
-      try move(point)
-      var lostFocus = false
-      try await eventually {
-        lostFocus = lostFocus || !NSApp.isActive || !host.window.isKeyWindow
-        if lostFocus { return true }
-        text = try? displayedText()
-        return text != nil
-      }
-      if !lostFocus { break }
-      text = nil
-      print("Warning tooltip hover interrupted by focus loss (attempt \(attempt)/3)")
-    }
-    let actual = try XCTUnwrap(
-      text, "Warning tooltip was not observed with the test app active and its window key")
+    let actual = try await host.hover(at: point, observe: displayedText)
     for expected in [
       "Changes unavailable", "Dirty failed", "PR unavailable", "PR failed", "Worktree failed",
     ] {
@@ -155,7 +107,7 @@ final class WorktreeWarningTests: XCTestCase {
     XCTAssertFalse(actual.contains("Old failure"))
     try await host.press("worktree:feature")
     XCTAssertEqual(model.selectedWorktree, "/repo/feature")
-    try move(CGPoint(x: point.x - 40, y: point.y))
+    try host.movePointer(to: CGPoint(x: point.x - 40, y: point.y))
     try await eventually { (try? displayedText()) == nil }
   }
 }

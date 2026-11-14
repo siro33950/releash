@@ -43,6 +43,67 @@ struct ViewElement {
       window.close()
     }
   }
+  func movePointer(to point: CGPoint) throws {
+    let desktop = try XCTUnwrap(NSScreen.screens.first).frame
+    XCTAssertEqual(CGWarpMouseCursorPosition(point), .success)
+    let event = try XCTUnwrap(
+      CGEvent(
+        mouseEventSource: nil, mouseType: .mouseMoved,
+        mouseCursorPosition: point, mouseButton: .left))
+    event.post(tap: .cghidEventTap)
+    let localEvent = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .mouseMoved,
+        location: window.convertPoint(fromScreen: NSPoint(x: point.x, y: desktop.height - point.y)),
+        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil, eventNumber: 1,
+        clickCount: 0, pressure: 0))
+    NSApp.postEvent(localEvent, atStart: false)
+  }
+
+  func hover<Value>(at point: CGPoint, observe: () throws -> Value?) async throws -> Value {
+    let previous = try XCTUnwrap(CGEvent(source: nil)?.location)
+    defer { try? movePointer(to: previous) }
+    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    window.acceptsMouseMovedEvents = true
+    var history: [String] = []
+    for attempt in 1...3 {
+      XCTAssertEqual(
+        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
+        .success)
+      try await eventually {
+        self.window.makeKeyAndOrderFront(nil)
+        return NSApp.isActive && self.window.isKeyWindow
+      }
+      try movePointer(to: CGPoint(x: point.x - 40, y: point.y))
+      try await Task.sleep(for: .milliseconds(100))
+      try movePointer(to: point)
+      let deadline = ContinuousClock.now + .seconds(5)
+      while NSApp.isActive && window.isKeyWindow {
+        let value = try observe()
+        guard NSApp.isActive && window.isKeyWindow else { break }
+        if let value { return value }
+        if ContinuousClock.now >= deadline {
+          history.append("attempt \(attempt)/3: observation timed out")
+          throw hoverFailure(history)
+        }
+        try await Task.sleep(for: .milliseconds(5))
+      }
+      history.append(
+        "attempt \(attempt)/3: focus lost (active=\(NSApp.isActive), key=\(window.isKeyWindow))")
+    }
+    throw hoverFailure(history)
+  }
+
+  private func hoverFailure(_ history: [String]) -> NSError {
+    NSError(
+      domain: "ViewHarness.Hover", code: 1,
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "Hover observation failed: " + history.joined(separator: "; ") + "\n" + debugDump()
+      ])
+  }
+
   func refresh() async { readSnapshot() }
   private func readSnapshot() {
     snapshot = {
