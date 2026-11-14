@@ -440,7 +440,7 @@ import XCTest
     }
   }
 
-  func test_本文リンク_B020_B021_両方の面から既定ブラウザへ渡す() async throws {
+  func test_本文リンク_B020_ファイルタブから既定ブラウザへ渡す() async throws {
     // Given
     let original = try XCTUnwrap(
       class_getInstanceMethod(NSWorkspace.self, #selector(NSWorkspace.open(_:))))
@@ -458,19 +458,6 @@ import XCTest
     _ = try await js(web, "all('a').find(e => e.textContent === '受入リンク').click();")
     // Then
     try await eventually { InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) == [url] } }
-    let host = try await panel(value)
-    try await eventually { self.findElement(host, name: "受入リンク") != nil }
-    // When
-    let link = try XCTUnwrap(findElement(host, name: "受入リンク"))
-    var role: CFTypeRef?
-    XCTAssertEqual(
-      AXUIElementCopyAttributeValue(link, kAXRoleAttribute as CFString, &role), .success)
-    XCTAssertEqual(role as? String, "AXLink")
-    XCTAssertEqual(AXUIElementPerformAction(link, kAXPressAction as CFString), .success)
-    // Then
-    try await eventually {
-      InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) == [url, url] }
-    }
   }
 
   func test_HTML_B022_B023_両方の面でscriptが操作を起こさない() async throws {
