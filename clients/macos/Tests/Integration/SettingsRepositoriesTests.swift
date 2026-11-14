@@ -301,6 +301,7 @@ final class SettingsRepositoriesTests: XCTestCase {
     let host = await ViewHarness(SettingsView(model: model))
     defer { host.close() }
     try await host.press("Repositories")
+    try await eventuallyView(host) { host.element("settings-repository-/second") != nil }
     try await host.press("settings-repository-/second")
     try await eventuallyView(host) { host.element("settings-notion-database")?.enabled == true }
     try await host.focusTextField(index: 0)
