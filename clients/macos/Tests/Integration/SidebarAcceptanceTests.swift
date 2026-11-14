@@ -421,79 +421,28 @@ final class SidebarAcceptanceTests: XCTestCase {
 
     var screen = host.window.convertToScreen(view.convert(local, to: nil))
     screen.origin.y = try XCTUnwrap(NSScreen.screens.first).frame.height - screen.maxY
-    let previous = try XCTUnwrap(CGEvent(source: nil)?.location)
-    defer {
-      CGWarpMouseCursorPosition(previous)
-      CGEvent(
-        mouseEventSource: nil, mouseType: .mouseMoved,
-        mouseCursorPosition: previous, mouseButton: .left)?.post(tap: .cghidEventTap)
-    }
-    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-    host.window.acceptsMouseMovedEvents = true
     let point = CGPoint(x: screen.midX, y: screen.midY)
-    var displayedTooltip: NSWindow?
-    for attempt in 1...3 {
-      XCTAssertEqual(
-        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue),
-        .success)
-      try await eventually {
-        host.window.makeKeyAndOrderFront(nil)
-        return NSApp.isActive && host.window.isKeyWindow
-      }
-      let visible = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
-      for position in [CGPoint(x: point.x - 40, y: point.y), point] {
-        XCTAssertEqual(CGWarpMouseCursorPosition(position), .success)
-        let event = try XCTUnwrap(
-          CGEvent(
-            mouseEventSource: nil, mouseType: .mouseMoved,
-            mouseCursorPosition: position, mouseButton: .left))
-        event.post(tap: .cghidEventTap)
-        let localEvent = try XCTUnwrap(
-          NSEvent.mouseEvent(
-            with: .mouseMoved,
-            location: host.window.convertPoint(
-              fromScreen: NSPoint(
-                x: position.x, y: try XCTUnwrap(NSScreen.screens.first).frame.height - position.y)),
-            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: host.window.windowNumber, context: nil, eventNumber: 1,
-            clickCount: 0, pressure: 0))
-        NSApp.postEvent(localEvent, atStart: false)
-        try await Task.sleep(for: .milliseconds(100))
-      }
-      var lostFocus = false
-      try await eventually {
-        lostFocus = lostFocus || !NSApp.isActive || !host.window.isKeyWindow
-        if lostFocus { return true }
-        displayedTooltip = NSApp.windows.first {
+    let visible = Set(NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init))
+    let (tooltip, text) = try await host.hover(at: point) { () -> (NSWindow, String)? in
+      guard
+        let tooltip = NSApp.windows.first(where: {
           $0 !== host.window && $0.isVisible && !visible.contains(ObjectIdentifier($0))
-        }
-        return displayedTooltip != nil
-      }
-      if !lostFocus { break }
-      displayedTooltip = nil
-      print("Warning tooltip hover interrupted by focus loss (attempt \(attempt)/3)")
+        })
+      else { return nil }
+      let content = try XCTUnwrap(tooltip.contentView)
+      let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+      content.cacheDisplay(in: content.bounds, to: bitmap)
+      let request = VNRecognizeTextRequest()
+      request.recognitionLanguages = ["en-US"]
+      request.usesLanguageCorrection = false
+      try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
+      let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        .joined(separator: " ")
+      return (tooltip, text)
     }
-    let tooltip = try XCTUnwrap(
-      displayedTooltip,
-      "Warning tooltip was not observed with the test app active and its window key")
-    let content = try XCTUnwrap(tooltip.contentView)
-    let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
-    content.cacheDisplay(in: content.bounds, to: bitmap)
-    let request = VNRecognizeTextRequest()
-    request.recognitionLanguages = ["en-US"]
-    request.usesLanguageCorrection = false
-    try VNImageRequestHandler(cgImage: XCTUnwrap(bitmap.cgImage)).perform([request])
-    let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-      .joined(separator: " ")
     for value in expected {
       XCTAssertTrue(text.contains(value), "Displayed tooltip: \(text); expected: \(value)")
     }
-    XCTAssertEqual(CGWarpMouseCursorPosition(previous), .success)
-    let exitEvent = try XCTUnwrap(
-      CGEvent(
-        mouseEventSource: nil, mouseType: .mouseMoved,
-        mouseCursorPosition: previous, mouseButton: .left))
-    exitEvent.post(tap: .cghidEventTap)
     try await eventually { !tooltip.isVisible }
   }
 
