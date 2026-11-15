@@ -146,22 +146,25 @@ impl LocalAgentSessionHistoryQueryService {
         let mut visible = Vec::new();
         let mut titles = HistoryTitles::new();
         for batch in candidates.chunks(TITLE_BATCH_SIZE) {
-            let mut batch_titles = self.read_titles(&request.worktree_path, batch).await?;
+            let mut unowned = Vec::new();
             for candidate in batch {
-                let key = (candidate.provider, candidate.provider_session_id.clone());
-                let title = batch_titles.remove(&key).expect("validated title response");
-                if !title.matches(search) {
-                    continue;
-                }
-                if self
+                if !self
                     .ownership
                     .is_owned(candidate.provider, &candidate.provider_session_id)
                     .await
                     .map_err(map_gateway_error)?
                 {
+                    unowned.push(candidate.clone());
+                }
+            }
+            let mut batch_titles = self.read_titles(&request.worktree_path, &unowned).await?;
+            for candidate in unowned {
+                let key = (candidate.provider, candidate.provider_session_id.clone());
+                let title = batch_titles.remove(&key).expect("validated title response");
+                if !title.matches(search) {
                     continue;
                 }
-                visible.push(candidate.clone());
+                visible.push(candidate);
                 titles.insert(key, title);
                 if visible.len() > request.visible_count {
                     return Ok((visible, titles));

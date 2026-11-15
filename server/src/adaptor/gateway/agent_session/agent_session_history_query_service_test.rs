@@ -464,12 +464,13 @@ async fn test_履歴検索_区切りをまたいで所有されない一致だ�
                 .iter()
                 .map(|(_, id)| id.clone())
                 .collect::<Vec<_>>(),
-            (62..(63 + matches.min(3)))
+            (0..if matches >= 3 { 128 } else { 201 })
                 .map(|i| format!("s-{i}"))
                 .collect::<Vec<_>>()
         );
         let requests = history.title_requests.lock().unwrap();
-        assert_eq!(requests[0].1.len(), 64);
+        assert_eq!(requests[0].1.len(), 63);
+        assert!(!requests[0].1.contains(&"s-62".to_string()));
         assert_eq!(requests[0].1.last().unwrap(), "s-63");
         assert_eq!(requests[1].1.first().unwrap(), "s-64");
         assert_eq!(requests.len(), if matches >= 3 { 2 } else { 4 });
