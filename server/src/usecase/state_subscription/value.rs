@@ -26,12 +26,8 @@ pub enum StateValue {
         node: Option<Box<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>>,
     },
     SessionHistory(AgentSessionHistoryPageDto),
-    /// Archive 済みの実行を読む実行木と、絞り込む検索語。
-    /// 並びと絞り込みは `WorkspaceTree::archived_history` が決める。
-    ArchivedHistory(
-        crate::domain::workspace_tree::WorkspaceTree,
-        Option<crate::domain::search_term::SearchTerm>,
-    ),
+    /// Archive 済みの実行。時刻の新しい順に並ぶ。
+    ArchivedHistory(Vec<crate::domain::workspace_tree::ArchivedExecution>),
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),
     /// ブランチと、その worktree があるか。

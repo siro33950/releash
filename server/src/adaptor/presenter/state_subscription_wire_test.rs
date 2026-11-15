@@ -1497,7 +1497,7 @@ fn test_archive履歴配信_sessionの名前と時刻と操作権限を届ける
             crate::domain::workflow::AgentSessionActivity::default(),
         );
     tree.record_executions(executions);
-    let state = StateValue::ArchivedHistory(tree, None);
+    let state = StateValue::ArchivedHistory(tree.archived_history(None));
     // When
     let value = super::payload(&state).unwrap();
     // Then
@@ -1534,8 +1534,7 @@ fn test_archive履歴配信_workflowの実行情報と検索結果を届ける()
     // When / Then
     for (search, count) in [("review", 1), ("missing", 0)] {
         let state = StateValue::ArchivedHistory(
-            tree.clone(),
-            crate::domain::search_term::SearchTerm::new(search),
+            tree.archived_history(crate::domain::search_term::SearchTerm::new(search).as_ref()),
         );
         let Some(wire::state_payload::Value::ArchivedHistory(list)) =
             payload(&state).unwrap().value

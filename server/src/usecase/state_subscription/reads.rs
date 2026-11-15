@@ -287,7 +287,7 @@ impl WorkspaceStateReads {
                     .workflow
                     .workspace_tree(path)
                     .await
-                    .map(|tree| StateValue::ArchivedHistory(tree, search.clone()))
+                    .map(|tree| StateValue::ArchivedHistory(tree.archived_history(search.as_ref())))
                     .map_err(error)
             }
             T::FilteredIssues(p, filter) => {

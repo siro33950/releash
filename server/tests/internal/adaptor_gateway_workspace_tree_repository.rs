@@ -2031,7 +2031,7 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
     assert_eq!(
         tree.archived_history(None)
             .iter()
-            .map(|entry| { entry.execution().session.as_ref().unwrap().id() })
+            .map(|entry| entry.id())
             .collect::<Vec<_>>(),
         vec!["archived-session"]
     );

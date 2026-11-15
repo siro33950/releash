@@ -3,6 +3,8 @@ import SwiftUI
 struct SessionHistoryView: View {
   @Bindable var model: AppModel
   let path: String
+  var now: Date = Date()
+  var calendar: Calendar = .current
   @Environment(\.dismiss) private var dismiss
   @State private var page = Releash_Client_V1_AgentSessionHistoryPageDto()
   @State private var count = 20
@@ -112,7 +114,7 @@ struct SessionHistoryView: View {
     return
       historyRow(id: id, title: session.name, action: action) {
         Text(
-          "Session · \(session.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: session.archivedAt)))に Archive"
+          "Session · \(session.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: session.archivedAt), now: now, calendar: calendar))に Archive"
         )
       } buttons: {
         Button("復元", action: action)
@@ -139,7 +141,9 @@ struct SessionHistoryView: View {
           Circle().fill(status.color)
             .frame(width: 7, height: 7).accessibilityHidden(true)
           Text(status.text)
-          Text("· \(historyTime(Date(timeIntervalSince1970: workflow.updatedAt)))")
+          Text(
+            "· \(historyTime(Date(timeIntervalSince1970: workflow.updatedAt), now: now, calendar: calendar))"
+          )
         }
       } buttons: {
         Button("復元", action: action)
@@ -156,7 +160,7 @@ struct SessionHistoryView: View {
         action: action
       ) {
         Text(
-          "\(candidate.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: candidate.updatedAt)))"
+          "\(candidate.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: candidate.updatedAt), now: now, calendar: calendar))"
         )
       } buttons: {
         Button("再開", action: action)

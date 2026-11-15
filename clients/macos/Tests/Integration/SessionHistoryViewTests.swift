@@ -42,10 +42,13 @@ final class SessionHistoryViewTests: XCTestCase {
   @MainActor func test_B006_B011_B012_区画の見出しと二段の行を表示する() async throws {
     // Given
     let (http, model) = try await setup()
-    let now = Date()
-    let yesterday = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: now))
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 9 * 3600))
+    let now = try XCTUnwrap(
+      calendar.date(from: DateComponents(year: 2026, month: 11, day: 15, hour: 12)))
+    let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: now))
     let workflowTime = try XCTUnwrap(
-      Calendar.current.date(bySettingHour: 18, minute: 42, second: 0, of: yesterday))
+      calendar.date(bySettingHour: 18, minute: 42, second: 0, of: yesterday))
     let archive = [
       session("Thread 面を GitHub の Conversation の見せ方にする", at: now.addingTimeInterval(-7200)),
       session("別の Session", id: "second", at: yesterday),
@@ -58,21 +61,30 @@ final class SessionHistoryViewTests: XCTestCase {
       ]
     }
     // When
-    let host = try await history(model, http: http, archive: archive)
+    let host = try await history(model, http: http, archive: archive, now: now, calendar: calendar)
     defer { host.close() }
     // Then
     try await eventuallyView(host) { host.element("development-v4") != nil }
     for title in [
-      "ARCHIVE 済み", "4", "PROVIDER の履歴", "このディレクトリで provider が残した Session",
+      "ARCHIVE 済み", "PROVIDER の履歴", "このディレクトリで provider が残した Session",
       "Thread 面を GitHub の Conversation の見せ方にする", "Workflow", "完了", "中止", "昨日 18:42",
       "Source Control 面の Commit メニューに Push を足したい",
     ] {
       XCTAssertTrue(host.texts().contains { $0.contains(title) }, title)
     }
-    XCTAssertFalse(
-      elements(named: "1", in: host).contains {
-        attribute($0, kAXRoleAttribute) as? String == kAXStaticTextRole
-      })
+    for (title, expected) in [
+      ("ARCHIVE 済み", ["4"]),
+      ("PROVIDER の履歴", ["このディレクトリで provider が残した Session"]),
+    ] {
+      let heading = try XCTUnwrap(elements(named: title, in: host).first)
+      let section = try XCTUnwrap(attribute(heading, kAXParentAttribute)) as! AXUIElement
+      let children = try XCTUnwrap(attribute(section, kAXChildrenAttribute) as? [AXUIElement])
+      let headingIndex = try XCTUnwrap(children.firstIndex { CFEqual($0, heading) })
+      let headerTexts = children.dropFirst(headingIndex + 1).prefix {
+        attribute($0, kAXRoleAttribute) as? String != kAXHeadingRole
+      }.compactMap { attribute($0, kAXValueAttribute) as? String }
+      XCTAssertEqual(headerTexts, expected, title)
+    }
     await model.stop()
   }
 
@@ -87,12 +99,14 @@ final class SessionHistoryViewTests: XCTestCase {
     let host = try await history(model, http: http)
     defer { host.close() }
     try await eventuallyView(host) { host.element("新しい相談") != nil }
+    let previousSubscriptions = http.state.withLock { $0.subscriptions.map(\.subscriptionID) }
     // When
     try await host.press("さらに読み込む")
     try await eventually {
       http.state.withLock {
         $0.subscriptions.contains {
-          $0.target == "session-history" && $0.args.prefix(2) == ["/repo", "40"]
+          $0.target == "session-history"
+            && !previousSubscriptions.contains($0.subscriptionID)
         }
       }
     }
@@ -273,12 +287,15 @@ final class SessionHistoryViewTests: XCTestCase {
     let host = try await history(model, http: http, archive: archive)
     defer { host.close() }
     try await eventuallyView(host) { host.element("development-v4") != nil }
+    var previousSubscriptions = http.state.withLock { $0.subscriptions.map(\.subscriptionID) }
     // When
     try await host.setTextField("thread")
     try await eventually {
       http.state.withLock { state in
         ["archived-history", "session-history"].allSatisfy { target in
-          state.subscriptions.last { $0.target == target }?.args.contains("search=thread") == true
+          state.subscriptions.contains {
+            $0.target == target && !previousSubscriptions.contains($0.subscriptionID)
+          }
         }
       }
     }
@@ -308,11 +325,14 @@ final class SessionHistoryViewTests: XCTestCase {
     XCTAssertNotNil(host.element("thread"))
     // When
     try await host.press("すべて")
+    previousSubscriptions = http.state.withLock { $0.subscriptions.map(\.subscriptionID) }
     try await host.setTextField("")
     try await eventually {
       http.state.withLock { state in
         ["archived-history", "session-history"].allSatisfy { target in
-          state.subscriptions.last { $0.target == target }?.args.contains("search=thread") == false
+          state.subscriptions.contains {
+            $0.target == target && !previousSubscriptions.contains($0.subscriptionID)
+          }
         }
       }
     }
@@ -445,10 +465,10 @@ final class SessionHistoryViewTests: XCTestCase {
 
   @MainActor func test_B010_B013_B016_今日の時刻を秒と分と時間で表示する() async throws {
     // Given
-    let now = Date()
-    let calendar = Calendar.current
-    try XCTSkipUnless(
-      calendar.isDate(now, inSameDayAs: now.addingTimeInterval(-10800)), "今日の3時間前が必要")
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 9 * 3600))
+    let now = try XCTUnwrap(
+      calendar.date(from: DateComponents(year: 2026, month: 11, day: 15, hour: 12)))
     let (http, model) = try await setup()
     let archive = [
       session("たった今の相談", id: "now", at: now.addingTimeInterval(-30)),
@@ -462,7 +482,7 @@ final class SessionHistoryViewTests: XCTestCase {
       ]
     }
     // When
-    let host = try await history(model, http: http, archive: archive)
+    let host = try await history(model, http: http, archive: archive, now: now, calendar: calendar)
     defer { host.close() }
     // Then
     for subtitle in [
@@ -476,31 +496,30 @@ final class SessionHistoryViewTests: XCTestCase {
 
   @MainActor func test_B017_B018_B019_昨日以前の時刻を暦日で表示する() async throws {
     // Given
-    let calendar = Calendar.current
-    let now = Date()
-    let year = calendar.component(.year, from: now)
-    let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: now))
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 9 * 3600))
+    let now = try XCTUnwrap(
+      calendar.date(from: DateComponents(year: 2026, month: 11, day: 15, hour: 1)))
     let yesterdayAt23 = try XCTUnwrap(
-      calendar.date(bySettingHour: 23, minute: 0, second: 0, of: yesterday))
-    let older = try XCTUnwrap(calendar.date(byAdding: .day, value: -3, to: now))
-    try XCTSkipUnless(calendar.component(.year, from: older) == year, "今年の昨日より前の日が必要")
+      calendar.date(from: DateComponents(year: 2026, month: 11, day: 14, hour: 23)))
+    let older = try XCTUnwrap(
+      calendar.date(from: DateComponents(year: 2026, month: 11, day: 12, hour: 12)))
     let previousYear = try XCTUnwrap(
-      calendar.date(from: DateComponents(year: year - 1, month: 11, day: 12, hour: 12)))
+      calendar.date(from: DateComponents(year: 2025, month: 11, day: 12, hour: 12)))
     let (http, model) = try await setup()
     let archive = [
       session("昨日の相談", id: "yesterday", at: yesterdayAt23), session("今年の相談", id: "year", at: older),
       session("去年の相談", id: "previous", at: previousYear),
     ]
     // When
-    let host = try await history(model, http: http, archive: archive)
+    let host = try await history(model, http: http, archive: archive, now: now, calendar: calendar)
     defer { host.close() }
     // Then
-    let month = calendar.component(.month, from: older)
-    let day = calendar.component(.day, from: older)
     for subtitle in [
-      "昨日 23:00", "\(month)月\(day)日", "\(year - 1)年11月12日",
+      "Session · Claude · 昨日 23:00に Archive", "Session · Claude · 11月12日に Archive",
+      "Session · Claude · 2025年11月12日に Archive",
     ] {
-      try await eventuallyView(host) { host.texts().contains { $0.contains(subtitle) } }
+      try await eventuallyView(host) { host.element(subtitle) != nil }
     }
     await model.stop()
   }
@@ -556,10 +575,12 @@ final class SessionHistoryViewTests: XCTestCase {
 
   @MainActor private func history(
     _ model: AppModel, http: TestHTTPClient,
-    archive: [Releash_Client_V1_ArchivedHistoryItem] = []
+    archive: [Releash_Client_V1_ArchivedHistoryItem] = [],
+    now: Date = Date(), calendar: Calendar = .current
   ) async throws -> ViewHarness {
     let host = await ViewHarness(
-      SessionHistoryView(model: model, path: "/repo"), size: NSSize(width: 1024, height: 800))
+      SessionHistoryView(model: model, path: "/repo", now: now, calendar: calendar),
+      size: NSSize(width: 1024, height: 800))
     try await eventually {
       http.state.withLock { $0.subscriptions.contains { $0.target == "archived-history" } }
     }

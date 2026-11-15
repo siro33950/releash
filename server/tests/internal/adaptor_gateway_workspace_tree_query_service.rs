@@ -717,8 +717,7 @@ pub async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示�
     assert_ne!(tree_title, "main");
     assert!(archived.visible().roots().is_empty());
     assert_eq!(history.len(), 1);
-    let item = history[0].execution();
-    assert_eq!(item.execution_id, execution_id);
+    assert_eq!(history[0].id(), execution_id);
     assert_eq!(history[0].name(), tree_title);
 }
 
@@ -976,10 +975,7 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
     // Then
     assert_eq!(history.len(), 2);
     for (id, updated_at_ms, at) in fixtures {
-        let item = history
-            .iter()
-            .find(|item| item.execution().execution_id == id)
-            .unwrap();
+        let item = history.iter().find(|item| item.id() == id).unwrap();
         let archive = tree
             .executions()
             .iter()
@@ -990,13 +986,14 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
             .unwrap();
         assert_eq!(archive.archived_at, at);
         assert_eq!(item.ordered_at(), updated_at_ms as f64 / 1_000.0);
-        assert_eq!(item.execution().status, ExecutionStatus::Aborted);
+        assert!(matches!(
+            item,
+            releashd::test_support::integration::workspace::ArchivedExecution::Workflow(execution)
+                if execution.status == ExecutionStatus::Aborted
+        ));
     }
     assert_eq!(
-        history
-            .iter()
-            .map(|item| item.execution().execution_id.as_str())
-            .collect::<Vec<_>>(),
+        history.iter().map(|item| item.id()).collect::<Vec<_>>(),
         vec![fixtures[0].0, fixtures[1].0]
     );
 }

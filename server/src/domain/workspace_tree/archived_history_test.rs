@@ -30,18 +30,14 @@ fn test_archive履歴_混在を更新時刻順と識別子順に並べ名前で�
         tree.archived_history(crate::domain::search_term::SearchTerm::new(" THREAD ").as_ref());
     // Then
     assert_eq!(history.len(), 2);
-    assert_eq!(
-        history[0].execution().session.as_ref().unwrap().id(),
-        "session-a"
-    );
+    assert_eq!(history[0].id(), "session-a");
     assert_eq!(history[0].ordered_at(), 10.0);
     assert_eq!(history[0].name(), "node-session-a");
     assert_eq!(history[1].ordered_at(), 5.0);
+    assert_eq!(history[1].id(), "exec-a");
+    assert_eq!(history[1].name(), "Thread workflow");
     assert_eq!(filtered.len(), 1);
-    assert!(std::ptr::eq(
-        filtered[0].execution(),
-        history[1].execution()
-    ));
+    assert_eq!(filtered[0], history[1]);
 }
 
 #[test]
@@ -62,12 +58,9 @@ fn test_archive履歴_同時刻は識別子順で他worktreeと未archiveを除�
         tree.archived_history(crate::domain::search_term::SearchTerm::new("node-b").as_ref());
     // Then
     assert_eq!(history.len(), 2);
-    assert_eq!(history[0].execution().session.as_ref().unwrap().id(), "a");
+    assert_eq!(history[0].id(), "a");
     assert_eq!(filtered.len(), 1);
-    assert!(std::ptr::eq(
-        filtered[0].execution(),
-        history[1].execution()
-    ));
+    assert_eq!(filtered[0], history[1]);
 }
 
 #[test]
@@ -88,4 +81,30 @@ fn test_archive履歴_sessionの欠損と未archiveを除く() {
     );
     // When / Then
     assert!(tree.archived_history(None).is_empty());
+}
+
+#[test]
+fn test_archive履歴の値_sessionとworkflowの識別子と名前と時刻を返す() {
+    // Given
+    let (_, execution) = session_execution("session-id", true);
+    let session = super::ArchivedExecution::Session {
+        session: execution.session.clone().unwrap(),
+        name: "Session title".into(),
+        archived_at: 42.5,
+    };
+    let workflow = super::ArchivedExecution::Workflow(super::WorkspaceExecution {
+        execution_id: "workflow-id".into(),
+        workflow_name: "Workflow title".into(),
+        updated_at: 12.5,
+        ..execution
+    });
+    // When / Then
+    assert_eq!(
+        (session.id(), session.name(), session.ordered_at()),
+        ("session-id", "Session title", 42.5)
+    );
+    assert_eq!(
+        (workflow.id(), workflow.name(), workflow.ordered_at()),
+        ("workflow-id", "Workflow title", 12.5)
+    );
 }
