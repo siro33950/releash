@@ -63,4 +63,10 @@ impl PrInfo {
             PrState::Closed => PrClassification::Closed,
         }
     }
+
+    /// この PR があるブランチで、新しい PR を作る操作を出すかを決める。
+    /// 状態が Closed のときだけ出す。Open、Draft、Merged のときは出さない。
+    pub fn allows_new_pull_request(&self) -> bool {
+        self.state == PrState::Closed
+    }
 }

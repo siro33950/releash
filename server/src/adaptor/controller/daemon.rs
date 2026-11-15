@@ -519,7 +519,15 @@ pub async fn compose(
             git_host_usecase.clone(),
         ),
     );
+    let pull_request_usecase = Arc::new(
+        adaptor::controller::wiring::build_pull_request_usecase(
+            app_config.clone(),
+            git_host_usecase.clone(),
+        )
+        .with_state_publisher(state_subscriptions.clone()),
+    );
     let app_state = AppState {
+        pull_request_usecase: pull_request_usecase.clone(),
         workspace_list,
         git_usecase: git_usecase.clone(),
         repository_config_usecase: repository_config_usecase.clone(),
@@ -643,6 +651,7 @@ pub async fn compose(
         Arc::new(
             adaptor::gateway::state_subscription_reads::StateSubscriptionReads(
                 usecase::state_subscription::WorkspaceStateReads {
+                    pull_request: pull_request_usecase.clone(),
                     daemon: daemon.clone(),
                     usage: provider_usage.clone(),
                     repository: git_usecase.clone(),

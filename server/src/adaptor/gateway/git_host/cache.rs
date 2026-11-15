@@ -88,3 +88,24 @@ impl IssueCache for InMemoryTtlCache<Vec<IssueInfo>> {
 #[cfg(test)]
 #[path = "cache_test.rs"]
 mod cache_tests;
+
+#[derive(Default)]
+pub(crate) struct LatestPullRequests {
+    entries: Mutex<HashMap<String, CachedResult<crate::domain::git_host::PullRequest>>>,
+}
+impl crate::domain::git_host::PullRequestCache for LatestPullRequests {
+    fn result(&self, path: &str) -> CachedResult<crate::domain::git_host::PullRequest> {
+        self.entries.lock().get(path).cloned().unwrap_or_default()
+    }
+    fn record(
+        &self,
+        path: &str,
+        result: Result<crate::domain::git_host::PullRequest, GitHostError>,
+    ) {
+        self.entries
+            .lock()
+            .entry(path.into())
+            .or_default()
+            .record(result);
+    }
+}

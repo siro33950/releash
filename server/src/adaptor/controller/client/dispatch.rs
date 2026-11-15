@@ -43,6 +43,7 @@ impl ClientCommandDispatch {
         self.daemon = deps.daemon.clone();
         self.mutations = deps.workflow_runtime_usecase.clone();
         super::repository::register_shared(self, deps);
+        super::pull_request::register_shared(self, deps);
         super::code::register_shared(self, deps);
         super::comment::register_shared(self, deps);
         super::agent_session::register_shared(self, deps);

@@ -80,3 +80,19 @@ fn test_pr選択_同状態の最後を選びopenとmergedとclosedの優先順�
         .retain(|(_, pr)| pr.state == PrState::Closed);
     assert_eq!(status.for_branch("branch").unwrap().number, 6);
 }
+
+#[test]
+fn test_pr作成操作_closedだけに表示する() {
+    // Given / When / Then
+    for state in [PrState::Open, PrState::Closed, PrState::Merged] {
+        for draft in [false, true] {
+            let pr = PrInfo {
+                number: 1,
+                url: "url".into(),
+                state,
+                draft,
+            };
+            assert_eq!(pr.allows_new_pull_request(), state == PrState::Closed);
+        }
+    }
+}

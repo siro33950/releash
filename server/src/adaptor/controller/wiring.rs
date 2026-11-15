@@ -438,3 +438,15 @@ pub(crate) fn spawn_startup_app_data_gc(
             .await;
     });
 }
+
+pub fn build_pull_request_usecase(
+    config: Arc<dyn RepositoryConfigRepository>,
+    git_host: Arc<GitHostUsecase>,
+) -> crate::usecase::git_host::PullRequestUsecase {
+    crate::usecase::git_host::PullRequestUsecase::new(
+        Arc::new(GitGateway::new(config)),
+        git_host,
+        Arc::new(GitHubGitHostGateway::default()),
+        Arc::new(crate::adaptor::gateway::git_host::cache::LatestPullRequests::default()),
+    )
+}

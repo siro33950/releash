@@ -161,6 +161,7 @@ where
 
 #[derive(Clone)]
 pub struct WorkspaceStateReads {
+    pub pull_request: Arc<crate::usecase::git_host::PullRequestUsecase>,
     pub daemon: crate::usecase::daemon::DaemonUsecase,
     pub repository: Arc<GitUsecase>,
     pub repository_config: Arc<RepositoryConfigUsecase>,
@@ -346,6 +347,11 @@ impl WorkspaceStateReads {
                         .map_err(error)?,
                 ))
             }
+            T::CheckLog(path, job) => {
+                return Ok(StateValue::CheckLog(
+                    self.pull_request.check_log(path, *job).await,
+                ))
+            }
             T::ProviderUsage => return Ok(StateValue::ProviderUsage(self.usage.snapshot())),
             T::ProviderHookHealth => {
                 return Ok(StateValue::ProviderHookHealth(
@@ -464,6 +470,9 @@ impl WorkspaceStateReads {
             T::WorkflowConfig => {
                 StateValue::WorkflowConfig(self.app_config.get_workflow_config().map_err(error)?)
             }
+            T::PullRequest(path) => StateValue::PullRequest(self.pull_request.read(path).map_err(|e| error(crate::usecase::repository_error::UsecaseError::from(e)))?),
+            T::PullRequestBases(path) => StateValue::PullRequestBases(self.pull_request.bases(path).map_err(|e| error(crate::usecase::repository_error::UsecaseError::from(e)))?),
+            T::CheckLog(..) => unreachable!("async reads handled above"),
             T::ExecutionOverview | T::DaemonInfo | T::WorkflowExecution(_) | T::WorkflowOutput(..) | T::NodeArtifact(_) | T::ReviewSessionThreads(..) | T::ReviewWorktreeThreads(..)
             | T::ReviewSessionThread(..) | T::ReviewSessionThreadHistory(..) | T::Issues(_) | T::FilteredIssues(..)
             | T::Terminal(_)
@@ -497,6 +506,11 @@ impl WorkspaceStateReads {
                 self.notion.refresh_label_options(path).await
             }
             SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests().await,
+            SubscriptionTarget::PullRequest(path) => self
+                .pull_request
+                .refresh(path)
+                .await
+                .map_err(|e| error(crate::usecase::repository_error::UsecaseError::from(e)))?,
             _ => {}
         }
         Ok(())

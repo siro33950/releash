@@ -30,3 +30,5 @@ pub(crate) fn parse_provider(
         _ => None,
     }
 }
+
+pub(crate) mod pull_request;

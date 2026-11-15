@@ -6,6 +6,7 @@ fn main() {
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path().expect("bundled protoc"));
     config.boxed(".releash.client.v1.Push.event.workflow_execution_changed");
     config.boxed(".releash.client.v1.SessionTabSnapshot.node");
+    config.boxed(".releash.client.v1.PullRequestSnapshot.branch_pull_request.present");
     config.file_descriptor_set_path(directory.join("client_descriptor.bin"));
     config
         .compile_protos(&[proto.join("client.proto")], &[proto])

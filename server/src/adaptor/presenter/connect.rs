@@ -753,3 +753,25 @@ impl ConnectFailure for crate::domain::provider_usage::UsageError {
         }
     }
 }
+
+impl ConnectFailure for crate::domain::git_host::PullRequestCreationError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        match self {
+            Self::EmptyTitle => connectrpc::ErrorCode::InvalidArgument,
+            Self::NotGitHubRepository | Self::HeadNotOnOrigin { .. } => {
+                connectrpc::ErrorCode::FailedPrecondition
+            }
+            Self::Host(error) => error.connect_code(),
+            Self::Repository(error) => error.connect_code(),
+        }
+    }
+}
+impl ConnectFailure for crate::domain::git_host::PrCommentError {
+    fn connect_code(&self) -> connectrpc::ErrorCode {
+        match self {
+            Self::Empty => connectrpc::ErrorCode::InvalidArgument,
+            Self::Host(error) => error.connect_code(),
+            Self::Repository(error) => error.connect_code(),
+        }
+    }
+}

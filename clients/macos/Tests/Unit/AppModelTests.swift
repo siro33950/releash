@@ -366,7 +366,9 @@ extension AppModelTests {
     for (path, axis) in [("/repo/a", PaneLayout.Axis.horizontal), ("/repo/b", .vertical)] {
       model.selectWorktree(path)
       try await eventually { model.layoutLoaded }
-      let tabs = PaneTab.Kind.allCases.filter { $0 != .file }.map { PaneTab(kind: $0) }
+      let tabs = PaneTab.Kind.allCases.filter { $0 != .file && $0 != .checkLog }.map {
+        PaneTab(kind: $0)
+      }
       model.editLayout { layout in
         layout = .split(
           id: "split", axis: axis, ratio: 0.5,
@@ -595,6 +597,23 @@ extension AppModelTests {
 }
 
 @MainActor final class AppModelLayoutEchoTests: XCTestCase {
+  func test_配置の保存結果を受信しても開いたcheckログを閉じない() throws {
+    // Given
+    let model = AppModel()
+    model.selectedWorktree = "/repo"
+    var state = Releash_Client_V1_NullableWorkspaceStateDto()
+    state.value.paneLayout = testLayout(.session).message
+    model.receiveWorkspaceState(state, path: "/repo")
+    model.panes.openCheckLog(worktree: "/repo", job: 42, title: "CI")
+    model.layout = try model.panes.layout()
+    state.value.paneLayout = model.layout.message
+    // When
+    model.receiveWorkspaceState(state, path: "/repo")
+    // Then
+    XCTAssertEqual(
+      try model.panes.layout().tabs.filter { $0.kind == .checkLog }.map(\.checkJob), [42])
+  }
+
   func test_同じ配置の再配信_未保存のペイン分割を取り消さない() throws {
     // Given
     let model = AppModel()

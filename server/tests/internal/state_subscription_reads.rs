@@ -1,5 +1,8 @@
 use crate::adaptor_gateway_workflow_workflow_host_test_helpers::archive_fixture;
 use releashd::test_support::integration::platform::FailureRecordStore;
+use releashd::test_support::integration::platform::{
+    ActionsJobId, NewPullRequest, PrCommentText, PullRequest,
+};
 use releashd::test_support::integration::sessions::test_sessions;
 use releashd::test_support::integration::sessions::MemoryHookHealthRepository as MemoryHookHealth;
 use releashd::test_support::integration::subscriptions::SubscriptionTarget as T;
@@ -160,6 +163,29 @@ struct Issues {
 }
 #[async_trait::async_trait]
 impl GitHostProvider for Issues {
+    async fn fetch_pull_request(&self, _: &str, _: u64) -> Result<PullRequest, GitHostError> {
+        panic!("unused")
+    }
+    async fn create_pull_request(
+        &self,
+        _: &str,
+        _: &str,
+        _: &NewPullRequest,
+    ) -> Result<(), GitHostError> {
+        panic!("unused")
+    }
+    async fn post_pull_request_comment(
+        &self,
+        _: &str,
+        _: u64,
+        _: &PrCommentText,
+    ) -> Result<(), GitHostError> {
+        panic!("unused")
+    }
+    async fn fetch_check_log(&self, _: &str, _: ActionsJobId) -> Result<String, GitHostError> {
+        panic!("unused")
+    }
+
     async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
         Ok(PrStatus::default())
     }
@@ -359,6 +385,7 @@ impl Fixture {
             ), comments.clone(),
         ));
         let reads = WorkspaceStateReads {
+            pull_request: Arc::new(releashd::test_support::integration::platform::build_pull_request_usecase(config.clone(), git_host.clone())),
             daemon: releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
                 releashd::test_support::integration::daemon::serving(),
             ),

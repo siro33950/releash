@@ -39,6 +39,37 @@ impl FakeProvider {
 #[async_trait::async_trait]
 
 impl GitHostProvider for FakeProvider {
+    async fn fetch_pull_request(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> Result<crate::domain::git_host::PullRequest, crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+    async fn create_pull_request(
+        &self,
+        _: &str,
+        _: &str,
+        _: &crate::domain::git_host::NewPullRequest,
+    ) -> Result<(), crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+    async fn post_pull_request_comment(
+        &self,
+        _: &str,
+        _: u64,
+        _: &crate::domain::git_host::PrCommentText,
+    ) -> Result<(), crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+    async fn fetch_check_log(
+        &self,
+        _: &str,
+        _: crate::domain::git_host::ActionsJobId,
+    ) -> Result<String, crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+
     async fn fetch_pr_status(&self, _repo_path: &str) -> Result<PrStatus, GitHostError> {
         self.pr_fetch_count.fetch_add(1, Ordering::SeqCst);
         self.pr_status.clone()
@@ -64,6 +95,38 @@ async fn test_pr読取_取得失敗を前の成功と区別し回復時に解除
     struct Provider(parking_lot::RwLock<bool>);
     #[async_trait::async_trait]
     impl GitHostProvider for Provider {
+        async fn fetch_pull_request(
+            &self,
+            _: &str,
+            _: u64,
+        ) -> Result<crate::domain::git_host::PullRequest, crate::domain::git_host::GitHostError>
+        {
+            panic!("unused")
+        }
+        async fn create_pull_request(
+            &self,
+            _: &str,
+            _: &str,
+            _: &crate::domain::git_host::NewPullRequest,
+        ) -> Result<(), crate::domain::git_host::GitHostError> {
+            panic!("unused")
+        }
+        async fn post_pull_request_comment(
+            &self,
+            _: &str,
+            _: u64,
+            _: &crate::domain::git_host::PrCommentText,
+        ) -> Result<(), crate::domain::git_host::GitHostError> {
+            panic!("unused")
+        }
+        async fn fetch_check_log(
+            &self,
+            _: &str,
+            _: crate::domain::git_host::ActionsJobId,
+        ) -> Result<String, crate::domain::git_host::GitHostError> {
+            panic!("unused")
+        }
+
         async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
             if *self.0.read() {
                 Err(GitHostError::External("denied".into()))
@@ -111,6 +174,38 @@ async fn test_issue手動再取得_失敗を保持し成功時に解除する() 
     struct Provider(parking_lot::RwLock<bool>);
     #[async_trait::async_trait]
     impl GitHostProvider for Provider {
+        async fn fetch_pull_request(
+            &self,
+            _: &str,
+            _: u64,
+        ) -> Result<crate::domain::git_host::PullRequest, crate::domain::git_host::GitHostError>
+        {
+            panic!("unused")
+        }
+        async fn create_pull_request(
+            &self,
+            _: &str,
+            _: &str,
+            _: &crate::domain::git_host::NewPullRequest,
+        ) -> Result<(), crate::domain::git_host::GitHostError> {
+            panic!("unused")
+        }
+        async fn post_pull_request_comment(
+            &self,
+            _: &str,
+            _: u64,
+            _: &crate::domain::git_host::PrCommentText,
+        ) -> Result<(), crate::domain::git_host::GitHostError> {
+            panic!("unused")
+        }
+        async fn fetch_check_log(
+            &self,
+            _: &str,
+            _: crate::domain::git_host::ActionsJobId,
+        ) -> Result<String, crate::domain::git_host::GitHostError> {
+            panic!("unused")
+        }
+
         async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
             Ok(PrStatus::default())
         }

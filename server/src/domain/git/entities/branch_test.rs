@@ -41,3 +41,14 @@ fn test_ブランチ作成_ローカルは再利用し未存在とremoteは新�
     assert!(super::Branch::needs_creation("new", &branches));
     assert!(super::Branch::needs_creation("origin/main", &branches));
 }
+
+#[test]
+fn test_origin名_originのリモートだけを返す() {
+    // Given / When / Then
+    assert_eq!(
+        super::Branch::remote("origin/topic").origin_name(),
+        Some("topic")
+    );
+    assert_eq!(super::Branch::local("origin/topic").origin_name(), None);
+    assert_eq!(super::Branch::remote("upstream/topic").origin_name(), None);
+}

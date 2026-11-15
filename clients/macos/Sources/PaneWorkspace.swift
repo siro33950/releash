@@ -421,6 +421,23 @@ import SwiftUI
     onFocus?()
   }
 
+  func openCheckLog(worktree: String, job: UInt64, title: String) {
+    guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
+    if let existing = controller.tabs(inPane: pane).first(where: {
+      tabs[$0.id.id.uuidString]?.checkJob == job
+        && tabs[$0.id.id.uuidString]?.checkWorktree == worktree
+    }) {
+      controller.selectTab(existing.id)
+      return
+    }
+    guard
+      let id = controller.createTab(title: title, icon: PaneTab.Kind.checkLog.icon, inPane: pane)
+    else { return }
+    tabs[id.id.uuidString] = PaneTab(
+      id: id.id.uuidString, kind: .checkLog,
+      checkJob: job, checkWorktree: worktree, checkTitle: title)
+  }
+
   func openFile(_ path: String, base: String) {
     guard let pane = controller.focusedPaneId ?? controller.allPaneIds.first else { return }
     if let existing = controller.tabs(inPane: pane).first(where: {
@@ -463,7 +480,11 @@ struct WorkspacePaneView: View {
   @Bindable var model: AppModel
   var body: some View {
     BonsplitView(controller: model.panes.controller) { tab, pane in
-      if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal,
+      if let value = model.panes.tab(tab.id), value.kind == .checkLog,
+        let worktree = value.checkWorktree, let job = value.checkJob
+      {
+        CheckLogPane(model: model, worktree: worktree, job: job).id(worktree + String(job))
+      } else if model.layoutLoaded, let value = model.panes.tab(tab.id), value.kind == .terminal,
         let path = model.selectedWorktree
       {
         TerminalPane(

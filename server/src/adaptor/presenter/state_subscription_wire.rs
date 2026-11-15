@@ -7,6 +7,9 @@ use crate::usecase::state_subscription::StateValue;
 pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::ConnectError> {
     Ok(wire::StatePayload {
         value: Some(match value {
+            StateValue::PullRequest(value) => wire::state_payload::Value::PullRequest(super::pull_request::snapshot(value)),
+            StateValue::PullRequestBases(value) => wire::state_payload::Value::PullRequestBases(wire::PullRequestBasesSnapshot { branches: value.branches.clone(), default_branch: value.default_branch.clone() }),
+            StateValue::CheckLog(value) => wire::state_payload::Value::CheckLog(wire::CheckLogSnapshot { log: value.value.clone(), read_error: value.error.as_ref().map(ToString::to_string) }),
             StateValue::ExecutionOverview((trees, failures)) => wire::state_payload::Value::ExecutionOverview(
                 execution_overview(trees, failures).map_err(crate::adaptor::presenter::connect::command_error)?,
             ),

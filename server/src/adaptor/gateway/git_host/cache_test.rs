@@ -145,3 +145,33 @@ fn test_git情報の保持_lock保持中のpanic後も読み書きできる() {
     assert_eq!(issue_result.value, Some(vec![sample_issue(1)]));
     assert_eq!(pr_result.value, Some(PrStatus::default()));
 }
+
+#[test]
+fn test_pr内容保持_失敗しても最後の内容を残す() {
+    use crate::domain::git_host::{
+        Checks, PrConversation, PrInfo, PrState, PullRequest, PullRequestCache,
+    };
+    // Given
+    let cache = LatestPullRequests::default();
+    let pr = PullRequest {
+        info: PrInfo {
+            number: 1,
+            url: "url".into(),
+            state: PrState::Open,
+            draft: false,
+        },
+        title: "title".into(),
+        body: "".into(),
+        checks: Checks::default(),
+        conversation: PrConversation::default(),
+    };
+    cache.record("/repo", Ok(pr.clone()));
+    // When
+    cache.record("/repo", Err(GitHostError::External("offline".into())));
+    // Then
+    assert_eq!(cache.result("/repo").value, Some(pr.clone()));
+    assert!(cache.result("/repo").error.is_some());
+    assert_eq!(cache.result("/other"), CachedResult::default());
+    cache.record("/repo", Ok(pr));
+    assert!(cache.result("/repo").error.is_none());
+}

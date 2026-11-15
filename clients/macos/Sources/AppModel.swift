@@ -537,7 +537,7 @@ import SwiftProtobuf
       workspaceState.layout.rightBottomCollapsed = true
     }
     if unset, previous?.isEmpty != true { received = .empty() }
-    if received != previous {
+    if received.message != previous?.message {
       do {
         if (try? panes.layout()) != received { try panes.restore(received) }
       } catch {

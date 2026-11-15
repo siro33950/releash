@@ -558,3 +558,18 @@ fn test_履歴購読_空検索を拒否し前後の空白を無視する() {
     }
     assert!(SubscriptionTarget::parse("archived-history:05:/repo").is_err());
 }
+
+#[test]
+fn test_pr購読_対象を往復し不正なjob番号を拒む() {
+    // Given / When / Then
+    for target in [
+        SubscriptionTarget::PullRequest("/repo".into()),
+        SubscriptionTarget::PullRequestBases("/repo".into()),
+        SubscriptionTarget::CheckLog("/repo".into(), crate::domain::git_host::ActionsJobId(42)),
+    ] {
+        assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
+    }
+    for job in ["0", "-1", "01", "a"] {
+        assert!(SubscriptionTarget::from_parts("check-log", &["/repo", job]).is_err());
+    }
+}

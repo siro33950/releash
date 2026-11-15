@@ -468,6 +468,12 @@ pub(crate) mod tests {
             ),
         );
         let app_state = AppState {
+            pull_request_usecase: Arc::new(
+                releashd::test_support::integration::platform::build_pull_request_usecase(
+                    app_config.clone(),
+                    git_host_usecase.clone(),
+                ),
+            ),
             workspace_list,
             git_usecase: git_usecase.clone(),
             repository_config_usecase: Arc::new(

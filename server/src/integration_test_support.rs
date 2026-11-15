@@ -247,6 +247,7 @@ pub mod platform {
     pub use crate::common::operation_context::OperationContext;
     pub use crate::common::operation_context::OperationStopped;
 
+    pub use crate::adaptor::controller::wiring::build_pull_request_usecase;
     pub use crate::common::operation_context::spawn_blocking;
     pub use crate::common::operation_context::sync_scope;
     pub use crate::common::operation_context::wait;
@@ -282,6 +283,7 @@ pub mod platform {
     pub use crate::domain::git_host::value_objects::pr::PrStatus;
     pub use crate::domain::git_host::IssueFilter;
     pub use crate::domain::git_host::IssueOptions;
+    pub use crate::domain::git_host::{ActionsJobId, NewPullRequest, PrCommentText, PullRequest};
     pub use crate::domain::local_event::batch::CommitBatchError;
     pub use crate::domain::local_event::batch::CommitBatchResult;
     pub use crate::domain::local_event::batch::CommitOperationKind;

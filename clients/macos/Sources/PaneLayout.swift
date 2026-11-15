@@ -8,9 +8,14 @@ struct PaneTab: Codable, Equatable, Identifiable {
   var filePath: String?
   var fileMode: String?
   var fileBase: String?
-  var title: String { filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title }
+  var checkJob: UInt64?
+  var checkWorktree: String?
+  var checkTitle: String?
+  var title: String {
+    checkTitle ?? filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? kind.title
+  }
   enum Kind: String, Codable, CaseIterable {
-    case terminal, file, session, command
+    case terminal, file, session, command, checkLog
     var icon: String {
       "circle.fill"
     }
@@ -20,6 +25,7 @@ struct PaneTab: Codable, Equatable, Identifiable {
       case .file: "ファイル"
       case .session: "Session"
       case .command: "Command"
+      case .checkLog: "Check log"
       }
     }
   }
@@ -82,14 +88,14 @@ indirect enum PaneLayout: Codable, Equatable {
         if let id = tab.agentSessionID { value.agentSessionID = id }
         switch tab.kind {
         case .terminal: value.kind = .terminal
-        case .file: return nil
+        case .file, .checkLog: return nil
         case .session: value.kind = .session
         case .command: value.kind = .command
         }
         return value
       }
       if let active {
-        if tabs.contains(where: { $0.id == active && $0.kind == .file }) {
+        if tabs.contains(where: { $0.id == active && ($0.kind == .file || $0.kind == .checkLog) }) {
           if let first = pane.tabs.first { pane.activeTab = first.id }
         } else {
           pane.activeTab = active

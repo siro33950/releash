@@ -40,6 +40,18 @@ impl SubscriptionTarget {
             }
         }
         let target = match (name, args) {
+            ("pull-request", [path]) => Ok(Self::PullRequest((*path).into())),
+            ("pull-request-bases", [path]) => Ok(Self::PullRequestBases((*path).into())),
+            ("check-log", [path, job]) => {
+                let id: u64 = job.parse().map_err(|_| SubscriptionError::InvalidId)?;
+                if id == 0 || id.to_string() != *job {
+                    return Err(SubscriptionError::InvalidId);
+                }
+                Ok(Self::CheckLog(
+                    (*path).into(),
+                    crate::domain::git_host::ActionsJobId(id),
+                ))
+            }
             ("daemon-info", []) => Ok(Self::DaemonInfo),
             ("workspace-terminal", [path, id]) => {
                 crate::domain::terminal_surface::TerminalSurfaceOwner::workspace_terminal(
@@ -201,6 +213,9 @@ impl SubscriptionTarget {
 impl SubscriptionTarget {
     pub fn parts(&self) -> (&'static str, Vec<String>) {
         match self {
+            Self::PullRequest(path) => ("pull-request", vec![path.clone()]),
+            Self::PullRequestBases(path) => ("pull-request-bases", vec![path.clone()]),
+            Self::CheckLog(path, job) => ("check-log", vec![path.clone(), job.0.to_string()]),
             Self::DaemonInfo => ("daemon-info", vec![]),
             Self::Terminal(owner) => match owner {
                 crate::domain::terminal_surface::TerminalSurfaceOwner::Workspace { workspace } => {

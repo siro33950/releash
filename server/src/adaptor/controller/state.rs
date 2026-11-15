@@ -26,5 +26,6 @@ pub struct AppState {
     pub notion_usecase: Arc<NotionUsecase>,
     pub workflow_usecase: Arc<WorkflowUsecase>,
     pub terminal_surface: Arc<TerminalSurfaceApplication>,
+    pub pull_request_usecase: Arc<crate::usecase::git_host::PullRequestUsecase>,
     pub git_host_usecase: Arc<GitHostUsecase>,
 }
