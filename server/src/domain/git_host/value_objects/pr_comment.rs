@@ -1,6 +1,3 @@
-use crate::domain::git::GitError;
-use crate::domain::git_host::GitHostError;
-
 /// GitHub の PR に書かれた文章の書き手。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrCommentAuthor {
@@ -71,12 +68,6 @@ pub enum PrCommentError {
     /// 本文が空である。
     #[error("Comment の本文が空です。")]
     Empty,
-    /// GitHub が投稿を拒んだ、または GitHub に届かなかった。
-    #[error("{0}")]
-    Host(#[from] GitHostError),
-    /// Worktree の Repository を読めなかった。
-    #[error("{0}")]
-    Repository(#[from] GitError),
 }
 
 #[cfg(test)]

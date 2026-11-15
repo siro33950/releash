@@ -4,7 +4,7 @@ import XCTest
 @testable import Releash
 
 final class PaneWorkspaceTests: XCTestCase {
-  @MainActor func testCheckLogReusesTabAndIsExcludedFromServerLayout() throws {
+  @MainActor func test_チェックログ_タブを再利用してサーバ保存対象から除く() throws {
     // Given
     let workspace = PaneWorkspace()
     workspace.openCheckLog(worktree: "/repo", job: 42, title: "build")

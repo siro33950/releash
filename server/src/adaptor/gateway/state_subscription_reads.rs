@@ -35,6 +35,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::ProviderHookHealth
                 | T::WorkspaceState(..)
                 | T::RepositoryGroupState(_)
+                | T::CheckLog(..)
         ) {
             return crate::common::telemetry::observe_result_async(
                 self.0.read(target),

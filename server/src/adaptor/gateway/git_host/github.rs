@@ -4,8 +4,9 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::domain::git_host::{
-    GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrState,
-    PrStatus,
+    ActionsJobId, Checks, GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone,
+    NewPullRequest, PrAuthor, PrCommentText, PrConversation, PrInfo, PrState, PrStatus,
+    PullRequest,
 };
 
 use super::discovery::is_github_repository;
@@ -145,9 +146,8 @@ impl GitHostProvider for GitHubGitHostGateway {
         &self,
         repo_path: &str,
         number: u64,
-    ) -> Result<crate::domain::git_host::PullRequest, GitHostError> {
-        use super::pull_request::{decode, Comment, Detail, GhCheck};
-        use crate::domain::git_host::{Checks, PrConversation, PullRequest};
+    ) -> Result<PullRequest, GitHostError> {
+        use super::pull_request::{decode, Comment, Detail, GhCheck, Review};
         let number = number.to_string();
         let detail: Detail = decode(
             &run_gh_with_timeout(
@@ -177,37 +177,27 @@ impl GitHostProvider for GitHubGitHostGateway {
             )
             .await?,
         )?;
-        let mut comments = Vec::new();
-        let mut reviews = Vec::new();
-        for (endpoint, review, entries) in [
-            (
-                format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"),
-                false,
-                &mut comments,
-            ),
-            (
-                format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews"),
-                true,
-                &mut reviews,
-            ),
-        ] {
-            let pages: Vec<Vec<Comment>> = decode(
-                &run_gh_with_timeout(
-                    self.runner.as_ref(),
-                    &["api", &endpoint, "--paginate", "--slurp"],
-                    repo_path,
-                )
-                .await?,
-            )?;
-            *entries = pages
-                .into_iter()
-                .flatten()
-                .map(|entry| entry.into_comment(review))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
-        }
+        let comments = self
+            .fetch_pages::<Comment>(
+                repo_path,
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"),
+            )
+            .await?
+            .into_iter()
+            .map(Comment::into_comment)
+            .collect::<Result<_, _>>()?;
+        let reviews = self
+            .fetch_pages::<Review>(
+                repo_path,
+                &format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews"),
+            )
+            .await?
+            .into_iter()
+            .map(Review::into_comment)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         Ok(PullRequest {
             info: detail.info()?,
             title: detail.title,
@@ -226,7 +216,7 @@ impl GitHostProvider for GitHubGitHostGateway {
         &self,
         repo_path: &str,
         head: &str,
-        new: &crate::domain::git_host::NewPullRequest,
+        new: &NewPullRequest,
     ) -> Result<(), GitHostError> {
         let mut args = vec![
             "pr",
@@ -252,7 +242,7 @@ impl GitHostProvider for GitHubGitHostGateway {
         &self,
         repo_path: &str,
         number: u64,
-        text: &crate::domain::git_host::PrCommentText,
+        text: &PrCommentText,
     ) -> Result<(), GitHostError> {
         run_gh_with_timeout(
             self.runner.as_ref(),
@@ -272,7 +262,7 @@ impl GitHostProvider for GitHubGitHostGateway {
     async fn fetch_check_log(
         &self,
         repo_path: &str,
-        job: crate::domain::git_host::ActionsJobId,
+        job: ActionsJobId,
     ) -> Result<String, GitHostError> {
         run_gh_with_timeout(
             self.runner.as_ref(),
@@ -284,6 +274,22 @@ impl GitHostProvider for GitHubGitHostGateway {
 }
 
 impl GitHubGitHostGateway {
+    async fn fetch_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        repo_path: &str,
+        endpoint: &str,
+    ) -> Result<Vec<T>, GitHostError> {
+        let pages: Vec<Vec<T>> = super::pull_request::decode(
+            &run_gh_with_timeout(
+                self.runner.as_ref(),
+                &["api", endpoint, "--paginate", "--slurp"],
+                repo_path,
+            )
+            .await?,
+        )?;
+        Ok(pages.into_iter().flatten().collect())
+    }
+
     async fn fetch_github_prs(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         let open_prs = detect_prs(self.runner.as_ref(), repo_path, "open", PrState::Open).await?;
         let merged = detect_prs(self.runner.as_ref(), repo_path, "merged", PrState::Merged).await?;

@@ -96,21 +96,31 @@ struct User {
 pub(super) struct Comment {
     user: User,
     body: String,
-    created_at: Option<String>,
-    submitted_at: Option<String>,
+    created_at: String,
 }
 impl Comment {
-    pub fn into_comment(self, review: bool) -> Result<Option<PrComment>, GitHostError> {
-        let time = if review {
-            self.submitted_at
-        } else {
-            self.created_at
-        };
-        let Some(time) = time else {
-            if review {
-                return Ok(None);
-            }
-            return Err(GitHostError::External("Comment timestamp missing".into()));
+    pub fn into_comment(self) -> Result<PrComment, GitHostError> {
+        Ok(PrComment {
+            author: PrCommentAuthor {
+                login: self.user.login,
+                is_bot: self.user.kind == "Bot",
+            },
+            body: self.body,
+            written_at: timestamp(&self.created_at)?,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct Review {
+    user: User,
+    body: String,
+    submitted_at: Option<String>,
+}
+impl Review {
+    pub fn into_comment(self) -> Result<Option<PrComment>, GitHostError> {
+        let Some(time) = self.submitted_at else {
+            return Ok(None);
         };
         Ok(Some(PrComment {
             author: PrCommentAuthor {

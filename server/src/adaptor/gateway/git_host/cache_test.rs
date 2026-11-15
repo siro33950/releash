@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::git_host::{IssueLabel, Milestone, PrAuthor};
+use crate::domain::git_host::{IssueLabel, Milestone, PrAuthor, PullRequestCache};
 
 fn sample_issue(number: u64) -> IssueInfo {
     IssueInfo {
@@ -153,6 +153,7 @@ fn test_pr内容保持_失敗しても最後の内容を残す() {
     };
     // Given
     let cache = LatestPullRequests::default();
+    cache.hold("/repo");
     let pr = PullRequest {
         info: PrInfo {
             number: 1,
@@ -174,4 +175,47 @@ fn test_pr内容保持_失敗しても最後の内容を残す() {
     assert_eq!(cache.result("/other"), CachedResult::default());
     cache.record("/repo", Ok(pr));
     assert!(cache.result("/repo").error.is_none());
+    // When
+    cache.forget("/repo");
+    // Then
+    assert_eq!(cache.result("/repo"), CachedResult::default());
+}
+
+#[test]
+fn test_pr内容保持_解放したpathの内容と失敗だけを捨てる() {
+    // Given
+    let cache = LatestPullRequests::default();
+    cache.hold("/worktree");
+    cache.hold("/other");
+    let error = GitHostError::External("offline".into());
+    cache.record("/worktree", Err(error.clone()));
+    cache.record("/other", Err(error.clone()));
+    // When
+    cache.forget("/worktree");
+    cache.forget("/missing");
+    // Then
+    assert_eq!(cache.result("/worktree"), CachedResult::default());
+    assert_eq!(cache.result("/other").error, Some(error));
+}
+
+#[test]
+fn test_pr内容保持_保持前と解放後の取得結果を捨てる() {
+    // Given
+    let cache = LatestPullRequests::default();
+    let error = GitHostError::External("offline".into());
+    // When
+    cache.record("/repo", Err(error.clone()));
+    // Then
+    assert_eq!(cache.result("/repo"), CachedResult::default());
+    // When
+    cache.hold("/repo");
+    cache.record("/repo", Err(error.clone()));
+    cache.hold("/repo");
+    // Then
+    assert_eq!(cache.result("/repo").error, Some(error.clone()));
+    // When
+    cache.forget("/repo");
+    cache.record("/repo", Err(error));
+    // Then
+    assert_eq!(cache.result("/repo"), CachedResult::default());
 }

@@ -3,13 +3,30 @@ use std::sync::Arc;
 use crate::domain::failure::WorkFailure;
 use crate::domain::git::{GitError, GitService};
 use crate::domain::git_host::{
-    authorize_pull_request_creation, ActionsJobId, BranchPullRequest, GitHostProvider,
-    NewPullRequest, PrCommentError, PrCommentText, PullRequestBases, PullRequestCache,
-    PullRequestCreationError,
+    authorize_pull_request_creation, ActionsJobId, BranchPullRequest, GitHostError,
+    GitHostProvider, NewPullRequest, PrCommentError, PrCommentText, PullRequestBases,
+    PullRequestCache, PullRequestCreationError,
 };
 use crate::usecase::fetched::Fetched;
 use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
+
+/// PR を作る操作と、Comment を投稿する操作の失敗。
+#[derive(Debug, thiserror::Error)]
+pub enum PullRequestUsecaseError {
+    /// PR を作れない業務上の理由。
+    #[error(transparent)]
+    Creation(#[from] PullRequestCreationError),
+    /// Comment を投稿できない業務上の理由。
+    #[error(transparent)]
+    Comment(#[from] PrCommentError),
+    /// GitHub が操作を拒んだ、または GitHub に届かなかった。
+    #[error(transparent)]
+    Host(#[from] GitHostError),
+    /// Worktree の Repository を読めなかった。
+    #[error(transparent)]
+    Repository(#[from] GitError),
+}
 
 /// PR の面の手順。選んでいる Worktree のブランチの PR を読む、作る、Comment を投稿する、check のログを読む。
 #[derive(Clone)]
@@ -79,6 +96,16 @@ impl PullRequestUsecase {
         Ok(())
     }
 
+    /// PR の面の購読が始まる Worktree の、PR の内容を持ち始める。
+    pub fn acquire(&self, worktree_path: &str) {
+        self.pull_requests.hold(worktree_path);
+    }
+
+    /// PR の面の購読が無くなった Worktree の、持っている PR の内容を捨てる。
+    pub fn release(&self, worktree_path: &str) {
+        self.pull_requests.forget(worktree_path);
+    }
+
     /// PR の base に選べるブランチと、初めに選ぶ既定のブランチを返す。
     pub fn bases(&self, worktree_path: &str) -> Result<PullRequestBases, GitError> {
         let branches = self.git.list_branches(worktree_path)?;
@@ -96,7 +123,7 @@ impl PullRequestUsecase {
         body: String,
         base: String,
         draft: bool,
-    ) -> Result<(), PullRequestCreationError> {
+    ) -> Result<(), PullRequestUsecaseError> {
         let new = NewPullRequest::new(title, body, base, draft)?;
         let repo_path = self.git.main_repo_path(worktree_path)?;
         let head = self.git.current(worktree_path)?;
@@ -119,7 +146,7 @@ impl PullRequestUsecase {
         worktree_path: &str,
         number: u64,
         body: String,
-    ) -> Result<(), PrCommentError> {
+    ) -> Result<(), PullRequestUsecaseError> {
         let text = PrCommentText::new(body)?;
         let repo_path = self.git.main_repo_path(worktree_path)?;
         self.provider
@@ -131,15 +158,21 @@ impl PullRequestUsecase {
     }
 
     /// GitHub Actions の job のログの全体を GitHub から取る。
-    pub async fn check_log(&self, worktree_path: &str, job: ActionsJobId) -> Fetched<String> {
+    /// GitHub から取れなかった失敗は、戻り値の `Fetched` に記録する。
+    pub async fn check_log(
+        &self,
+        worktree_path: &str,
+        job: ActionsJobId,
+    ) -> Result<Fetched<String>, GitError> {
+        let repo_path = self.git.main_repo_path(worktree_path)?;
         let mut log = Fetched::default();
         log.record(
             self.provider
-                .fetch_check_log(worktree_path, job)
+                .fetch_check_log(&repo_path, job)
                 .await
                 .map_err(|error| WorkFailure::from_error(&error)),
         );
-        log
+        Ok(log)
     }
 
     fn notify(&self, worktree_path: &str) {

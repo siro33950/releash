@@ -52,7 +52,9 @@ fn view(pr: &PullRequest) -> wire::PullRequestView {
                         CheckBucket::Fail => wire::PullRequestCheckBucket::Fail,
                         CheckBucket::Cancel => wire::PullRequestCheckBucket::Cancel,
                         CheckBucket::Pending => wire::PullRequestCheckBucket::Pending,
-                        _ => wire::PullRequestCheckBucket::Unspecified,
+                        CheckBucket::Skipping | CheckBucket::Pass => {
+                            wire::PullRequestCheckBucket::Unspecified
+                        }
                     } as i32,
                     failure_seconds: check.failure_seconds(),
                     started_at: check.running_since(),

@@ -349,7 +349,9 @@ impl WorkspaceStateReads {
             }
             T::CheckLog(path, job) => {
                 return Ok(StateValue::CheckLog(
-                    self.pull_request.check_log(path, *job).await,
+                    self.pull_request.check_log(path, *job).await.map_err(|e| {
+                        error(crate::usecase::repository_error::UsecaseError::from(e))
+                    })?,
                 ))
             }
             T::ProviderUsage => return Ok(StateValue::ProviderUsage(self.usage.snapshot())),
@@ -560,6 +562,7 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         match target {
             SubscriptionTarget::NotionTasks(request) => self.notion.acquire_tasks(request),
             SubscriptionTarget::NotionLabelOptions(path) => self.notion.acquire_label_options(path),
+            SubscriptionTarget::PullRequest(path) => self.pull_request.acquire(path),
             _ => {}
         }
     }
@@ -567,6 +570,7 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         match target {
             SubscriptionTarget::NotionTasks(request) => self.notion.release_tasks(request),
             SubscriptionTarget::NotionLabelOptions(path) => self.notion.release_label_options(path),
+            SubscriptionTarget::PullRequest(path) => self.pull_request.release(path),
             _ => {}
         }
     }

@@ -120,7 +120,7 @@ struct WorktreeCard: View {
         Text(branch.name).fontWeight(.medium).lineLimit(1)
         Spacer()
         if branch.hasPrState {
-          let appearance = prAppearance(branch.prState)
+          let appearance = UIStyle.prAppearance(branch.prState)
           CardIcon(image: Image(appearance.icon))
             .foregroundStyle(appearance.color)
             .help("PR #\(branch.prStateNumber): \(branch.prState)")
@@ -184,14 +184,6 @@ struct WorktreeCard: View {
     return messages.isEmpty ? nil : messages.joined(separator: "\n")
   }
 
-  private func prAppearance(_ value: String) -> (icon: String, color: Color) {
-    switch value {
-    case "open": ("git-pull-request", .green)
-    case "draft": ("git-pull-request-draft", .gray)
-    case "merged": ("git-merge", .purple)
-    default: ("git-pull-request-closed", .red)
-    }
-  }
   func remove() {
     guard let client = model.client else { return }
     var request = Releash_Client_V1_RemoveWorktreeRequest()

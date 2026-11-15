@@ -32,8 +32,9 @@ struct PullRequestPanel: View {
           ScrollView {
             VStack(alignment: .leading, spacing: UIStyle.spacing) {
               HStack {
-                CardIcon(image: Image(icon(pr.state)))
-                  .foregroundStyle(color(pr.state))
+                let appearance = UIStyle.prAppearance(appearanceState(pr.state))
+                CardIcon(image: Image(appearance.icon))
+                  .foregroundStyle(appearance.color)
                 Text(pr.title).font(.headline)
                 Text("#" + String(pr.number)).foregroundStyle(.secondary)
                 Spacer()
@@ -45,6 +46,8 @@ struct PullRequestPanel: View {
                 .accessibilityLabel("ブラウザで開く")
               }
               StructuredText(markdown: pr.body)
+                .environment(
+                  \.openURL, OpenURLAction { openCommentLink($0) ? .handled : .discarded })
               if pr.canCreateNew {
                 Button("新しい PR を作る") { Task { @MainActor in creating = true } }
               }
@@ -70,6 +73,8 @@ struct PullRequestPanel: View {
                     }
                   }
                   StructuredText(markdown: item.body)
+                    .environment(
+                      \.openURL, OpenURLAction { openCommentLink($0) ? .handled : .discarded })
                 }
               }
             }
@@ -209,23 +214,15 @@ struct PullRequestPanel: View {
     }
   }
 
-  private func icon(_ state: Releash_Client_V1_PullRequestState) -> String {
+  private func appearanceState(_ state: Releash_Client_V1_PullRequestState) -> String {
     switch state {
-    case .draft: "git-pull-request-draft"
-    case .merged: "git-merge"
-    case .closed: "git-pull-request-closed"
-    default: "git-pull-request"
+    case .draft: "draft"
+    case .merged: "merged"
+    case .closed: "closed"
+    default: "open"
     }
   }
 
-  private func color(_ state: Releash_Client_V1_PullRequestState) -> Color {
-    switch state {
-    case .draft: .gray
-    case .merged: .purple
-    case .closed: .red
-    default: .green
-    }
-  }
 }
 
 struct CheckLogPane: View {

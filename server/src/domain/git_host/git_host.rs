@@ -71,11 +71,17 @@ pub trait PrStatusCache: Send + Sync {
     fn result(&self, repo_path: &str) -> CachedResult<PrStatus>;
     fn record(&self, repo_path: &str, result: Result<PrStatus, GitHostError>);
 }
-/// Worktree ごとに、最後に取れた PR の内容と、直近の取得の失敗を持つ。期限では捨てない。
+/// PR の面が出ている Worktree ごとに、最後に取れた PR の内容と、直近の取得の失敗を持つ。
+/// 持つのは `hold` から `forget` までの間である。期限では捨てない。
 pub trait PullRequestCache: Send + Sync {
+    /// その Worktree の分を持ち始める。
+    fn hold(&self, worktree_path: &str);
     fn result(&self, worktree_path: &str) -> CachedResult<PullRequest>;
     /// 取得の結果を記録する。失敗のときは、最後に取れた内容を残す。
+    /// `hold` していない Worktree の結果は捨てる。
     fn record(&self, worktree_path: &str, result: Result<PullRequest, GitHostError>);
+    /// その Worktree の分を捨てる。
+    fn forget(&self, worktree_path: &str);
 }
 pub trait IssueCache: Send + Sync {
     fn result(&self, repo_path: &str) -> CachedResult<Vec<IssueInfo>>;

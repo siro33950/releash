@@ -3130,3 +3130,59 @@ fn test_workflow診断失敗_invalid_argumentとして返す() {
         connectrpc::ErrorCode::InvalidArgument
     );
 }
+
+#[test]
+fn test_pr操作失敗_業務と外部とrepositoryのコードを保つ() {
+    use crate::domain::git::GitError;
+    use crate::domain::git_host::{GitHostError, PrCommentError, PullRequestCreationError};
+    use crate::usecase::git_host::PullRequestUsecaseError as E;
+    // Given
+    let cases = [
+        (
+            E::Creation(PullRequestCreationError::EmptyTitle),
+            ErrorCode::InvalidArgument,
+        ),
+        (
+            E::Creation(PullRequestCreationError::NotGitHubRepository),
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            E::Creation(PullRequestCreationError::HeadNotOnOrigin {
+                branch: "topic".into(),
+            }),
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            E::Comment(PrCommentError::Empty),
+            ErrorCode::InvalidArgument,
+        ),
+        (
+            E::Host(GitHostError::External("offline".into())),
+            ErrorCode::Internal,
+        ),
+        (
+            E::Repository(GitError::External("io".into())),
+            ErrorCode::Internal,
+        ),
+        (
+            E::Repository(GitError::Rule("rule".into())),
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            E::Host(GitHostError::Technical(
+                crate::common::operation_context::OperationStopped::Expired.into(),
+            )),
+            ErrorCode::DeadlineExceeded,
+        ),
+        (
+            E::Repository(GitError::Technical(
+                crate::common::operation_context::OperationStopped::Cancelled.into(),
+            )),
+            ErrorCode::Canceled,
+        ),
+    ];
+    // When / Then
+    for (error, expected) in cases {
+        assert_eq!(error.connect_code(), expected);
+    }
+}

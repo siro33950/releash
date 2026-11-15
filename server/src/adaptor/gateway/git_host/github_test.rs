@@ -411,7 +411,7 @@ async fn test_pr取得_本文とcheckとcommentを読み取る() {
             } else if args[0..2] == ["pr", "checks"] {
                 r#"[{"name":"test","bucket":"fail","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:04:00Z","link":"https://github.com/a/b/actions/runs/1/job/7"},{"name":"running","bucket":"pending","startedAt":"2026-01-01T00:00:00Z","completedAt":"0001-01-01T00:00:00Z","link":""},{"name":"external","bucket":"fail","startedAt":"0001-01-01T00:00:00Z","completedAt":"0001-01-01T00:00:00Z","link":"https://example.com/check"}]"#
             } else if args[1].ends_with("/reviews") {
-                r#"[[{"user":{"login":"reviewer","type":"User"},"body":"review","submitted_at":"2026-01-01T00:02:00Z"},{"user":{"login":"empty","type":"User"},"body":"","submitted_at":null}]]"#
+                r#"[[{"user":{"login":"reviewer","type":"User"},"body":"review","submitted_at":"2026-01-01T00:02:00Z"},{"user":{"login":"empty","type":"User"},"body":"pending review","submitted_at":null}]]"#
             } else {
                 r#"[[{"user":{"login":"bot","type":"Bot"},"body":"comment","created_at":"2026-01-01T00:01:00Z"}]]"#
             };
@@ -546,4 +546,68 @@ async fn test_pr操作_外部コマンドの失敗理由を返す() {
         .unwrap_err()
         .to_string()
         .contains("permission denied"));
+}
+
+#[tokio::test]
+async fn test_pr取得_複数ページのcommentと提出済みreviewだけを返す() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            let value = match args {
+                ["pr", "view", ..] => {
+                    r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":""}"#
+                }
+                ["pr", "checks", ..] => "[]",
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/comments") => {
+                    r#"[[{"user":{"login":"alice","type":"User"},"body":"first","created_at":"2026-01-01T00:00:00Z"}],[{"user":{"login":"bot","type":"Bot"},"body":"last","created_at":"2026-01-01T00:02:00Z"}]]"#
+                }
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/reviews") => {
+                    r#"[[{"user":{"login":"alice","type":"User"},"body":"pending","submitted_at":null}],[{"user":{"login":"bob","type":"User"},"body":"review","submitted_at":"2026-01-01T00:01:00Z"}]]"#
+                }
+                _ => panic!("unexpected arguments: {args:?}"),
+            };
+            GhCommandOutput::Success(value.into())
+        }
+    }
+    // When
+    let pr = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(
+        pr.conversation
+            .entries()
+            .iter()
+            .map(|entry| entry.body.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "review", "last"]
+    );
+    assert!(pr.conversation.entries()[2].author.is_bot);
+}
+
+#[tokio::test]
+async fn test_pr取得_reviewの不正な時刻を失敗として返す() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            GhCommandOutput::Success(if args[0..2] == ["pr", "view"] {
+                r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":""}"#
+            } else if args[1].ends_with("/reviews") {
+                r#"[[{"user":{"login":"alice","type":"User"},"body":"review","submitted_at":"invalid"}]]"#
+            } else { "[]" }.into())
+        }
+    }
+    // When
+    let result = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await;
+    // Then
+    assert!(
+        matches!(result, Err(GitHostError::External(message)) if message.contains("Invalid GitHub timestamp"))
+    );
 }

@@ -1,7 +1,7 @@
 import XCTest
 
 final class PullRequestTests: XCTestCase {
-  @MainActor func testPullRequestShowsTitleDescriptionCommentAndChecks() async throws {
+  @MainActor func test_PR表示_タイトル本文コメントとチェックを表示する() async throws {
     // Given
     let fixture = try Fixture(pullRequest: true)
     let app = XCUIApplication()

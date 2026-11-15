@@ -160,11 +160,19 @@ struct Issues {
     values: Mutex<Vec<IssueInfo>>,
     own_runtime: AtomicBool,
     failure: Mutex<bool>,
+    pull_request: Mutex<Option<PullRequest>>,
+    detail_gate: Mutex<Option<Arc<(tokio::sync::Notify, tokio::sync::Notify)>>>,
+    log_calls: Mutex<Vec<(String, ActionsJobId)>>,
 }
 #[async_trait::async_trait]
 impl GitHostProvider for Issues {
     async fn fetch_pull_request(&self, _: &str, _: u64) -> Result<PullRequest, GitHostError> {
-        panic!("unused")
+        let gate = self.detail_gate.lock().clone();
+        if let Some(gate) = gate {
+            gate.0.notify_one();
+            gate.1.notified().await;
+        }
+        Ok(self.pull_request.lock().clone().unwrap())
     }
     async fn create_pull_request(
         &self,
@@ -182,12 +190,22 @@ impl GitHostProvider for Issues {
     ) -> Result<(), GitHostError> {
         panic!("unused")
     }
-    async fn fetch_check_log(&self, _: &str, _: ActionsJobId) -> Result<String, GitHostError> {
-        panic!("unused")
+    async fn fetch_check_log(&self, path: &str, job: ActionsJobId) -> Result<String, GitHostError> {
+        self.log_calls.lock().push((path.into(), job));
+        Ok("job output".into())
     }
 
     async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
-        Ok(PrStatus::default())
+        Ok(PrStatus {
+            open_prs: self
+                .pull_request
+                .lock()
+                .as_ref()
+                .map(|pr| ("main".into(), pr.info.clone()))
+                .into_iter()
+                .collect(),
+            completed_prs: vec![],
+        })
     }
     async fn list_issues(&self, _: &str) -> Result<Vec<IssueInfo>, GitHostError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -385,7 +403,7 @@ impl Fixture {
             ), comments.clone(),
         ));
         let reads = WorkspaceStateReads {
-            pull_request: Arc::new(releashd::test_support::integration::platform::build_pull_request_usecase(config.clone(), git_host.clone())),
+            pull_request: Arc::new(releashd::test_support::integration::platform::pull_request_with_provider(config.clone(), git_host.clone(), issues.clone())),
             daemon: releashd::test_support::integration::daemon::DaemonUsecase::test_with_repository(
                 releashd::test_support::integration::daemon::serving(),
             ),
@@ -1910,4 +1928,91 @@ async fn test_実行木概要購読_全worktreeの失敗と解消をworkspace_li
             matches!(event, Some(StateSubscriptionEvent::Item(id, Event::Change(_, _, value))) if id == format!("client:{target}") && releashd::test_support::integration::subscriptions::same(&value, expected))
         );
     }
+}
+
+#[tokio::test]
+async fn test_checkログ_本番の読み取り経路でログを返す() {
+    // Given
+    let fixture = Fixture::new();
+    let reads = StateSubscriptionReads(fixture.reads.clone());
+    // When
+    let value = reads
+        .read(&T::CheckLog(fixture.path.clone(), ActionsJobId(7)))
+        .await
+        .unwrap();
+    // Then
+    assert!(
+        matches!(value, StateValue::CheckLog(value) if value.value.as_deref() == Some("job output") && value.error.is_none())
+    );
+    assert_eq!(
+        *fixture.issues.log_calls.lock(),
+        [(fixture.path.clone(), ActionsJobId(7))]
+    );
+}
+
+#[tokio::test]
+async fn test_pr購読解放_最後の購読終了後に完了した取得結果を保持しない() {
+    // Given
+    use releashd::test_support::integration::platform::{PrInfo, PrState};
+    let fixture = Fixture::new();
+    let git = git2::Repository::open(&fixture.path).unwrap();
+    let commit = git.head().unwrap().peel_to_commit().unwrap();
+    if git.head().unwrap().shorthand().unwrap() != "main" {
+        git.branch("main", &commit, true).unwrap();
+        git.set_head("refs/heads/main").unwrap();
+    }
+    *fixture.issues.pull_request.lock() = Some(PullRequest {
+        info: PrInfo {
+            number: 42,
+            url: "url".into(),
+            state: PrState::Open,
+            draft: false,
+        },
+        title: "title".into(),
+        body: "body".into(),
+        checks: Default::default(),
+        conversation: Default::default(),
+    });
+    let reads = Arc::new(StateSubscriptionReads(fixture.reads.clone()));
+    let target = T::PullRequest(fixture.path.clone());
+    let subscriptions =
+        fixture
+            .subscriptions
+            .with_reads(reads.clone(), None, vec![], String::new());
+    let _first = subscriptions.open("first".into()).unwrap();
+    let _second = subscriptions.open("second".into()).unwrap();
+    start_read(&subscriptions, "first", &target.to_string())
+        .await
+        .unwrap();
+    start_read(&subscriptions, "second", &target.to_string())
+        .await
+        .unwrap();
+    subscriptions
+        .deps()
+        .stop_subscription(&format!("first:{target}"))
+        .await
+        .unwrap();
+    assert!(
+        matches!(reads.read(&target).await.unwrap(), StateValue::PullRequest(value) if value.value.is_some())
+    );
+    // When
+    let gate = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+    *fixture.issues.detail_gate.lock() = Some(gate.clone());
+    let refresh = tokio::spawn({
+        let reads = reads.clone();
+        let target = target.clone();
+        async move { reads.refresh_external(&target).await }
+    });
+    gate.0.notified().await;
+    subscriptions
+        .deps()
+        .stop_subscription(&format!("second:{target}"))
+        .await
+        .unwrap();
+    gate.1.notify_one();
+    refresh.await.unwrap().unwrap();
+    // Then
+    assert!(
+        matches!(reads.read(&target).await.unwrap(), StateValue::PullRequest(value) if value.value.is_none() && value.error.is_none())
+    );
 }

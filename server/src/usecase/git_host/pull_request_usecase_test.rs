@@ -5,6 +5,7 @@ use crate::usecase::git_host::test_helpers::{FakeIssueCache, FakePrCache};
 use std::sync::Mutex;
 #[derive(Default)]
 struct Git {
+    origin: Mutex<Option<String>>,
     main_results: Mutex<std::collections::VecDeque<Result<String, GitError>>>,
     current_results: Mutex<std::collections::VecDeque<Result<String, GitError>>>,
 }
@@ -32,7 +33,13 @@ impl GitService for Git {
         panic!("unused")
     }
     fn origin_url(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
-        Ok(Some("https://github.com/a/b".into()))
+        Ok(Some(
+            self.origin
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| "https://github.com/a/b".into()),
+        ))
     }
     fn main_repo_path(&self, _any_path: &str) -> Result<String, GitError> {
         self.main_results
@@ -100,8 +107,14 @@ impl GitService for Git {
     }
 }
 #[derive(Default)]
-struct Cache(Mutex<CachedResult<PullRequest>>);
+struct Cache(Mutex<CachedResult<PullRequest>>, Mutex<Vec<String>>);
 impl PullRequestCache for Cache {
+    fn hold(&self, path: &str) {
+        self.1.lock().unwrap().push(path.into());
+    }
+    fn forget(&self, _: &str) {
+        *self.0.lock().unwrap() = CachedResult::default();
+    }
     fn result(&self, _: &str) -> CachedResult<PullRequest> {
         self.0.lock().unwrap().clone()
     }
@@ -114,10 +127,12 @@ struct Host {
     status: Mutex<Result<PrStatus, GitHostError>>,
     detail: Mutex<Result<PullRequest, GitHostError>>,
     log: Mutex<Result<String, GitHostError>>,
+    operation_error: Mutex<Option<GitHostError>>,
 }
 impl Default for Host {
     fn default() -> Self {
         Self {
+            operation_error: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
             status: Mutex::new(Ok(PrStatus {
                 open_prs: vec![("topic".into(), pr().info)],
@@ -153,7 +168,11 @@ impl GitHostProvider for Host {
             ("topic", "title", "body", "main", true)
         );
         self.calls.lock().unwrap().push("create".into());
-        Ok(())
+        self.operation_error
+            .lock()
+            .unwrap()
+            .clone()
+            .map_or(Ok(()), Err)
     }
     async fn post_pull_request_comment(
         &self,
@@ -163,10 +182,14 @@ impl GitHostProvider for Host {
     ) -> Result<(), GitHostError> {
         assert_eq!((number, text.as_str()), (42, "comment"));
         self.calls.lock().unwrap().push("comment".into());
-        Ok(())
+        self.operation_error
+            .lock()
+            .unwrap()
+            .clone()
+            .map_or(Ok(()), Err)
     }
     async fn fetch_check_log(&self, path: &str, job: ActionsJobId) -> Result<String, GitHostError> {
-        assert_eq!((path, job), ("/worktree", ActionsJobId(7)));
+        assert_eq!((path, job), ("/repo", ActionsJobId(7)));
         self.calls.lock().unwrap().push("log".into());
         self.log.lock().unwrap().clone()
     }
@@ -337,7 +360,7 @@ fn test_pr作成候補_gitのブランチと既定ブランチを返す() {
     assert!(host.calls.lock().unwrap().is_empty());
 }
 #[tokio::test]
-async fn test_checkログ_worktreeとjobを渡して成功と失敗を返す() {
+async fn test_checkログ_mainのpathとjobを渡して成功と失敗を返す() {
     // Given
     let host = Arc::new(Host::default());
     let usecase = reader(
@@ -351,7 +374,10 @@ async fn test_checkログ_worktreeとjobを渡して成功と失敗を返す() {
     ] {
         *host.log.lock().unwrap() = result.clone();
         // When
-        let fetched = usecase.check_log("/worktree", ActionsJobId(7)).await;
+        let fetched = usecase
+            .check_log("/worktree", ActionsJobId(7))
+            .await
+            .unwrap();
         // Then
         match result {
             Ok(log) => {
@@ -436,4 +462,150 @@ async fn test_pr操作_成功後のgit再取得失敗でも成功を返して購
             assert!(git.current_results.lock().unwrap().is_empty());
         }
     }
+}
+
+#[tokio::test]
+async fn test_checkログ_repository失敗ではproviderを呼ばない() {
+    // Given
+    let git = Arc::new(Git::default());
+    let error = GitError::External("missing repository".into());
+    git.main_results
+        .lock()
+        .unwrap()
+        .push_back(Err(error.clone()));
+    let host = Arc::new(Host::default());
+    let mut usecase = reader(
+        host.clone(),
+        Arc::new(FakePrCache::default()),
+        Arc::new(Cache::default()),
+    );
+    usecase.git = git;
+    // When
+    let result = usecase.check_log("/worktree", ActionsJobId(7)).await;
+    // Then
+    assert_eq!(result.unwrap_err(), error);
+    assert!(host.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn test_pr解放_保持していた内容と失敗を捨てる() {
+    // Given
+    let host = Arc::new(Host::default());
+    let status = Arc::new(FakePrCache::with_lookup(Some(
+        host.status.lock().unwrap().clone().unwrap(),
+    )));
+    let cache = Arc::new(Cache::default());
+    cache.record("/worktree", Ok(pr()));
+    cache.record("/worktree", Err(GitHostError::External("offline".into())));
+    let usecase = reader(host.clone(), status, cache);
+    assert!(usecase.read("/worktree").unwrap().value.is_some());
+    // When
+    usecase.release("/worktree");
+    // Then
+    let value = usecase.read("/worktree").unwrap();
+    assert!(value.value.is_none());
+    assert!(value.error.is_none());
+    assert!(host.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_pr作成_認可拒否では外部操作も購読通知もしない() {
+    for github in [false, true] {
+        // Given
+        let git = Arc::new(Git::default());
+        let expected = if github {
+            git.current_results
+                .lock()
+                .unwrap()
+                .push_back(Ok("unpushed".into()));
+            PullRequestCreationError::HeadNotOnOrigin {
+                branch: "unpushed".into(),
+            }
+        } else {
+            *git.origin.lock().unwrap() = Some("https://example.com/a/b".into());
+            PullRequestCreationError::NotGitHubRepository
+        };
+        let host = Arc::new(Host::default());
+        let publisher = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
+        let mut usecase = reader(
+            host.clone(),
+            Arc::new(FakePrCache::default()),
+            Arc::new(Cache::default()),
+        )
+        .with_state_publisher(publisher);
+        usecase.git = git;
+        // When
+        let result = usecase
+            .create(
+                "/worktree",
+                "title".into(),
+                "body".into(),
+                "main".into(),
+                true,
+            )
+            .await;
+        // Then
+        assert!(
+            matches!(result, Err(PullRequestUsecaseError::Creation(error)) if error == expected)
+        );
+        assert!(host.calls.lock().unwrap().is_empty());
+        assert!(crate::test_support::state_subscription::take_changes(&mut changes).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn test_pr操作_provider失敗では再取得も購読通知もしない() {
+    for create in [true, false] {
+        // Given
+        let host = Arc::new(Host::default());
+        let error = GitHostError::External("denied".into());
+        *host.operation_error.lock().unwrap() = Some(error.clone());
+        let publisher = crate::test_support::state_subscription::test_subscriptions();
+        let mut changes = crate::test_support::state_subscription::changes(&publisher);
+        let usecase = reader(
+            host.clone(),
+            Arc::new(FakePrCache::default()),
+            Arc::new(Cache::default()),
+        )
+        .with_state_publisher(publisher);
+        // When
+        let result = if create {
+            usecase
+                .create(
+                    "/worktree",
+                    "title".into(),
+                    "body".into(),
+                    "main".into(),
+                    true,
+                )
+                .await
+        } else {
+            usecase
+                .post_comment("/worktree", 42, "comment".into())
+                .await
+        };
+        // Then
+        assert!(matches!(result, Err(PullRequestUsecaseError::Host(value)) if value == error));
+        assert_eq!(
+            *host.calls.lock().unwrap(),
+            [if create { "create" } else { "comment" }]
+        );
+        assert!(crate::test_support::state_subscription::take_changes(&mut changes).is_empty());
+    }
+}
+
+#[test]
+fn test_pr購読開始_worktreeの内容を保持し始める() {
+    // Given
+    let cache = Arc::new(Cache::default());
+    let usecase = reader(
+        Arc::new(Host::default()),
+        Arc::new(FakePrCache::default()),
+        cache.clone(),
+    );
+    // When
+    usecase.acquire("/worktree");
+    // Then
+    assert_eq!(*cache.1.lock().unwrap(), ["/worktree"]);
 }

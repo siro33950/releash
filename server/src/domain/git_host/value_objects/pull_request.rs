@@ -1,5 +1,5 @@
-use crate::domain::git::{Branch, GitError};
-use crate::domain::git_host::{CachedResult, GitHostError};
+use crate::domain::git::Branch;
+use crate::domain::git_host::CachedResult;
 
 use super::{Checks, PrConversation, PrInfo, PrStatus};
 
@@ -154,12 +154,6 @@ pub enum PullRequestCreationError {
     /// head にするブランチが origin に無い。ブランチの push が要る。
     #[error("ブランチ {branch} が origin にありません。ブランチを push してから PR を作成してください。")]
     HeadNotOnOrigin { branch: String },
-    /// GitHub が作成を拒んだ、または GitHub に届かなかった。
-    #[error("{0}")]
-    Host(#[from] GitHostError),
-    /// Worktree の Repository を読めなかった。
-    #[error("{0}")]
-    Repository(#[from] GitError),
 }
 
 #[cfg(test)]
