@@ -95,4 +95,32 @@ pub(crate) mod tests {
             "fix login bug"
         );
     }
+
+    #[test]
+    fn test_ページ送り_カーソルが無いか前と同じ応答を拒否する() {
+        // Given
+        let rejected = [
+            (None, None),
+            (None, Some("first")),
+            (Some("first".to_string()), Some("first")),
+        ];
+
+        // When / Then
+        assert_eq!(
+            next_page_cursor(Some("first".into()), None),
+            Ok("first".into())
+        );
+        assert_eq!(
+            next_page_cursor(Some("second".into()), Some("first")),
+            Ok("second".into())
+        );
+        for (next, current) in rejected {
+            assert_eq!(
+                next_page_cursor(next, current),
+                Err(crate::domain::notion::NotionError::ParseError(
+                    "Notion pagination cursor is missing or repeated".into()
+                ))
+            );
+        }
+    }
 }

@@ -262,15 +262,10 @@ async fn query_task_list(
                 next_cursor: None,
             });
         }
-        let cursor = page
-            .next_cursor
-            .filter(|cursor| Some(cursor) != query.cursor.as_ref())
-            .ok_or_else(|| {
-                crate::domain::notion::NotionError::ParseError(
-                    "Notion pagination cursor is missing or repeated".into(),
-                )
-            })?;
-        query.cursor = Some(cursor);
+        query.cursor = Some(crate::domain::notion::services::next_page_cursor(
+            page.next_cursor,
+            query.cursor.as_deref(),
+        )?);
     }
 }
 

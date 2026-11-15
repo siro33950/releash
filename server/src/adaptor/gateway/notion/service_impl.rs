@@ -340,7 +340,10 @@ async fn fetch_workspace_users(
         if !has_more {
             break;
         }
-        next_cursor = cursor;
+        next_cursor = Some(crate::domain::notion::services::next_page_cursor(
+            cursor,
+            next_cursor.as_deref(),
+        )?);
     }
 
     Ok(users)
