@@ -3133,49 +3133,58 @@ fn test_workflow診断失敗_invalid_argumentとして返す() {
 
 #[test]
 fn test_pr操作失敗_業務と外部とrepositoryのコードを保つ() {
+    use crate::domain::failure::{Failure, WorkFailure};
     use crate::domain::git::GitError;
     use crate::domain::git_host::{GitHostError, PrCommentError, PullRequestCreationError};
-    use crate::usecase::git_host::PullRequestUsecaseError as E;
+    fn failure<E: std::fmt::Display>(error: E) -> WorkFailure
+    where
+        for<'a> Failure: From<&'a E>,
+    {
+        WorkFailure {
+            kind: Failure::from(&error),
+            message: error.to_string(),
+        }
+    }
     // Given
     let cases = [
         (
-            E::Creation(PullRequestCreationError::EmptyTitle),
-            ErrorCode::InvalidArgument,
-        ),
-        (
-            E::Creation(PullRequestCreationError::NotGitHubRepository),
+            failure(PullRequestCreationError::EmptyTitle),
             ErrorCode::FailedPrecondition,
         ),
         (
-            E::Creation(PullRequestCreationError::HeadNotOnOrigin {
+            failure(PullRequestCreationError::NotGitHubRepository),
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            failure(PullRequestCreationError::HeadNotOnOrigin {
                 branch: "topic".into(),
             }),
             ErrorCode::FailedPrecondition,
         ),
         (
-            E::Comment(PrCommentError::Empty),
-            ErrorCode::InvalidArgument,
-        ),
-        (
-            E::Host(GitHostError::External("offline".into())),
-            ErrorCode::Internal,
-        ),
-        (
-            E::Repository(GitError::External("io".into())),
-            ErrorCode::Internal,
-        ),
-        (
-            E::Repository(GitError::Rule("rule".into())),
+            failure(PrCommentError::Empty),
             ErrorCode::FailedPrecondition,
         ),
         (
-            E::Host(GitHostError::Technical(
+            failure(GitHostError::External("offline".into())),
+            ErrorCode::Internal,
+        ),
+        (
+            failure(GitError::External("io".into())),
+            ErrorCode::Internal,
+        ),
+        (
+            failure(GitError::Rule("rule".into())),
+            ErrorCode::FailedPrecondition,
+        ),
+        (
+            failure(GitHostError::Technical(
                 crate::common::operation_context::OperationStopped::Expired.into(),
             )),
             ErrorCode::DeadlineExceeded,
         ),
         (
-            E::Repository(GitError::Technical(
+            failure(GitError::Technical(
                 crate::common::operation_context::OperationStopped::Cancelled.into(),
             )),
             ErrorCode::Canceled,

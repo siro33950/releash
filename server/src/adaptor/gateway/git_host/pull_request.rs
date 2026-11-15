@@ -92,6 +92,14 @@ struct User {
     #[serde(rename = "type")]
     kind: String,
 }
+impl From<User> for PrCommentAuthor {
+    fn from(user: User) -> Self {
+        Self {
+            login: user.login,
+            is_bot: user.kind == "Bot",
+        }
+    }
+}
 #[derive(Deserialize)]
 pub(super) struct Comment {
     user: User,
@@ -101,10 +109,7 @@ pub(super) struct Comment {
 impl Comment {
     pub fn into_comment(self) -> Result<PrComment, GitHostError> {
         Ok(PrComment {
-            author: PrCommentAuthor {
-                login: self.user.login,
-                is_bot: self.user.kind == "Bot",
-            },
+            author: self.user.into(),
             body: self.body,
             written_at: timestamp(&self.created_at)?,
         })
@@ -123,10 +128,7 @@ impl Review {
             return Ok(None);
         };
         Ok(Some(PrComment {
-            author: PrCommentAuthor {
-                login: self.user.login,
-                is_bot: self.user.kind == "Bot",
-            },
+            author: self.user.into(),
             body: self.body,
             written_at: timestamp(&time)?,
         }))

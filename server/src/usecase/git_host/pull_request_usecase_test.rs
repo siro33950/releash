@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::failure::{BusinessFailure, TechnicalFailureNature};
 use crate::domain::git::{Branch, RepositoryStatusScan, Worktree};
 use crate::domain::git_host::*;
 use crate::usecase::git_host::test_helpers::{FakeIssueCache, FakePrCache};
@@ -247,14 +248,26 @@ async fn test_pr操作_作成と投稿の後に取得し空入力は外部へ送
         usecase.read("/worktree").unwrap().value,
         Some(BranchPullRequest::Present(_))
     ));
-    assert!(usecase
-        .create("/worktree", "".into(), "".into(), "main".into(), false)
-        .await
-        .is_err());
-    assert!(usecase
-        .post_comment("/worktree", 42, "".into())
-        .await
-        .is_err());
+    assert_eq!(
+        usecase
+            .create("/worktree", "".into(), "".into(), "main".into(), false)
+            .await
+            .unwrap_err(),
+        WorkFailure {
+            kind: Failure::Business(BusinessFailure::Other),
+            message: PullRequestCreationError::EmptyTitle.to_string()
+        }
+    );
+    assert_eq!(
+        usecase
+            .post_comment("/worktree", 42, "".into())
+            .await
+            .unwrap_err(),
+        WorkFailure {
+            kind: Failure::Business(BusinessFailure::Other),
+            message: PrCommentError::Empty.to_string()
+        }
+    );
     assert_eq!(host.calls.lock().unwrap().len(), 6);
 }
 
@@ -546,8 +559,12 @@ async fn test_pr作成_認可拒否では外部操作も購読通知もしない
             )
             .await;
         // Then
-        assert!(
-            matches!(result, Err(PullRequestUsecaseError::Creation(error)) if error == expected)
+        assert_eq!(
+            result.unwrap_err(),
+            WorkFailure {
+                kind: Failure::Business(BusinessFailure::Other),
+                message: expected.to_string(),
+            }
         );
         assert!(host.calls.lock().unwrap().is_empty());
         assert!(crate::test_support::state_subscription::take_changes(&mut changes).is_empty());
@@ -586,7 +603,13 @@ async fn test_pr操作_provider失敗では再取得も購読通知もしない(
                 .await
         };
         // Then
-        assert!(matches!(result, Err(PullRequestUsecaseError::Host(value)) if value == error));
+        assert_eq!(
+            result.unwrap_err(),
+            WorkFailure {
+                kind: Failure::Technical(TechnicalFailureNature::Other),
+                message: error.to_string(),
+            }
+        );
         assert_eq!(
             *host.calls.lock().unwrap(),
             [if create { "create" } else { "comment" }]
@@ -608,4 +631,68 @@ fn test_pr購読開始_worktreeの内容を保持し始める() {
     usecase.acquire("/worktree");
     // Then
     assert_eq!(*cache.1.lock().unwrap(), ["/worktree"]);
+}
+
+#[tokio::test]
+async fn test_pr操作_git失敗の区別と理由を返し外部操作しない() {
+    use crate::common::operation_context::OperationStopped;
+    for create in [true, false] {
+        for (error, kind) in [
+            (
+                GitError::Rule("rule".into()),
+                Failure::Business(BusinessFailure::Other),
+            ),
+            (
+                GitError::External("io".into()),
+                Failure::Technical(TechnicalFailureNature::Other),
+            ),
+            (
+                GitError::Technical(OperationStopped::Cancelled.into()),
+                Failure::Technical(TechnicalFailureNature::Cancelled),
+            ),
+            (
+                GitError::Technical(OperationStopped::Expired.into()),
+                Failure::Technical(TechnicalFailureNature::TimedOut),
+            ),
+        ] {
+            // Given
+            let git = Arc::new(Git::default());
+            git.main_results
+                .lock()
+                .unwrap()
+                .push_back(Err(error.clone()));
+            let host = Arc::new(Host::default());
+            let mut usecase = reader(
+                host.clone(),
+                Arc::new(FakePrCache::default()),
+                Arc::new(Cache::default()),
+            );
+            usecase.git = git;
+            // When
+            let result = if create {
+                usecase
+                    .create(
+                        "/worktree",
+                        "title".into(),
+                        "body".into(),
+                        "main".into(),
+                        true,
+                    )
+                    .await
+            } else {
+                usecase
+                    .post_comment("/worktree", 42, "comment".into())
+                    .await
+            };
+            // Then
+            assert_eq!(
+                result.unwrap_err(),
+                WorkFailure {
+                    kind,
+                    message: error.to_string()
+                }
+            );
+            assert!(host.calls.lock().unwrap().is_empty());
+        }
+    }
 }

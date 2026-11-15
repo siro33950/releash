@@ -443,10 +443,22 @@ pub fn build_pull_request_usecase(
     config: Arc<dyn RepositoryConfigRepository>,
     git_host: Arc<GitHostUsecase>,
 ) -> crate::usecase::git_host::PullRequestUsecase {
+    build_pull_request_usecase_with_provider(
+        config,
+        git_host,
+        Arc::new(GitHubGitHostGateway::default()),
+    )
+}
+
+pub fn build_pull_request_usecase_with_provider(
+    config: Arc<dyn RepositoryConfigRepository>,
+    git_host: Arc<GitHostUsecase>,
+    provider: Arc<dyn crate::domain::git_host::GitHostProvider>,
+) -> crate::usecase::git_host::PullRequestUsecase {
     crate::usecase::git_host::PullRequestUsecase::new(
         Arc::new(GitGateway::new(config)),
         git_host,
-        Arc::new(GitHubGitHostGateway::default()),
+        provider,
         Arc::new(crate::adaptor::gateway::git_host::cache::LatestPullRequests::default()),
     )
 }

@@ -1,32 +1,14 @@
 use std::sync::Arc;
 
-use crate::domain::failure::WorkFailure;
+use crate::domain::failure::{Failure, WorkFailure};
 use crate::domain::git::{GitError, GitService};
 use crate::domain::git_host::{
-    authorize_pull_request_creation, ActionsJobId, BranchPullRequest, GitHostError,
-    GitHostProvider, NewPullRequest, PrCommentError, PrCommentText, PullRequestBases,
-    PullRequestCache, PullRequestCreationError,
+    authorize_pull_request_creation, ActionsJobId, BranchPullRequest, GitHostProvider,
+    NewPullRequest, PrCommentText, PullRequestBases, PullRequestCache,
 };
 use crate::usecase::fetched::Fetched;
 use crate::usecase::git_host::GitHostUsecase;
 use crate::usecase::state_subscription::{StateChangeSource, StateSubscriptionUsecase};
-
-/// PR を作る操作と、Comment を投稿する操作の失敗。
-#[derive(Debug, thiserror::Error)]
-pub enum PullRequestUsecaseError {
-    /// PR を作れない業務上の理由。
-    #[error(transparent)]
-    Creation(#[from] PullRequestCreationError),
-    /// Comment を投稿できない業務上の理由。
-    #[error(transparent)]
-    Comment(#[from] PrCommentError),
-    /// GitHub が操作を拒んだ、または GitHub に届かなかった。
-    #[error(transparent)]
-    Host(#[from] GitHostError),
-    /// Worktree の Repository を読めなかった。
-    #[error(transparent)]
-    Repository(#[from] GitError),
-}
 
 /// PR の面の手順。選んでいる Worktree のブランチの PR を読む、作る、Comment を投稿する、check のログを読む。
 #[derive(Clone)]
@@ -116,6 +98,7 @@ impl PullRequestUsecase {
     /// Worktree のブランチを head とする PR を作る。
     /// 作れたら、ブランチの PR を取り直し、PR の面の購読へ知らせる。
     /// 取り直しの失敗は、作成の結果にしない。
+    /// 失敗は、業務の失敗か技術的な失敗かの区別と、PR の面に出す理由の文で返す。
     pub async fn create(
         &self,
         worktree_path: &str,
@@ -123,16 +106,18 @@ impl PullRequestUsecase {
         body: String,
         base: String,
         draft: bool,
-    ) -> Result<(), PullRequestUsecaseError> {
-        let new = NewPullRequest::new(title, body, base, draft)?;
-        let repo_path = self.git.main_repo_path(worktree_path)?;
-        let head = self.git.current(worktree_path)?;
-        let origin_url = self.git.origin_url(&repo_path)?;
-        let branches = self.git.list_branches(&repo_path)?;
-        authorize_pull_request_creation(origin_url.as_deref(), &head, &branches)?;
+    ) -> Result<(), WorkFailure> {
+        let new = NewPullRequest::new(title, body, base, draft).map_err(failure)?;
+        let repo_path = self.git.main_repo_path(worktree_path).map_err(failure)?;
+        let head = self.git.current(worktree_path).map_err(failure)?;
+        let origin_url = self.git.origin_url(&repo_path).map_err(failure)?;
+        let branches = self.git.list_branches(&repo_path).map_err(failure)?;
+        authorize_pull_request_creation(origin_url.as_deref(), &head, &branches)
+            .map_err(failure)?;
         self.provider
             .create_pull_request(&repo_path, &head, &new)
-            .await?;
+            .await
+            .map_err(failure)?;
         let _ = self.refresh(worktree_path).await;
         self.notify(worktree_path);
         Ok(())
@@ -141,17 +126,19 @@ impl PullRequestUsecase {
     /// PR 全体への Comment を投稿する。
     /// 投稿できたら、ブランチの PR を取り直し、PR の面の購読へ知らせる。
     /// 取り直しの失敗は、投稿の結果にしない。
+    /// 失敗は、業務の失敗か技術的な失敗かの区別と、PR の面に出す理由の文で返す。
     pub async fn post_comment(
         &self,
         worktree_path: &str,
         number: u64,
         body: String,
-    ) -> Result<(), PullRequestUsecaseError> {
-        let text = PrCommentText::new(body)?;
-        let repo_path = self.git.main_repo_path(worktree_path)?;
+    ) -> Result<(), WorkFailure> {
+        let text = PrCommentText::new(body).map_err(failure)?;
+        let repo_path = self.git.main_repo_path(worktree_path).map_err(failure)?;
         self.provider
             .post_pull_request_comment(&repo_path, number, &text)
-            .await?;
+            .await
+            .map_err(failure)?;
         let _ = self.refresh(worktree_path).await;
         self.notify(worktree_path);
         Ok(())
@@ -179,6 +166,17 @@ impl PullRequestUsecase {
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(StateChangeSource::PullRequest(worktree_path.into()));
         }
+    }
+}
+
+/// 失敗を、業務の失敗か技術的な失敗かの区別と、PR の面に出す理由の文にする。
+fn failure<E: std::fmt::Display>(error: E) -> WorkFailure
+where
+    for<'a> Failure: From<&'a E>,
+{
+    WorkFailure {
+        kind: Failure::from(&error),
+        message: error.to_string(),
     }
 }
 

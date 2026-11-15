@@ -248,22 +248,7 @@ pub mod platform {
     pub use crate::common::operation_context::OperationStopped;
 
     pub use crate::adaptor::controller::wiring::build_pull_request_usecase;
-    pub fn pull_request_with_provider(
-        config: std::sync::Arc<dyn crate::domain::app_config::RepositoryConfigRepository>,
-        git_host: std::sync::Arc<crate::usecase::git_host::GitHostUsecase>,
-        provider: std::sync::Arc<dyn crate::domain::git_host::GitHostProvider>,
-    ) -> crate::usecase::git_host::PullRequestUsecase {
-        crate::usecase::git_host::PullRequestUsecase::new(
-            std::sync::Arc::new(crate::adaptor::gateway::repository::git::GitGateway::new(
-                config,
-            )),
-            git_host,
-            provider,
-            std::sync::Arc::new(
-                crate::adaptor::gateway::git_host::cache::LatestPullRequests::default(),
-            ),
-        )
-    }
+    pub use crate::adaptor::controller::wiring::build_pull_request_usecase_with_provider as pull_request_with_provider;
 
     pub use crate::common::operation_context::spawn_blocking;
     pub use crate::common::operation_context::sync_scope;

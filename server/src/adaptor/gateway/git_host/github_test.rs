@@ -439,6 +439,9 @@ async fn test_pr取得_本文とcheckとcommentを読み取る() {
     );
     assert_eq!(pr.conversation.entries().len(), 2);
     assert!(pr.conversation.entries()[0].author.is_bot);
+    assert_eq!(pr.conversation.entries()[0].author.login, "bot");
+    assert!(!pr.conversation.entries()[1].author.is_bot);
+    assert_eq!(pr.conversation.entries()[1].author.login, "reviewer");
 }
 
 #[tokio::test]
