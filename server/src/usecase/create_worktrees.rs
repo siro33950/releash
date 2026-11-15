@@ -1,106 +1,19 @@
 use std::sync::Arc;
 
 use crate::domain::git::GitError;
-use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workspace_tree::WorkspaceIdentity;
-use crate::usecase::agent_session::{AgentSessionLaunchRequest, AgentSessionLaunchUsecase};
 use crate::usecase::git_usecase::GitUsecase;
 use crate::usecase::repository_error::UsecaseError;
-use crate::usecase::workflow::{command::StartExecutionCommand, WorkflowRuntimeUsecase};
 
-#[derive(Clone)]
-pub enum LaunchAfterCreation {
-    None,
-    Session {
-        provider: ProviderKind,
-        rows: u16,
-        cols: u16,
-        request_id: String,
-    },
-    Workflow {
-        name: String,
-        request: Option<String>,
-    },
-}
-
-#[async_trait::async_trait]
-pub trait WorktreeLaunch: Send + Sync {
-    async fn launch(&self, path: &str, launch: &LaunchAfterCreation) -> Result<(), UsecaseError>;
-}
-
-#[async_trait::async_trait]
-pub trait WorktreeSessionLaunch: Send + Sync {
-    async fn launch_session(&self, request: AgentSessionLaunchRequest) -> Result<(), UsecaseError>;
-}
-#[async_trait::async_trait]
-impl WorktreeSessionLaunch for Arc<AgentSessionLaunchUsecase> {
-    async fn launch_session(&self, request: AgentSessionLaunchRequest) -> Result<(), UsecaseError> {
-        self.clone().launch_standalone_selection(request).await?;
-        Ok(())
-    }
-}
-#[async_trait::async_trait]
-pub trait WorktreeWorkflowLaunch: Send + Sync {
-    async fn launch_workflow(&self, command: StartExecutionCommand) -> Result<(), UsecaseError>;
-}
-#[async_trait::async_trait]
-impl WorktreeWorkflowLaunch for WorkflowRuntimeUsecase {
-    async fn launch_workflow(&self, command: StartExecutionCommand) -> Result<(), UsecaseError> {
-        self.start_execution(command).await?;
-        Ok(())
-    }
-}
-pub struct WorktreeLauncher<S = Arc<AgentSessionLaunchUsecase>, W = WorkflowRuntimeUsecase> {
-    pub sessions: S,
-    pub workflows: Arc<W>,
-}
-
-#[async_trait::async_trait]
-impl<S: WorktreeSessionLaunch, W: WorktreeWorkflowLaunch> WorktreeLaunch
-    for WorktreeLauncher<S, W>
-{
-    async fn launch(&self, path: &str, launch: &LaunchAfterCreation) -> Result<(), UsecaseError> {
-        match launch {
-            LaunchAfterCreation::None => {}
-            LaunchAfterCreation::Session {
-                provider,
-                rows,
-                cols,
-                request_id,
-            } => {
-                self.sessions
-                    .launch_session(AgentSessionLaunchRequest {
-                        workspace: WorkspaceIdentity::new(path),
-                        worktree_path: path.into(),
-                        provider: *provider,
-                        rows: *rows,
-                        cols: *cols,
-                        caller_request_id: format!("{request_id}:{path}"),
-                        pane: None,
-                    })
-                    .await?;
-            }
-            LaunchAfterCreation::Workflow { name, request } => {
-                self.workflows
-                    .launch_workflow(StartExecutionCommand {
-                        workflow_name: name.clone(),
-                        worktree_path: path.into(),
-                        request: request.clone(),
-                    })
-                    .await?;
-            }
-        }
-        Ok(())
-    }
-}
-
+/// ブランチごとに worktree を順に作り、作った worktree の path を返す。
+///
+/// ローカルに無いブランチは `base_branch` から作り、そのブランチの base として記録する。
+/// ローカルにあるブランチには `base_branch` を使わず、base の記録も変えない。
+/// 途中で失敗したら、残りのブランチの worktree は作らない。
 pub async fn create_worktrees(
     repository: Arc<GitUsecase>,
-    launcher: &dyn WorktreeLaunch,
     repo_path: String,
     branches: Vec<String>,
     base_branch: Option<String>,
-    launch: LaunchAfterCreation,
 ) -> Result<Vec<String>, UsecaseError> {
     crate::domain::git::validate_worktree_branches(&branches)?;
     let mut paths = Vec::with_capacity(branches.len());
@@ -111,13 +24,13 @@ pub async fn create_worktrees(
         let path = crate::common::operation_context::spawn_blocking(move || {
             let existing = repository.list_branches_with_worktree(&repo_path)?;
             let create_branch = crate::domain::git::Branch::needs_creation(&branch, &existing);
+            let base = base_branch.as_deref().filter(|_| create_branch);
             repository
-                .create_worktree(&repo_path, &branch, create_branch, base_branch.as_deref())
+                .create_worktree(&repo_path, &branch, create_branch, base)
                 .map(|worktree| worktree.path)
         })
         .await
         .map_err(|error| GitError::Technical(error.into()))??;
-        launcher.launch(&path, &launch).await?;
         paths.push(path);
     }
     Ok(paths)
@@ -129,37 +42,17 @@ mod create_worktrees_tests;
 
 pub struct CreateWorktreesUsecase {
     repository: Arc<GitUsecase>,
-    launcher: WorktreeLauncher,
 }
 impl CreateWorktreesUsecase {
-    pub fn new(
-        repository: Arc<GitUsecase>,
-        sessions: Arc<AgentSessionLaunchUsecase>,
-        workflows: Arc<WorkflowRuntimeUsecase>,
-    ) -> Self {
-        Self {
-            repository,
-            launcher: WorktreeLauncher {
-                sessions,
-                workflows,
-            },
-        }
+    pub fn new(repository: Arc<GitUsecase>) -> Self {
+        Self { repository }
     }
     pub async fn execute(
         &self,
         repo: String,
         branches: Vec<String>,
         base: Option<String>,
-        launch: LaunchAfterCreation,
     ) -> Result<Vec<String>, UsecaseError> {
-        create_worktrees(
-            self.repository.clone(),
-            &self.launcher,
-            repo,
-            branches,
-            base,
-            launch,
-        )
-        .await
+        create_worktrees(self.repository.clone(), repo, branches, base).await
     }
 }

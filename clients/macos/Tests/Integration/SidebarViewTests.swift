@@ -36,8 +36,6 @@ final class SidebarViewTests: XCTestCase {
     for source in ["issues", "tasks"] {
       var form = CreateWorktreeForm()
       form.repository = repositories[0].path
-      form.launch = "workflow"
-      form.workflow = "review"
       for index in 1...2 {
         let selection: WorktreeSelection.Key =
           source == "issues" ? .issue(UInt64(index)) : .task("task-\(index)")
@@ -49,10 +47,6 @@ final class SidebarViewTests: XCTestCase {
       }
       let request = try Releash_Client_V1_CreateWorktreesRequest(
         serializedBytes: XCTUnwrap(http.requests("CreateWorktrees").last?.message))
-      guard case .workflow(let launch) = request.launch else {
-        return XCTFail("Missing workflow launch")
-      }
-      XCTAssertEqual(launch.name, "review")
       XCTAssertEqual(request.repoPath, repositories[0].path)
       XCTAssertEqual(request.branches.count, 2)
 

@@ -63,6 +63,17 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 page: value.value.clone().map(crate::adaptor::presenter::notion::NotionTaskPageView::from).map(crate::adaptor::presenter::client::value).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
                 read_error: value.error.as_ref().map(notion_read_failure),
             }),
+            StateValue::NotionLabelOptions(value) => wire::state_payload::Value::NotionLabelOptions(wire::NotionLabelOptionsSnapshot {
+                options: value.value.iter().flatten().map(|option| wire::NotionLabelOption {
+                    property_name: option.property_name.clone(),
+                    choices: option.choices.iter().map(|choice| wire::NotionLabelChoice { label: choice.label.clone(), value: choice.value.clone() }).collect(),
+                }).collect(),
+                read_error: value.error.as_ref().map(notion_read_failure),
+            }),
+            StateValue::WorktreeBases(branches, default_branch) => wire::state_payload::Value::WorktreeBases(wire::WorktreeBasesSnapshot {
+                branches: branches.iter().map(|branch| branch.name.clone()).collect(),
+                default_branch: default_branch.clone(),
+            }),
             StateValue::WorkspaceState(version, value, failures, _) => {
                 let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?;
@@ -91,6 +102,18 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::ThreadExcerpts(items) => wire::state_payload::Value::ThreadExcerpts(wire::ThreadExcerptsSnapshot {
+                items: items.iter().map(|(thread, lines)| Ok(wire::ThreadExcerpt {
+                    thread: Some(crate::adaptor::presenter::client::value(thread.clone())?),
+                    lines: lines.iter().flatten().map(|line| wire::ThreadDiffLine {
+                        old_line: line.line.old_number(),
+                        new_line: line.line.new_number(),
+                        text: line.line.text().into(),
+                        targeted: line.targeted,
+                    }).collect(),
+                    read_error: lines.as_ref().err().map(|failure| failure.message.clone()),
+                })).collect::<Result<_, wire::CommandFailure>>().map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
             StateValue::WorkflowExecution(value) => wire::state_payload::Value::WorkflowExecution(wire::NullableWorkflowExecutionView {
                 value: value.as_ref().map(|tree| crate::adaptor::presenter::client::value(crate::adaptor::presenter::workflow::workflow_execution_to_view(tree.clone()))).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
             }),

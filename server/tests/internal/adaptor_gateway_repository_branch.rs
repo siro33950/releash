@@ -93,6 +93,47 @@ pub(crate) mod branch_gateway_tests {
     }
 
     #[test]
+    pub fn test_ブランチ一覧_ローカルとリモート追跡のブランチを名前のまま返す() {
+        // Given
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let path = path_str(dir.path());
+        let current = get_current_branch(&path).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        for name in [current.as_str(), "feature"] {
+            repo.reference(
+                &format!("refs/remotes/origin/{name}"),
+                head.id(),
+                true,
+                "test remote branch",
+            )
+            .unwrap();
+        }
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            &format!("refs/remotes/origin/{current}"),
+            true,
+            "test remote HEAD",
+        )
+        .unwrap();
+        // When
+        let mut branches: Vec<_> = list_branches(&path)
+            .unwrap()
+            .into_iter()
+            .map(|branch| (branch.is_remote, branch.name))
+            .collect();
+        branches.sort();
+        // Then
+        let mut expected = vec![
+            (false, current.clone()),
+            (true, "origin/feature".to_string()),
+            (true, format!("origin/{current}")),
+        ];
+        expected.sort();
+        assert_eq!(branches, expected);
+    }
+
+    #[test]
     pub fn test_既定ブランチ取得() {
         let (_dir, repo) = create_test_repo();
         create_initial_commit(&repo);

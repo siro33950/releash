@@ -258,6 +258,14 @@ struct ViewElement {
     else { return false }
     return window.firstResponder is NSTextView
   }
+  /// 識別子で見つけた入力欄の入力を、アクセシビリティの操作で確定する。
+  func confirm(_ name: String, file: StaticString = #filePath, line: UInt = #line) async throws {
+    try await eventuallyView(self, { element(name) != nil }, file: file, line: line)
+    let element = try XCTUnwrap(element(name), file: file, line: line)
+    let result = AXUIElementPerformAction(element.reference, kAXConfirmAction as CFString).rawValue
+    XCTAssertEqual(result, AXError.success.rawValue, file: file, line: line)
+    await refresh()
+  }
   func setTextField(_ value: String, file: StaticString = #filePath, line: UInt = #line)
     async throws
   {

@@ -13,6 +13,7 @@ pub(crate) mod local_event;
 pub(crate) mod notion;
 pub(crate) mod path;
 pub(crate) mod provider_lifecycle;
+pub(crate) mod search_term;
 pub(crate) mod shell;
 pub(crate) mod terminal_surface;
 pub(crate) mod workflow;

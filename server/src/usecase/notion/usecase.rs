@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::domain::app_config::value_objects as app_config_vo;
 use crate::domain::app_config::RepositoryConfigRepository;
 use crate::domain::notion::{
-    NotionApiGateway, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
+    NotionApiGateway, NotionLabelOption, NotionTaskPage, NotionTaskQuery, NotionValidationResult,
 };
 use crate::usecase::notion::error::NotionUsecaseError;
 
@@ -58,6 +58,7 @@ pub struct NotionUsecase {
     api: Arc<dyn NotionApiGateway>,
     result_generation: std::sync::atomic::AtomicU64,
     task_results: Results<NotionTaskListRequest, NotionTaskPage>,
+    label_results: Results<String, Vec<NotionLabelOption>>,
     state_publisher: Option<crate::usecase::state_subscription::StateSubscriptionUsecase>,
 }
 
@@ -76,6 +77,7 @@ impl NotionUsecase {
             state_publisher: None,
             result_generation: Default::default(),
             task_results: Default::default(),
+            label_results: Default::default(),
         }
     }
 
@@ -129,6 +131,35 @@ impl NotionUsecase {
 
     pub(crate) fn release_tasks(&self, request: &NotionTaskListRequest) {
         self.task_results.lock().remove(request);
+    }
+
+    pub(crate) fn acquire_label_options(&self, path: &str) {
+        acquire_result(
+            &self.label_results,
+            &self.result_generation,
+            path.to_owned(),
+        );
+    }
+
+    pub(crate) async fn refresh_label_options(&self, path: &str) {
+        refresh_result(&self.label_results, &path.to_owned(), async {
+            fetch_label_options(self.repository.as_ref(), self.api.as_ref(), path).await
+        })
+        .await;
+    }
+
+    pub(crate) fn cached_label_options(
+        &self,
+        path: &str,
+    ) -> Option<Fetched<Vec<NotionLabelOption>, NotionUsecaseError>> {
+        self.label_results
+            .lock()
+            .get(path)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn release_label_options(&self, path: &str) {
+        self.label_results.lock().remove(path);
     }
 
     /// repository の Notion 設定を保存し、設定の変更を通知する。
@@ -231,16 +262,20 @@ async fn query_task_list(
                 next_cursor: None,
             });
         }
-        let cursor = page
-            .next_cursor
-            .filter(|cursor| Some(cursor) != query.cursor.as_ref())
-            .ok_or_else(|| {
-                crate::domain::notion::NotionError::ParseError(
-                    "Notion pagination cursor is missing or repeated".into(),
-                )
-            })?;
-        query.cursor = Some(cursor);
+        query.cursor = Some(crate::domain::notion::services::next_page_cursor(
+            page.next_cursor,
+            query.cursor.as_deref(),
+        )?);
     }
+}
+
+async fn fetch_label_options(
+    repository: &dyn RepositoryConfigRepository,
+    api: &dyn NotionApiGateway,
+    repo_path: &str,
+) -> Result<Vec<NotionLabelOption>, NotionUsecaseError> {
+    let config = resolve_config(repository, repo_path)?;
+    api.fetch_label_options(&config).await.map_err(Into::into)
 }
 
 async fn validate_config(

@@ -1066,6 +1066,60 @@ fn test_notion購読配信_タスクの前の一覧と取得の失敗を共に�
 }
 
 #[test]
+fn test_notion購読配信_ラベルの前の選択肢と取得の失敗を共に送る() {
+    // Given
+    let value = StateValue::NotionLabelOptions(crate::usecase::fetched::Fetched {
+        value: Some(vec![crate::domain::notion::NotionLabelOption {
+            property_name: "Assignee".into(),
+            choices: vec![crate::domain::notion::NotionLabelChoice {
+                label: "Alice".into(),
+                value: "user-1".into(),
+            }],
+        }]),
+        error: Some(crate::usecase::notion::error::NotionUsecaseError::Notion(
+            crate::domain::notion::NotionError::ApiError("offline".into()),
+        )),
+    });
+    // When
+    let result = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::NotionLabelOptions(snapshot)) = result.value else {
+        panic!()
+    };
+    assert_eq!(
+        snapshot.options,
+        [wire::NotionLabelOption {
+            property_name: "Assignee".into(),
+            choices: vec![wire::NotionLabelChoice {
+                label: "Alice".into(),
+                value: "user-1".into(),
+            }],
+        }]
+    );
+    assert_eq!(snapshot.read_error.unwrap().code, 9);
+}
+
+#[test]
+fn test_worktreeのbase候補の配信_ブランチの名前とデフォルトブランチを送る() {
+    // Given
+    let value = StateValue::WorktreeBases(
+        vec![
+            crate::domain::git::Branch::local("main"),
+            crate::domain::git::Branch::remote("origin/main"),
+        ],
+        Some("main".into()),
+    );
+    // When
+    let result = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::WorktreeBases(snapshot)) = result.value else {
+        panic!()
+    };
+    assert_eq!(snapshot.branches, ["main", "origin/main"]);
+    assert_eq!(snapshot.default_branch.as_deref(), Some("main"));
+}
+
+#[test]
 fn test_購読payload_提出済みoutputの全フィールドを保持する() {
     // Given
     let output = crate::usecase::workflow::WorkflowGetOutputResult::Submitted {
@@ -1313,4 +1367,103 @@ fn test_ファイル一覧配信_直下一覧と絞込結果が同じgit状態�
         assert_eq!(files.directories[0].entries, directory.entries);
         assert!(files.truncated);
     }
+}
+
+#[test]
+fn test_thread一覧購読_対象行の差分と読めなかった理由を転送する() {
+    use crate::domain::code::value_objects::DiffLine;
+    use crate::domain::comment::{Author, Comment, ExcerptLine, State, Target, Thread};
+    // Given
+    let thread = Thread {
+        id: "thread".into(),
+        worktree_name: "/repo".into(),
+        target: Target {
+            file_path: Some("file.rs".into()),
+            line_number: Some(3),
+            end_line: None,
+            side: None,
+            end_side: None,
+        },
+        state: State::Open,
+        comments: vec![Comment {
+            id: "comment".into(),
+            thread_id: "thread".into(),
+            author: Author::human(),
+            content: "content".into(),
+            created_at: 1.0,
+        }],
+        resolve: None,
+        created_at: 1.0,
+        updated_at: 1.0,
+        version: 1,
+        can_resolve: true,
+    };
+    let broken = Thread {
+        id: "broken".into(),
+        ..thread.clone()
+    };
+    let value = StateValue::ThreadExcerpts(vec![
+        (
+            broken,
+            Err(crate::domain::failure::WorkFailure {
+                kind: crate::domain::failure::Failure::Technical(
+                    crate::domain::failure::TechnicalFailureNature::Other,
+                ),
+                message: "read failed".into(),
+            }),
+        ),
+        (
+            thread,
+            Ok(vec![
+                ExcerptLine {
+                    line: DiffLine::Deletion {
+                        old: 3,
+                        text: "old".into(),
+                    },
+                    targeted: false,
+                },
+                ExcerptLine {
+                    line: DiffLine::Addition {
+                        new: 3,
+                        text: "new".into(),
+                    },
+                    targeted: true,
+                },
+            ]),
+        ),
+    ]);
+    // When
+    let payload = payload(&value).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::ThreadExcerpts(snapshot)) = payload.value else {
+        panic!("expected thread excerpts");
+    };
+    assert_eq!(
+        snapshot.items[0].thread.as_ref().unwrap().id.as_deref(),
+        Some("broken")
+    );
+    assert!(snapshot.items[0].lines.is_empty());
+    assert_eq!(snapshot.items[0].read_error.as_deref(), Some("read failed"));
+    assert_eq!(
+        snapshot.items[1].thread.as_ref().unwrap().id.as_deref(),
+        Some("thread")
+    );
+    assert_eq!(snapshot.items[1].read_error, None);
+    assert_eq!(
+        snapshot.items[1].lines,
+        vec![
+            wire::ThreadDiffLine {
+                old_line: Some(3),
+                new_line: None,
+                text: "old".into(),
+                targeted: false,
+            },
+            wire::ThreadDiffLine {
+                old_line: None,
+                new_line: Some(3),
+                text: "new".into(),
+                targeted: true,
+            },
+        ]
+    );
 }

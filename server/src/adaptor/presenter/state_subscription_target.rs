@@ -80,7 +80,12 @@ impl SubscriptionTarget {
             ("branches", [path, excluded]) => {
                 Ok(Self::Branches((*path).into(), Some((*excluded).into())))
             }
-            ("available-branches", [path]) => Ok(Self::AvailableBranches((*path).into())),
+            ("available-branches", [path]) => Ok(Self::AvailableBranches((*path).into(), None)),
+            ("available-branches", [path, search]) => Ok(Self::AvailableBranches(
+                (*path).into(),
+                Some(parse_search(search)?),
+            )),
+            ("worktree-bases", [path]) => Ok(Self::WorktreeBases((*path).into())),
             ("issues", [path]) => Ok(Self::Issues((*path).into())),
             ("issues", [path, filters @ ..]) => {
                 let mut filter = crate::domain::git_host::IssueFilter::default();
@@ -94,6 +99,9 @@ impl SubscriptionTarget {
                         {
                             filter.milestone = Some(value.into())
                         }
+                        Some(("search", _)) if filter.search.is_none() => {
+                            filter.search = Some(parse_search(value)?)
+                        }
                         _ => return Err(SubscriptionError::InvalidId),
                     }
                 }
@@ -101,6 +109,7 @@ impl SubscriptionTarget {
                 filter.labels.dedup();
                 Ok(Self::FilteredIssues((*path).into(), filter))
             }
+            ("notion-label-options", [path]) => Ok(Self::NotionLabelOptions((*path).into())),
             ("notion-tasks", [path, count, filters @ ..]) => {
                 parse_notion_tasks(path, count, filters)
             }
@@ -120,7 +129,22 @@ impl SubscriptionTarget {
                 ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
             )),
             ("file-threads", [path, file]) => Ok(Self::FileThreads((*path).into(), (*file).into())),
-            ("review-threads", [name]) => Ok(Self::ReviewThreads((*name).into())),
+            ("review-threads", [name, base, threads @ ..]) => {
+                let mut ids = Vec::new();
+                for thread in threads {
+                    match thread.split_once('=') {
+                        Some(("thread", id)) if !id.is_empty() => ids.push(id.into()),
+                        _ => return Err(SubscriptionError::InvalidId),
+                    }
+                }
+                ids.sort();
+                ids.dedup();
+                Ok(Self::ReviewThreads(
+                    (*name).into(),
+                    ReviewBase::parse(base).map_err(|_| SubscriptionError::InvalidId)?,
+                    ids,
+                ))
+            }
             ("workflow-execution", [id]) => Ok(Self::WorkflowExecution((*id).into())),
             ("node-artifact", [id]) => Ok(Self::NodeArtifact((*id).into())),
             ("workflow-output", [id, node]) => {
@@ -197,7 +221,13 @@ impl SubscriptionTarget {
                     .chain(excluded.iter().cloned())
                     .collect(),
             ),
-            Self::AvailableBranches(p) => ("available-branches", vec![p.clone()]),
+            Self::AvailableBranches(p, search) => (
+                "available-branches",
+                std::iter::once(p.clone())
+                    .chain(search.iter().map(format_search))
+                    .collect(),
+            ),
+            Self::WorktreeBases(p) => ("worktree-bases", vec![p.clone()]),
             Self::Issues(p) => ("issues", vec![p.clone()]),
             Self::FilteredIssues(p, filter) => {
                 let mut args = vec![p.clone()];
@@ -208,8 +238,10 @@ impl SubscriptionTarget {
                         .iter()
                         .map(|milestone| format!("milestone={milestone}")),
                 );
+                args.extend(filter.search.iter().map(format_search));
                 ("issues", args)
             }
+            Self::NotionLabelOptions(p) => ("notion-label-options", vec![p.clone()]),
             Self::NotionTasks(request) => format_notion_tasks(request),
             Self::WorkspaceState(n, p) => ("workspace-state", vec![n.clone(), p.clone()]),
             Self::Directory(p, directory) => ("directory", vec![p.clone(), directory.clone()]),
@@ -230,7 +262,11 @@ impl SubscriptionTarget {
                 vec![p.clone(), file.clone(), base.as_str().into()],
             ),
             Self::FileThreads(p, file) => ("file-threads", vec![p.clone(), file.clone()]),
-            Self::ReviewThreads(name) => ("review-threads", vec![name.clone()]),
+            Self::ReviewThreads(name, base, threads) => {
+                let mut args = vec![name.clone(), base.as_str().into()];
+                args.extend(threads.iter().map(|id| format!("thread={id}")));
+                ("review-threads", args)
+            }
             Self::WorkflowExecution(id) => ("workflow-execution", vec![id.clone()]),
             Self::NodeArtifact(id) => ("node-artifact", vec![id.clone()]),
             Self::WorkflowOutput(id, node) => ("workflow-output", vec![id.clone(), node.clone()]),
@@ -264,6 +300,19 @@ impl SubscriptionTarget {
             Self::ExecutionOverview => ("execution-overview", vec![]),
         }
     }
+}
+
+const SEARCH_PREFIX: &str = "search=";
+
+/// `search=<検索語>` の引数から検索語を読む。
+fn parse_search(arg: &str) -> Result<crate::domain::search_term::SearchTerm, SubscriptionError> {
+    arg.strip_prefix(SEARCH_PREFIX)
+        .and_then(crate::domain::search_term::SearchTerm::new)
+        .ok_or(SubscriptionError::InvalidId)
+}
+
+fn format_search(term: &crate::domain::search_term::SearchTerm) -> String {
+    format!("{SEARCH_PREFIX}{}", term.as_str())
 }
 
 const FILE_FILTER_NAME_PREFIX: &str = "name=";

@@ -280,6 +280,7 @@ pub mod platform {
     pub use crate::domain::git_host::value_objects::pr::PrInfo;
     pub use crate::domain::git_host::value_objects::pr::PrState;
     pub use crate::domain::git_host::value_objects::pr::PrStatus;
+    pub use crate::domain::git_host::IssueFilter;
     pub use crate::domain::git_host::IssueOptions;
     pub use crate::domain::local_event::batch::CommitBatchError;
     pub use crate::domain::local_event::batch::CommitBatchResult;
@@ -305,6 +306,8 @@ pub mod platform {
     pub use crate::domain::local_event::query::LocalEventQueryResult;
     pub use crate::domain::notion::error::NotionError;
     pub use crate::domain::notion::gateway::NotionApiGateway;
+    pub use crate::domain::notion::value_objects::NotionLabelChoice;
+    pub use crate::domain::notion::value_objects::NotionLabelOption;
     pub use crate::domain::notion::value_objects::NotionTaskPage;
     pub use crate::domain::notion::value_objects::NotionTaskQuery;
     pub use crate::domain::notion::value_objects::NotionValidationResult;
@@ -557,9 +560,11 @@ pub mod repository {
     pub use crate::domain::code::repository::ReviewSideMetadata;
     pub use crate::domain::local_event::repository::LocalEventTransactionRepository;
 
+    pub use crate::domain::git::entities::branch::Branch;
     pub use crate::domain::git::entities::worktree::Worktree;
     pub use crate::domain::git::error::GitError;
     pub use crate::domain::git::file_watcher::FileWatchGateway;
+    pub use crate::domain::search_term::SearchTerm;
 
     pub use crate::domain::git::repository::RepoPathsRepository;
 

@@ -1,6 +1,9 @@
 use crate::domain::app_config::value_objects::NotionPropertyMapping;
 use crate::domain::notion::services::notion_task_branch_name;
-use crate::domain::notion::{NotionError, NotionPropertyInfo, NotionTask, NotionTaskQuery};
+use crate::domain::notion::{
+    NotionError, NotionLabelChoice, NotionLabelOption, NotionPropertyInfo, NotionTask,
+    NotionTaskQuery,
+};
 
 pub(crate) fn build_notion_filter(
     query: &NotionTaskQuery,
@@ -174,6 +177,67 @@ fn extract_property_options(prop_schema: &serde_json::Value, property_type: &str
             .unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// Labels に選んだプロパティから、task の絞り込みの選択肢を作る。
+///
+/// people は workspace の user を選択肢にし、絞り込みには user の ID を渡す。
+/// ほかのプロパティは、database が持つ選択肢の名前をそのまま渡す。選択肢を持たないプロパティは含めない。
+pub(crate) fn label_options(
+    mapping: &NotionPropertyMapping,
+    properties: Vec<NotionPropertyInfo>,
+    users: &[(String, String)],
+) -> Vec<NotionLabelOption> {
+    properties
+        .into_iter()
+        .filter_map(|property| {
+            let label = mapping
+                .labels
+                .iter()
+                .find(|label| label.name == property.name)?;
+            let choices: Vec<_> = if label.property_type == "people" {
+                users
+                    .iter()
+                    .map(|(id, name)| NotionLabelChoice {
+                        label: name.clone(),
+                        value: id.clone(),
+                    })
+                    .collect()
+            } else {
+                property
+                    .options
+                    .into_iter()
+                    .map(|name| NotionLabelChoice {
+                        label: name.clone(),
+                        value: name,
+                    })
+                    .collect()
+            };
+            (!choices.is_empty()).then_some(NotionLabelOption {
+                property_name: property.name,
+                choices,
+            })
+        })
+        .collect()
+}
+
+/// user の一覧の応答から、人の user の ID と名前を読む。bot と、ID か名前の無い user は含めない。
+pub(crate) fn extract_person_users(json: &serde_json::Value) -> Vec<(String, String)> {
+    json.get("results")
+        .and_then(|results| results.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|user| user.get("type").and_then(|kind| kind.as_str()) == Some("person"))
+        .filter_map(|user| {
+            let text = |key: &str| {
+                user.get(key)
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                    .map(String::from)
+            };
+            Some((text("id")?, text("name")?))
+        })
+        .collect()
 }
 
 pub(crate) fn parse_query_response(

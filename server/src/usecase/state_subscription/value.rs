@@ -30,12 +30,20 @@ pub enum StateValue {
     Branches(Vec<BranchDto>),
     /// ブランチと、その worktree があるか。
     BranchStatus(Vec<(crate::domain::git::Branch, bool)>),
+    /// 新しい worktree のブランチを作る元にできるブランチと、デフォルトブランチ。
+    WorktreeBases(Vec<crate::domain::git::Branch>, Option<String>),
     Issues(
         crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,
     ),
     NotionTasks(
         crate::usecase::fetched::Fetched<
             crate::domain::notion::NotionTaskPage,
+            crate::usecase::notion::error::NotionUsecaseError,
+        >,
+    ),
+    NotionLabelOptions(
+        crate::usecase::fetched::Fetched<
+            Vec<crate::domain::notion::NotionLabelOption>,
             crate::usecase::notion::error::NotionUsecaseError,
         >,
     ),
@@ -50,6 +58,13 @@ pub enum StateValue {
     FileTab(crate::usecase::code_dto::FileTabViewDto),
     FileThreads(Vec<crate::domain::comment::Thread>),
     ReviewThreads(Vec<crate::domain::comment::Thread>),
+    /// Thread と、その対象の行の差分。差分を読めなかった Thread は、その失敗を持つ。
+    ThreadExcerpts(
+        Vec<(
+            crate::domain::comment::Thread,
+            Result<Vec<crate::domain::comment::ExcerptLine>, crate::domain::failure::WorkFailure>,
+        )>,
+    ),
     WorkflowExecution(Option<crate::domain::workflow::ExecutionTree>),
     WorkflowOutput(Option<crate::usecase::workflow::WorkflowGetOutputResult>),
     ReviewSessionThreads(Option<Vec<crate::domain::comment::Thread>>),

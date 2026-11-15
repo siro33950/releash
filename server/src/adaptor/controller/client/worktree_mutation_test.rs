@@ -99,18 +99,10 @@ async fn test_ui状態保存_絶対pathキーの保存が終わるまでworktree
 #[tokio::test]
 async fn test_複数worktree作成_handler破棄後もblocking作成が終わるまで削除を待つ() {
     use super::*;
-    use crate::usecase::create_worktrees::{create_worktrees, LaunchAfterCreation, WorktreeLaunch};
+    use crate::usecase::create_worktrees::create_worktrees;
     use crate::usecase::git_usecase::WorktreeExecutionArchiver;
-    use crate::usecase::repository_error::UsecaseError;
     use crate::usecase::test_helpers::{usecase, FakeRepo};
     use std::sync::Arc;
-    struct Launcher;
-    #[async_trait::async_trait]
-    impl WorktreeLaunch for Launcher {
-        async fn launch(&self, _: &str, _: &LaunchAfterCreation) -> Result<(), UsecaseError> {
-            Ok(())
-        }
-    }
     // Given
     let runtime = WorkflowRuntimeUsecase::new(
         Arc::new(crate::usecase::workflow::runtime_command::runtime_command_tests::tests::FakeRuntimeGateway::default()),
@@ -131,11 +123,9 @@ async fn test_複数worktree作成_handler破棄後もblocking作成が終わる
     let handler = tokio::spawn(scope(guards, async move {
         create_worktrees(
             repository,
-            &Launcher,
             "/repo".into(),
             vec!["a".into(), "b".into()],
             None,
-            LaunchAfterCreation::None,
         )
         .await
     }));

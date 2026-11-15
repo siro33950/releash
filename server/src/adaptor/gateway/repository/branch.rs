@@ -9,13 +9,11 @@ pub fn list_branches(repo_path: &str) -> Result<Vec<Branch>, GitError> {
     let repo = git_operation::run(|| client::discover(repo_path))?;
 
     let mut result = Vec::new();
-    let mut local_names = std::collections::HashSet::new();
 
     let local_branches = git_operation::run(|| repo.branches(Some(BranchType::Local)))?;
     for branch in local_branches {
         let (branch, _) = branch?;
         if let Some(name) = git_operation::run(|| branch.name())? {
-            local_names.insert(name.to_string());
             result.push(Branch::local(name));
         }
     }
@@ -23,20 +21,20 @@ pub fn list_branches(repo_path: &str) -> Result<Vec<Branch>, GitError> {
     let remote_branches = git_operation::run(|| repo.branches(Some(BranchType::Remote)))?;
     for branch in remote_branches {
         let (branch, _) = branch?;
-        if let Some(full_name) = git_operation::run(|| branch.name())? {
-            // "origin/branch-name" → "branch-name"
-            let short = full_name
-                .split_once('/')
-                .map(|(_, b)| b)
-                .unwrap_or(full_name);
-            if short == "HEAD" || local_names.contains(short) {
+        if let Some(name) = git_operation::run(|| branch.name())? {
+            if name.ends_with("/HEAD") {
                 continue;
             }
-            result.push(Branch::remote(short));
+            result.push(Branch::remote(name));
         }
     }
 
     Ok(result)
+}
+
+pub fn default_branch(repo_path: &str) -> Result<Option<String>, GitError> {
+    let repo = git_operation::run(|| client::discover(repo_path))?;
+    Ok(git_operation::detect_default_branch(&repo)?)
 }
 
 pub fn get_current_branch(repo_path: &str) -> Result<String, GitError> {

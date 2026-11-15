@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use crate::domain::app_config::value_objects::{NotionPropertyMapping, NotionRepoConfig};
 use crate::domain::notion::{
-    NotionApiGateway, NotionConfigStatus, NotionError, NotionPropertyInfo, NotionTaskPage,
-    NotionTaskQuery, NotionValidationResult,
+    NotionApiGateway, NotionConfigStatus, NotionError, NotionLabelOption, NotionPropertyInfo,
+    NotionTaskPage, NotionTaskQuery, NotionValidationResult,
 };
 
 use super::service_models::{
-    build_notion_filter, extract_first_data_source_id, extract_properties_from_json,
-    parse_query_response,
+    build_notion_filter, extract_first_data_source_id, extract_person_users,
+    extract_properties_from_json, label_options, parse_query_response,
 };
 
 const NOTION_API_VERSION: &str = "2022-06-28";
@@ -35,6 +35,13 @@ impl NotionApiGateway for NotionApiGatewayImpl {
         query: &NotionTaskQuery,
     ) -> Result<NotionTaskPage, NotionError> {
         query_tasks(config, query, &self.limiter).await
+    }
+
+    async fn fetch_label_options(
+        &self,
+        config: &NotionRepoConfig,
+    ) -> Result<Vec<NotionLabelOption>, NotionError> {
+        fetch_label_options(config).await
     }
 
     async fn validate(
@@ -286,6 +293,62 @@ where
     }
 }
 
+async fn fetch_label_options(
+    config: &NotionRepoConfig,
+) -> Result<Vec<NotionLabelOption>, NotionError> {
+    let client = build_client(&config.api_token)?;
+    let properties = fetch_database_properties(&client, &config.database_id).await?;
+    let has_people = config
+        .property_mapping
+        .labels
+        .iter()
+        .any(|label| label.property_type == "people");
+    let users = if has_people {
+        fetch_workspace_users(&client).await?
+    } else {
+        Vec::new()
+    };
+    Ok(label_options(&config.property_mapping, properties, &users))
+}
+
+async fn fetch_workspace_users(
+    client: &reqwest::Client,
+) -> Result<Vec<(String, String)>, NotionError> {
+    let mut users = Vec::new();
+    let mut next_cursor: Option<String> = None;
+
+    loop {
+        let mut url = format!("{NOTION_BASE_URL}/users?page_size=100");
+        if let Some(ref cursor) = next_cursor {
+            url.push_str(&format!("&start_cursor={cursor}"));
+        }
+
+        let resp = send(client.get(&url)).await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            return Err(NotionError::ApiError(format!("HTTP {status}: {body}")));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .map_err(|error| NotionError::ParseError(error.to_string()))?;
+
+        users.extend(extract_person_users(&json));
+        let (has_more, cursor) = parse_page_metadata(&json);
+        if !has_more {
+            break;
+        }
+        next_cursor = Some(crate::domain::notion::services::next_page_cursor(
+            cursor,
+            next_cursor.as_deref(),
+        )?);
+    }
+
+    Ok(users)
+}
+
 async fn fetch_data_source_properties(
     client: &reqwest::Client,
     data_source_id: &str,
@@ -304,6 +367,29 @@ async fn fetch_data_source_properties(
         .map_err(|error| NotionError::ParseError(error.to_string()))?;
 
     Ok(extract_properties_from_json(&json))
+}
+
+async fn fetch_database_properties(
+    client: &reqwest::Client,
+    database_id: &str,
+) -> Result<Vec<NotionPropertyInfo>, NotionError> {
+    let url = format!("{NOTION_BASE_URL}/databases/{database_id}");
+    let resp = send(client.get(&url)).await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(NotionError::ApiError(format!("HTTP {status}: {body}")));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .map_err(|error| NotionError::ParseError(error.to_string()))?;
+
+    validation_properties(&json, |id| async move {
+        fetch_data_source_properties(client, &id).await
+    })
+    .await
 }
 
 pub struct NotionResponse {

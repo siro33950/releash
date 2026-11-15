@@ -87,6 +87,24 @@ impl GitUsecase {
         Ok(self.git.list_branches(repo_path)?)
     }
 
+    /// 新しい worktree のブランチを作る元にできるブランチと、デフォルトブランチを返す。
+    /// ブランチは、ローカル、origin のリモートの順に、それぞれ名前順で並べる。
+    pub fn worktree_bases(
+        &self,
+        repo_path: &str,
+    ) -> Result<(Vec<Branch>, Option<String>), UsecaseError> {
+        let mut branches: Vec<_> = self
+            .git
+            .list_branches(repo_path)?
+            .into_iter()
+            .filter(Branch::is_worktree_base)
+            .collect();
+        branches.sort_by(|left, right| {
+            (left.is_remote, &left.name).cmp(&(right.is_remote, &right.name))
+        });
+        Ok((branches, self.git.default_branch(repo_path)?))
+    }
+
     // ── branch（書き込み） ──
 
     pub fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), UsecaseError> {

@@ -3,6 +3,14 @@ struct WorktreeSelection {
     case issue(UInt64)
     case task(String)
     case branch(String)
+
+    var identifier: String {
+      switch self {
+      case .issue(let number): "issue:\(number)"
+      case .task(let id): "task:\(id)"
+      case .branch(let name): "branch:\(name)"
+      }
+    }
   }
   private var values: [Key: String] = [:]
   var isEmpty: Bool { values.isEmpty }

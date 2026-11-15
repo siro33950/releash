@@ -37,6 +37,37 @@ fn test_worktree作成_base未指定ではbase設定しない() {
 }
 
 #[test]
+fn test_worktreeのbase候補_ローカルとoriginのブランチを順に並べデフォルトブランチを添える() {
+    // Given
+    let fake = Arc::new(FakeRepo {
+        branches: vec![
+            Branch::remote("origin/main"),
+            Branch::local("main"),
+            Branch::remote("upstream/main"),
+            Branch::local("feature"),
+            Branch::remote("origin/feature"),
+        ],
+        default_branch: Some("main".into()),
+        ..<FakeRepo as Default>::default()
+    });
+    // When
+    let bases = usecase(fake).worktree_bases("/main").unwrap();
+    // Then
+    assert_eq!(
+        bases,
+        (
+            vec![
+                Branch::local("feature"),
+                Branch::local("main"),
+                Branch::remote("origin/feature"),
+                Branch::remote("origin/main"),
+            ],
+            Some("main".into())
+        )
+    );
+}
+
+#[test]
 fn test_作業worktree一覧_隔離worktreeを除きmainを先頭にブランチ名順で返す() {
     // Given
     let fake = Arc::new(FakeRepo {

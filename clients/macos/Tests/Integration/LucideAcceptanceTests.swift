@@ -328,10 +328,7 @@ final class LucideAcceptanceTests: XCTestCase {
     let model = try await testModel(http)
     let host = await ViewHarness(ThreadPanelView(model: model, worktree: "/icons"))
     defer { host.close() }
-    // When
-    try await eventuallyView(host) { host.element("解決済み 1") != nil }
-    try await host.press("解決済み 1")
-    // Then
+    // When / Then
     try await assertIcon("circle-check", in: host, element: "thread-resolved:resolved")
     await model.stop()
   }

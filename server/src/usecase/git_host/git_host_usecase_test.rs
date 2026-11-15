@@ -355,6 +355,26 @@ async fn test_pr状態の取り直し_違う失敗なら記録して通知する
     );
 }
 
+#[test]
+fn test_期限内のissue一覧_取得できた一覧があり失敗していないときだけ持つ() {
+    // Given
+    let cache = |value: Option<Vec<IssueInfo>>, failed: bool| {
+        let cache = Arc::new(FakeIssueCache::with_lookup(value));
+        if failed {
+            cache.record("/repo", Err(GitHostError::External("offline".into())));
+        }
+        usecase_with(
+            Arc::new(FakeProvider::empty()),
+            Arc::new(FakePrCache::default()),
+            cache,
+        )
+    };
+    // When / Then
+    assert!(cache(Some(vec![sample_issue(1)]), false).has_fresh_issues("/repo"));
+    assert!(!cache(None, false).has_fresh_issues("/repo"));
+    assert!(!cache(Some(vec![sample_issue(1)]), true).has_fresh_issues("/repo"));
+}
+
 #[tokio::test]
 async fn test_issue絞り込み_キャッシュを変えず条件に一致するissueと読取失敗を返す() {
     // Given
@@ -387,6 +407,7 @@ async fn test_issue絞り込み_キャッシュを変えず条件に一致する
     let filter = crate::domain::git_host::IssueFilter {
         labels: vec!["bug".into()],
         milestone: Some("release".into()),
+        search: None,
     };
     // When
     let result = uc.get_filtered_issues("/repo", &filter).await;

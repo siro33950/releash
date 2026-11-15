@@ -14,10 +14,15 @@ pub enum SubscriptionTarget {
     SessionHistory(String, usize),
     Providers,
     Branches(String, Option<String>),
-    AvailableBranches(String),
+    /// worktree を作れるローカルのブランチ。検索語があれば、名前が検索語を含むブランチに絞る。
+    AvailableBranches(String, Option<crate::domain::search_term::SearchTerm>),
+    /// 新しい worktree のブランチを作る元にできるブランチと、デフォルトブランチ。
+    WorktreeBases(String),
     Issues(String),
     FilteredIssues(String, crate::domain::git_host::IssueFilter),
     NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
+    /// Repository の Notion の設定で Labels に選んだプロパティと、その選択肢。
+    NotionLabelOptions(String),
     WorkspaceState(String, String),
     RepositoryGroupState(String),
     Directory(String, String),
@@ -28,7 +33,8 @@ pub enum SubscriptionTarget {
     ),
     FileTab(String, String, ReviewBase),
     FileThreads(String, String),
-    ReviewThreads(String),
+    /// worktree の Thread の一覧。差分の比較の基準と、解決済みでも対象の行の差分を添える Thread の ID を持つ。
+    ReviewThreads(String, ReviewBase, Vec<String>),
     WorkflowExecution(String),
     WorkflowOutput(String, String),
     NodeArtifact(String),
@@ -97,7 +103,10 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(WatchRequirement::Git)
                 .collect(),
-            Self::Branches(path, _) | Self::AvailableBranches(path) | Self::ReleashBase(path) => {
+            Self::Branches(path, _)
+            | Self::AvailableBranches(path, _)
+            | Self::WorktreeBases(path)
+            | Self::ReleashBase(path) => {
                 vec![WatchRequirement::Git(path.clone())]
             }
             Self::SessionHistory(_, _) => history_paths
@@ -105,8 +114,15 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(|path| WatchRequirement::Files(path, StateChangeSource::ProviderHistory))
                 .collect(),
+            Self::ReviewThreads(path, ..) => vec![
+                WatchRequirement::Git(path.clone()),
+                WatchRequirement::Files(path.clone(), StateChangeSource::Worktree(path.clone())),
+                WatchRequirement::Files(
+                    review_comments_dir.into(),
+                    StateChangeSource::ReviewComments(None),
+                ),
+            ],
             Self::FileThreads(..)
-            | Self::ReviewThreads(_)
             | Self::ReviewSessionThreads(..)
             | Self::ReviewWorktreeThreads(..)
             | Self::ReviewSessionThread(..)
@@ -131,7 +147,11 @@ impl SubscriptionTarget {
     pub fn external_information(&self) -> bool {
         matches!(
             self,
-            Self::Workspaces | Self::Issues(_) | Self::FilteredIssues(..) | Self::NotionTasks(..)
+            Self::Workspaces
+                | Self::Issues(_)
+                | Self::FilteredIssues(..)
+                | Self::NotionTasks(..)
+                | Self::NotionLabelOptions(_)
         )
     }
 }
@@ -179,10 +199,12 @@ impl SubscriptionTarget {
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
                 Self::Branches(p, _)
-                | Self::AvailableBranches(p)
+                | Self::AvailableBranches(p, _)
+                | Self::WorktreeBases(p)
                 | Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
+                | Self::ReviewThreads(p, ..)
                 | Self::ReleashBase(p) => paths.contains(p),
                 _ => false,
             },
@@ -196,6 +218,7 @@ impl SubscriptionTarget {
                 Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
+                | Self::ReviewThreads(p, ..)
                 | Self::NodeDetail(p, _)
                 | Self::SessionHistory(p, _) => p == path,
                 _ => false,
@@ -216,7 +239,7 @@ impl SubscriptionTarget {
                             | Self::ReviewSessionThread(..)
                             | Self::ReviewSessionThreadHistory(..)
                     )
-                    || matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
+                    || matches!(self, Self::ReviewThreads(name, ..) if worktree.as_ref().is_none_or(|w| w == name))
             }
             C::WorkflowDefinitions => matches!(
                 self,
@@ -224,6 +247,7 @@ impl SubscriptionTarget {
             ),
             C::NotionConfig(path) => match self {
                 Self::NotionTasks(request) => request.path == *path,
+                Self::NotionLabelOptions(p) => p == path,
                 _ => false,
             },
             C::AppConfig => matches!(

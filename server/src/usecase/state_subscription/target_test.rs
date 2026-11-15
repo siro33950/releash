@@ -35,7 +35,11 @@ fn test_repository通知_path一致の対象だけを選ぶ() {
     // Given
     let targets = [
         SubscriptionTarget::Branches("/repo".into(), None),
-        SubscriptionTarget::AvailableBranches("/repo".into()),
+        SubscriptionTarget::AvailableBranches(
+            "/repo".into(),
+            crate::domain::search_term::SearchTerm::new("fix"),
+        ),
+        SubscriptionTarget::WorktreeBases("/repo".into()),
         SubscriptionTarget::ReleashBase("/repo".into()),
     ];
     // When / Then
@@ -171,6 +175,27 @@ fn test_ファイルthread購読_該当worktreeのcomment変更だけを受け�
 }
 
 #[test]
+fn test_thread一覧購読_該当worktreeのcommentとファイルとgitの変化を受ける() {
+    // Given
+    let target = SubscriptionTarget::ReviewThreads("/repo".into(), ReviewBase::Head, vec![]);
+    // When / Then
+    assert!(target.affected_by(&StateChangeSource::ReviewComments(Some("/repo".into()))));
+    assert!(target.affected_by(&StateChangeSource::ReviewComments(None)));
+    assert!(target.affected_by(&StateChangeSource::Worktree("/repo".into())));
+    assert!(target.affected_by(&StateChangeSource::Repository(vec!["/repo".into()])));
+    assert!(!target.affected_by(&StateChangeSource::ReviewComments(Some("/other".into()))));
+    assert!(!target.affected_by(&StateChangeSource::Worktree("/other".into())));
+    assert_eq!(
+        target.watches(&[], &[], "/comments", "", ""),
+        vec![
+            WatchRequirement::Git("/repo".into()),
+            WatchRequirement::Files("/repo".into(), StateChangeSource::Worktree("/repo".into())),
+            WatchRequirement::Files("/comments".into(), StateChangeSource::ReviewComments(None)),
+        ]
+    );
+}
+
+#[test]
 fn test_sessionタブ購読_idだけを受け取りworktree変化で更新する() {
     // Given
     let args = ["agent-session"];
@@ -227,6 +252,7 @@ fn test_notion購読対象_外部の情報としてissueと同じ契機で取り
             title: None,
             labels: Default::default(),
         }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
         SubscriptionTarget::Issues("/repo".into()),
     ];
     // When
@@ -246,14 +272,15 @@ fn test_notion購読対象_外部の情報としてissueと同じ契機で取り
 #[test]
 fn test_notion購読対象_同じrepoの設定変更で取り直す() {
     // Given
-    let targets = [SubscriptionTarget::NotionTasks(
-        crate::usecase::notion::usecase::NotionTaskListRequest {
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
             path: "/repo".into(),
             count: 20,
             title: None,
             labels: Default::default(),
-        },
-    )];
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
     // When
     let results: Vec<_> = targets
         .iter()
@@ -266,14 +293,15 @@ fn test_notion購読対象_同じrepoの設定変更で取り直す() {
 #[test]
 fn test_notion購読対象_別のrepoの設定変更と他の設定変更では取り直さない() {
     // Given
-    let targets = [SubscriptionTarget::NotionTasks(
-        crate::usecase::notion::usecase::NotionTaskListRequest {
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
             path: "/repo".into(),
             count: 20,
             title: None,
             labels: Default::default(),
-        },
-    )];
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
     // When
     let results: Vec<_> = targets
         .iter()

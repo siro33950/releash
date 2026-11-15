@@ -12,6 +12,48 @@ fn no_lookup(_: &str) -> Result<Option<FactRowMeta>, FactReadError> {
 }
 
 #[test]
+fn test_アーカイブ復元_日時欠損は記録時刻を使い保存済み日時は保持する() {
+    // Given
+    for (detail, expected) in [
+        ("{}", 12.345),
+        (r#"{"archivedAt":null}"#, 12.345),
+        (r#"{"archivedAt":1.234567}"#, 1.234567),
+    ] {
+        let row = NodeEventRow {
+            tree_id: TREE.into(),
+            seq: 2,
+            node_execution_id: "node".into(),
+            parent_id: None,
+            node_name: "main".into(),
+            kind: "session".into(),
+            attempt: 1,
+            event_type: "archive_requested".into(),
+            session_id: None,
+            detail: detail.into(),
+            timestamp_ms: 12_345,
+        };
+        // When
+        let record = record_from_row(&row).unwrap().unwrap();
+        // Then
+        assert_eq!(
+            record.fact,
+            NodeFact::ArchiveRequested(crate::domain::workflow::ArchiveRequestedFact {
+                archived_at: expected,
+            })
+        );
+    }
+}
+
+#[test]
+fn test_アーカイブ復元_不正な日時と非objectは拒否する() {
+    // Given
+    for detail in [r#"{"archivedAt":"bad"}"#, "[]", "null", "invalid"] {
+        // When / Then
+        assert!(decode_stored_fact("archive_requested", detail, 12_345).is_err());
+    }
+}
+
+#[test]
 fn test_写像_開始バッチがroot構成つきstarted行になる() {
     // Given: 起動時の required batch 相当のイベント列
     let events = vec![

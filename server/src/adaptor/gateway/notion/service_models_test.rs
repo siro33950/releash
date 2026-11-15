@@ -386,6 +386,78 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_絞り込みの選択肢_labelsに選んだプロパティだけを残しpeopleはuserのidを渡す() {
+        // Given
+        let mapping = NotionPropertyMapping {
+            labels: vec![
+                NotionLabelProperty {
+                    name: "Status".into(),
+                    property_type: "status".into(),
+                },
+                NotionLabelProperty {
+                    name: "Assignee".into(),
+                    property_type: "people".into(),
+                },
+                NotionLabelProperty {
+                    name: "Memo".into(),
+                    property_type: "rich_text".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let property = |name: &str, property_type: &str, options: &[&str]| NotionPropertyInfo {
+            name: name.into(),
+            property_type: property_type.into(),
+            options: options.iter().map(|option| option.to_string()).collect(),
+        };
+        let properties = vec![
+            property("Status", "status", &["Todo", "Done"]),
+            property("Priority", "select", &["High"]),
+            property("Assignee", "people", &[]),
+            property("Memo", "rich_text", &[]),
+        ];
+        let users = [("user-1".to_string(), "Alice".to_string())];
+        // When
+        let options = label_options(&mapping, properties, &users);
+        // Then
+        let choice = |label: &str, value: &str| NotionLabelChoice {
+            label: label.into(),
+            value: value.into(),
+        };
+        assert_eq!(
+            options,
+            [
+                NotionLabelOption {
+                    property_name: "Status".into(),
+                    choices: vec![choice("Todo", "Todo"), choice("Done", "Done")],
+                },
+                NotionLabelOption {
+                    property_name: "Assignee".into(),
+                    choices: vec![choice("Alice", "user-1")],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_user一覧抽出_人のuserだけをidと名前で返す() {
+        // Given
+        let json = serde_json::json!({
+            "results": [
+                { "type": "person", "id": "user-1", "name": "Alice" },
+                { "type": "bot", "id": "bot-1", "name": "Bot" },
+                { "type": "person", "id": "user-2" },
+                { "type": "person", "id": "", "name": "No id" },
+            ]
+        });
+        // When
+        let users = extract_person_users(&json);
+        // Then
+        assert_eq!(users, [("user-1".to_string(), "Alice".to_string())]);
+        assert!(extract_person_users(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
     fn test_filter構築_empty_queryはnone() {
         assert!(build_notion_filter(
             &query("", HashMap::new()),
