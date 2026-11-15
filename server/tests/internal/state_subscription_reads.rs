@@ -523,6 +523,30 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
             ]),
         ),
         (
+            T::AvailableBranches(
+                p.clone(),
+                releashd::test_support::integration::repository::SearchTerm::new("FEAT"),
+            ),
+            StateValue::BranchStatus(vec![(
+                releashd::test_support::integration::repository::Branch::local("feature"),
+                false,
+            )]),
+        ),
+        (
+            T::WorktreeBases(p.clone()),
+            StateValue::WorktreeBases(
+                {
+                    let mut names = vec!["feature".to_string(), branch.clone()];
+                    names.sort();
+                    names
+                        .into_iter()
+                        .map(releashd::test_support::integration::repository::Branch::local)
+                        .collect()
+                },
+                Some(branch.clone()),
+            ),
+        ),
+        (
             T::Issues(p.clone()),
             StateValue::Issues(
                 releashd::test_support::integration::platform::Fetched::ready(
@@ -585,6 +609,47 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
     }
     assert_eq!(*fixture.sessions.calls.lock(), [format!("{p}:120")]);
     assert_eq!(fixture.issues.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+pub async fn test_issue絞り込みの購読開始_期限内の一覧があれば取り直さず絞り込み無しは取り直す() {
+    // Given
+    let fixture = Fixture::new();
+    let filtered = SubscriptionTarget::FilteredIssues(
+        fixture.path.clone(),
+        releashd::test_support::integration::platform::IssueFilter {
+            search: releashd::test_support::integration::repository::SearchTerm::new("issue"),
+            ..Default::default()
+        },
+    );
+    let unfiltered = SubscriptionTarget::Issues(fixture.path.clone());
+    let mut calls = Vec::new();
+    // When
+    for target in [&filtered, &filtered, &unfiltered] {
+        fixture
+            .reads
+            .refresh_external_blocking(target)
+            .await
+            .unwrap();
+        calls.push(fixture.issues.calls.load(Ordering::SeqCst));
+    }
+    let listed = fixture.reads.read(&filtered).await.unwrap();
+    // Then
+    assert_eq!(calls, [1, 1, 2]);
+    assert_eq!(
+        listed,
+        StateValue::Issues(
+            releashd::test_support::integration::platform::Fetched::ready(
+                releashd::test_support::integration::platform::IssueListing {
+                    options:
+                        releashd::test_support::integration::platform::IssueOptions::from_issues(&[
+                            issue(1)
+                        ],),
+                    issues: vec![issue(1)],
+                },
+            ),
+        )
+    );
 }
 
 #[tokio::test]

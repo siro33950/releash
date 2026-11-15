@@ -203,26 +203,6 @@ final class Fixture: Sendable {
     return repository
   }
 
-  func waitForLiveSession(
-    repository: URL, branch: String,
-    provider: Releash_Client_V1_AgentSessionProviderDto.Value
-  ) async throws {
-    try await waitForState(target: "workspaces") { payload in
-      guard case .workspaces(let workspaces) = payload.value,
-        let repo = workspaces.repositories.items.first(where: { $0.path == repository.path }),
-        let created = repo.branches.items.first(where: { $0.name == branch }),
-        let worktree = repo.worktrees.items.first(where: { $0.path == created.worktreePath }),
-        worktree.executions.count == 1,
-        let execution = worktree.executions.first,
-        !execution.isWorkflow,
-        worktree.snapshot.nodes.items.count == 1,
-        case .node(let node) = worktree.snapshot.nodes.items.first?.variant,
-        node.provider.value == provider, node.processPresence.value == .live
-      else { return false }
-      return true
-    }
-  }
-
   static func hasRunningWorkflow(
     _ workspaces: Releash_Client_V1_WorkspaceListSnapshot,
     repository: String, executionID: String

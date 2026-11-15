@@ -21,9 +21,8 @@ pub(crate) fn register_shared(
                     };
                     let usecase =
                         usecase.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                    let launch = worktree::parse_launch(args.launch)?;
                     let paths = usecase
-                        .execute(args.repo_path, args.branches, args.base_branch, launch)
+                        .execute(args.repo_path, args.branches, args.base_branch)
                         .await
                         .map_err(AppError::from)?;
                     Ok(wire::command_result::Command::CreateWorktrees(value(

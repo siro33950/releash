@@ -3380,6 +3380,7 @@ fn test_issue絞り込み対象_条件を正規化し同じrepositoryの変更�
         &[
             "/repo",
             "label=z",
+            "search=Fix",
             "milestone=release",
             "label=a",
             "label=z",
@@ -3391,6 +3392,7 @@ fn test_issue絞り込み対象_条件を正規化し同じrepositoryの変更�
         crate::domain::git_host::IssueFilter {
             labels: vec!["a".into(), "z".into()],
             milestone: Some("release".into()),
+            search: crate::domain::search_term::SearchTerm::new("Fix"),
         },
     );
     // Then
@@ -3401,10 +3403,21 @@ fn test_issue絞り込み対象_条件を正規化し同じrepositoryの変更�
     );
     assert!(target.affected_by(&StateChangeSource::Issues("/repo".into())));
     assert!(!target.affected_by(&StateChangeSource::Issues("/other".into())));
-    for bad in ["label=", "state=open", "milestone="] {
+    assert_eq!(
+        target.parts().1,
+        [
+            "/repo",
+            "label=a",
+            "label=z",
+            "milestone=release",
+            "search=Fix"
+        ]
+    );
+    for bad in ["label=", "state=open", "milestone=", "search=", "search= "] {
         assert!(SubscriptionTarget::from_parts("issues", &["/repo", bad]).is_err());
     }
     assert!(
         SubscriptionTarget::from_parts("issues", &["/repo", "milestone=a", "milestone=b"]).is_err()
     );
+    assert!(SubscriptionTarget::from_parts("issues", &["/repo", "search=a", "search=b"]).is_err());
 }

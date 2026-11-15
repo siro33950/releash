@@ -403,6 +403,7 @@ impl WorkspaceStateReads {
                 StateValue::DesktopSettings(self.app_config.desktop_settings().map_err(error)?)
             }
             T::NotionTasks(request) => StateValue::NotionTasks(self.notion.cached_tasks(request).ok_or_else(|| error(super::SubscriptionError::UnknownTarget))?),
+            T::NotionLabelOptions(path) => StateValue::NotionLabelOptions(self.notion.cached_label_options(path).ok_or_else(|| error(super::SubscriptionError::UnknownTarget))?),
             T::NotionConfig(p) => {
                 StateValue::NotionConfig(self.notion.get_config(p).map_err(error)?)
             }
@@ -423,10 +424,16 @@ impl WorkspaceStateReads {
                     .collect(),
                 },
             ),
-            T::AvailableBranches(path) => StateValue::BranchStatus(
+            T::AvailableBranches(path, search) => StateValue::BranchStatus(
                 self.repository.list_branches_with_worktree(path).map_err(error)?.into_iter()
-                    .filter(|(branch, has_worktree)| branch.can_create_worktree(*has_worktree)).collect()
+                    .filter(|(branch, has_worktree)| branch.can_create_worktree(*has_worktree))
+                    .filter(|(branch, _)| search.as_ref().is_none_or(|term| term.matches(&branch.name)))
+                    .collect()
             ),
+            T::WorktreeBases(path) => {
+                let (branches, default_branch) = self.repository.worktree_bases(path).map_err(error)?;
+                StateValue::WorktreeBases(branches, default_branch)
+            }
             T::ReleashBase(p) => {
                 StateValue::ReleashBase(self.repository_config.get_releash_base(p).map_err(error)?)
             }
@@ -455,10 +462,16 @@ impl WorkspaceStateReads {
         target: &SubscriptionTarget,
     ) -> Result<(), StateReadError> {
         match target {
-            SubscriptionTarget::Issues(path) | SubscriptionTarget::FilteredIssues(path, _) => {
-                self.refresh_issues(path).await?
+            SubscriptionTarget::Issues(path) => self.refresh_issues(path).await?,
+            SubscriptionTarget::FilteredIssues(path, _) => {
+                if !self.git_host.has_fresh_issues(path) {
+                    self.refresh_issues(path).await?
+                }
             }
             SubscriptionTarget::NotionTasks(request) => self.notion.refresh_tasks(request).await,
+            SubscriptionTarget::NotionLabelOptions(path) => {
+                self.notion.refresh_label_options(path).await
+            }
             SubscriptionTarget::Workspaces => self.workspaces.refresh_pull_requests().await,
             _ => {}
         }
@@ -506,13 +519,17 @@ impl StateSubscriptionRead for WorkspaceStateReads {
         self.refresh_external_blocking(target).await
     }
     fn acquire_external(&self, target: &SubscriptionTarget) {
-        if let SubscriptionTarget::NotionTasks(request) = target {
-            self.notion.acquire_tasks(request);
+        match target {
+            SubscriptionTarget::NotionTasks(request) => self.notion.acquire_tasks(request),
+            SubscriptionTarget::NotionLabelOptions(path) => self.notion.acquire_label_options(path),
+            _ => {}
         }
     }
     fn release_external(&self, target: &SubscriptionTarget) {
-        if let SubscriptionTarget::NotionTasks(request) = target {
-            self.notion.release_tasks(request);
+        match target {
+            SubscriptionTarget::NotionTasks(request) => self.notion.release_tasks(request),
+            SubscriptionTarget::NotionLabelOptions(path) => self.notion.release_label_options(path),
+            _ => {}
         }
     }
     fn repositories(&self) -> Vec<String> {

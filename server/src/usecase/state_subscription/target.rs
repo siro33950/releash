@@ -14,10 +14,15 @@ pub enum SubscriptionTarget {
     SessionHistory(String, usize),
     Providers,
     Branches(String, Option<String>),
-    AvailableBranches(String),
+    /// worktree を作れるローカルのブランチ。検索語があれば、名前が検索語を含むブランチに絞る。
+    AvailableBranches(String, Option<crate::domain::search_term::SearchTerm>),
+    /// 新しい worktree のブランチを作る元にできるブランチと、デフォルトブランチ。
+    WorktreeBases(String),
     Issues(String),
     FilteredIssues(String, crate::domain::git_host::IssueFilter),
     NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
+    /// Repository の Notion の設定で Labels に選んだプロパティと、その選択肢。
+    NotionLabelOptions(String),
     WorkspaceState(String, String),
     RepositoryGroupState(String),
     Directory(String, String),
@@ -97,7 +102,10 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(WatchRequirement::Git)
                 .collect(),
-            Self::Branches(path, _) | Self::AvailableBranches(path) | Self::ReleashBase(path) => {
+            Self::Branches(path, _)
+            | Self::AvailableBranches(path, _)
+            | Self::WorktreeBases(path)
+            | Self::ReleashBase(path) => {
                 vec![WatchRequirement::Git(path.clone())]
             }
             Self::SessionHistory(_, _) => history_paths
@@ -131,7 +139,11 @@ impl SubscriptionTarget {
     pub fn external_information(&self) -> bool {
         matches!(
             self,
-            Self::Workspaces | Self::Issues(_) | Self::FilteredIssues(..) | Self::NotionTasks(..)
+            Self::Workspaces
+                | Self::Issues(_)
+                | Self::FilteredIssues(..)
+                | Self::NotionTasks(..)
+                | Self::NotionLabelOptions(_)
         )
     }
 }
@@ -179,7 +191,8 @@ impl SubscriptionTarget {
             C::Repository(paths) => match self {
                 Self::Workspaces => true,
                 Self::Branches(p, _)
-                | Self::AvailableBranches(p)
+                | Self::AvailableBranches(p, _)
+                | Self::WorktreeBases(p)
                 | Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
@@ -224,6 +237,7 @@ impl SubscriptionTarget {
             ),
             C::NotionConfig(path) => match self {
                 Self::NotionTasks(request) => request.path == *path,
+                Self::NotionLabelOptions(p) => p == path,
                 _ => false,
             },
             C::AppConfig => matches!(

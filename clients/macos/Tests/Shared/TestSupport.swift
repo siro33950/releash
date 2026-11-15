@@ -39,6 +39,11 @@ final class TestHTTPClient: HTTPClientInterface {
     var workflowConfig = Releash_Client_V1_WorkflowSection()
     var releashBases: [String: Releash_Client_V1_Nullablestring] = [:]
     var branches: [String: Releash_Client_V1_ListBranchDto] = [:]
+    var worktreeBases: [String: Releash_Client_V1_WorktreeBasesSnapshot] = [:]
+    var availableBranches: [String: Releash_Client_V1_ListBranchStatus] = [:]
+    var issues: [String: Releash_Client_V1_IssuesSnapshot] = [:]
+    var notionTasks: [String: Releash_Client_V1_NotionTasksSnapshot] = [:]
+    var notionLabelOptions: [String: Releash_Client_V1_NotionLabelOptionsSnapshot] = [:]
     var notionConfigs: [String: Releash_Client_V1_NullableNotionRepoConfigView] = [:]
     var notionValidation = Releash_Client_V1_NotionValidationResultView()
     var deferNotionValidation = false
@@ -187,6 +192,16 @@ final class TestHTTPClient: HTTPClientInterface {
             payload.releashBase = state.releashBases[subscription.args[0]] ?? .init()
           } else if subscription.target == "branches" {
             payload.branches = state.branches[subscription.args[0]] ?? .init()
+          } else if subscription.target == "worktree-bases" {
+            payload.worktreeBases = state.worktreeBases[subscription.args[0]] ?? .init()
+          } else if subscription.target == "available-branches" {
+            payload.branchStatus = state.availableBranches[subscription.args[0]] ?? .init()
+          } else if subscription.target == "issues" {
+            payload.issues = state.issues[subscription.args[0]] ?? .init()
+          } else if subscription.target == "notion-tasks" {
+            payload.notionTasks = state.notionTasks[subscription.args[0]] ?? .init()
+          } else if subscription.target == "notion-label-options" {
+            payload.notionLabelOptions = state.notionLabelOptions[subscription.args[0]] ?? .init()
           } else if subscription.target == "notion-config" {
             payload.notionConfig = state.notionConfigs[subscription.args[0]] ?? .init()
           } else if subscription.target == "repository-group-state" {

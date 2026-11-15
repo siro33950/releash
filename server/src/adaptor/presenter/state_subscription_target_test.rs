@@ -119,6 +119,50 @@ fn test_automation購読対象_facet種別を検証して往復する() {
 }
 
 #[test]
+fn test_worktree作成元の購読対象_検索語の有無と候補の対象が往復する() {
+    // Given
+    let cases = [
+        ("available-branches", vec!["/repo"]),
+        ("available-branches", vec!["/repo", "search=fix/side bar"]),
+        ("worktree-bases", vec!["/repo"]),
+        ("notion-label-options", vec!["/repo"]),
+    ];
+    // When
+    let results: Vec<_> = cases
+        .iter()
+        .map(|(name, args)| SubscriptionTarget::from_parts(name, args).unwrap())
+        .collect();
+    // Then
+    for ((name, args), target) in cases.iter().zip(&results) {
+        assert_eq!(
+            target.parts(),
+            (*name, args.iter().map(|arg| arg.to_string()).collect())
+        );
+        assert_eq!(
+            &SubscriptionTarget::parse(&target.to_string()).unwrap(),
+            target
+        );
+    }
+    assert_eq!(
+        results[1],
+        SubscriptionTarget::AvailableBranches(
+            "/repo".into(),
+            crate::domain::search_term::SearchTerm::new("fix/side bar")
+        )
+    );
+    for bad in [
+        vec!["/repo", "search="],
+        vec!["/repo", "fix"],
+        vec!["/repo", "search=a", "search=b"],
+    ] {
+        assert!(
+            SubscriptionTarget::from_parts("available-branches", &bad).is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
 fn test_notion購読対象_絞り込み無しの引数は往復で同じ対象になる() {
     // Given
     let args = ["/repo", "20"];

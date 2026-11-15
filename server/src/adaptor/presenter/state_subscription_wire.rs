@@ -63,6 +63,17 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 page: value.value.clone().map(crate::adaptor::presenter::notion::NotionTaskPageView::from).map(crate::adaptor::presenter::client::value).transpose().map_err(crate::adaptor::presenter::connect::command_error)?,
                 read_error: value.error.as_ref().map(notion_read_failure),
             }),
+            StateValue::NotionLabelOptions(value) => wire::state_payload::Value::NotionLabelOptions(wire::NotionLabelOptionsSnapshot {
+                options: value.value.iter().flatten().map(|option| wire::NotionLabelOption {
+                    property_name: option.property_name.clone(),
+                    choices: option.choices.iter().map(|choice| wire::NotionLabelChoice { label: choice.label.clone(), value: choice.value.clone() }).collect(),
+                }).collect(),
+                read_error: value.error.as_ref().map(notion_read_failure),
+            }),
+            StateValue::WorktreeBases(branches, default_branch) => wire::state_payload::Value::WorktreeBases(wire::WorktreeBasesSnapshot {
+                branches: branches.iter().map(|branch| branch.name.clone()).collect(),
+                default_branch: default_branch.clone(),
+            }),
             StateValue::WorkspaceState(version, value, failures, _) => {
                 let mut value: wire::NullableWorkspaceStateDto = crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?;

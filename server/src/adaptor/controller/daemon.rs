@@ -605,12 +605,9 @@ pub async fn compose(
         .join("provider-launches")
         .to_string_lossy()
         .into_owned();
-    let create_worktrees_usecase =
-        Arc::new(usecase::create_worktrees::CreateWorktreesUsecase::new(
-            app_state.git_usecase.clone(),
-            agent_session_launch.clone(),
-            workflow_runtime_usecase.clone(),
-        ));
+    let create_worktrees_usecase = Arc::new(
+        usecase::create_worktrees::CreateWorktreesUsecase::new(app_state.git_usecase.clone()),
+    );
     let dependencies = super::client::ClientDependencies {
         agent_session_usecase: Some(agent_sessions.sessions),
         create_worktrees_usecase: Some(create_worktrees_usecase),

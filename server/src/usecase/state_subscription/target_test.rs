@@ -35,7 +35,11 @@ fn test_repository通知_path一致の対象だけを選ぶ() {
     // Given
     let targets = [
         SubscriptionTarget::Branches("/repo".into(), None),
-        SubscriptionTarget::AvailableBranches("/repo".into()),
+        SubscriptionTarget::AvailableBranches(
+            "/repo".into(),
+            crate::domain::search_term::SearchTerm::new("fix"),
+        ),
+        SubscriptionTarget::WorktreeBases("/repo".into()),
         SubscriptionTarget::ReleashBase("/repo".into()),
     ];
     // When / Then
@@ -227,6 +231,7 @@ fn test_notion購読対象_外部の情報としてissueと同じ契機で取り
             title: None,
             labels: Default::default(),
         }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
         SubscriptionTarget::Issues("/repo".into()),
     ];
     // When
@@ -246,14 +251,15 @@ fn test_notion購読対象_外部の情報としてissueと同じ契機で取り
 #[test]
 fn test_notion購読対象_同じrepoの設定変更で取り直す() {
     // Given
-    let targets = [SubscriptionTarget::NotionTasks(
-        crate::usecase::notion::usecase::NotionTaskListRequest {
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
             path: "/repo".into(),
             count: 20,
             title: None,
             labels: Default::default(),
-        },
-    )];
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
     // When
     let results: Vec<_> = targets
         .iter()
@@ -266,14 +272,15 @@ fn test_notion購読対象_同じrepoの設定変更で取り直す() {
 #[test]
 fn test_notion購読対象_別のrepoの設定変更と他の設定変更では取り直さない() {
     // Given
-    let targets = [SubscriptionTarget::NotionTasks(
-        crate::usecase::notion::usecase::NotionTaskListRequest {
+    let targets = [
+        SubscriptionTarget::NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest {
             path: "/repo".into(),
             count: 20,
             title: None,
             labels: Default::default(),
-        },
-    )];
+        }),
+        SubscriptionTarget::NotionLabelOptions("/repo".into()),
+    ];
     // When
     let results: Vec<_> = targets
         .iter()

@@ -194,6 +194,11 @@ where
         Ok(Vec::new())
     }
 
+    fn default_branch(&self, repo_path: &str) -> Result<Option<String>, GitError> {
+        let _ = repo_path;
+        Ok(None)
+    }
+
     fn create_branch(&self, repo_path: &str, branch_name: &str) -> Result<(), GitError> {
         let _ = (repo_path, branch_name);
         Ok(())

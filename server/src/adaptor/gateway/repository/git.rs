@@ -21,6 +21,9 @@ impl GitService for GitGateway {
     fn list_branches(&self, repo_path: &str) -> Result<Vec<Branch>, GitError> {
         branch::list_branches(repo_path)
     }
+    fn default_branch(&self, repo_path: &str) -> Result<Option<String>, GitError> {
+        branch::default_branch(repo_path)
+    }
     fn current(&self, repo_path: &str) -> Result<String, GitError> {
         branch::get_current_branch(repo_path)
     }

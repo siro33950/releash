@@ -8,6 +8,22 @@ pub struct NotionTaskQuery {
     pub page_size: Option<u32>,
 }
 
+/// task の絞り込みに使うプロパティと、その選択肢。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotionLabelOption {
+    pub property_name: String,
+    pub choices: Vec<NotionLabelChoice>,
+}
+
+/// task の絞り込みの選択肢。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotionLabelChoice {
+    /// 画面に出す名前。
+    pub label: String,
+    /// task の絞り込みに渡す値。
+    pub value: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotionTaskPage {
     pub tasks: Vec<NotionTask>,

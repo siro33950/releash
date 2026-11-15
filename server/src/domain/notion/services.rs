@@ -31,6 +31,17 @@ pub(crate) fn notion_task_branch_name(branch_name_property: &str, task_id: &str)
     }
 }
 
+/// 続きのページを読むカーソル。続きがあるのにカーソルが無い、または前と同じ応答は拒否する。
+pub(crate) fn next_page_cursor(
+    next: Option<String>,
+    current: Option<&str>,
+) -> Result<String, super::NotionError> {
+    next.filter(|cursor| Some(cursor.as_str()) != current)
+        .ok_or_else(|| {
+            super::NotionError::ParseError("Notion pagination cursor is missing or repeated".into())
+        })
+}
+
 fn sanitize_branch_name_property(value: &str) -> String {
     let whitespace_collapsed = collapse_whitespace_to_dash(value.trim());
     let allowed_only: String = whitespace_collapsed

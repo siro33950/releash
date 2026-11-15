@@ -65,8 +65,10 @@ struct FakeNotionApiGateway {
     >,
     query_pages: Mutex<std::collections::VecDeque<Result<NotionTaskPage, NotionError>>>,
     query_calls: AtomicUsize,
+    label_calls: AtomicUsize,
     validate_calls: AtomicUsize,
     query_result: Mutex<Option<Result<NotionTaskPage, NotionError>>>,
+    label_result: Mutex<Option<Result<Vec<NotionLabelOption>, NotionError>>>,
     validate_result: Mutex<Option<NotionValidationResult>>,
 }
 
@@ -118,6 +120,18 @@ impl NotionApiGateway for FakeNotionApiGateway {
                 next_cursor: None,
             })
         })
+    }
+
+    async fn fetch_label_options(
+        &self,
+        _config: &app_config_vo::NotionRepoConfig,
+    ) -> Result<Vec<NotionLabelOption>, NotionError> {
+        self.label_calls.fetch_add(1, Ordering::SeqCst);
+        self.label_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Ok(label_options()))
     }
 
     async fn validate(
@@ -632,6 +646,57 @@ async fn test_notion購読_解放後に遅れた取得は項目を作り直さ�
     // Then
     assert!(notion.cached_tasks(&task_request()).is_none());
     assert!(api.configs.lock().unwrap().is_empty());
+}
+
+fn label_options() -> Vec<NotionLabelOption> {
+    vec![NotionLabelOption {
+        property_name: "Status".into(),
+        choices: vec![crate::domain::notion::NotionLabelChoice {
+            label: "Todo".into(),
+            value: "Todo".into(),
+        }],
+    }]
+}
+
+#[tokio::test]
+async fn test_notionの選択肢の購読_設定済みのrepositoryは選択肢を持ち取得の失敗では前の選択肢を残す(
+) {
+    // Given
+    let (notion, api) = notion_fixture();
+    notion.acquire_label_options("/repo");
+    // When
+    notion.refresh_label_options("/repo").await;
+    let fetched = notion.cached_label_options("/repo").unwrap();
+    *api.label_result.lock().unwrap() = Some(Err(NotionError::ApiError("offline".into())));
+    notion.refresh_label_options("/repo").await;
+    let failed = notion.cached_label_options("/repo").unwrap();
+    notion.release_label_options("/repo");
+    // Then
+    assert_eq!(fetched.value, Some(label_options()));
+    assert_eq!(fetched.error, None);
+    assert_eq!(failed.value, Some(label_options()));
+    assert!(matches!(failed.error, Some(NotionUsecaseError::Notion(_))));
+    assert!(notion.cached_label_options("/repo").is_none());
+}
+
+#[tokio::test]
+async fn test_notionの選択肢の購読_設定が無ければapiを呼ばず設定不足の失敗を持つ() {
+    // Given
+    let api = Arc::new(FakeNotionApiGateway::default());
+    let notion = NotionUsecase::new(
+        Arc::new(FakeNotionConfigRepository::default()),
+        Arc::new(ConfigQuery),
+        api.clone(),
+        Default::default(),
+    );
+    notion.acquire_label_options("/repo");
+    // When
+    notion.refresh_label_options("/repo").await;
+    // Then
+    let result = notion.cached_label_options("/repo").unwrap();
+    assert_eq!(result.value, None);
+    assert_eq!(result.error, Some(NotionUsecaseError::ConfigNotFound));
+    assert_eq!(api.label_calls.load(Ordering::SeqCst), 0);
 }
 
 fn notion_fixture() -> (NotionUsecase, Arc<FakeNotionApiGateway>) {
