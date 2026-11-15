@@ -113,6 +113,7 @@ async fn test_履歴照会_所有照会の業務失敗を保持する() {
         // When
         let result = query
             .list(AgentSessionHistoryRequest {
+                search: None,
                 worktree_path: "/repo/worktree".into(),
                 visible_count: 1,
             })
@@ -177,6 +178,7 @@ async fn test_agent_session_history_query_metadataだけを並べ管理中idを�
 
     let page = query
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 3,
         })
@@ -246,6 +248,7 @@ async fn test_agent_session_history_query_表示件数を増やすと先頭か�
     );
     let first = query
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 2,
         })
@@ -253,6 +256,7 @@ async fn test_agent_session_history_query_表示件数を増やすと先頭か�
         .unwrap();
     let second = query
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 3,
         })
@@ -289,6 +293,7 @@ async fn test_履歴表示件数_百件を超えて全providerの既存走査範
     for count in [100, 120, 402, 420, usize::MAX] {
         let page = query
             .list(AgentSessionHistoryRequest {
+                search: None,
                 worktree_path: "/repo/worktree".into(),
                 visible_count: count,
             })
@@ -296,5 +301,98 @@ async fn test_履歴表示件数_百件を超えて全providerの既存走査範
             .unwrap();
         assert_eq!(page.items.len(), count.min(402));
         assert_eq!(page.has_more, count < 402);
+    }
+}
+
+#[tokio::test]
+async fn test_履歴検索_未表示の題と指示を絞ってからページ化する() {
+    // Given
+    let gateway = FixedHistoryGateway {
+        entries: vec![
+            metadata(ProviderKind::Codex, "new", 30),
+            metadata(ProviderKind::Codex, "title", 20),
+            metadata(ProviderKind::Codex, "prompt", 10),
+        ],
+        titles: HashMap::from([((ProviderKind::Codex, "title".into()), Some("Thread".into()))]),
+        prompts: HashMap::from([(
+            (ProviderKind::Codex, "prompt".into()),
+            Some("thread in prompt".into()),
+        )]),
+        title_requests: Mutex::new(Vec::new()),
+    };
+    let query = LocalAgentSessionHistoryQueryService::new(
+        Arc::new(gateway),
+        Arc::new(FixedOwnershipQuery {
+            owned: HashSet::new(),
+        }),
+    );
+    // When
+    let page = query
+        .list(AgentSessionHistoryRequest {
+            worktree_path: "/repo/worktree".into(),
+            visible_count: 1,
+            search: crate::domain::search_term::SearchTerm::new("THREAD"),
+        })
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(page.items[0].provider_session_id, "title");
+    assert!(page.has_more);
+}
+
+#[tokio::test]
+async fn test_履歴検索_各providerの202件目以降を題と指示で検索してページ化する() {
+    // Given
+    let entries = ProviderKind::supported()
+        .iter()
+        .flat_map(|provider| {
+            (0..203).map(move |index| metadata(*provider, &format!("session-{index}"), 203 - index))
+        })
+        .collect();
+    let titles = ProviderKind::supported()
+        .iter()
+        .map(|provider| {
+            (
+                (*provider, "session-201".into()),
+                Some("needle title".into()),
+            )
+        })
+        .collect();
+    let prompts = ProviderKind::supported()
+        .iter()
+        .map(|provider| {
+            (
+                (*provider, "session-202".into()),
+                Some("needle prompt".into()),
+            )
+        })
+        .collect();
+    let query = LocalAgentSessionHistoryQueryService::new(
+        Arc::new(FixedHistoryGateway {
+            entries,
+            titles,
+            prompts,
+            title_requests: Mutex::new(Vec::new()),
+        }),
+        Arc::new(FixedOwnershipQuery {
+            owned: HashSet::new(),
+        }),
+    );
+    // When / Then
+    for count in [1, 4] {
+        let page = query
+            .list(AgentSessionHistoryRequest {
+                worktree_path: "/repo/worktree".into(),
+                visible_count: count,
+                search: crate::domain::search_term::SearchTerm::new("needle"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), count);
+        assert_eq!(page.has_more, count == 1);
+        assert_eq!(page.items[0].provider_session_id, "session-201");
+        if count == 4 {
+            assert_eq!(page.items[3].provider_session_id, "session-202");
+        }
     }
 }

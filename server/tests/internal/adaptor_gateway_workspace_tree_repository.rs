@@ -2029,9 +2029,17 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
         assert_eq!(operations.can_delete, can_restore);
     }
     assert_eq!(
-        tree.archived_sessions()
+        tree.archived_history(None)
             .iter()
-            .map(|execution| execution.execution_id.as_str())
+            .map(|entry| {
+                let releashd::test_support::integration::workspace::ArchivedHistoryEntry::Session(
+                    session,
+                ) = entry
+                else {
+                    panic!("session history")
+                };
+                session.agent_session_id.as_str()
+            })
             .collect::<Vec<_>>(),
         vec!["archived-session"]
     );

@@ -39,6 +39,15 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::ArchivedHistory(entries) => wire::state_payload::Value::ArchivedHistory(
+                wire::ListArchivedHistoryItem {
+                    items: entries
+                        .iter()
+                        .map(archived_history_item)
+                        .collect::<Result<_, _>>()
+                        .map_err(crate::adaptor::presenter::connect::command_error)?,
+                },
+            ),
             StateValue::Providers(value) => wire::state_payload::Value::Providers(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -360,6 +369,48 @@ fn directory_entry(
         }
         .into(),
     }
+}
+
+fn archived_history_item(
+    entry: &crate::domain::workspace_tree::ArchivedHistoryEntry,
+) -> Result<wire::ArchivedHistoryItem, wire::CommandFailure> {
+    use crate::adaptor::presenter::client::value;
+    use crate::domain::workspace_tree::{
+        ArchivedHistoryEntry, ArchivedSessionEntry, ArchivedWorkflowEntry,
+    };
+    use wire::archived_history_item::Variant;
+    Ok(wire::ArchivedHistoryItem {
+        variant: Some(match entry {
+            ArchivedHistoryEntry::Session(ArchivedSessionEntry {
+                agent_session_id,
+                provider,
+                name,
+                archived_at,
+                can_delete,
+            }) => Variant::Session(wire::ArchivedSessionHistoryItem {
+                agent_session_id: agent_session_id.clone(),
+                name: name.clone(),
+                provider: Some(value(
+                    crate::usecase::provider_dto::AgentSessionProviderDto::from(*provider),
+                )?),
+                archived_at: *archived_at,
+                can_delete: *can_delete,
+            }),
+            ArchivedHistoryEntry::Workflow(ArchivedWorkflowEntry {
+                execution_id,
+                worktree_path,
+                title,
+                status,
+                updated_at,
+            }) => Variant::Workflow(wire::WorkspaceWorkflowHistoryItem {
+                execution_id: Some(execution_id.clone()),
+                worktree_path: Some(worktree_path.clone()),
+                title: Some(title.clone()),
+                status: Some(value(status.as_str())?),
+                updated_at: Some(*updated_at),
+            }),
+        }),
+    })
 }
 
 #[cfg(test)]

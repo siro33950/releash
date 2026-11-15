@@ -495,7 +495,7 @@ pub async fn test_状態読取_全対象を対応するサービスへ引数付�
             StateValue::NodeDetail(None),
         ),
         (
-            T::SessionHistory(p.clone(), 120),
+            T::SessionHistory(p.clone(), 120, None),
             StateValue::SessionHistory(AgentSessionHistoryPageDto {
                 items: vec![AgentSessionHistoryCandidateDto {
                     provider: AgentSessionProviderDto::Codex,

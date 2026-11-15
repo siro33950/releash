@@ -6,10 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    WorkspaceExecution, WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTree, WorkspaceTreeNode,
+    WorkspaceNodeKind, WorkspacePublicRoot, WorkspaceTree, WorkspaceTreeNode,
     WorkspaceTreeVisibilityPolicy,
 };
-use crate::domain::agent_session::aggregates::{AgentSession, AgentSessionLifecycle};
+use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::workflow::ExecutionTreeLaunch;
 
 /// archive 済みの実行と内部の節を除いた、画面に出す木。
@@ -69,47 +69,6 @@ impl WorkspaceTree {
                     .map(|execution| execution.execution_id.as_str()),
             ),
         }
-    }
-
-    /// archive 済みの session を持つ実行（session の識別子順）。
-    pub fn archived_sessions(&self) -> Vec<&WorkspaceExecution> {
-        let mut archived = self
-            .executions()
-            .iter()
-            .filter(|execution| {
-                execution.launched_as == ExecutionTreeLaunch::Session
-                    && execution.session.as_ref().is_some_and(|session| {
-                        session.lifecycle() == AgentSessionLifecycle::Archived
-                    })
-            })
-            .collect::<Vec<_>>();
-        archived.sort_by_key(|execution| execution.session.as_ref().map(AgentSession::id));
-        archived
-    }
-
-    /// archive 済みの workflow の実行（archive の新しい順）。
-    pub fn archived_workflows(&self) -> Vec<&WorkspaceExecution> {
-        let mut archived = self
-            .executions()
-            .iter()
-            .filter(|execution| {
-                execution.launched_as == ExecutionTreeLaunch::Workflow
-                    && execution.worktree_path == self.workspace_identity().as_str()
-                    && execution.archive.is_some()
-            })
-            .collect::<Vec<_>>();
-        archived.sort_by(|left, right| {
-            let archived_at = |execution: &WorkspaceExecution| {
-                execution
-                    .archive
-                    .as_ref()
-                    .map_or(f64::NEG_INFINITY, |archive| archive.archived_at)
-            };
-            archived_at(right)
-                .total_cmp(&archived_at(left))
-                .then_with(|| left.execution_id.cmp(&right.execution_id))
-        });
-        archived
     }
 }
 

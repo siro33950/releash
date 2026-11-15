@@ -16,6 +16,7 @@ use releashd::test_support::integration::workflow::NodeFact;
 use releashd::test_support::integration::workflow::StopReceivedFact;
 use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
 use releashd::test_support::integration::workflow::WorkspaceNodeContentDto;
+use releashd::test_support::integration::workspace::ArchivedHistoryEntry;
 use releashd::test_support::integration::workspace::SqliteWorkspaceQueryService;
 use releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
 use releashd::test_support::integration::workspace::WorkspaceIdentity;
@@ -708,17 +709,20 @@ pub async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示�
     // When
     let snapshot = visible_rows(&repository, &workspace).await;
     let tree_title = snapshot[0].title.as_str();
-    archive_aborted(&store, execution_id, 10.0).await;
+    archive_aborted(&store, execution_id, 2, 10.0).await;
     let archived = load_tree(&repository, &workspace).await;
-    let history = archived.archived_workflows();
+    let history = archived.archived_history(None);
 
     // Then
     assert_eq!(tree_title, "01_author-spec");
     assert_ne!(tree_title, "main");
     assert!(archived.visible().roots().is_empty());
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].execution_id, execution_id);
-    assert_eq!(history[0].workflow_name, tree_title);
+    let ArchivedHistoryEntry::Workflow(item) = &history[0] else {
+        panic!("workflow history")
+    };
+    assert_eq!(item.execution_id, execution_id);
+    assert_eq!(item.title, tree_title);
 }
 
 #[tokio::test]
@@ -948,10 +952,10 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
         std::sync::Arc::new(FailureRecordStore::default()),
     );
     let fixtures = [
-        ("00000000-0000-4000-8000-000000000901", 12.345678),
-        ("00000000-0000-4000-8000-000000000902", 98.765432),
+        ("00000000-0000-4000-8000-000000000901", 8_000, 12.345678),
+        ("00000000-0000-4000-8000-000000000902", 4_000, 98.765432),
     ];
-    for (id, at) in fixtures {
+    for (id, updated_at_ms, at) in fixtures {
         seed_workflow_session_facts(
             &store,
             WorkflowSessionFactSeed {
@@ -967,24 +971,52 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
         )
         .await
         .unwrap();
-        archive_aborted(&store, id, at).await;
+        archive_aborted(&store, id, updated_at_ms, at).await;
     }
     // When
     let tree = load_tree(&repository, &WorkspaceIdentity::new("/repo")).await;
-    let history = tree.archived_workflows();
+    let history = tree
+        .archived_history(None)
+        .into_iter()
+        .map(|entry| {
+            let ArchivedHistoryEntry::Workflow(item) = entry else {
+                panic!("workflow history")
+            };
+            item
+        })
+        .collect::<Vec<_>>();
     // Then
     assert_eq!(history.len(), 2);
-    for (id, at) in fixtures {
+    for (id, updated_at_ms, at) in fixtures {
         let item = history.iter().find(|item| item.execution_id == id).unwrap();
-        let archive = item.archive.as_ref().unwrap();
+        let archive = tree
+            .executions()
+            .iter()
+            .find(|execution| execution.execution_id == id)
+            .unwrap()
+            .archive
+            .as_ref()
+            .unwrap();
         assert_eq!(archive.archived_at, at);
+        assert_eq!(item.updated_at, updated_at_ms as f64 / 1_000.0);
         assert_eq!(item.status, ExecutionStatus::Aborted);
     }
-    assert_eq!(history[0].execution_id, fixtures[1].0);
+    assert_eq!(
+        history
+            .iter()
+            .map(|item| item.execution_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![fixtures[0].0, fixtures[1].0]
+    );
 }
 
 /// 実行木を abort してから archive する。
-async fn archive_aborted(store: &Arc<LocalEventStore>, execution_id: &str, archived_at: f64) {
+async fn archive_aborted(
+    store: &Arc<LocalEventStore>,
+    execution_id: &str,
+    updated_at_ms: i64,
+    archived_at: f64,
+) {
     use releashd::test_support::integration::workflow::ExecutionTreeArchiveFactRepository;
     use releashd::test_support::integration::workflow::ExecutionTreeArchiveRepository;
     let root =
@@ -996,7 +1028,7 @@ async fn archive_aborted(store: &Arc<LocalEventStore>, execution_id: &str, archi
         store,
         &root.meta,
         &NodeFact::AbortRequested(Default::default()),
-        2,
+        updated_at_ms,
     )
     .await
     .unwrap();

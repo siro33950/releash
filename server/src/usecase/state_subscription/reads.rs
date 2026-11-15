@@ -270,15 +270,24 @@ impl WorkspaceStateReads {
                     node: node.map(Box::new),
                 });
             }
-            T::SessionHistory(path, count) => {
+            T::SessionHistory(path, count, search) => {
                 return self
                     .history
                     .list(AgentSessionHistoryRequest {
                         worktree_path: path.clone(),
                         visible_count: *count,
+                        search: search.clone(),
                     })
                     .await
                     .map(StateValue::SessionHistory)
+                    .map_err(error)
+            }
+            T::ArchivedHistory(path, search) => {
+                return self
+                    .workflow
+                    .workspace_tree(path)
+                    .await
+                    .map(|tree| StateValue::ArchivedHistory(tree.archived_history(search.as_ref())))
                     .map_err(error)
             }
             T::FilteredIssues(p, filter) => {
@@ -451,7 +460,8 @@ impl WorkspaceStateReads {
             | T::Workspaces
             | T::Workflows
             | T::SessionTab(_)
-            | T::SessionHistory(_, _)
+            | T::SessionHistory(..)
+            | T::ArchivedHistory(..)
             | T::NodeDetail(_, _)
             | T::ProviderUsage | T::ProviderHookHealth | T::WorkspaceState(..) | T::RepositoryGroupState(_) => {
                 unreachable!("async reads handled above")

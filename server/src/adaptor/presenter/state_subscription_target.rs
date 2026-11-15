@@ -68,13 +68,25 @@ impl SubscriptionTarget {
             ("workspaces", []) => Ok(Self::Workspaces),
             ("node-detail", [path, id]) => Ok(Self::NodeDetail((*path).into(), (*id).into())),
             ("session-tab", [id]) => Ok(Self::SessionTab((*id).into())),
-            ("session-history", [path, count]) => {
+            ("session-history", [path, count] | [path, count, _]) => {
                 let parsed: usize = count.parse().map_err(|_| SubscriptionError::InvalidId)?;
                 if parsed == 0 || parsed.to_string() != *count {
                     return Err(SubscriptionError::InvalidId);
                 }
-                Ok(Self::SessionHistory((*path).into(), parsed))
+                Ok(Self::SessionHistory(
+                    (*path).into(),
+                    parsed,
+                    args.get(2)
+                        .map(|search| parse_history_search(search))
+                        .transpose()?
+                        .flatten(),
+                ))
             }
+            ("archived-history", [path]) => Ok(Self::ArchivedHistory((*path).into(), None)),
+            ("archived-history", [path, search]) => Ok(Self::ArchivedHistory(
+                (*path).into(),
+                parse_history_search(search)?,
+            )),
             ("providers", []) => Ok(Self::Providers),
             ("branches", [path]) => Ok(Self::Branches((*path).into(), None)),
             ("branches", [path, excluded]) => {
@@ -211,9 +223,19 @@ impl SubscriptionTarget {
             Self::Workspaces => ("workspaces", vec![]),
             Self::NodeDetail(p, id) => ("node-detail", vec![p.clone(), id.clone()]),
             Self::SessionTab(id) => ("session-tab", vec![id.clone()]),
-            Self::SessionHistory(p, count) => {
-                ("session-history", vec![p.clone(), count.to_string()])
-            }
+            Self::SessionHistory(path, count, search) => (
+                "session-history",
+                [path.clone(), count.to_string()]
+                    .into_iter()
+                    .chain(search.iter().map(format_search))
+                    .collect(),
+            ),
+            Self::ArchivedHistory(path, search) => (
+                "archived-history",
+                std::iter::once(path.clone())
+                    .chain(search.iter().map(format_search))
+                    .collect(),
+            ),
             Self::Providers => ("providers", vec![]),
             Self::Branches(p, excluded) => (
                 "branches",
@@ -308,6 +330,14 @@ const SEARCH_PREFIX: &str = "search=";
 fn parse_search(arg: &str) -> Result<crate::domain::search_term::SearchTerm, SubscriptionError> {
     arg.strip_prefix(SEARCH_PREFIX)
         .and_then(crate::domain::search_term::SearchTerm::new)
+        .ok_or(SubscriptionError::InvalidId)
+}
+
+fn parse_history_search(
+    arg: &str,
+) -> Result<Option<crate::domain::search_term::SearchTerm>, SubscriptionError> {
+    arg.strip_prefix(SEARCH_PREFIX)
+        .map(crate::domain::search_term::SearchTerm::new)
         .ok_or(SubscriptionError::InvalidId)
 }
 

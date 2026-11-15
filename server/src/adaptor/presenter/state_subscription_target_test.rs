@@ -37,7 +37,7 @@ fn test_購読対象_空の引数と不正な件数と未知の名前を拒否�
         assert!(SubscriptionTarget::parse(value).is_err(), "{value}");
     }
     for count in [1, 100, 120, 402, 420] {
-        let target = SubscriptionTarget::SessionHistory("/repo".into(), count);
+        let target = SubscriptionTarget::SessionHistory("/repo".into(), count, None);
         assert_eq!(SubscriptionTarget::parse(&target.to_string()), Ok(target));
     }
 }
@@ -495,4 +495,60 @@ fn test_thread一覧購読対象_基準と差分を添えるthreadを正規の�
     ] {
         assert!(SubscriptionTarget::from_parts("review-threads", invalid).is_err());
     }
+}
+
+#[test]
+fn test_履歴購読_検索語を往復し不正な件数を拒否する() {
+    // Given / When / Then
+    for target in [
+        SubscriptionTarget::SessionHistory(
+            "/repo".into(),
+            20,
+            crate::domain::search_term::SearchTerm::new("Thread"),
+        ),
+        SubscriptionTarget::ArchivedHistory("/repo".into(), None),
+        SubscriptionTarget::ArchivedHistory(
+            "/repo".into(),
+            crate::domain::search_term::SearchTerm::new("名前"),
+        ),
+    ] {
+        assert_eq!(
+            SubscriptionTarget::parse(&target.to_string()).unwrap(),
+            target
+        );
+    }
+    for args in [
+        vec!["/repo", "0", "search=term"],
+        vec!["/repo", "01", "search=term"],
+    ] {
+        assert!(SubscriptionTarget::from_parts("session-history", &args).is_err());
+    }
+    assert!(SubscriptionTarget::from_parts("archived-history", &["/repo", "name=term"]).is_err());
+}
+
+#[test]
+fn test_履歴購読_空検索を解除し前後の空白を無視する() {
+    // Given / When / Then
+    for (input, expected) in [
+        ("search=", None),
+        ("search=  ", None),
+        (
+            "search= Thread ",
+            crate::domain::search_term::SearchTerm::new("Thread"),
+        ),
+    ] {
+        let raw = format!("session-history:5:/repo2:20{}:{input}", input.len());
+        assert!(SubscriptionTarget::parse(&raw).is_err());
+        assert_eq!(
+            SubscriptionTarget::from_parts("session-history", &["/repo", "20", input]).unwrap(),
+            SubscriptionTarget::SessionHistory("/repo".into(), 20, expected.clone())
+        );
+        let raw = format!("archived-history:5:/repo{}:{input}", input.len());
+        assert!(SubscriptionTarget::parse(&raw).is_err());
+        assert_eq!(
+            SubscriptionTarget::from_parts("archived-history", &["/repo", input]).unwrap(),
+            SubscriptionTarget::ArchivedHistory("/repo".into(), expected)
+        );
+    }
+    assert!(SubscriptionTarget::parse("archived-history:05:/repo").is_err());
 }

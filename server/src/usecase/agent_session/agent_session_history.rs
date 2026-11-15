@@ -24,6 +24,8 @@ pub struct AgentSessionHistoryPageDto {
 pub struct AgentSessionHistoryRequest {
     pub worktree_path: String,
     pub visible_count: usize,
+    /// 検索語。あれば、題か最初の指示が検索語を含む履歴に絞る。
+    pub search: Option<crate::domain::search_term::SearchTerm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +40,9 @@ pub enum AgentSessionHistoryQueryError {
 
 #[async_trait::async_trait]
 pub trait AgentSessionHistoryQueryService: Send + Sync {
+    /// Provider の履歴を、最終更新の新しい順に `visible_count` 件まで返す。
+    /// 検索語があれば、題か最初の指示が検索語を含む履歴に絞ってから数える。
+    /// `has_more` は、絞った後の履歴に続きがあるかである。
     async fn list(
         &self,
         request: AgentSessionHistoryRequest,

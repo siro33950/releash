@@ -11,7 +11,16 @@ pub enum SubscriptionTarget {
     ExecutionOverview,
     NodeDetail(String, String),
     SessionTab(String),
-    SessionHistory(String, usize),
+    /// worktree の Provider の履歴。出す件数を持つ。
+    /// 検索語があれば、題か最初の指示が検索語を含む履歴に絞る。
+    SessionHistory(
+        String,
+        usize,
+        Option<crate::domain::search_term::SearchTerm>,
+    ),
+    /// worktree の Archive 済みの Session と Workflow。
+    /// 検索語があれば、Session は名前、Workflow はタイトルが検索語を含む行に絞る。
+    ArchivedHistory(String, Option<crate::domain::search_term::SearchTerm>),
     Providers,
     Branches(String, Option<String>),
     /// worktree を作れるローカルのブランチ。検索語があれば、名前が検索語を含むブランチに絞る。
@@ -109,7 +118,7 @@ impl SubscriptionTarget {
             | Self::ReleashBase(path) => {
                 vec![WatchRequirement::Git(path.clone())]
             }
-            Self::SessionHistory(_, _) => history_paths
+            Self::SessionHistory(..) => history_paths
                 .iter()
                 .cloned()
                 .map(|path| WatchRequirement::Files(path, StateChangeSource::ProviderHistory))
@@ -220,12 +229,13 @@ impl SubscriptionTarget {
                 | Self::FileTab(p, _, _)
                 | Self::ReviewThreads(p, ..)
                 | Self::NodeDetail(p, _)
-                | Self::SessionHistory(p, _) => p == path,
+                | Self::SessionHistory(p, ..)
+                | Self::ArchivedHistory(p, _) => p == path,
                 _ => false,
             },
             C::WorkspaceList => matches!(self, Self::Workspaces | Self::SessionTab(_)),
             C::WorkspaceState(name) => matches!(self, Self::WorkspaceState(n, _) if n == name),
-            C::ProviderHistory => matches!(self, Self::SessionHistory(_, _)),
+            C::ProviderHistory => matches!(self, Self::SessionHistory(..)),
             C::Providers => matches!(self, Self::Providers | Self::ProviderAvailability),
             C::Issues(path) => {
                 matches!(self, Self::Issues(p) | Self::FilteredIssues(p, _) if p == path)

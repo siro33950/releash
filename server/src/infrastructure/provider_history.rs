@@ -89,7 +89,13 @@ pub(crate) fn recent_jsonl_files(
     if limit == 0 || !directory.exists() {
         return Ok(Vec::new());
     }
-    let mut recent = Vec::with_capacity(limit);
+    let mut recent = Vec::new();
+    let newest_first = |left: &RawHistoryFile, right: &RawHistoryFile| {
+        right
+            .updated_at_ms
+            .cmp(&left.updated_at_ms)
+            .then_with(|| left.path.cmp(&right.path))
+    };
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
@@ -108,14 +114,12 @@ pub(crate) fn recent_jsonl_files(
             path,
             updated_at_ms,
         });
-        recent.sort_by(|left, right| {
-            right
-                .updated_at_ms
-                .cmp(&left.updated_at_ms)
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        recent.truncate(limit);
+        if recent.len() > limit {
+            recent.sort_by(newest_first);
+            recent.truncate(limit);
+        }
     }
+    recent.sort_by(newest_first);
     Ok(recent)
 }
 

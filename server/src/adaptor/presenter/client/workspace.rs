@@ -4,12 +4,8 @@
 
 use super as wire;
 use super::conversions::cv;
-use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::git::Branch;
-use crate::domain::provider_lifecycle::ProviderKind;
-use crate::domain::workspace_tree::{
-    WorkspaceExecution, WorkspaceNodeKind, WorkspaceTree, WorkspaceVisibleNode,
-};
+use crate::domain::workspace_tree::{WorkspaceNodeKind, WorkspaceTree, WorkspaceVisibleNode};
 use crate::usecase::fetched::{FetchState, Fetched};
 use crate::usecase::workspace_tree::{
     WorkspaceList, WorkspaceListRepository, WorkspaceListWorktree,
@@ -125,28 +121,7 @@ fn worktree(row: &WorkspaceListWorktree) -> Result<wire::WorkspaceWorktreeList, 
             .collect(),
         path: Some(row.worktree.path.clone()),
         status: Some(status(&row.tree, empty)),
-        workflow_history: Some(wire::ListWorkspaceWorkflowHistoryItem {
-            items: row
-                .tree
-                .value
-                .iter()
-                .flat_map(WorkspaceTree::archived_workflows)
-                .map(history_item)
-                .collect::<Result<_, _>>()?,
-        }),
         snapshot,
-    })
-}
-
-fn history_item(
-    execution: &WorkspaceExecution,
-) -> Result<wire::WorkspaceWorkflowHistoryItem, String> {
-    Ok(wire::WorkspaceWorkflowHistoryItem {
-        execution_id: Some(execution.execution_id.clone()),
-        worktree_path: Some(execution.worktree_path.clone()),
-        title: Some(execution.workflow_name.clone()),
-        status: Some(cv(execution.status.as_str())?),
-        updated_at: Some(execution.updated_at),
     })
 }
 
@@ -154,18 +129,6 @@ fn tree_snapshot(tree: &WorkspaceTree) -> Result<wire::WorkspaceTreeSnapshot, St
     let visible = tree.visible();
     Ok(wire::WorkspaceTreeSnapshot {
         nodes: Some(tree_items(&visible.roots())?),
-        archived_sessions: Some(wire::ListAgentSessionItemDto {
-            items: tree
-                .archived_sessions()
-                .into_iter()
-                .filter_map(|execution| {
-                    execution
-                        .session
-                        .as_ref()
-                        .map(|session| session_item(session, &execution.worktree_path))
-                })
-                .collect::<Result<_, _>>()?,
-        }),
     })
 }
 
@@ -259,36 +222,6 @@ fn workflow_capabilities(
             can_abort: Some(owner.can_abort),
             can_archive: Some(owner.can_archive),
         })
-}
-
-fn session_item(
-    session: &AgentSession,
-    workspace_worktree_path: &str,
-) -> Result<wire::AgentSessionItemDto, String> {
-    let location = session.tree_location();
-    let operations = session.operations();
-    Ok(wire::AgentSessionItemDto {
-        id: Some(session.id().to_owned()),
-        workspace_identity: Some(session.workspace().as_str().to_owned()),
-        worktree_path: Some(session.worktree_path().to_owned()),
-        workspace_worktree_path: Some(workspace_worktree_path.to_owned()),
-        provider: Some(wire::AgentSessionProviderDto {
-            value: Some(match session.provider() {
-                ProviderKind::Claude => wire::agent_session_provider_dto::Value::Claude as i32,
-                ProviderKind::Codex => wire::agent_session_provider_dto::Value::Codex as i32,
-            }),
-        }),
-        tree_location: Some(wire::AgentSessionTreeLocationDto {
-            tree_id: Some(location.tree_id().to_owned()),
-            node_execution_id: Some(location.node_execution_id().to_owned()),
-        }),
-        provider_session_id: session.provider_session_id().map(str::to_owned),
-        operations: Some(wire::AgentSessionOperationsDto {
-            can_archive: Some(operations.can_archive),
-            can_delete: Some(operations.can_delete),
-        }),
-        availability: None,
-    })
 }
 
 #[cfg(test)]

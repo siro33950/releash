@@ -3,6 +3,7 @@
 //! WorkspaceTree is restored from canonical execution/node/session records and
 //! has no dedicated persistence or CAS lifecycle.
 
+mod archived_history;
 pub(crate) mod entities;
 mod projection;
 pub(crate) mod repository;
@@ -10,6 +11,7 @@ pub(crate) mod services;
 pub(crate) mod value_objects;
 pub(crate) mod visible;
 
+pub use archived_history::{ArchivedHistoryEntry, ArchivedSessionEntry, ArchivedWorkflowEntry};
 pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, RuntimeSnapshotNodeProjection};
 pub use repository::WorkspaceTreeRepository;
@@ -22,3 +24,6 @@ pub(crate) use value_objects::{WorkspaceExecution, WorkspaceNodeClassification};
 pub(crate) use visible::WorkspaceVisibleNode;
 
 pub(crate) mod card;
+
+#[cfg(test)]
+mod test_helpers;

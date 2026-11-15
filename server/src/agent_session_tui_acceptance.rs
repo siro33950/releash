@@ -649,9 +649,10 @@ impl crate::usecase::state_subscription::StateSubscriptionRead for AcceptanceSes
                     message: format!("{e:?}"),
                     source: e.into(),
                 }),
-            T::SessionHistory(path, count) => self
+            T::SessionHistory(path, count, search) => self
                 .history
                 .list(crate::usecase::agent_session::AgentSessionHistoryRequest {
+                    search: search.clone(),
                     worktree_path: path.clone(),
                     visible_count: *count,
                 })

@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::domain::agent_session::{
@@ -37,14 +37,19 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
         if request.worktree_path.trim().is_empty() || request.visible_count == 0 {
             return Err(AgentSessionHistoryQueryError::InvalidRequest);
         }
+        let scan_limit = if request.search.is_some() {
+            usize::MAX
+        } else {
+            MAX_SCAN_PER_PROVIDER
+        };
         let mut unique = HashMap::new();
         for provider in ProviderKind::supported() {
             let entries = self
                 .history
-                .list_metadata(*provider, &request.worktree_path, MAX_SCAN_PER_PROVIDER)
+                .list_metadata(*provider, &request.worktree_path, scan_limit)
                 .await
                 .map_err(map_gateway_error)?;
-            if entries.len() > MAX_SCAN_PER_PROVIDER {
+            if entries.len() > scan_limit {
                 return Err(AgentSessionHistoryQueryError::Corrupt);
             }
             for entry in entries {
@@ -82,55 +87,80 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
                 continue;
             }
             visible.push(candidate);
-            if visible.len() > request.visible_count {
+            if request.search.is_none() && visible.len() > request.visible_count {
                 break;
             }
         }
-        let has_more = visible.len() > request.visible_count;
-        visible.truncate(request.visible_count);
         let mut titles = HashMap::new();
         for provider in ProviderKind::supported() {
             let provider_session_ids = visible
                 .iter()
+                .take(if request.search.is_some() {
+                    visible.len()
+                } else {
+                    request.visible_count
+                })
                 .filter(|entry| entry.provider == *provider)
                 .map(|entry| entry.provider_session_id.clone())
                 .collect::<Vec<_>>();
             if provider_session_ids.is_empty() {
                 continue;
             }
-            let entries = self
-                .history
-                .list_session_titles(*provider, &request.worktree_path, &provider_session_ids)
-                .await
-                .map_err(map_gateway_error)?;
-            if entries.len() != provider_session_ids.len() {
-                return Err(AgentSessionHistoryQueryError::Corrupt);
-            }
-            for entry in entries {
-                if !provider_session_ids.contains(&entry.provider_session_id)
-                    || titles
-                        .insert(
-                            (*provider, entry.provider_session_id),
-                            (entry.session_title, entry.first_user_prompt),
-                        )
-                        .is_some()
-                {
+            let batch_size = if request.search.is_some() {
+                64
+            } else {
+                provider_session_ids.len()
+            };
+            let previous_count = titles.len();
+            for ids in provider_session_ids.chunks(batch_size) {
+                let entries = self
+                    .history
+                    .list_session_titles(*provider, &request.worktree_path, ids)
+                    .await
+                    .map_err(map_gateway_error)?;
+                if entries.len() != ids.len() {
                     return Err(AgentSessionHistoryQueryError::Corrupt);
+                }
+                let mut expected = ids.iter().map(String::as_str).collect::<HashSet<_>>();
+                for entry in entries {
+                    if !expected.remove(entry.provider_session_id.as_str()) {
+                        return Err(AgentSessionHistoryQueryError::Corrupt);
+                    }
+                    if request
+                        .search
+                        .as_ref()
+                        .is_none_or(|term| entry.matches(term))
+                    {
+                        titles.insert((*provider, entry.provider_session_id.clone()), entry);
+                    }
+                }
+                if request.search.is_some() && titles.len() - previous_count > request.visible_count
+                {
+                    break;
                 }
             }
         }
+        if request.search.is_some() {
+            visible.retain(|entry| {
+                titles.contains_key(&(entry.provider, entry.provider_session_id.clone()))
+            });
+        }
+        let has_more = visible.len() > request.visible_count;
+        visible.truncate(request.visible_count);
         Ok(AgentSessionHistoryPageDto {
             items: visible
                 .into_iter()
                 .map(|entry| {
-                    let (title, first_user_prompt) = titles
-                        .remove(&(entry.provider, entry.provider_session_id.clone()))
-                        .unwrap_or((None, None));
+                    let title = titles.remove(&(entry.provider, entry.provider_session_id.clone()));
                     let label = provider_history_label(
                         entry.provider,
                         &entry.provider_session_id,
-                        title.as_deref(),
-                        first_user_prompt.as_deref(),
+                        title
+                            .as_ref()
+                            .and_then(|title| title.session_title.as_deref()),
+                        title
+                            .as_ref()
+                            .and_then(|title| title.first_user_prompt.as_deref()),
                     );
                     AgentSessionHistoryCandidateDto {
                         provider: entry.provider.into(),

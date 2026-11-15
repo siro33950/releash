@@ -1,9 +1,12 @@
 use super::*;
 use crate::adaptor::presenter::client::from_message;
+use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::agent_session::aggregates::AgentSessionTreeLocation;
 use crate::domain::git::Worktree;
 use crate::domain::git_host::PrInfo;
+use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workflow::{ExecutionStatus, ExecutionTreeArchiveRecord, ExecutionTreeLaunch};
+use crate::domain::workspace_tree::WorkspaceExecution;
 use crate::domain::workspace_tree::{
     WorkspaceIdentity, WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
 };
@@ -770,14 +773,12 @@ fn test_workspaces一覧_持ち主の値と取得の状態を画面が読む名�
                                 "error": "nodes failed"
                             },
                             "snapshot": null,
-                            "workflowHistory": [],
                             "executions": []
                         },
                         {
                             "path": "/repo-worktrees/feature",
                             "status": {"state": "empty", "error": null},
-                            "snapshot": {"nodes": [], "archivedSessions": []},
-                            "workflowHistory": [],
+                            "snapshot": {"nodes": []},
                             "executions": []
                         }
                     ]
@@ -863,7 +864,7 @@ fn test_workspaces一覧_読めなくなった実行木は前回の木と失敗�
 }
 
 #[test]
-fn test_実行木の変換_archive済みの実行を木から外し履歴とsessionの一覧に載せる() {
+fn test_実行木の変換_archive済みを除いて現行の木を返す() {
     // Given
     let mut archived_workflow = workflow_execution("archived-workflow");
     archived_workflow.workflow_name = "01_author-spec".into();
@@ -926,32 +927,6 @@ fn test_実行木の変換_archive済みの実行を木から外し履歴とsess
     assert_eq!(worktree["status"]["state"], "ready");
     assert_eq!(worktree["snapshot"]["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(worktree["snapshot"]["nodes"][0]["id"], "live-workflow");
-    assert_eq!(
-        worktree["workflowHistory"],
-        json!([{
-            "executionId": "archived-workflow",
-            "worktreePath": "/repo",
-            "title": "01_author-spec",
-            "status": "aborted",
-            "updatedAt": 5.0
-        }])
-    );
-    assert_eq!(
-        worktree["snapshot"]["archivedSessions"],
-        json!([{
-            "id": "archived-session",
-            "workspaceIdentity": "/repo",
-            "worktreePath": "/repo",
-            "workspaceWorktreePath": "/repo",
-            "provider": "codex",
-            "treeLocation": {
-                "treeId": "archived-session",
-                "nodeExecutionId": "archived-session"
-            },
-            "providerSessionId": "provider-session",
-            "operations": {"canArchive": false, "canDelete": true}
-        }])
-    );
 }
 
 #[test]

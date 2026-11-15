@@ -32,6 +32,7 @@ async fn test_agent_session_history_controller境界へusecaseとして公開す
 
     let page = usecase
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 1,
         })

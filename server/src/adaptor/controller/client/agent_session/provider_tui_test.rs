@@ -522,6 +522,7 @@ async fn test_履歴失敗分類_全gateway経路から購読を通じconnectへ
             // When
             let error = usecase
                 .list(crate::usecase::agent_session::AgentSessionHistoryRequest {
+                    search: None,
                     worktree_path: "/repo".into(),
                     visible_count: 1,
                 })

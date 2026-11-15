@@ -536,6 +536,7 @@ fn test_購読payload_全種類を旧wire型とフィールドへ変換する() 
                         provider: Some(provider),
                         provider_session_id: Some("provider-session".into()),
                         label: Some("session".into()),
+                        updated_at: Some(0.011),
                     }],
                 }),
                 has_more: Some(true),
@@ -1466,4 +1467,33 @@ fn test_thread一覧購読_対象行の差分と読めなかった理由を転�
             },
         ]
     );
+}
+
+#[test]
+fn test_archive履歴配信_sessionの名前と時刻と操作権限を届ける() {
+    // Given
+    let state = crate::usecase::state_subscription::StateValue::ArchivedHistory(vec![
+        crate::domain::workspace_tree::ArchivedHistoryEntry::Session(
+            crate::domain::workspace_tree::ArchivedSessionEntry {
+                agent_session_id: "session".into(),
+                provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
+                name: "相談".into(),
+                archived_at: 123.5,
+                can_delete: true,
+            },
+        ),
+    ]);
+    // When
+    let value = super::payload(&state).unwrap();
+    // Then
+    let Some(wire::state_payload::Value::ArchivedHistory(list)) = value.value else {
+        panic!("archive history")
+    };
+    let Some(wire::archived_history_item::Variant::Session(session)) = &list.items[0].variant
+    else {
+        panic!("session")
+    };
+    assert_eq!(session.name, "相談");
+    assert_eq!(session.archived_at, 123.5);
+    assert!(session.can_delete);
 }
