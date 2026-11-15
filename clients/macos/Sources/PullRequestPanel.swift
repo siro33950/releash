@@ -35,14 +35,15 @@ struct PullRequestPanel: View {
                 let appearance = UIStyle.prAppearance(appearanceState(pr.state))
                 CardIcon(image: Image(appearance.icon))
                   .foregroundStyle(appearance.color)
-                Text(pr.title).font(.headline)
-                Text("#" + String(pr.number)).foregroundStyle(.secondary)
+                Text(pr.title).font(.title3.bold())
+                Text("#" + String(pr.number)).font(.title3).foregroundStyle(.secondary)
                 Spacer()
                 Button {
                   if let url = URL(string: pr.url) { openURL(url) }
                 } label: {
-                  Image("square-arrow-out-up-right")
+                  CardIcon(image: Image("square-arrow-out-up-right"))
                 }
+                .buttonStyle(IconButtonStyle()).iconButtonFrame()
                 .accessibilityLabel("ブラウザで開く")
               }
               StructuredText(markdown: pr.body)
@@ -51,39 +52,63 @@ struct PullRequestPanel: View {
               if pr.canCreateNew {
                 Button("新しい PR を作る") { Task { @MainActor in creating = true } }
               }
+              Divider()
               checks(pr.checks)
+              Divider()
               HStack {
-                Text("COMMENTS")
+                Text("COMMENTS").font(.subheadline.bold()).foregroundStyle(.secondary)
                 Text("\(pr.comments.count)")
+                  .font(.caption).foregroundStyle(.secondary)
+                  .padding(.horizontal, 6).padding(.vertical, 2)
+                  .background(.quaternary, in: Capsule())
               }
               ForEach(Array(pr.comments.enumerated()), id: \.offset) { _, item in
-                VStack(alignment: .leading) {
-                  HStack {
-                    if item.bot {
-                      CardIcon(image: Image("bot")).accessibilityHidden(true)
-                    } else {
-                      Text(String(item.author.prefix(1)))
-                        .frame(width: 24, height: 24).background(.quaternary, in: Circle())
-                    }
-                    Text(item.author)
-                    if item.bot { Text("bot").font(.caption) }
-                    TimelineView(.everyMinute) { _ in
-                      Text(relativeTimeLabel(Double(item.writtenAt), now: Date()))
-                        .foregroundStyle(.secondary)
-                    }
+                HStack(alignment: .top, spacing: UIStyle.spacing) {
+                  if item.bot {
+                    CardIcon(image: Image("bot"))
+                      .frame(width: 24, height: 24)
+                      .background(.quaternary, in: Circle()).accessibilityHidden(true)
+                  } else {
+                    Text(String(item.author.prefix(1)))
+                      .frame(width: 24, height: 24).background(.quaternary, in: Circle())
                   }
-                  StructuredText(markdown: item.body)
-                    .environment(
-                      \.openURL, OpenURLAction { openCommentLink($0) ? .handled : .discarded })
+                  VStack(alignment: .leading, spacing: UIStyle.rowSpacing) {
+                    HStack {
+                      Text(item.author).bold()
+                      if item.bot {
+                        Text("bot").font(.caption).foregroundStyle(.secondary)
+                          .padding(.horizontal, 4).padding(.vertical, 2)
+                          .overlay(
+                            RoundedRectangle(cornerRadius: UIStyle.badgeCornerRadius)
+                              .strokeBorder(.separator))
+                      }
+                      TimelineView(.everyMinute) { _ in
+                        Text(relativeTimeLabel(Double(item.writtenAt), now: Date()))
+                          .foregroundStyle(.secondary)
+                      }
+                    }
+                    StructuredText(markdown: item.body)
+                      .environment(
+                        \.openURL, OpenURLAction { openCommentLink($0) ? .handled : .discarded })
+                  }
+                  Spacer(minLength: 0)
                 }
+                Divider()
               }
             }
           }
           Divider()
-          CommentField(placeholder: "Comment", text: $comment, identifier: "pr-comment") {
-            if !comment.isEmpty && !busy { post(pr.number) }
-          }.accessibilityLabel("Comment")
-          Button("Comment") { post(pr.number) }.disabled(comment.isEmpty || busy)
+          TextField("Comment を書く…（Markdown）", text: $comment, axis: .vertical)
+            .lineLimit(3...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
+            .onSubmit {
+              if !comment.isEmpty && !busy { post(pr.number) }
+            }
+            .accessibilityIdentifier("pr-comment").accessibilityLabel("Comment")
+          HStack {
+            Spacer()
+            Button("Comment") { post(pr.number) }.disabled(comment.isEmpty || busy)
+              .buttonStyle(.borderedProminent).tint(.blue)
+          }
         }
       case nil: ProgressView()
       }
@@ -112,17 +137,28 @@ struct PullRequestPanel: View {
 
   private var creation: some View {
     VStack(alignment: .leading, spacing: UIStyle.spacing) {
-      Text("このブランチの PR はありません")
+      HStack {
+        CardIcon(image: Image("git-pull-request")).accessibilityHidden(true)
+        Text("このブランチの PR はありません")
+      }.foregroundStyle(.secondary)
+      Divider()
+      Text("Title").foregroundStyle(.secondary)
       TextField("Title", text: $title).accessibilityLabel("Title")
-      Text("Description（任意）")
+      Text("Description（任意）").foregroundStyle(.secondary)
       TextField("Description（任意）", text: $description, axis: .vertical).lineLimit(3...8)
         .accessibilityLabel("Description（任意）")
-      Picker("base", selection: $base) {
-        ForEach(bases.branches, id: \.self) { Text($0).tag($0) }
+      HStack {
+        Text("base").foregroundStyle(.secondary).accessibilityHidden(true)
+        Picker("base", selection: $base) {
+          ForEach(bases.branches, id: \.self) { Text($0).tag($0) }
+        }
+        .labelsHidden().fixedSize()
+        Toggle("draft で作る", isOn: $draft).toggleStyle(.checkbox)
+        Spacer(minLength: 0)
+        Button("PR を作成", action: create).disabled(title.isEmpty || busy)
+          .buttonStyle(.borderedProminent).tint(.blue)
       }
-      .labelsHidden()
-      Toggle("draft で作る", isOn: $draft)
-      Button("PR を作成", action: create).disabled(title.isEmpty || busy)
+      Divider()
       Spacer()
     }
   }
@@ -130,12 +166,23 @@ struct PullRequestPanel: View {
   private func checks(_ checks: Releash_Client_V1_PullRequestChecks) -> some View {
     VStack(alignment: .leading, spacing: UIStyle.spacing) {
       HStack {
-        Text("CHECKS")
-        if checks.failed > 0 { Text("失敗 \(checks.failed)") }
-        if checks.cancelled > 0 { Text("取り消し \(checks.cancelled)") }
-        if checks.pending > 0 { Text("実行中 \(checks.pending)") }
-        if checks.skipped > 0 { Text("skip \(checks.skipped)") }
-        if checks.passed > 0 { Text("通過 \(checks.passed)") }
+        Text("CHECKS").font(.subheadline.bold()).foregroundStyle(.secondary)
+        Spacer()
+        if checks.failed > 0 {
+          checkCount(checks.failed, label: "失敗", icon: "circle-alert", color: .red)
+        }
+        if checks.cancelled > 0 {
+          checkCount(checks.cancelled, label: "取り消し", icon: "triangle-alert", color: .orange)
+        }
+        if checks.pending > 0 {
+          checkCount(checks.pending, label: "実行中", icon: "refresh-cw", color: .yellow)
+        }
+        if checks.skipped > 0 {
+          checkCount(checks.skipped, label: "skip", icon: "circle-check", color: .gray)
+        }
+        if checks.passed > 0 {
+          checkCount(checks.passed, label: "通過", icon: "circle-check", color: .green)
+        }
       }
       ForEach(Array(checks.listed.enumerated()), id: \.offset) { _, check in
         HStack {
@@ -144,15 +191,26 @@ struct PullRequestPanel: View {
               ? "circle-alert" : check.bucket == .cancel ? "triangle-alert" : "refresh-cw"
           )
           .resizable().renderingMode(.template).scaledToFit().frame(width: 16, height: 16)
+          .foregroundStyle(
+            check.bucket == .fail ? Color.red : check.bucket == .cancel ? .orange : .yellow)
           Text(check.name)
-          if check.hasFailureSeconds { Text("\(check.failureSeconds / 60) 分で失敗") }
+          if check.hasFailureSeconds {
+            HStack(spacing: 4) {
+              Text("·").accessibilityHidden(true)
+              Text("\(check.failureSeconds / 60) 分で失敗")
+            }.foregroundStyle(.secondary)
+          }
           if check.hasStartedAt {
             TimelineView(.everyMinute) { _ in
-              Text(
-                "実行中 \(Int(max(0, Date().timeIntervalSince1970 - Double(check.startedAt))) / 60) 分"
-              )
+              HStack(spacing: 4) {
+                Text("·").accessibilityHidden(true)
+                Text(
+                  "実行中 \(Int(max(0, Date().timeIntervalSince1970 - Double(check.startedAt))) / 60) 分"
+                )
+              }.foregroundStyle(.secondary)
             }
           }
+          Spacer(minLength: 0)
           if check.hasLogJobID {
             Button("ログを開く") {
               model.panes.openCheckLog(worktree: worktree, job: check.logJobID, title: check.name)
@@ -161,18 +219,44 @@ struct PullRequestPanel: View {
         }
       }
       if checks.passed > 0 {
-        Button("通過した \(checks.passed) 件") { Task { @MainActor in passedExpanded.toggle() } }
+        Button {
+          Task { @MainActor in passedExpanded.toggle() }
+        } label: {
+          HStack {
+            Text(passedExpanded ? "⌄" : "›").accessibilityHidden(true)
+            Text("通過した \(checks.passed) 件")
+          }
+        }.buttonStyle(.plain).foregroundStyle(.secondary)
+          .accessibilityLabel("通過した \(checks.passed) 件")
         if passedExpanded {
           ForEach(Array(checks.passedNames.enumerated()), id: \.offset) { _, name in Text(name) }
         }
       }
       if checks.skipped > 0 {
-        Button("skip した \(checks.skipped) 件") { Task { @MainActor in skippedExpanded.toggle() } }
+        Button {
+          Task { @MainActor in skippedExpanded.toggle() }
+        } label: {
+          HStack {
+            Text(skippedExpanded ? "⌄" : "›").accessibilityHidden(true)
+            Text("skip した \(checks.skipped) 件")
+          }
+        }.buttonStyle(.plain).foregroundStyle(.secondary)
+          .accessibilityLabel("skip した \(checks.skipped) 件")
         if skippedExpanded {
           ForEach(Array(checks.skippedNames.enumerated()), id: \.offset) { _, name in Text(name) }
         }
       }
     }
+  }
+
+  private func checkCount(_ count: UInt32, label: String, icon: String, color: Color) -> some View {
+    HStack(spacing: UIStyle.statusSpacing) {
+      CardIcon(image: Image(icon))
+      Text("\(count)")
+    }
+    .foregroundStyle(color)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(label) \(count)")
   }
 
   private func create() {

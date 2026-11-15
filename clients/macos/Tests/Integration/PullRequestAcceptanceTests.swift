@@ -8,6 +8,63 @@ import XCTest
 @testable import Releash
 
 final class PullRequestAcceptanceTests: XCTestCase {
+  @MainActor func test_PR作成欄_baseとdraftと作成ボタンが同じ行に並ぶ() async throws {
+    // Given
+    try await withPanel { http, _, host in
+      // When
+      try await creationForm(http, host)
+      // Then
+      let title = try screenFrame(find("Title", host, role: kAXStaticTextRole))
+      let input = try screenFrame(find("Title", host, editable: true))
+      XCTAssertLessThan(title.maxY, input.minY)
+      let base = try frame("base", host)
+      let draft = try frame("draft で作る", host)
+      let create = try frame("PR を作成", host)
+      XCTAssertEqual(base.midY, draft.midY, accuracy: 8)
+      XCTAssertEqual(draft.midY, create.midY, accuracy: 8)
+      XCTAssertGreaterThan(create.minX, draft.maxX)
+      XCTAssertEqual(
+        create.maxX, host.window.contentLayoutRect.width - UIStyle.spacing, accuracy: 12)
+      try attachPanel(host, name: "PR creation layout")
+    }
+  }
+
+  @MainActor func test_PR表示_件数と操作を右端に置きComment本文を名前にそろえる() async throws {
+    // Given
+    var pr = pullRequest()
+    pr.checks.failed = 1
+    pr.checks.listed = [
+      .with {
+        $0.name = "CI build"
+        $0.bucket = .fail
+        $0.failureSeconds = 240
+        $0.logJobID = 123
+      }
+    ]
+    pr.comments = [comment("Reviewer", body: "Review text", secondsAgo: 3600)]
+    try await withPanel { http, _, host in
+      // When
+      try await show(pr, http, host)
+      // Then
+      let count = try frame("失敗 1", host)
+      let log = try frame("ログを開く", host)
+      let author = try frame("Reviewer", host)
+      let body = try frame("Review text", host)
+      XCTAssertEqual(body.minX, author.minX, accuracy: 2)
+      XCTAssertGreaterThan(count.minX, host.window.contentLayoutRect.width * 0.8)
+      XCTAssertEqual(log.maxX, count.maxX, accuracy: 12)
+      let input = try screenFrame(find("pr-comment", host, editable: true))
+      let submit = try screenFrame(find("Comment", host, role: kAXButtonRole))
+      XCTAssertGreaterThan(input.height, 48)
+      XCTAssertEqual(submit.maxX, input.maxX, accuracy: 4)
+      XCTAssertEqual(
+        attribute(try find("pr-comment", host, editable: true), kAXPlaceholderValueAttribute)
+          as? String,
+        "Comment を書く…（Markdown）")
+      try attachPanel(host, name: "PR content layout")
+    }
+  }
+
   @MainActor func test_B002_B004_PRを選ぶと作成欄が出る() async throws {
     // Given
     try await withPanel { http, _, host in
@@ -857,6 +914,18 @@ final class PullRequestAcceptanceTests: XCTestCase {
     let button = try find(name, host, role: kAXButtonRole)
     XCTAssertEqual(AXUIElementPerformAction(button, kAXPressAction as CFString), .success)
     await host.refresh()
+  }
+
+  @MainActor private func attachPanel(_ host: ViewHarness, name: String) throws {
+    let view = try XCTUnwrap(host.window.contentView)
+    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    let image = NSImage(size: bitmap.size)
+    image.addRepresentation(bitmap)
+    let attachment = XCTAttachment(image: image)
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
   }
 
   @MainActor private func screenFrame(_ element: AXUIElement) throws -> NSRect {
