@@ -21,6 +21,16 @@ pub enum UsecaseError {
     /// 移行前（gateway が返していた `GitError::rule`）と等価に保つ。
     #[error("{0}")]
     Rule(String),
+    /// commit を作った後の Push か Sync が失敗した。commit は残っている。中身は、その Push か Sync の失敗である。
+    #[error("{0}")]
+    AfterCommit(Box<UsecaseError>),
+}
+
+impl UsecaseError {
+    /// commit を作った後の操作の失敗にする。
+    pub fn after_commit(error: Self) -> Self {
+        Self::AfterCommit(Box::new(error))
+    }
 }
 
 #[cfg(test)]

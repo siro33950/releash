@@ -69,6 +69,7 @@ impl ConnectFailure for crate::usecase::repository_error::UsecaseError {
             Self::Session(error) => error.connect_code(),
             Self::Repository(error) => error.connect_code(),
             Self::Rule(_) => connectrpc::ErrorCode::FailedPrecondition,
+            Self::AfterCommit(error) => error.connect_code(),
         }
     }
 }

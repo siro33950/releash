@@ -18,9 +18,17 @@ use crate::usecase::repository_error::UsecaseError;
 /// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。
 /// `#[error(transparent)]` な `UsecaseError` の `Display` を保持するため、
 /// serialize 表現は移行前と等価に保たれる。
+///
+/// commit を作った後の失敗（`UsecaseError::AfterCommit`）は、中身の失敗の分類と文を保ち、
+/// code `GIT_COMMIT_FOLLOW_UP_FAILED` を付ける。
 impl From<UsecaseError> for AppError {
     fn from(e: UsecaseError) -> Self {
-        AppError::from_failure(e)
+        match e {
+            UsecaseError::AfterCommit(error) => {
+                AppError::from(*error).with_code("GIT_COMMIT_FOLLOW_UP_FAILED")
+            }
+            e => AppError::from_failure(e),
+        }
     }
 }
 
@@ -40,3 +48,5 @@ where
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod mod_tests;
+
+mod source_control;

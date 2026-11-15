@@ -1,4 +1,7 @@
-use super::{Branch, GitError, RepositoryStatusScan, Worktree};
+use super::{
+    Branch, CommitMessage, GitError, LineChanges, OperationKind, Push, RepositoryStatusScan,
+    Worktree, WorktreeBranch,
+};
 
 /// Git のブランチ、作業ツリー、履歴を操作するドメインサービス。
 pub trait GitService: Send + Sync {
@@ -13,6 +16,41 @@ pub trait GitService: Send + Sync {
 
     /// 作業ツリーの変更と差分の状態を返す。
     fn status_scan(&self, repo_path: &str) -> Result<RepositoryStatusScan, GitError>;
+
+    /// worktree が checkout しているブランチと、その状態を返す。
+    ///
+    /// - merge か rebase の途中なら、状態は `Operating` である。rebase の途中の名前は、rebase しているブランチの名前である。
+    /// - upstream があれば `Tracking`、無ければ `Unpublished` である。
+    /// - ブランチが無い状態では、`current` と同じ表示を名前にし、状態は `Unpublished` である。
+    fn worktree_branch(&self, worktree: &str) -> Result<WorktreeBranch, GitError>;
+    /// stage 済みの変更と、まだ stage していない変更の、ファイルごとの行数を返す。
+    fn line_changes(&self, worktree: &str) -> Result<LineChanges, GitError>;
+
+    /// stage 済みの変更から、メッセージを付けた commit を作る。署名は git の設定に従う。
+    fn commit(&self, worktree: &str, message: &CommitMessage) -> Result<(), GitError>;
+    /// ブランチの commit を、指定した送り方で送る。送り先は `Push` が決める。
+    fn push(&self, worktree: &str, push: Push) -> Result<(), GitError>;
+    /// upstream の commit をブランチに取り込む。取り込み方は git の設定に従う。
+    /// conflict で止まったときは失敗を返し、worktree は merge か rebase の途中のまま残る。
+    fn pull(&self, worktree: &str) -> Result<(), GitError>;
+    /// upstream がある remote の状態を取得する。upstream が無ければ origin の状態を取得する。
+    /// worktree のファイルとブランチの commit は変えない。
+    fn fetch(&self, worktree: &str) -> Result<(), GitError>;
+    /// 指定したファイルの worktree の内容を、index の内容に戻す。index は変えない。`paths` が空なら何もしない。
+    fn restore_worktree_files(&self, worktree: &str, paths: &[String]) -> Result<(), GitError>;
+    /// 指定したファイルを OS のゴミ箱に移す。`paths` が空なら何もしない。
+    fn trash_files(&self, worktree: &str, paths: &[String]) -> Result<(), GitError>;
+    /// 進行中の merge か rebase を先へ進める。`message` があれば、そのメッセージの commit を作る。
+    /// `message` が無ければ、commit を作らない。
+    /// rebase が次の commit の conflict で止まったときは失敗を返し、worktree は rebase の途中のまま残る。
+    fn continue_operation(
+        &self,
+        worktree: &str,
+        operation: &OperationKind,
+        message: Option<&CommitMessage>,
+    ) -> Result<(), GitError>;
+    /// 進行中の merge か rebase を中止し、ブランチと worktree のファイルを、始める前の状態に戻す。
+    fn abort_operation(&self, worktree: &str, operation: &OperationKind) -> Result<(), GitError>;
 
     /// repository の origin の URL を返す。repository を開けない、または origin が無いときは `None`。
     fn origin_url(&self, repo_path: &str) -> Result<Option<String>, GitError>;

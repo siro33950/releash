@@ -168,7 +168,13 @@ struct ViewElement {
       let handled = MainActor.assumeIsolated {
         guard let menu = trackingMenu else { return false }
         let titles = menu.items.map(\.title)
-        guard let choice, let index = titles.firstIndex(of: choice) else {
+        guard let choice else {
+          inspect(titles)
+          menuHandled = true
+          menu.cancelTracking()
+          return true
+        }
+        guard let index = titles.firstIndex(of: choice) else {
           if ContinuousClock.now < deadline { return false }
           inspect(titles)
           XCTAssertNil(choice)
@@ -188,12 +194,15 @@ struct ViewElement {
     defer { timer.invalidate() }
     await withCheckedContinuation { continuation in
       DispatchQueue.main.async { [self] in
-        let result = AXUIElementPerformAction(row.reference, kAXShowMenuAction as CFString)
+        let action =
+          row.role == kAXMenuButtonRole as String || row.role == kAXPopUpButtonRole as String
+          ? kAXPressAction : kAXShowMenuAction
+        let result = AXUIElementPerformAction(row.reference, action as CFString)
         XCTAssertEqual(result, .success)
         continuation.resume()
       }
     }
-    if choice != nil {
+    if choice != nil || trackingMenu != nil {
       try await eventually({ menuHandled && !menuTracking }, file: file, line: line)
     }
     if !menuHandled {

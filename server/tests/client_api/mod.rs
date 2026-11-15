@@ -181,6 +181,41 @@ impl<F> GitService for BranchStub<F>
 where
     F: Fn(&str) -> Result<String, GitError> + Send + Sync,
 {
+    fn worktree_branch(&self, _worktree: &str) -> Result<WorktreeBranch, GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn line_changes(&self, _worktree: &str) -> Result<LineChanges, GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn commit(&self, _worktree: &str, _message: &CommitMessage) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn push(&self, _worktree: &str, _push: Push) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn pull(&self, _worktree: &str) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn fetch(&self, _worktree: &str) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn restore_worktree_files(&self, _worktree: &str, _paths: &[String]) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn trash_files(&self, _worktree: &str, _paths: &[String]) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn continue_operation(
+        &self,
+        _worktree: &str,
+        _operation: &OperationKind,
+        _message: Option<&CommitMessage>,
+    ) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
+    fn abort_operation(&self, _worktree: &str, _operation: &OperationKind) -> Result<(), GitError> {
+        panic!("BranchStub does not support source control operations")
+    }
     fn origin_url(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
         Ok(None)
     }

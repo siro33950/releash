@@ -694,3 +694,211 @@ fn test_origin取得_取得失敗を呼び出し元へ返す() {
     );
     assert_eq!(*fake.origin_url_calls.lock(), ["/requested"]);
 }
+
+fn source_fake(failure: Option<&'static str>) -> Arc<FakeRepo> {
+    use crate::domain::git::{BranchState, FileStatus, Tracking, WorktreeBranch};
+    Arc::new(FakeRepo {
+        source_branch: Some(WorktreeBranch {
+            name: "feature".into(),
+            state: BranchState::Tracking(Tracking {
+                upstream: "origin/feature".into(),
+                ahead: 1,
+                behind: 1,
+            }),
+        }),
+        source_files: vec![
+            FileStatus {
+                path: "a".into(),
+                index_status: "modified".into(),
+                worktree_status: "modified".into(),
+                conflict: None,
+            },
+            FileStatus {
+                path: "new".into(),
+                index_status: "none".into(),
+                worktree_status: "new".into(),
+                conflict: None,
+            },
+        ],
+        git_failure: failure,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn test_git複合操作_順に実行し失敗した段階で後続を打ち切る() {
+    use crate::domain::git::Push;
+    for operation in ["commit", "commit_push", "commit_sync", "sync"] {
+        for failure in [None, Some("commit"), Some("pull"), Some("push")] {
+            // Given
+            let fake = source_fake(failure);
+            let service = usecase(fake.clone());
+            let steps = match operation {
+                "commit" => vec![GitCall::Commit("message".into())],
+                "commit_push" => vec![
+                    GitCall::Commit("message".into()),
+                    GitCall::Push(Push::ToUpstream),
+                ],
+                "commit_sync" => vec![
+                    GitCall::Commit("message".into()),
+                    GitCall::Pull,
+                    GitCall::Push(Push::ToUpstream),
+                ],
+                _ => vec![GitCall::Pull, GitCall::Push(Push::ToUpstream)],
+            };
+            let stop = steps.iter().position(|call| match call {
+                GitCall::Commit(_) => failure == Some("commit"),
+                GitCall::Pull => failure == Some("pull"),
+                GitCall::Push(_) => failure == Some("push"),
+                _ => false,
+            });
+            // When
+            let result = match operation {
+                "commit" => service.commit("/r", " message "),
+                "commit_push" => service.commit_and_push("/r", " message "),
+                "commit_sync" => service.commit_and_sync("/r", " message "),
+                _ => service.sync("/r"),
+            };
+            // Then
+            let expected = &steps[..stop.map_or(steps.len(), |index| index + 1)];
+            assert_eq!(*fake.git_calls.lock(), expected, "{operation}/{failure:?}");
+            assert_eq!(result.is_err(), stop.is_some());
+            if stop.is_some() {
+                assert_eq!(
+                    matches!(&result, Err(UsecaseError::AfterCommit(_))),
+                    matches!(operation, "commit_push" | "commit_sync") && failure != Some("commit")
+                );
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&format!("{} failed", failure.unwrap())));
+            }
+        }
+    }
+}
+
+#[test]
+fn test_git単独操作_pushの指定とpullとfetchの失敗を呼び出し元へ返す() {
+    use crate::domain::git::Push;
+    for (operation, expected) in [
+        ("push", GitCall::Push(Push::ForceWithLease)),
+        ("pull", GitCall::Pull),
+        ("fetch", GitCall::Fetch),
+    ] {
+        for failure in [None, Some(operation)] {
+            // Given
+            let fake = source_fake(failure);
+            let service = usecase(fake.clone());
+            // When
+            let result = match operation {
+                "push" => service.push("/r", true),
+                "pull" => service.pull("/r"),
+                _ => service.fetch("/r"),
+            };
+            // Then
+            assert_eq!(*fake.git_calls.lock(), [expected.clone()]);
+            assert_eq!(result.is_err(), failure.is_some());
+        }
+    }
+}
+
+#[test]
+fn test_破棄_追跡ファイルを復元してから未追跡を捨て復元失敗時は捨てない() {
+    for failure in [None, Some("restore"), Some("trash")] {
+        // Given
+        let fake = source_fake(failure);
+        // When
+        let result = usecase(fake.clone()).discard("/r", &["a".into(), "new".into()]);
+        // Then
+        let mut expected = vec![GitCall::Restore(vec!["a".into()])];
+        if failure != Some("restore") {
+            expected.push(GitCall::Trash(vec!["new".into()]));
+        }
+        assert_eq!(*fake.git_calls.lock(), expected);
+        assert_eq!(result.is_err(), failure.is_some());
+    }
+}
+
+#[test]
+fn test_git進行操作_続行と中止に操作種別とメッセージを渡し失敗を返す() {
+    use crate::domain::git::{BranchState, Operation, OperationKind, RebaseProgress};
+    for kind in [
+        OperationKind::Merge,
+        OperationKind::Rebase(RebaseProgress {
+            onto: "main".into(),
+            step: 2,
+            total: 3,
+        }),
+    ] {
+        for action in ["continue", "abort"] {
+            for failure in [None, Some(action)] {
+                // Given
+                let mut fake = source_fake(failure);
+                Arc::get_mut(&mut fake)
+                    .unwrap()
+                    .source_branch
+                    .as_mut()
+                    .unwrap()
+                    .state = BranchState::Operating(Operation {
+                    kind: kind.clone(),
+                    message: Some("original".into()),
+                });
+                // When
+                let result = if action == "continue" {
+                    usecase(fake.clone()).continue_operation("/r", " edited ")
+                } else {
+                    usecase(fake.clone()).abort_operation("/r")
+                };
+                // Then
+                let expected = if action == "continue" {
+                    GitCall::Continue(kind.clone(), Some("edited".into()))
+                } else {
+                    GitCall::Abort(kind.clone())
+                };
+                assert_eq!(*fake.git_calls.lock(), [expected]);
+                assert_eq!(result.is_err(), failure.is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_commit_メッセージかstage済み変更が無ければgitを呼ばない() {
+    for (staged, message) in [(true, " \n"), (false, "message")] {
+        // Given
+        let mut fake = source_fake(None);
+        if !staged {
+            Arc::get_mut(&mut fake).unwrap().source_files.clear();
+        }
+        // When
+        let result = usecase(fake.clone()).commit("/r", message);
+        // Then
+        assert!(result.is_err());
+        assert!(fake.git_calls.lock().is_empty());
+    }
+}
+
+#[test]
+fn test_続行_commitを作らないときはメッセージ無しで委譲する() {
+    use crate::domain::git::{BranchState, Operation, OperationKind, RebaseProgress};
+    // Given
+    let mut fake = source_fake(None);
+    let kind = OperationKind::Rebase(RebaseProgress {
+        onto: "main".into(),
+        step: 1,
+        total: 2,
+    });
+    Arc::get_mut(&mut fake)
+        .unwrap()
+        .source_branch
+        .as_mut()
+        .unwrap()
+        .state = BranchState::Operating(Operation {
+        kind: kind.clone(),
+        message: None,
+    });
+    // When
+    usecase(fake.clone()).continue_operation("/r", "").unwrap();
+    // Then
+    assert_eq!(*fake.git_calls.lock(), [GitCall::Continue(kind, None)]);
+}

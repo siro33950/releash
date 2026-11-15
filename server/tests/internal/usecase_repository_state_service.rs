@@ -93,6 +93,7 @@ pub(crate) mod tests {
             path: "changed.txt".to_string(),
             index_status: "none".to_string(),
             worktree_status: "modified".to_string(),
+            conflict: None,
         }]));
         let watcher = Arc::new(CountingRepositoryStateWatcher::default());
         let service = counting_service(scanner.clone(), watcher.clone());
@@ -133,6 +134,7 @@ pub(crate) mod tests {
             path: "worker.txt".to_string(),
             index_status: "none".to_string(),
             worktree_status: "modified".to_string(),
+            conflict: None,
         }]));
         let watcher = Arc::new(CountingRepositoryStateWatcher::default());
         let service = counting_service(scanner.clone(), watcher);
@@ -163,6 +165,7 @@ pub(crate) mod tests {
             path: "changed.txt".to_string(),
             index_status: "none".to_string(),
             worktree_status: "modified".to_string(),
+            conflict: None,
         }]));
         let service =
             counting_service(scanner, Arc::new(CountingRepositoryStateWatcher::default()));

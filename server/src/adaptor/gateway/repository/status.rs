@@ -71,6 +71,34 @@ fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, GitError> {
     STATUS_WALK_COUNT.with(|count| count.set(count.get() + 1));
     let statuses = git_operation::run(|| repo.statuses(Some(&mut opts)))?;
 
+    let index = git_operation::run(|| repo.index())?;
+    let mut conflicts = std::collections::HashMap::new();
+    for conflict in git_operation::run(|| index.conflicts())? {
+        let conflict = conflict?;
+        use crate::domain::git::ConflictKind;
+        let kind = match (
+            conflict.ancestor.is_some(),
+            conflict.our.is_some(),
+            conflict.their.is_some(),
+        ) {
+            (true, true, true) => ConflictKind::BothModified,
+            (false, true, true) => ConflictKind::BothAdded,
+            (true, false, false) => ConflictKind::BothDeleted,
+            (false, true, false) => ConflictKind::AddedByUs,
+            (false, false, true) => ConflictKind::AddedByThem,
+            (true, false, true) => ConflictKind::DeletedByUs,
+            (true, true, false) => ConflictKind::DeletedByThem,
+            (false, false, false) => return Err(GitError::rule("Empty index conflict")),
+        };
+        for entry in [conflict.ancestor, conflict.our, conflict.their]
+            .into_iter()
+            .flatten()
+        {
+            let path = String::from_utf8(entry.path)
+                .map_err(|error| GitError::External(error.to_string()))?;
+            conflicts.insert(path, kind);
+        }
+    }
     let result: Vec<FileStatus> = statuses
         .iter()
         .filter_map(|entry| {
@@ -83,6 +111,7 @@ fn collect_git_status(repo: &Repository) -> Result<Vec<FileStatus>, GitError> {
                 return None;
             }
             Some(FileStatus {
+                conflict: conflicts.get(&path).copied(),
                 path,
                 index_status: idx.to_string(),
                 worktree_status: wt.to_string(),

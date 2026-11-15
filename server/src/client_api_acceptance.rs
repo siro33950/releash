@@ -11,7 +11,10 @@ pub use crate::adaptor::gateway::repository::git::GitGateway;
 pub use crate::adaptor::presenter::workflow_wire::{
     DiagnosticReport, DiagnosticSpan, DiagnosticStage, Severity,
 };
-pub use crate::domain::git::{Branch, GitError, GitService};
+pub use crate::domain::git::{
+    Branch, BranchState, CommitMessage, GitError, GitService, LineChanges, OperationKind, Push,
+    RebaseProgress, WorktreeBranch,
+};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

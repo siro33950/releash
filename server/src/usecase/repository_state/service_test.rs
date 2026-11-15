@@ -292,6 +292,7 @@ mod rescan_tests {
             Ok(RepositorySnapshotParts {
                 status: vec![FileStatusDto {
                     path: format!("scan-{call}"),
+                    conflict: None,
                     index_status: "none".into(),
                     worktree_status: "modified".into(),
                 }],

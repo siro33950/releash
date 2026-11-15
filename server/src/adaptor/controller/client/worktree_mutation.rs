@@ -28,6 +28,14 @@ pub fn admit(
 ) -> Result<Vec<WorktreeMutationGuard>, wire::CommandFailure> {
     use wire::command_request::Command as C;
     let path = match command {
+        C::GitCommit(a) => Some(a.worktree_path.as_str()),
+        C::GitPush(a) => Some(a.worktree_path.as_str()),
+        C::GitPull(a) => Some(a.worktree_path.as_str()),
+        C::GitSync(a) => Some(a.worktree_path.as_str()),
+        C::GitFetch(a) => Some(a.worktree_path.as_str()),
+        C::GitDiscard(a) => Some(a.worktree_path.as_str()),
+        C::GitContinueOperation(a) => Some(a.worktree_path.as_str()),
+        C::GitAbortOperation(a) => Some(a.worktree_path.as_str()),
         C::GitCreateBranch(a) => a.repo_path.as_deref(),
         C::GitStage(a) => a.repo_path.as_deref(),
         C::GitUnstage(a) => a.repo_path.as_deref(),

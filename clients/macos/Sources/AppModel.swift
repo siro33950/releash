@@ -84,6 +84,7 @@ import SwiftProtobuf
   @ObservationIgnored private var subscriptionIDs = StateSubscriptionIDs()
   @ObservationIgnored private var host = ""
   @ObservationIgnored private(set) var client: (any Releash_Client_V1_ClientServiceClientInterface)?
+  @ObservationIgnored private(set) var gitClient: (any Releash_Client_V1_GitServiceClientInterface)?
   @ObservationIgnored private(set) var headers: Headers = [:]
   @ObservationIgnored var pendingSaves: [String: Int] = [:]
   @ObservationIgnored private var saves: [String: Task<Void, Never>] = [:]
@@ -179,10 +180,11 @@ import SwiftProtobuf
     clearFooterState()
     host = "http://127.0.0.1:\(discovery.port)"
     headers = ["authorization": ["Bearer \(discovery.token)"]]
-    client = Releash_Client_V1_ClientServiceClient(
-      client: ProtocolClient(
-        httpClient: httpClient,
-        config: ProtocolClientConfig(host: host, codec: ProtoCodec(), timeout: policy.timeout)))
+    let protocolClient = ProtocolClient(
+      httpClient: httpClient,
+      config: ProtocolClientConfig(host: host, codec: ProtoCodec(), timeout: policy.timeout))
+    client = Releash_Client_V1_ClientServiceClient(client: protocolClient)
+    gitClient = Releash_Client_V1_GitServiceClient(client: protocolClient)
   }
   private func subscriptionKey(_ target: String, _ args: [String]) -> String {
     ([target] + args).map { "\($0.utf8.count):\($0)" }.joined()
@@ -397,6 +399,7 @@ import SwiftProtobuf
       connected = false
       reconnecting = false
       client = nil
+      gitClient = nil
       clearFooterState()
       connectionFailure = "サーバは停止しています"
     } catch {
@@ -721,7 +724,7 @@ import SwiftProtobuf
     addRepository(path)
   }
   func stageAll() {
-    guard let path = selectedWorktree, let client else { return }
+    guard let path = selectedWorktree, let client = gitClient else { return }
     var request = Releash_Client_V1_GitStageRequest()
     request.repoPath = path
     request.paths = .init()
@@ -730,7 +733,7 @@ import SwiftProtobuf
     }
   }
   func unstageAll() {
-    guard let path = selectedWorktree, let client else { return }
+    guard let path = selectedWorktree, let client = gitClient else { return }
     var request = Releash_Client_V1_GitUnstageRequest()
     request.repoPath = path
     request.paths = .init()
@@ -739,7 +742,7 @@ import SwiftProtobuf
     }
   }
   func createBranch(_ name: String, path: String) async throws {
-    guard let client else { throw CLIFailure(message: "サーバに接続されていません") }
+    guard let client = gitClient else { throw CLIFailure(message: "サーバに接続されていません") }
     var request = Releash_Client_V1_GitCreateBranchRequest()
     request.repoPath = path
     request.branchName = name

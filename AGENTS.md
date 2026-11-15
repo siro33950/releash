@@ -76,7 +76,7 @@ Releash は、特定の作業単位や特定の道具を主語にしない。コ
 
 - **workflow 定義はリポジトリ直下の `workflows/`** に置く。`*.yml` と `facets/{instructions,policies,knowledge}/*.md`。builtin は `adaptor/gateway/workflow/builtin.rs` が `include_str!` でコンパイル時に取り込むため、定義を追加するときは builtin.rs 側の登録も要る。
 - **Rust の実行ファイルは2つある**。`releashd` は daemon と内部 background worker、`releash`（`clients/cli/`）は独立 CLI。CLI は backend に依存しない。サーバと CLI は `proto/` からそれぞれ型・descriptor・Connect 定義を生成する。発見と同一性確認、protocol 互換性、サーバの起動・停止は CLI が提供し、Swift.app は同梱した CLI を呼ぶ。
-- **画面・CLI・hook は Connect の ClientService を使う**。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。
+- **画面・CLI・hook は Connect の ClientService を使う**。Git の操作だけは、同じ入口が受ける GitService を使う。契約は `proto/client.proto`、入口は `adaptor/controller/api/client*.rs`、処理は `adaptor/controller/client/`。
 - **daemon は 127.0.0.1 のみに bind する**。`client-api.json` に port と client token を書き出す。CLI と画面はこのファイルだけを読む。
 
 - **永続化は event store**。`domain/local_event/` と `adaptor/gateway/local_event_store/`。事実を追記し、読み側で projection を導出する。full-recompute 経路を増やさない。

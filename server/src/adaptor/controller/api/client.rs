@@ -154,8 +154,9 @@ pub fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Duration)
     };
     let priority = deps.priority.clone();
     let admission = super::client_admission::DaemonAdmission(deps.daemon.clone());
-    let service = connectrpc::Router::new()
-        .add_service(Arc::new(deps))
+    let deps = Arc::new(deps);
+    let services = rpc::ClientServiceExt::register(deps.clone(), connectrpc::Router::new());
+    let service = rpc::GitServiceExt::register(deps, services)
         .into_axum_service()
         .with_interceptor(priority)
         .with_interceptor(admission)
@@ -167,7 +168,9 @@ pub fn router(deps: Option<ClientApiDeps>, default_timeout: std::time::Duration)
                 .with_max_request_body_size(16 * 1024 * 1024)
                 .with_max_message_size(16 * 1024 * 1024),
         );
-    Router::new().route_service("/releash.client.v1.ClientService/{method}", service)
+    Router::new()
+        .route_service("/releash.client.v1.ClientService/{method}", service.clone())
+        .route_service("/releash.client.v1.GitService/{method}", service)
 }
 
 include!(concat!(env!("OUT_DIR"), "/client_service.rs"));

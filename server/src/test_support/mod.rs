@@ -121,9 +121,10 @@ pub mod agent_session_tui_acceptance {
 #[cfg(feature = "test-support")]
 pub mod client_api_acceptance {
     pub use crate::client_api_acceptance::{
-        connect_client, read_current_branch, read_state, request_client, rpc, Branch,
-        ClientApiAcceptanceHost, ClientEndpoint, DiagnosticReport, DiagnosticSpan, DiagnosticStage,
-        GitError, GitGateway, GitService, NativeClient, Severity,
+        connect_client, read_current_branch, read_state, request_client, rpc, Branch, BranchState,
+        ClientApiAcceptanceHost, ClientEndpoint, CommitMessage, DiagnosticReport, DiagnosticSpan,
+        DiagnosticStage, GitError, GitGateway, GitService, LineChanges, NativeClient,
+        OperationKind, Push, RebaseProgress, Severity, WorktreeBranch,
     };
 }
 

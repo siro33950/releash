@@ -9,6 +9,7 @@ pub(crate) fn register_shared(
     router: &mut ClientCommandDispatch,
     deps: &crate::adaptor::controller::client::ClientDependencies,
 ) {
+    super::source_control::register(router, deps);
     {
         let usecase = deps.create_worktrees_usecase.clone();
         router.register_domain(

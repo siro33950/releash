@@ -137,6 +137,7 @@ fn test_直下一覧_指定したディレクトリの列挙結果とgit状態�
         path: "src/keep.rs".into(),
         index_status: "none".into(),
         worktree_status: "modified".into(),
+        conflict: None,
     }];
     // When
     let result = usecase
@@ -177,6 +178,7 @@ fn test_絞込一覧_列挙結果へ条件とgit状態を適用する() {
         path: "keep.rs".into(),
         index_status: "new".into(),
         worktree_status: "modified".into(),
+        conflict: None,
     }];
     // When
     let result = usecase.filtered_files("/repo", &filter, &statuses).unwrap();
@@ -207,6 +209,7 @@ fn test_絞込一覧_不正なgit状態では列挙せず失敗を返す() {
             path: "a".into(),
             index_status: index.into(),
             worktree_status: working.into(),
+            conflict: None,
         }];
         let error = usecase(false)
             .filtered_files("must not walk", &FileFilter::Changed, &statuses)
