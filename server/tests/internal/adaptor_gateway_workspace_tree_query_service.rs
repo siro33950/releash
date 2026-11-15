@@ -1826,6 +1826,17 @@ pub async fn test_準備中の会話詳細_起動失敗の理由を返し紐付�
     assert!(
         matches!(detail.content, WorkspaceNodeContentDto::Session(content) if content.session_id.is_none())
     );
+    assert_eq!(
+        load_tree(&repository, &WorkspaceIdentity::new("/repo"))
+            .await
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("pending-node"))
+            .unwrap()
+            .failure_reason()
+            .as_deref(),
+        Some("provider could not start")
+    );
     // When
     append_single_fact(&store, &attached.meta, &attached.fact, 6000)
         .await

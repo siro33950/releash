@@ -524,21 +524,7 @@ impl WorkspaceQueryService for SqliteWorkspaceQueryService {
             let workflow = nodes.iter().find(|node| {
                 node.kind == WorkspaceNodeKind::Workflow && node.id == folded.aggregate.id
             });
-            let pending_session = (node.kind == WorkspaceNodeKind::WorkflowSession
-                && node.session_id.is_none()
-                && !node.background_failure)
-                .then(|| node.node_execution_id.clone())
-                .flatten();
             let mut detail = node_detail_with_workflow(node, workflow);
-            if let Some(id) = pending_session {
-                if let Some(record) = crate::adaptor::gateway::workflow::fact_log::read_latest_record_for_node_with_event_types(
-                    &self.backend, &id, &["runtime_failure_observed"],
-                ).await.map_err(WorkflowError::from)? {
-                    if let crate::domain::workflow::NodeFact::RuntimeFailureObserved(failure) = record.fact {
-                        detail.error_reason = Some(failure.reason);
-                    }
-                }
-            }
             detail.past_attempts = attempts;
             return Ok(Some(detail));
         }

@@ -29,7 +29,7 @@ fn test_未紐づけsession_プロセス不在判定でも青になる() {
         execution: &execution(),
         session_activities: &Default::default(),
         session_display_names: &Default::default(),
-        command_failure_reasons: &Default::default(),
+        runtime_failure_reasons: &Default::default(),
     })
     .unwrap();
     let session = nodes
@@ -88,7 +88,7 @@ fn test_完了済みworkflow_session_プロセス消失後も緑になる() {
             execution: &execution(),
             session_activities: &activities,
             session_display_names: &Default::default(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         let session = nodes
@@ -149,7 +149,7 @@ fn test_delegate親_子のactivityを集約する() {
             execution: &execution(),
             session_activities: &session_activities,
             session_display_names: &Default::default(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         let parent = projected
@@ -238,7 +238,7 @@ pub(crate) mod tests {
             execution: &execution(),
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap()
         .into_iter()
@@ -436,7 +436,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
 
@@ -497,7 +497,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &display_names,
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         let session = nodes
@@ -546,7 +546,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
 
@@ -577,7 +577,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         assert!(!nodes[0].can_retry);
@@ -624,7 +624,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         let by_execution_id = nodes
@@ -693,7 +693,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &std::collections::HashMap::new(),
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
 
@@ -757,7 +757,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &session_activities,
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         let by_execution_id = nodes
@@ -821,7 +821,7 @@ pub(crate) mod tests {
             execution: &execution,
             session_activities: &session_activities,
             session_display_names: &std::collections::HashMap::new(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         let waiting = nodes
@@ -891,7 +891,7 @@ pub(crate) mod tests {
                     execution: &execution,
                     session_activities: &session_activities,
                     session_display_names: &std::collections::HashMap::new(),
-                    command_failure_reasons: &Default::default(),
+                    runtime_failure_reasons: &Default::default(),
                 })
                 .unwrap()
             });
@@ -950,7 +950,7 @@ pub(crate) mod tests {
                 execution: &execution(),
                 session_activities: &Default::default(),
                 session_display_names: &Default::default(),
-                command_failure_reasons: &Default::default(),
+                runtime_failure_reasons: &Default::default(),
             })
             .unwrap();
             // Then
@@ -995,7 +995,7 @@ pub(crate) mod tests {
                         execution: &execution(),
                         session_activities: &Default::default(),
                         session_display_names: &Default::default(),
-                        command_failure_reasons: &Default::default(),
+                        runtime_failure_reasons: &Default::default(),
                     })
                     .unwrap();
                     let leaf = nodes
@@ -1050,7 +1050,7 @@ fn test_sessionノード_providerとmodelを定義から配る() {
         execution: &execution(),
         session_activities: &Default::default(),
         session_display_names: &Default::default(),
-        command_failure_reasons: &Default::default(),
+        runtime_failure_reasons: &Default::default(),
     })
     .unwrap();
     // Then
@@ -1097,7 +1097,7 @@ fn test_model配信_指定のないsessionとcommandは空欄になる() {
             execution: &execution(),
             session_activities: &Default::default(),
             session_display_names: &Default::default(),
-            command_failure_reasons: &Default::default(),
+            runtime_failure_reasons: &Default::default(),
         })
         .unwrap();
         // Then
@@ -1107,5 +1107,43 @@ fn test_model配信_指定のないsessionとcommandは空欄になる() {
             .unwrap()
             .model
             .is_none());
+    }
+}
+
+#[test]
+fn test_session起動失敗理由_session未紐づけなら行に載り紐づけ済みなら載らない() {
+    for (session_id, expected) in [(None, Some("activation failed")), (Some("session-1"), None)] {
+        // Given
+        let mut runtime = node("session", EXECUTION_ID, RuntimeNodeExecutionStatus::Running);
+        runtime.kind = NodeKindName::Session;
+        runtime.display_command = None;
+        runtime.session_id = session_id.map(str::to_string);
+        // When
+        let nodes = runtime_snapshot_nodes(RuntimeSnapshotNodeProjection {
+            process_presences: &Default::default(),
+            execution_id: EXECUTION_ID,
+            workflow_name: "workflow",
+            workspace_identity: "/repo",
+            workflow_definition: Some(&WorkflowDefinitionContent::default()),
+            node_executions: &[runtime],
+            retry_predecessors: &Default::default(),
+            delegate_waiting_node_ids: &Default::default(),
+            execution_active: true,
+            started_at: 1.0,
+            updated_at: 2.0,
+            execution: &execution(),
+            session_activities: &Default::default(),
+            session_display_names: &Default::default(),
+            runtime_failure_reasons: &[("session".into(), "activation failed".into())]
+                .into_iter()
+                .collect(),
+        })
+        .unwrap();
+        // Then
+        let session = nodes
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("session"))
+            .unwrap();
+        assert_eq!(session.failure_reason().as_deref(), expected);
     }
 }
