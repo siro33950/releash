@@ -2111,7 +2111,7 @@ message StatePayload {
     ExecutionOverviewDto execution_overview = 76;
     FilteredFilesSnapshot filtered_files = 77;
     ThreadExcerptsSnapshot thread_excerpts = 78;
-    SourceControlSnapshot source_control = 80;
+    SourceControlSnapshot source_control = 81;
   }
 }
 // worktree の Source Control の状態。購読の対象 `source-control` で届く。
