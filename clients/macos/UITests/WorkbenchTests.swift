@@ -369,7 +369,7 @@ extension WorkbenchTests {
     launch()
     app.buttons["worktree:main"].firstMatch.click()
     app.checkBoxes["Node"].click()
-    let root = app.buttons["open-node:\(rootID)"]
+    let root = app.descendants(matching: .any).matching(identifier: "root:\(rootID)").firstMatch
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
     root.click()
     let terminal = app.textViews["terminal:\(selection.agentSessionID)"]
@@ -465,7 +465,7 @@ extension WorkbenchTests {
     let panel = app.checkBoxes["Node"]
     XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription)
     panel.click()
-    let root = app.buttons["open-node:\(rootID)"]
+    let root = app.descendants(matching: .any).matching(identifier: "root:\(rootID)").firstMatch
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
     root.click()
     let terminal = app.textViews["terminal:\(selection.agentSessionID)"]
@@ -507,11 +507,9 @@ extension WorkbenchTests {
     let panel = app.checkBoxes["Node"]
     XCTAssertTrue(panel.waitForExistence(timeout: 10), app.debugDescription)
     panel.click()
-    let root = app.buttons["open-node:\(execution.value)"]
+    let root = app.descendants(matching: .any).matching(identifier: "root:\(execution.value)")
+      .firstMatch
     XCTAssertTrue(root.waitForExistence(timeout: 30), app.debugDescription)
-    app.scrollViews.containing(.any, identifier: "root:\(execution.value)").firstMatch.scroll(
-      byDeltaX: -160, deltaY: 0)
-    XCTAssertTrue(root.isHittable, app.debugDescription)
     root.click()
     let output = app.staticTexts["command-stdout"]
     XCTAssertTrue(output.waitForExistence(timeout: 30), app.debugDescription)
@@ -527,7 +525,7 @@ extension WorkbenchTests {
 }
 
 extension WorkbenchTests {
-  @MainActor func testNodePanelExpandsWorkflowAndOpensChildSession() async throws {
+  @MainActor func testNodePanelShowsNodeDetailAndOpensChildSession() async throws {
     try await fixture.startServer()
     let repository = try await fixture.repository("node-tree-repository")
     var path = ""
@@ -594,10 +592,17 @@ extension WorkbenchTests {
     let child = app.descendants(matching: .any).matching(identifier: "root:\(childID)").firstMatch
     XCTAssertTrue(child.waitForExistence(timeout: 10), app.debugDescription)
     XCTAssertTrue(["active", "attention", "idle"].contains(child.value as? String ?? ""))
-    child.click()
     XCTAssertFalse(app.textViews["terminal:\(sessionID)"].exists)
-    app.buttons["open-node:\(childID)"].click()
+    root.click()
+    let title = app.staticTexts["node-detail-title"]
+    XCTAssertTrue(title.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertEqual(title.value as? String, "node-tree-e2e")
+    XCTAssertFalse(app.textViews["terminal:\(sessionID)"].exists)
+    child.click()
     XCTAssertTrue(
       app.textViews["terminal:\(sessionID)"].waitForExistence(timeout: 30), app.debugDescription)
+    let selected = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", "observe"), object: title)
+    XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 10), .completed, app.debugDescription)
   }
 }

@@ -611,9 +611,15 @@ pub fn node_detail(node: WorkspaceTreeNode, can_abort: bool) -> WorkspaceNodeDet
                 }),
             })
         }
-        _ => WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
-            session_id: node.session_id,
-        }),
+        WorkspaceNodeKind::Fanout => WorkspaceNodeContentDto::Fanout,
+        WorkspaceNodeKind::Sequence | WorkspaceNodeKind::Workflow => {
+            WorkspaceNodeContentDto::Sequence
+        }
+        WorkspaceNodeKind::WorkflowSession => {
+            WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
+                session_id: node.session_id,
+            })
+        }
     };
     WorkspaceNodeDetailDto {
         classification: node.status_classification.as_public_str().into(),

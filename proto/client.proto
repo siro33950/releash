@@ -966,12 +966,18 @@ message WorkspaceNodeContentDto {
   oneof variant {
     WorkspaceSessionNodeContentDto session = 1 [json_name = "session"];
     WorkspaceCommandNodeContentDto command = 2 [json_name = "command"];
+    WorkspaceSequenceNodeContentDto sequence = 3 [json_name = "sequence"];
+    WorkspaceFanoutNodeContentDto fanout = 4 [json_name = "fanout"];
   }
 }
 
 message WorkspaceSessionNodeContentDto {
   optional string session_id = 1 [json_name = "sessionId", (json_nullable) = true, (json_omit_none) = true];
 }
+
+message WorkspaceSequenceNodeContentDto {}
+
+message WorkspaceFanoutNodeContentDto {}
 
 message WorkspaceCommandNodeContentDto {
   optional string shell = 3 [json_name = "shell"];
@@ -1025,6 +1031,8 @@ message WorkspaceTreeItem {
 }
 
 message WorkspaceNode {
+  reserved 19;
+  reserved "has_artifact";
   optional string session_id = 21 [json_name = "sessionId"];
   optional AgentSessionProviderDto provider = 14 [json_name = "provider"];
   optional NodeProcessPresence process_presence = 13 [json_name = "processPresence", (json_required) = true];
@@ -1041,9 +1049,9 @@ message WorkspaceNode {
   optional string execution_id = 15 [json_name = "executionId"];
   optional string node_execution_id = 16 [json_name = "nodeExecutionId"];
   optional string node_name = 17 [json_name = "nodeName"];
-  optional bool has_artifact = 19 [json_name = "hasArtifact", (json_required) = true];
   optional string model = 20 [json_name = "model"];
-
+  // この Node と過去の試行のうち、Artifact を持つものの数。
+  optional uint32 artifact_count = 22 [json_name = "artifactCount", (json_required) = true];
 }
 
 message WorkspaceWorkflowCapabilities {
@@ -1069,7 +1077,8 @@ message WorkspacePastAttempt {
 }
 
 message WorkspaceSequence {
-  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
+  reserved 1;
+  reserved "worktree";
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 4 [json_name = "status", (json_required) = true];
@@ -1077,10 +1086,12 @@ message WorkspaceSequence {
   optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
   optional bool can_approve = 8 [json_name = "canApprove", (json_required) = true];
+  optional string error_reason = 9 [json_name = "errorReason", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message WorkspaceFanout {
-  optional NodeWorktreeDto worktree = 1 [json_name = "worktree", (json_nullable) = true, (json_omit_none) = true];
+  reserved 1;
+  reserved "worktree";
   optional string id = 2 [json_name = "id", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceStatusClassification status = 4 [json_name = "status", (json_required) = true];
@@ -1088,6 +1099,7 @@ message WorkspaceFanout {
   optional ListWorkspaceTreeItem children = 6 [json_name = "children", (json_required) = true];
   optional double updated_at = 7 [json_name = "updatedAt", (json_required) = true];
   optional bool can_approve = 8 [json_name = "canApprove", (json_required) = true];
+  optional string error_reason = 9 [json_name = "errorReason", (json_nullable) = true, (json_omit_none) = true];
 }
 
 message ListAgentSessionItemDto {

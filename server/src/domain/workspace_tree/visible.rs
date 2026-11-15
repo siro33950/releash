@@ -197,6 +197,16 @@ impl<'a> WorkspaceVisibleNode<'a> {
             })
             .collect()
     }
+
+    /// この節と過去の試行のうち、Artifact を持つものの数。
+    pub(crate) fn artifact_count(&self) -> usize {
+        usize::from(self.node.has_artifact)
+            + self
+                .past_attempts()
+                .iter()
+                .filter(|attempt| attempt.node.has_artifact)
+                .count()
+    }
 }
 
 #[cfg(test)]

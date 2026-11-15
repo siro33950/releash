@@ -36,6 +36,18 @@ enum UIStyle {
   static let iconButtonHeight: CGFloat = 24
   static let collapsedPanelWidth: CGFloat = 36
   static let footerHeight: CGFloat = 24
+  static let nodeNameMinimumWidth: CGFloat = 140
+  static let nodeNameWidth: CGFloat = 240
+  static let nodeMetricWidth: CGFloat = 52
+  static let nodeModelMinimumWidth: CGFloat = 72
+  static let nodeModelWidth: CGFloat = 112
+  static let nodeTimelineMinimumWidth: CGFloat = 80
+  static let nodeTimelineWidth: CGFloat = 200
+  static let nodeTreeMinimumHeight: CGFloat = 160
+  static let nodeDetailMinimumHeight: CGFloat = 150
+  static let nodeDetailHeightRatio: CGFloat = 1.0 / 3
+  static let nodeEventsWidthRatio: CGFloat = 1.0 / 3
+  static let artifactFieldMinimumWidth: CGFloat = 150
   static let statusSize: CGFloat = 8
   static let tabSelection = Color(nsColor: .secondaryLabelColor)
   static let sidebarSelection = Color(nsColor: .selectedContentBackgroundColor)
@@ -45,6 +57,7 @@ enum UIStyle {
   static let attention = Color.yellow
   static let active = Color.blue
   static let idle = Color.green
+  static let failure = Color.red
 
   static func statusColor(_ status: String) -> Color {
     switch status {
@@ -140,7 +153,26 @@ struct CardLabel: View {
 }
 
 extension UIStyle {
-  static func nodeIcon(isCommand: Bool) -> String {
-    isCommand ? "terminal" : "bot"
+  enum NodeKind {
+    case session, command, sequence, fanout
+
+    var icon: String {
+      switch self {
+      case .session: "bot"
+      case .command: "terminal"
+      case .sequence: "waypoints"
+      case .fanout: "git-fork"
+      }
+    }
+    var title: String {
+      switch self {
+      case .session: "Session"
+      case .command: "Command"
+      case .sequence: "Sequence"
+      case .fanout: "Fanout"
+      }
+    }
+    /// Command は model を持たないので、Model の欄には実行する場所を出す
+    var modelLabel: String? { self == .command ? "shell" : nil }
   }
 }

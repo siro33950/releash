@@ -107,11 +107,7 @@ final class RootListViewTests: XCTestCase {
     try await expectExpansion(initial != .idle, status: initial)
     if let manualExpansion {
       for id in ids {
-        if manualExpansion && id != "session" {
-          try await host.selectRow("root:\(id)")
-        } else {
-          try await host.setRowExpanded("root:\(id)", manualExpansion)
-        }
+        try await host.setRowExpanded("root:\(id)", manualExpansion)
       }
       try await expectExpansion(manualExpansion, status: initial)
     }
@@ -146,8 +142,8 @@ final class RootListViewTests: XCTestCase {
     try await eventually { model.layoutLoaded }
     XCTAssertNil(model.pendingRoots["/b"])
     let host = await ViewHarness(RootListView(model: model, path: "/b"))
-    try await eventuallyView(host) { host.element("開始") != nil }
-    XCTAssertNil(host.element("Rootの配信を待っています"))
+    try await eventuallyView(host) { host.element("New") != nil }
+    XCTAssertNil(host.element("Starting Workflow…"))
     var root = Releash_Client_V1_WorkspaceTreeItem()
     root.node.id = "workflow-execution"
     root.node.title = "A command"
@@ -231,10 +227,22 @@ final class RootListViewTests: XCTestCase {
     XCTAssertTrue(host.element("root:session-root")?.label.contains("Claude") == true)
     XCTAssertTrue(host.element("root:session-root")?.label.contains("Session") == true)
     XCTAssertTrue(host.element("root:command-root")?.label.contains("Command") == true)
-    try await host.selectRow("root:session-root")
+    func detailSubscribed(_ id: String) -> Bool {
+      http.state.withLock {
+        $0.subscriptions.contains { $0.target == "node-detail" && $0.args == ["/repo", id] }
+      }
+    }
     XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
-    try await host.press("open-node:session-root")
+    try await host.selectRow("root:session-root")
+    try await eventually { detailSubscribed("session-root") }
+    XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+    try await host.press("root:sequence-root")
+    try await eventually { detailSubscribed("sequence-root") }
+    XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
+    try await host.press("root:session-root")
     XCTAssertEqual(try model.panes.layout().tabs.last?.agentSessionID, "agent-session")
+    try await host.press("root:session-root")
+    XCTAssertEqual(try model.panes.layout().tabs.count, 1)
     try await host.menu("root:command-root", selecting: nil) { texts in
       for action in ["Rename", "Resume", "Archive"] { XCTAssertFalse(texts.contains(action)) }
     }
@@ -257,9 +265,9 @@ final class RootListViewTests: XCTestCase {
     try await host.menu("root:session-root", selecting: "Archive") { texts in
       for action in ["Rename", "Resume", "Archive"] { XCTAssertTrue(texts.contains(action)) }
     }
-    try await eventuallyView(host) { host.element("キャンセル") != nil }
+    try await eventuallyView(host) { host.element("Cancel") != nil }
     XCTAssertTrue(http.requests("ArchiveWorkspaceWorkflowExecution").isEmpty)
-    try await host.pressAlertButton("キャンセル")
+    try await host.pressAlertButton("Cancel")
     XCTAssertTrue(http.requests("ArchiveWorkspaceWorkflowExecution").isEmpty)
     try await host.menu("root:session-root", selecting: "Archive") {
       XCTAssertTrue($0.contains("Archive"))
@@ -270,9 +278,9 @@ final class RootListViewTests: XCTestCase {
     try await host.menu("root:session-root", selecting: "Rename") {
       XCTAssertTrue($0.contains("Rename"))
     }
-    try await eventuallyView(host) { host.element("保存") != nil }
+    try await eventuallyView(host) { host.element("Save") != nil }
     try await host.setTextField("Renamed title")
-    try await host.pressAlertButton("保存")
+    try await host.pressAlertButton("Save")
     try await eventually { !http.requests("RenameWorkspaceSessionNode").isEmpty }
     let request = try Releash_Client_V1_RenameWorkspaceSessionNodeRequest(
       serializedBytes: XCTUnwrap(http.requests("RenameWorkspaceSessionNode").last?.message))
@@ -314,7 +322,7 @@ final class RootListViewTests: XCTestCase {
     session.node.contentKind.value = .session
     session.node.model = "session-model"
     session.node.errorReason = "Session failed"
-    session.node.hasArtifact_p = true
+    session.node.artifactCount = 3
     var past = Releash_Client_V1_WorkspacePastAttempt()
     past.node.id = "past-session"
     past.node.title = "Previous session"
@@ -329,16 +337,14 @@ final class RootListViewTests: XCTestCase {
     command.node.title = "Failed command"
     command.node.contentKind.value = .command
     command.node.errorReason = "Command failed"
+    command.node.artifactCount = 1
     var sequence = Releash_Client_V1_WorkspaceTreeItem()
-    sequence.sequence.id = "isolated-sequence"
-    sequence.sequence.title = "Sequence"
-    sequence.sequence.worktree.branch = "sequence-branch"
-    sequence.sequence.worktree.path = "/isolated/sequence"
+    sequence.sequence.id = "failed-sequence"
+    sequence.sequence.title = "Flow"
+    sequence.sequence.errorReason = "Sequence failed"
     var fanout = Releash_Client_V1_WorkspaceTreeItem()
-    fanout.fanout.id = "isolated-fanout"
-    fanout.fanout.title = "Fanout"
-    fanout.fanout.worktree.branch = "fanout-branch"
-    fanout.fanout.worktree.path = "/isolated/fanout"
+    fanout.fanout.id = "plain-fanout"
+    fanout.fanout.title = "Parallel"
     var tree = Releash_Client_V1_WorkspaceWorktreeList()
     tree.path = "/repo"
     tree.snapshot.nodes.items = [session, unset, command, sequence, fanout]
@@ -348,36 +354,77 @@ final class RootListViewTests: XCTestCase {
     let model = try await testModel(http)
     let host = await ViewHarness(RootListView(model: model, path: "/repo"))
     defer { host.close() }
-    try await eventuallyView(host) { host.element("root:isolated-fanout") != nil }
-    XCTAssertTrue(
-      try XCTUnwrap(host.element("root:specified-session")).label.contains("Session failed"))
-    XCTAssertTrue(
-      try XCTUnwrap(host.element("root:failed-command")).label.contains("Command failed"))
+    try await eventuallyView(host) { host.element("root:plain-fanout") != nil }
+    for (id, reason) in [
+      ("specified-session", "Session failed"), ("failed-command", "Command failed"),
+      ("failed-sequence", "Sequence failed"),
+    ] {
+      XCTAssertEqual(host.element("node-failure:\(id)")?.value, reason)
+      XCTAssertFalse(try XCTUnwrap(host.element("root:\(id)")).label.contains(reason))
+    }
+    for id in ["unset-session", "plain-fanout"] {
+      XCTAssertNil(host.element("node-failure:\(id)"))
+    }
     for (id, title, modelValue, artifact) in [
-      ("specified-session", "Specified session", "session-model", "◆"),
+      ("specified-session", "Specified session", "session-model", "◆×3"),
       ("unset-session", "Unset session", "", ""),
-      ("failed-command", "Failed command", "", ""),
+      ("failed-command", "Failed command", "shell", "◆"),
     ] {
       XCTAssertEqual(
-        try XCTUnwrap(host.element("node-model:\(id)")).label, "\(title)を選択、MODEL \(modelValue)")
+        try XCTUnwrap(host.element("node-model:\(id)")).label, "\(title), Model \(modelValue)")
       XCTAssertEqual(try XCTUnwrap(host.element("node-artifact:\(id)")).value, artifact)
     }
-    for (id, kind, branch, path) in [
-      ("isolated-sequence", "SEQ", "sequence-branch", "/isolated/sequence"),
-      ("isolated-fanout", "FANOUT", "fanout-branch", "/isolated/fanout"),
+    for (id, kind, title) in [
+      ("specified-session", "Session", "Specified session"),
+      ("failed-command", "Command", "Failed command"),
+      ("failed-sequence", "Sequence", "Flow"), ("plain-fanout", "Fanout", "Parallel"),
     ] {
-      let row = try XCTUnwrap(host.element("root:\(id)")).label
-      XCTAssertTrue(row.contains(kind))
-      XCTAssertTrue(row.contains(branch))
-      XCTAssertTrue(row.contains(path))
+      XCTAssertEqual(try XCTUnwrap(host.element("root:\(id)")).label, "\(kind), \(title)")
     }
+    for column in ["Node", "Elapsed", "Active", "Token", "Cost", "Model", "Artifact", "Timeline"] {
+      XCTAssertTrue(host.texts().contains(column), column)
+    }
+    XCTAssertNotNil(host.element("node-events-empty"))
     XCTAssertNil(host.element("root:past-session"))
-    try await host.press("過去の試行")
+    XCTAssertEqual(host.element("past-attempts:specified-session")?.label, "Past attempts")
+    XCTAssertEqual(host.element("past-attempts:specified-session")?.value, "2")
+    try await host.press("past-attempts:specified-session")
     try await eventuallyView(host) { host.element("root:past-session") != nil }
     XCTAssertTrue(
       try XCTUnwrap(host.element("root:past-session")).label.contains("Previous session"))
-    try await host.press("過去の試行")
+    try await host.press("past-attempts:specified-session")
     try await eventuallyView(host) { host.element("root:past-session") == nil }
+    await model.stop()
+  }
+
+  @MainActor func testDetailHeaderUsesTheNameShownInTheSelectedRow() async throws {
+    let http = TestHTTPClient()
+    var root = Releash_Client_V1_WorkspaceTreeItem()
+    root.sequence.id = "execution"
+    root.sequence.title = "dev-cycle"
+    var tree = Releash_Client_V1_WorkspaceWorktreeList()
+    tree.path = "/repo"
+    tree.snapshot.nodes.items = [root]
+    var repo = Releash_Client_V1_WorkspaceRepositoryList()
+    repo.worktrees.items = [tree]
+    var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
+    detail.id = "execution"
+    detail.title = "main"
+    detail.content.sequence = .init()
+    http.state.withLock {
+      $0.repositories = [repo]
+      $0.nodeDetails["execution"] = detail
+    }
+    let model = try await testModel(http)
+    let host = await ViewHarness(RootListView(model: model, path: "/repo"))
+    defer { host.close() }
+
+    try await eventuallyView(host) { host.element("root:execution") != nil }
+    XCTAssertTrue(host.texts().contains("No Node selected"))
+    try await host.press("root:execution")
+    try await eventuallyView(host) { host.element("node-detail-title")?.value == "dev-cycle" }
+    XCTAssertFalse(host.texts().contains("main"))
+    XCTAssertNotNil(host.element("node-panel-divider"))
     await model.stop()
   }
 
@@ -408,22 +455,22 @@ final class RootListViewTests: XCTestCase {
     defer { host.close() }
     try await eventuallyView(host) { host.element("root:delegate") != nil }
     XCTAssertNil(host.element("root:past"))
-    try await host.press("過去の試行")
+    try await host.press("Past attempts")
     try await eventuallyView(host) { host.element("root:past") != nil }
     XCTAssertNotNil(host.element("root:delegate"))
     try await host.setRowExpanded("root:session", false)
     try await eventuallyView(host) { host.element("root:delegate") == nil }
     XCTAssertNotNil(host.element("root:past"))
-    try await host.press("過去の試行")
+    try await host.press("Past attempts")
     try await eventuallyView(host) { host.element("root:past") == nil }
     XCTAssertNil(host.element("root:delegate"))
-    try await host.press("過去の試行")
+    try await host.press("Past attempts")
     try await eventuallyView(host) { host.element("root:past") != nil }
     XCTAssertNil(host.element("root:delegate"))
     try await host.setRowExpanded("root:session", true)
     try await eventuallyView(host) { host.element("root:delegate") != nil }
     XCTAssertNotNil(host.element("root:past"))
-    try await host.press("過去の試行")
+    try await host.press("Past attempts")
     try await eventuallyView(host) { host.element("root:past") == nil }
     XCTAssertNotNil(host.element("root:delegate"))
     await model.stop()
@@ -452,7 +499,6 @@ final class RootListViewTests: XCTestCase {
       leaf.node.status.value = index == 0 ? .attention : .idle
       leaf.node.capabilities.canApprove = index == 0
       leaf.node.model = "test-model"
-      leaf.node.hasArtifact_p = true
       fanout.fanout.children.items.append(leaf)
     }
     var deep = Releash_Client_V1_WorkspaceTreeItem()
@@ -511,19 +557,19 @@ final class RootListViewTests: XCTestCase {
       try await eventuallyView(host) { host.element("root:depth-\(depth)") != nil }
     }
     try await eventuallyView(host) { host.element("root:deep") != nil }
-    try await host.selectRow("node-model:leaf-0")
+    try await host.press("root:leaf-0")
     try await eventually {
       http.state.withLock {
         $0.subscriptions.contains { $0.target == "node-detail" && $0.args == ["/repo", "leaf-0"] }
       }
     }
     try await eventuallyView(host) { host.texts().contains("implementation_plan") }
+    XCTAssertEqual(try model.panes.layout().tabs.map(\.nodeID), ["leaf-0"])
     let before = http.state.withLock { $0.subscriptions.count }
-    try await host.selectRow("root:parallel")
+    try await host.setRowExpanded("root:parallel", false)
     try await eventuallyView(host) { host.element("root:leaf-0") == nil }
     XCTAssertTrue(host.texts().contains("implementation_plan"))
     XCTAssertEqual(http.state.withLock { $0.subscriptions.count }, before)
-    XCTAssertTrue(model.panes.controller.allTabIds.isEmpty)
     var delegate = Releash_Client_V1_WorkspaceTreeItem()
     delegate.node.id = "new-delegate"
     delegate.node.title = "New delegate"
@@ -546,7 +592,7 @@ final class RootListViewTests: XCTestCase {
     try await eventuallyView(host) { host.element("root:new-delegate") != nil }
     XCTAssertNil(host.element("root:leaf-0"))
     XCTAssertTrue(host.texts().contains("implementation_plan"))
-    try await host.selectRow("root:parallel")
+    try await host.setRowExpanded("root:parallel", true)
     try await eventuallyView(host) { host.element("approve:leaf-0") != nil }
     var selected: CFTypeRef?
     XCTAssertEqual(

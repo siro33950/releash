@@ -331,6 +331,29 @@ fn test_node詳細の転送_分類と実行識別とmodelと過去の試行の�
 }
 
 #[test]
+fn test_node詳細の変換_sequenceとfanoutの種別を保つ() {
+    // Given
+    use crate::usecase::workflow::WorkspaceNodeContentDto;
+    use wire::workspace_node_content_dto::Variant;
+    let cases = [
+        (
+            WorkspaceNodeContentDto::Sequence,
+            Variant::Sequence(wire::WorkspaceSequenceNodeContentDto {}),
+        ),
+        (
+            WorkspaceNodeContentDto::Fanout,
+            Variant::Fanout(wire::WorkspaceFanoutNodeContentDto {}),
+        ),
+    ];
+    for (content, expected) in cases {
+        // When
+        let wire = wire::WorkspaceNodeContentDto::try_from(content).unwrap();
+        // Then
+        assert_eq!(wire.variant, Some(expected));
+    }
+}
+
+#[test]
 fn test_session詳細の転送_ドメインの状態と操作可否を既存の形式で配る() {
     use crate::domain::workflow::{NodeCompletionSignalState as S, NodeProcessPresence};
     use crate::domain::workspace_tree::{

@@ -66,6 +66,8 @@ pub struct WorkspaceNodeAttemptDto {
 pub enum WorkspaceNodeContentDto {
     Session(WorkspaceSessionNodeContentDto),
     Command(WorkspaceCommandNodeContentDto),
+    Sequence,
+    Fanout,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

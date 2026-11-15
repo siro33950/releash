@@ -14,7 +14,7 @@ final class SessionWorkflowMenuTests: XCTestCase {
     defer { host.close() }
     // When
     try await MenuHarness().open(
-      press: { try await host.press("開始") },
+      press: { try await host.press("New") },
       inspect: { menu in
         // Then
         let workflow = try XCTUnwrap(menu.items.first { $0.title == "Workflow" })

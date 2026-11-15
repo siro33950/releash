@@ -1436,6 +1436,16 @@ impl TryFrom<crate::usecase::workflow::WorkspaceNodeContentDto> for wire::Worksp
                 crate::usecase::workflow::WorkspaceNodeContentDto::Command(value) => {
                     wire::workspace_node_content_dto::Variant::Command(cv(value)?)
                 }
+                crate::usecase::workflow::WorkspaceNodeContentDto::Sequence => {
+                    wire::workspace_node_content_dto::Variant::Sequence(
+                        wire::WorkspaceSequenceNodeContentDto {},
+                    )
+                }
+                crate::usecase::workflow::WorkspaceNodeContentDto::Fanout => {
+                    wire::workspace_node_content_dto::Variant::Fanout(
+                        wire::WorkspaceFanoutNodeContentDto {},
+                    )
+                }
             }),
         })
     }
