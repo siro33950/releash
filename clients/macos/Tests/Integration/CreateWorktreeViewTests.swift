@@ -136,6 +136,54 @@ final class CreateWorktreeViewTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func testRepositoriesArrivingAfterOpenSelectTheDefaultRepository() async throws {
+    let http = TestHTTPClient()
+    let model = try await preparedModel(http)
+    try await eventually { model.repositories.count == 2 }
+    let repositories = model.repositories
+    model.repositories = []
+    let host = await ViewHarness(CreateWorktreeView(model: model), size: size)
+    defer { host.close() }
+    try await eventuallyView(host) {
+      host.element("repository-picker")?.value == "選択してください"
+    }
+
+    model.repositories = repositories
+
+    try await eventuallyView(host) {
+      host.element("repository-picker")?.value == "releash"
+        && host.element("worktree-source-item:branch:feature") != nil
+    }
+    await model.stop()
+  }
+
+  @MainActor func testIssueReadFailureKeepsSelectedFilter() async throws {
+    let http = TestHTTPClient()
+    let model = try await preparedModel(http)
+    var form = CreateWorktreeForm()
+    form.repository = "/repo"
+    form.source = .issue
+    form.label = "bug"
+    let host = await ViewHarness(CreateWorktreeView(model: model, form: form), size: size)
+    defer { host.close() }
+    try await eventuallyView(host) {
+      host.element("worktree-source-item:issue:7") != nil
+        && host.element("worktree-source-filter:Label")?.value == "bug"
+    }
+
+    var payload = Releash_Client_V1_StatePayload()
+    payload.issues.readError = "gh: could not resolve host"
+    try http.publish(payload, target: "issues")
+
+    try await eventuallyView(host) {
+      host.element("worktree-source-failure") != nil
+        && host.element("worktree-source-item:issue:7") == nil
+    }
+    XCTAssertEqual(host.element("worktree-source-filter:Label")?.value, "bug")
+    XCTAssertEqual(arguments(http, "issues"), [["/repo", "label=bug"]])
+    await model.stop()
+  }
+
   @MainActor func testBaseWithoutDefaultBranchStartsFromHeadAndReadFailureIsShown() async throws {
     let http = TestHTTPClient()
     let model = try await preparedModel(http)

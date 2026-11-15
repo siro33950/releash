@@ -70,6 +70,7 @@ struct CreateWorktreeView: View {
               rows
             }
           }
+          .scrollDisabled(false)
           .frame(height: max(0, formHeight - listTop - formInset))
           .onGeometryChange(for: CGFloat.self) {
             $0.frame(in: .named(Self.formSpace)).minY
@@ -97,12 +98,12 @@ struct CreateWorktreeView: View {
       }.padding(UIStyle.padding)
     }
     .frame(width: UIStyle.worktreeDialogWidth, height: UIStyle.worktreeDialogHeight)
-    .onAppear {
+    .onChange(of: model.repositories.map(\.path), initial: true) { _, paths in
       guard form.repository.isEmpty else { return }
       form.repository =
         model.repositories.first { repository in
           repository.branches.items.contains { $0.worktreePath == model.selectedWorktree }
-        }?.path ?? model.repositories.first?.path ?? ""
+        }?.path ?? paths.first ?? ""
     }
     .onChange(of: form.repository, initial: true) { _, repository in
       bases = .init()
@@ -223,8 +224,13 @@ struct CreateWorktreeView: View {
       branches = value.items
       readFailure = nil
     case .issues(let value):
-      issues = value
       readFailure = value.hasReadError ? value.readError : nil
+      // 読み取れなかった応答は選択肢を持たない。絞り込みの選択肢と選択は、前のまま残す
+      guard value.hasIssues else {
+        issues.clearIssues()
+        return
+      }
+      issues = value
       if !value.labels.contains(form.label) { form.label = "" }
       if !value.milestones.contains(form.milestone) { form.milestone = "" }
     case .notionTasks(let value):
