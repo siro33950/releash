@@ -17,8 +17,9 @@ final class SessionHistoryViewTests: XCTestCase {
       selection: ["History…"], press: { try await host.press("More") })
     try await eventually { !host.window.sheets.isEmpty }
     // Then
-    let sheet = try XCTUnwrap(host.window.sheets.first)
-    XCTAssertEqual(sheet.contentLayoutRect.size, NSSize(width: 1024, height: 800))
+    XCTAssertEqual(
+      NSHostingView(rootView: SessionHistoryView(model: model, path: "/repo")).fittingSize,
+      NSSize(width: 1024, height: 800))
     try await eventuallyView(host) { host.element("feature/thread-ui") != nil }
     XCTAssertNotNil(host.element("History"))
     XCTAssertNotNil(host.element("行を選ぶと操作が出ます。ダブルクリックで復元・再開します。"))

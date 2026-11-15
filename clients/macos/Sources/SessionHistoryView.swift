@@ -82,7 +82,7 @@ struct SessionHistoryView: View {
         Spacer()
         Button("閉じる") { dismiss() }.disabled(busy)
       }
-    }.padding(UIStyle.padding).frame(width: 1024, height: 800)
+    }.padding(UIStyle.padding).frame(width: UIStyle.historyWidth, height: UIStyle.historyHeight)
       .onAppear { subscribe() }
       .onChange(of: search) {
         selected = nil
