@@ -43,7 +43,7 @@ final class SessionHistoryViewTests: XCTestCase {
       let originalTabs = model.panes.controller.allTabIds
       let host = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
       try await eventuallyView(host) { host.element("Codex · History session") != nil }
-      try await host.press("さらに読み込む")
+      try await host.press("Load more")
       try await eventually {
         http.state.withLock {
           $0.subscriptions.contains {
@@ -62,7 +62,7 @@ final class SessionHistoryViewTests: XCTestCase {
       try http.publish(payload, target: "session-history")
       try await eventuallyView(host) { host.element("Codex · Older session") != nil }
       XCTAssertNotNil(host.element("Codex · History session"))
-      XCTAssertNil(host.element("さらに読み込む"))
+      XCTAssertNil(host.element("Load more"))
       let action =
         method == "DeleteAgentSession"
         ? "Delete"

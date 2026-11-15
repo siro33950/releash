@@ -56,6 +56,8 @@ struct RootListView: View {
   @State private var archive: String?
   @State private var renaming: String?
   @State private var name = ""
+  @State private var detailHeight: CGFloat?
+  private static let splitSpace = "node-panel-split"
 
   var roots: [Releash_Client_V1_WorkspaceTreeItem] {
     model.repositories.flatMap(\.worktrees.items).first { $0.path == path }?.snapshot.nodes.items
@@ -75,44 +77,82 @@ struct RootListView: View {
   }
   var body: some View {
     let rootIDs = Set(roots.map(\.rootID))
-    VStack(spacing: 0) {
-      HStack {
-        Spacer()
-        IconMenu(title: "その他", image: "ellipsis") {
-          Button("History…") { history = true }
+    let selectedItem = selected.flatMap { id in roots.lazy.compactMap { $0.find(id) }.first }
+    GeometryReader { geometry in
+      let bounds = Self.detailBounds(total: geometry.size.height)
+      let lowerHeight = Self.detailHeight(total: geometry.size.height, chosen: detailHeight)
+      VStack(spacing: 0) {
+        HStack {
+          Spacer()
+          IconMenu(title: "More", image: "ellipsis") {
+            Button("History…") { history = true }
+          }
+          SessionWorkflowMenu(model: model, path: path)
+        }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
+        if model.pendingRoots[path] != nil {
+          ProgressView("Starting Workflow…").controlSize(.small)
         }
-        SessionWorkflowMenu(model: model, path: path)
-      }.padding(UIStyle.spacing).disabled(!model.layoutLoaded)
-      if model.pendingRoots[path] != nil { ProgressView("Rootの配信を待っています").controlSize(.small) }
-      VSplitView {
         Table(
           of: Releash_Client_V1_WorkspaceTreeItem.self,
           selection: Binding(
-            get: { selected },
-            set: { id in
-              if let id, let item = roots.lazy.compactMap({ $0.find(id) }).first {
-                select(item)
-              }
-            })
+            get: { selected }, set: { selectionChanged(to: $0, by: NSApp.currentEvent) })
         ) {
-          TableColumn("実行木") { item in nameCell(item, isRoot: rootIDs.contains(item.rootID)) }
-            .width(min: 120, ideal: 240)
-          TableColumn("MODEL") { item in modelCell(item) }.width(80)
-          TableColumn("ART") { item in artifactCell(item) }.width(24)
+          TableColumn("Node") { item in nameCell(item, isRoot: rootIDs.contains(item.rootID)) }
+            .width(min: UIStyle.nodeNameMinimumWidth, ideal: UIStyle.nodeNameWidth)
+          TableColumn("Elapsed") { item in missingCell(item, "Elapsed") }
+            .width(UIStyle.nodeMetricWidth)
+          TableColumn("Active") { item in missingCell(item, "Active") }
+            .width(UIStyle.nodeMetricWidth)
+          TableColumn("Token") { item in missingCell(item, "Token") }
+            .width(UIStyle.nodeMetricWidth)
+          TableColumn("Cost") { item in missingCell(item, "Cost") }
+            .width(UIStyle.nodeMetricWidth)
+          TableColumn("Model") { item in modelCell(item) }
+            .width(min: UIStyle.nodeModelMinimumWidth, ideal: UIStyle.nodeModelWidth)
+          TableColumn("Artifact") { item in artifactCell(item) }.width(UIStyle.nodeMetricWidth)
+          TableColumn("Timeline") { item in Color.clear.modifier(RowActivation { open(item) }) }
+            .width(min: UIStyle.nodeTimelineMinimumWidth, ideal: UIStyle.nodeTimelineWidth)
         } rows: {
           WorkspaceTableRows(
             items: roots, isExpanded: isExpanded, setExpanded: setExpanded,
             expandedPastAttempts: $expandedPastAttempts)
-        }.scrollContentBackground(.hidden).alternatingRowBackgrounds(.disabled).frame(
-          minHeight: 120)
-        if let selected {
-          NodeInspector(model: model, path: path, nodeID: selected).id(selected).frame(
-            minHeight: 150)
-        } else {
-          Text("Nodeを選択").foregroundStyle(.secondary).frame(
-            maxWidth: .infinity, maxHeight: .infinity)
         }
+        .scrollContentBackground(.hidden).alternatingRowBackgrounds(.disabled)
+        .frame(maxHeight: .infinity)
+        Divider().overlay {
+          Color.clear.frame(height: UIStyle.dividerCursorWidth).contentShape(Rectangle())
+            .gesture(
+              DragGesture(coordinateSpace: .named(Self.splitSpace)).onChanged {
+                detailHeight = geometry.size.height - $0.location.y
+              }
+            )
+            .pointerStyle(.rowResize)
+            .accessibilityRepresentation {
+              Slider(
+                value: Binding(get: { lowerHeight }, set: { detailHeight = $0 }),
+                in: bounds.lowerBound...max(bounds.upperBound, bounds.lowerBound + 1)
+              ) {
+                Text("Detail height")
+              }
+              .accessibilityIdentifier("node-panel-divider")
+            }
+        }
+        HStack(spacing: 0) {
+          if let selected {
+            NodeInspector(
+              model: model, path: path, nodeID: selected,
+              name: selectedItem?.displayName(isRoot: rootIDs.contains(selected))
+            ).id(selected)
+          } else {
+            Text("No Node selected").foregroundStyle(.secondary)
+              .frame(maxWidth: .infinity, maxHeight: .infinity)
+          }
+          Divider()
+          NodeEvents().frame(width: geometry.size.width * UIStyle.nodeEventsWidthRatio)
+        }
+        .frame(height: lowerHeight)
       }
+      .coordinateSpace(.named(Self.splitSpace))
     }
     .onChange(of: defaultExpansion) { oldValues, newValues in
       expandedRows = expandedRows.filter { newValues[$0.key] != nil }
@@ -122,10 +162,10 @@ struct RootListView: View {
     }
     .sheet(isPresented: $history) { SessionHistoryView(model: model, path: path) }
     .alert(
-      "実行をAbortしてArchiveしますか？",
+      "Abort and archive this execution?",
       isPresented: Binding(get: { archive != nil }, set: { if !$0 { archive = nil } })
     ) {
-      Button("キャンセル", role: .cancel) { archive = nil }
+      Button("Cancel", role: .cancel) { archive = nil }
       Button("Abort and Archive", role: .destructive) {
         if let root = archive { archiveRoot(root) }
         archive = nil
@@ -134,9 +174,9 @@ struct RootListView: View {
     .alert(
       "Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
     ) {
-      TextField("名前", text: $name)
-      Button("キャンセル", role: .cancel) { renaming = nil }
-      Button("保存") {
+      TextField("Name", text: $name)
+      Button("Cancel", role: .cancel) { renaming = nil }
+      Button("Save") {
         guard let root = renaming, let client = model.client else { return }
         var request = Releash_Client_V1_RenameWorkspaceSessionNodeRequest()
         request.worktreePath = path
@@ -150,95 +190,104 @@ struct RootListView: View {
       }
     }
   }
+  /// 下段の高さの範囲。上段（右上の操作と表）と下段のどちらも最小の高さを割らない。両方は入らない高さでは上段を優先する
+  static func detailBounds(total: CGFloat) -> ClosedRange<CGFloat> {
+    let upper = max(total - UIStyle.nodeUpperMinimumHeight, 0)
+    return min(UIStyle.nodeDetailMinimumHeight, upper)...upper
+  }
+  static func detailHeight(total: CGFloat, chosen: CGFloat?) -> CGFloat {
+    let bounds = detailBounds(total: total)
+    return min(
+      max(chosen ?? total * UIStyle.nodeDetailHeightRatio, bounds.lowerBound), bounds.upperBound)
+  }
+  /// 表は、セルの中身の外（字下げや余白）のクリックを選択の変更として伝える。そのクリックでもタブを開き、
+  /// キーボードやアクセシビリティで選択だけが動いたときは開かない
+  func selectionChanged(
+    to id: String?, by event: NSEvent?,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) {
+    guard let id, let item = roots.lazy.compactMap({ $0.find(id) }).first else { return }
+    if Self.isClick(event, now: now) { open(item) } else { selected = id }
+  }
+  static func isClick(
+    _ event: NSEvent?, now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> Bool {
+    guard let event, event.type == .leftMouseDown || event.type == .leftMouseUp else {
+      return false
+    }
+    return now - event.timestamp < 1
+  }
+  func missingCell(_ item: Releash_Client_V1_WorkspaceTreeItem, _ column: String) -> some View {
+    Text(verbatim: "—").font(.caption.monospaced()).foregroundStyle(.secondary)
+      .frame(maxWidth: .infinity, alignment: .trailing)
+      .accessibilityLabel("\(item.rootTitle), \(column)")
+      .modifier(RowActivation { open(item) })
+  }
   func modelCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
-    HStack {
-      Text(item.nodeModel).font(.system(.caption, design: .monospaced)).frame(
-        maxWidth: .infinity, alignment: .trailing)
+    let model = item.nodeModel ?? "—"
+    let text = Text(model).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+      .frame(maxWidth: .infinity, alignment: .trailing)
+    return HStack {
+      if item.nodeModel == nil { text.foregroundStyle(.secondary) } else { text }
     }
     .accessibilityElement(children: .ignore).accessibilityIdentifier("node-model:\(item.rootID)")
-    .accessibilityLabel("\(item.rootTitle)を選択、MODEL \(item.nodeModel)")
+    .accessibilityLabel("\(item.rootTitle), Model \(model)")
+    .help(model)
+    .modifier(RowActivation { open(item) })
   }
   func artifactCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
     HStack {
-      Text(item.hasArtifact ? "◆" : "").foregroundStyle(Color.accentColor).frame(
-        maxWidth: .infinity)
+      Text(item.artifactLabel).font(.caption.monospaced()).foregroundStyle(Color.accentColor)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
-    .accessibilityElement(children: .ignore).accessibilityLabel(
-      "\(item.rootTitle)を選択、Artifact\(item.hasArtifact ? "あり" : "なし")"
-    )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(item.rootTitle), Artifact")
     .accessibilityIdentifier("node-artifact:\(item.rootID)").accessibilityAddTraits(.isStaticText)
-    .accessibilityValue(item.hasArtifact ? "◆" : "")
-  }
-  private func nodeIcon(_ item: Releash_Client_V1_WorkspaceTreeItem) -> String? {
-    switch item.variant {
-    case .node(let node): UIStyle.nodeIcon(isCommand: node.contentKind.value == .command)
-    case .sequence: "waypoints"
-    case .fanout: "git-fork"
-    case nil: nil
-    }
+    .accessibilityValue(item.artifactLabel)
+    .modifier(RowActivation { open(item) })
   }
   func nameCell(_ item: Releash_Client_V1_WorkspaceTreeItem, isRoot: Bool) -> some View {
     HStack(spacing: UIStyle.rowSpacing) {
-      HStack(spacing: UIStyle.rowSpacing) {
-        if let icon = nodeIcon(item) {
-          Image(icon).resizable()
-            .frame(width: UIStyle.statusSize, height: UIStyle.statusSize)
-            .foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
-            .accessibilityLabel(item.rootKind?.title ?? item.compositeKind)
-        }
-        if isRoot, case .node(let node) = item.variant, node.hasProvider {
-          Text(node.provider.displayName).fontWeight(.medium)
-        }
-        VStack(alignment: .leading) {
-          HStack(spacing: UIStyle.rowSpacing) {
-            Text(item.rootTitle).lineLimit(1).fontWeight(
-              item.rootKind == nil ? .semibold : .regular)
-            Text(item.rootKind?.title ?? item.compositeKind)
-              .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, UIStyle.rowSpacing)
-              .background(
-                Color(nsColor: .quaternarySystemFill), in: RoundedRectangle(cornerRadius: 3))
+      Button {
+        open(item)
+      } label: {
+        HStack(spacing: UIStyle.rowSpacing) {
+          if let kind = item.kind {
+            Image(kind.icon).resizable()
+              .frame(width: UIStyle.statusSize, height: UIStyle.statusSize)
+              .foregroundStyle(UIStyle.statusColor(String(describing: item.rootStatus.value)))
+              .accessibilityLabel(kind.title)
           }
-          if case .node(let node) = item.variant, node.hasErrorReason {
-            Text(node.errorReason).font(.caption).lineLimit(1)
-          }
-          if let worktree = item.isolatedWorktree {
-            Text(worktree.branch + " · " + worktree.path).font(.caption).foregroundStyle(.secondary)
-          }
-        }
-      }.contentShape(Rectangle()).layoutPriority(-1).accessibilityElement(children: .combine)
-        .accessibilityIdentifier("root:\(item.rootID)")
-        .accessibilityValue(String(describing: item.rootStatus.value))
-        .contextMenu {
-          if isRoot {
-            if case .node(let node) = item.variant {
-              if node.capabilities.canRename {
-                Button("Rename") {
-                  name = item.rootTitle
-                  renaming = item.rootID
-                }
-              }
-              if node.capabilities.canResumeSession {
-                Button("Resume") { model.resumeNode(path: path, id: item.rootID) }
-              }
-            }
-            if item.workflowCapabilities.canArchive {
-              Button("Archive") {
-                if item.workflowCapabilities.canAbort {
-                  archive = item.rootID
-                } else {
-                  archiveRoot(item.rootID)
-                }
-              }
-            }
-          }
-        }
-      if item.rootKind != nil {
-        Button("▷") { model.openRoot(item) }.buttonStyle(.bordered).controlSize(.mini)
-          .accessibilityLabel("タブを開く").accessibilityIdentifier("open-node:\(item.rootID)")
+          Text(item.displayName(isRoot: isRoot)).lineLimit(1)
+            .fontWeight(isRoot ? .semibold : .regular)
+        }.contentShape(Rectangle())
       }
-      if item.canApprove {
-        Button("Approve") { approve(item.rootID) }.controlSize(.small).accessibilityIdentifier(
-          "approve:\(item.rootID)")
+      .buttonStyle(.plain).layoutPriority(-1)
+      .accessibilityIdentifier("root:\(item.rootID)")
+      .accessibilityValue(String(describing: item.rootStatus.value))
+      .contextMenu {
+        if isRoot {
+          if case .node(let node) = item.variant {
+            if node.capabilities.canRename {
+              Button("Rename") {
+                name = item.rootTitle
+                renaming = item.rootID
+              }
+            }
+            if node.capabilities.canResumeSession {
+              Button("Resume") { model.resumeNode(path: path, id: item.rootID) }
+            }
+          }
+          if item.workflowCapabilities.canArchive {
+            Button("Archive") {
+              if item.workflowCapabilities.canAbort {
+                archive = item.rootID
+              } else {
+                archiveRoot(item.rootID)
+              }
+            }
+          }
+        }
       }
       if !item.pastAttempts.isEmpty {
         Button {
@@ -248,18 +297,31 @@ struct RootListView: View {
             expandedPastAttempts.insert(item.rootID)
           }
         } label: {
-          CardIcon(image: Image("history"))
-        }.buttonStyle(.borderless).help("過去の試行").accessibilityLabel("過去の試行")
+          HStack(spacing: UIStyle.statusSpacing) {
+            CardIcon(image: Image("history"))
+            Text(verbatim: "\(item.pastAttempts.count + 1)").font(.caption)
+          }
+        }
+        .buttonStyle(.borderless).help("Past attempts").accessibilityLabel("Past attempts")
+        .accessibilityValue("\(item.pastAttempts.count + 1)")
+        .accessibilityIdentifier("past-attempts:\(item.rootID)")
+      }
+      if item.canApprove {
+        Button("Approve") { approve(item.rootID) }
+          .buttonStyle(.borderedProminent).controlSize(.small)
+          .accessibilityIdentifier("approve:\(item.rootID)")
+      }
+      if let reason = item.errorReason {
+        CardIcon(image: Image("circle-alert")).foregroundStyle(UIStyle.failure).help(reason)
+          .accessibilityLabel("Failed").accessibilityValue(reason)
+          .accessibilityIdentifier("node-failure:\(item.rootID)")
       }
     }.frame(maxWidth: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
+      .modifier(RowActivation { open(item) })
   }
-  func select(_ item: Releash_Client_V1_WorkspaceTreeItem) {
-    if item.rootKind != nil {
-      selected = item.rootID
-    } else {
-      setExpanded(item.rootID, !isExpanded(item))
-    }
+  func open(_ item: Releash_Client_V1_WorkspaceTreeItem) {
+    selected = item.rootID
+    model.openRoot(item)
   }
   private func isExpanded(_ item: Releash_Client_V1_WorkspaceTreeItem) -> Bool {
     expandedRows[item.rootID] ?? item.defaultExpanded
@@ -290,12 +352,37 @@ struct RootListView: View {
   }
 }
 
+private struct RowActivation: ViewModifier {
+  let action: () -> Void
+
+  func body(content: Content) -> some View {
+    content.frame(maxHeight: .infinity).contentShape(Rectangle()).onTapGesture(perform: action)
+  }
+}
+
+private struct NodeEvents: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text("Events").font(.caption).foregroundStyle(.secondary).padding(UIStyle.spacing)
+      Divider()
+      Text("No events").foregroundStyle(.secondary).padding(UIStyle.spacing)
+        .accessibilityIdentifier("node-events-empty")
+      Spacer(minLength: 0)
+    }.frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
 extension Releash_Client_V1_WorkspaceTreeItem {
   var defaultExpanded: Bool { rootStatus.value != .idle }
-  var compositeKind: String {
-    if case .fanout = variant { return "FANOUT" }
-    return "SEQ"
+  var kind: UIStyle.NodeKind? {
+    switch variant {
+    case .node(let node): node.contentKind.value == .command ? .command : .session
+    case .sequence: .sequence
+    case .fanout: .fanout
+    case nil: nil
+    }
   }
+  func displayName(isRoot: Bool) -> String { isRoot ? rootTabTitle : rootTitle }
   var children: [Self] {
     switch variant {
     case .node(let node): node.children.items
@@ -313,13 +400,21 @@ extension Releash_Client_V1_WorkspaceTreeItem {
       return item
     }
   }
-  var nodeModel: String {
-    if case .node(let node) = variant { return node.model }
-    return ""
+  var nodeModel: String? {
+    guard case .node(let node) = variant else { return "" }
+    return kind?.modelLabel ?? (node.model.isEmpty ? nil : node.model)
   }
-  var hasArtifact: Bool {
-    if case .node(let node) = variant { return node.hasArtifact_p }
-    return false
+  var artifactLabel: String {
+    guard case .node(let node) = variant, node.artifactCount > 0 else { return "" }
+    return node.artifactCount == 1 ? "◆" : "◆×\(node.artifactCount)"
+  }
+  var errorReason: String? {
+    switch variant {
+    case .node(let node): node.hasErrorReason ? node.errorReason : nil
+    case .sequence(let node): node.hasErrorReason ? node.errorReason : nil
+    case .fanout(let node): node.hasErrorReason ? node.errorReason : nil
+    case nil: nil
+    }
   }
   var canApprove: Bool {
     switch variant {
@@ -327,13 +422,6 @@ extension Releash_Client_V1_WorkspaceTreeItem {
     case .sequence(let node): node.canApprove
     case .fanout(let node): node.canApprove
     case nil: false
-    }
-  }
-  var isolatedWorktree: Releash_Client_V1_NodeWorktreeDto? {
-    switch variant {
-    case .sequence(let node): node.hasWorktree ? node.worktree : nil
-    case .fanout(let node): node.hasWorktree ? node.worktree : nil
-    default: nil
     }
   }
 }

@@ -163,6 +163,32 @@ fn test_隔離node詳細_実行中と成果物なし終端でもbranchとpathを
 }
 
 #[test]
+fn test_合成node詳細_sequenceとfanoutの種別を配りworkflowの節はsequenceとして配る() {
+    // Given
+    let cases = [
+        (
+            WorkspaceNodeKind::Sequence,
+            WorkspaceNodeContentDto::Sequence,
+        ),
+        (WorkspaceNodeKind::Fanout, WorkspaceNodeContentDto::Fanout),
+        (
+            WorkspaceNodeKind::Workflow,
+            WorkspaceNodeContentDto::Sequence,
+        ),
+    ];
+    for (kind, expected) in cases {
+        let mut composite = node();
+        composite.kind = kind;
+        composite.error_reason = Some("child failed".into());
+        // When
+        let detail = node_detail(composite, false);
+        // Then
+        assert_eq!(detail.content, expected);
+        assert_eq!(detail.error_reason.as_deref(), Some("child failed"));
+    }
+}
+
+#[test]
 fn test_command詳細_実行時のshellとcwdとabort対象を配る() {
     // Given
     let mut command = node();

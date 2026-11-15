@@ -5,6 +5,12 @@ import XCTest
 
 final class NodeInspectorTests: XCTestCase {
 
+  func testCommandHeaderShowsShellInPlaceOfModel() {
+    var command = Releash_Client_V1_WorkspaceNodeDetailDto()
+    command.content.command = .init()
+    XCTAssertEqual(command.metricsLabel, "shell · Elapsed — · Active — · Token — · Cost —")
+  }
+
   func testNestedArtifactFieldsAndJSONPreserveArraysEscapedStringsAndScalars() throws {
     var value = Releash_Client_V1_WorkflowValue()
     value.objectValue.entries["name", default: .init()].stringValue.value = "quote\"\nline"
@@ -19,6 +25,7 @@ final class NodeInspectorTests: XCTestCase {
     XCTAssertEqual((decoded?["items"] as? [Any])?.count, 2)
     XCTAssertEqual(value.displayFields.map(\.name), ["items", "[0]", "[1]", "name"])
     XCTAssertEqual(value.displayFields.map(\.depth), [0, 1, 1, 0])
+    XCTAssertEqual(value.displayFields.map(\.type), ["array[2]", "boolean", "integer", "string"])
   }
 
   func testEmptyContainersAndNullKeepTheirValuesInTheTable() {
@@ -28,6 +35,10 @@ final class NodeInspectorTests: XCTestCase {
     value.objectValue.entries["null", default: .init()].nullValue = .init()
     XCTAssertEqual(value.displayFields.map(\.name), ["array", "null", "object"])
     XCTAssertEqual(value.displayFields.map(\.value), ["[]", "null", "{}"])
+    XCTAssertEqual(value.displayFields.map(\.type), ["array[0]", "null", "object"])
+    var number = Releash_Client_V1_WorkflowValue()
+    number.numberValue.value = 1.5
+    XCTAssertEqual(number.displayFields.map(\.type), ["number"])
     value.objectValue = .init()
     XCTAssertEqual(value.displayFields.map(\.name), ["$"])
     XCTAssertEqual(value.displayFields.map(\.value), ["{}"])

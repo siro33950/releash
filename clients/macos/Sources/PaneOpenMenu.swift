@@ -25,7 +25,7 @@ struct SessionWorkflowMenu: View {
   let path: String
 
   var body: some View {
-    IconMenu(title: "開始", image: "plus") {
+    IconMenu(title: "New", image: "plus") {
       SessionWorkflowItems(model: model, path: path, pane: nil)
     }
   }

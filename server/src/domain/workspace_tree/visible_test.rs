@@ -171,6 +171,44 @@ fn test_画面に出す木_実行を代表する節は実行の識別子と題�
     );
 }
 
+#[test]
+fn test_artifactの数_この節と過去の試行のうちartifactを持つものを数える() {
+    // Given
+    let cases = [
+        (vec!["exec-a-fix-1", "exec-a-fix-2"], 2),
+        (vec!["exec-a-fix-2"], 1),
+        (vec!["exec-a-fix-1"], 1),
+        (vec![], 0),
+    ];
+    for (with_artifact, expected) in cases {
+        let mut nodes = workflow_nodes("exec-a");
+        for node in &mut nodes {
+            node.has_artifact = with_artifact.contains(&node.id.as_str());
+        }
+        let tree = tree(
+            nodes,
+            vec![execution("exec-a", ExecutionTreeLaunch::Workflow)],
+        );
+        // When
+        let visible = tree.visible();
+        let roots = visible.roots();
+        let counts: Vec<_> = roots[0]
+            .children()
+            .iter()
+            .map(|child| (child.id().to_string(), child.artifact_count()))
+            .collect();
+        // Then
+        assert_eq!(
+            counts,
+            [
+                ("exec-a-review".to_string(), 0),
+                ("exec-a-fix-2".to_string(), expected)
+            ],
+            "{with_artifact:?}"
+        );
+    }
+}
+
 fn session_execution(
     session_id: &str,
     archive: bool,

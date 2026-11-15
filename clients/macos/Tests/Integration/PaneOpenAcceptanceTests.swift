@@ -27,7 +27,7 @@ final class PaneOpenAcceptanceTests: XCTestCase {
     let host = await ViewHarness(RootListView(model: model, path: "/repo/a"))
     defer { host.close() }
     // When / Then
-    try await menu(host, button: "開始") {
+    try await menu(host, button: "New") {
       XCTAssertEqual($0.items.map(\.title), ["Session", "Workflow"])
     }
     await model.stop()
@@ -48,7 +48,7 @@ final class PaneOpenAcceptanceTests: XCTestCase {
     }
     let node = await ViewHarness(RootListView(model: model, path: "/repo/a"))
     defer { node.close() }
-    try await menu(node, button: "開始") { menu in
+    try await menu(node, button: "New") { menu in
       let lists = try ["Session", "Workflow"].map { title in
         try XCTUnwrap(menu.items.first { $0.title == title }?.submenu).items.map(\.title)
       }
@@ -231,7 +231,7 @@ final class PaneOpenAcceptanceTests: XCTestCase {
         })
       // When
       try await menu(
-        host, button: central ? "開く" : "開始", selection: ["Workflow", "acceptance-flow"],
+        host, button: central ? "開く" : "New", selection: ["Workflow", "acceptance-flow"],
         rightmost: central)
       try await eventually { !http.requests("StartWorkflow").isEmpty }
       try deliverRoot(http)
@@ -259,7 +259,7 @@ final class PaneOpenAcceptanceTests: XCTestCase {
       })
     defer { host.close() }
     try await menu(host, button: "開く", selection: ["Workflow", "acceptance-flow"])
-    try await eventuallyView(host) { host.texts().contains("Rootの配信を待っています") }
+    try await eventuallyView(host) { host.texts().contains("Starting Workflow…") }
     // When / Then
     try await menu(host, button: "開く") { menu in
       let index = try XCTUnwrap(menu.items.firstIndex { $0.title == "Workflow" })

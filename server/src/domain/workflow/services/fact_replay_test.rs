@@ -1950,7 +1950,7 @@ mod process_observation_tests {
     use super::*;
 
     #[test]
-    fn test_command起動失敗_差分再生で理由を更新し起動成功で解消する() {
+    fn test_command起動失敗_差分再生で理由を更新し起動成功で解消し中止後の失敗は記録しない() {
         // Given
         let mut log = FactLog::new();
         let root_meta = meta(TREE, None, "work", NodeKindName::Command, 1);
@@ -1975,7 +1975,7 @@ mod process_observation_tests {
             let view = fold.view().unwrap();
             // Then
             assert_eq!(
-                view.command_failure_reasons.get(TREE).map(String::as_str),
+                view.runtime_failure_reasons.get(TREE).map(String::as_str),
                 Some(reason)
             );
             assert_eq!(
@@ -1989,7 +1989,7 @@ mod process_observation_tests {
         }
         // When
         log.push(
-            root_meta,
+            root_meta.clone(),
             NodeFact::CommandSpawned(crate::domain::workflow::CommandSpawnedFact {
                 display_command: "true".into(),
                 shell: None,
@@ -1998,9 +1998,90 @@ mod process_observation_tests {
         );
         fold.push(log.records.last().unwrap()).unwrap();
         // Then
-        assert!(fold.view().unwrap().command_failure_reasons.is_empty());
+        assert!(fold.view().unwrap().runtime_failure_reasons.is_empty());
         assert_eq!(
             fold.view().unwrap(),
+            fold_execution_tree(TREE, &log.records).unwrap().unwrap()
+        );
+        // When
+        for fact in [
+            NodeFact::AbortRequested(Default::default()),
+            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                reason: "spawn failed after abort".into(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            }),
+        ] {
+            log.push(root_meta.clone(), fact);
+            fold.push(log.records.last().unwrap()).unwrap();
+        }
+        // Then
+        assert!(fold.view().unwrap().runtime_failure_reasons.is_empty());
+        assert_eq!(
+            fold.view().unwrap(),
+            fold_execution_tree(TREE, &log.records).unwrap().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_session起動失敗_差分再生で理由を記録しsession紐づけで解消し中止後の失敗も記録する() {
+        // Given
+        let mut log = FactLog::new();
+        let root_meta = meta(TREE, None, "work", NodeKindName::Session, 1);
+        log.push(
+            root_meta.clone(),
+            started_root(workflow_root(workflow_definition(
+                vec![session_leaf("work")],
+                "work",
+            ))),
+        );
+        let (mut fold, _) = TreeFold::from_records(TREE, &log.records).unwrap().unwrap();
+        // When
+        log.push(
+            root_meta.clone(),
+            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                reason: "activation failed".into(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            }),
+        );
+        fold.push(log.records.last().unwrap()).unwrap();
+        // Then
+        let view = fold.view().unwrap();
+        assert_eq!(
+            view.runtime_failure_reasons.get(TREE).map(String::as_str),
+            Some("activation failed")
+        );
+        assert_eq!(
+            view,
+            fold_execution_tree(TREE, &log.records).unwrap().unwrap()
+        );
+        // When
+        log.push(root_meta.clone(), attached("session-1"));
+        fold.push(log.records.last().unwrap()).unwrap();
+        // Then
+        assert!(fold.view().unwrap().runtime_failure_reasons.is_empty());
+        assert_eq!(
+            fold.view().unwrap(),
+            fold_execution_tree(TREE, &log.records).unwrap().unwrap()
+        );
+        // When
+        for fact in [
+            NodeFact::AbortRequested(Default::default()),
+            NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+                reason: "activation failed after abort".into(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            }),
+        ] {
+            log.push(root_meta.clone(), fact);
+            fold.push(log.records.last().unwrap()).unwrap();
+        }
+        // Then
+        let view = fold.view().unwrap();
+        assert_eq!(
+            view.runtime_failure_reasons.get(TREE).map(String::as_str),
+            Some("activation failed after abort")
+        );
+        assert_eq!(
+            view,
             fold_execution_tree(TREE, &log.records).unwrap().unwrap()
         );
     }

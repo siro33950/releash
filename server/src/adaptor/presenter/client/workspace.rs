@@ -8,7 +8,7 @@ use crate::domain::agent_session::aggregates::AgentSession;
 use crate::domain::git::Branch;
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::domain::workspace_tree::{
-    WorkspaceExecution, WorkspaceNodeKind, WorkspaceTree, WorkspaceTreeNode, WorkspaceVisibleNode,
+    WorkspaceExecution, WorkspaceNodeKind, WorkspaceTree, WorkspaceVisibleNode,
 };
 use crate::usecase::fetched::{FetchState, Fetched};
 use crate::usecase::workspace_tree::{
@@ -181,7 +181,6 @@ fn tree_item(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceTreeItem,
     Ok(wire::WorkspaceTreeItem {
         variant: Some(match node.kind {
             WorkspaceNodeKind::Fanout => Variant::Fanout(wire::WorkspaceFanout {
-                worktree: node_worktree(node),
                 can_approve: Some(node.can_approve),
                 id: Some(item.id().to_owned()),
                 title: Some(item.title().to_owned()),
@@ -189,9 +188,9 @@ fn tree_item(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceTreeItem,
                 workflow_capabilities: workflow_capabilities(item),
                 children: Some(tree_items(&item.children())?),
                 updated_at: Some(node.updated_at()),
+                error_reason: node.failure_reason(),
             }),
             WorkspaceNodeKind::Sequence => Variant::Sequence(wire::WorkspaceSequence {
-                worktree: node_worktree(node),
                 can_approve: Some(node.can_approve),
                 id: Some(item.id().to_owned()),
                 title: Some(item.title().to_owned()),
@@ -199,6 +198,7 @@ fn tree_item(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceTreeItem,
                 workflow_capabilities: workflow_capabilities(item),
                 children: Some(tree_items(&item.children())?),
                 updated_at: Some(node.updated_at()),
+                error_reason: node.failure_reason(),
             }),
             _ => Variant::Node(tree_node(item)?),
         }),
@@ -223,7 +223,7 @@ fn tree_node(item: &WorkspaceVisibleNode<'_>) -> Result<wire::WorkspaceNode, Str
         execution_id: node.execution_id.clone(),
         node_execution_id: node.node_execution_id.clone(),
         node_name: node.node_name.clone(),
-        has_artifact: Some(node.has_artifact),
+        artifact_count: Some(item.artifact_count() as u32),
         model: node.model.clone(),
         provider: item.provider().map(Into::into),
         process_presence: Some(cv(node.process_presence.as_str())?),
@@ -258,15 +258,6 @@ fn workflow_capabilities(
         .map(|owner| wire::WorkspaceWorkflowCapabilities {
             can_abort: Some(owner.can_abort),
             can_archive: Some(owner.can_archive),
-        })
-}
-
-fn node_worktree(node: &WorkspaceTreeNode) -> Option<wire::NodeWorktreeDto> {
-    node.worktree
-        .as_ref()
-        .map(|worktree| wire::NodeWorktreeDto {
-            branch: Some(worktree.branch.clone()),
-            path: Some(worktree.path.clone()),
         })
 }
 

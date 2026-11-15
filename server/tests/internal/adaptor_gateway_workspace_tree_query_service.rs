@@ -1826,6 +1826,17 @@ pub async fn test_準備中の会話詳細_起動失敗の理由を返し紐付�
     assert!(
         matches!(detail.content, WorkspaceNodeContentDto::Session(content) if content.session_id.is_none())
     );
+    assert_eq!(
+        load_tree(&repository, &WorkspaceIdentity::new("/repo"))
+            .await
+            .nodes()
+            .iter()
+            .find(|node| node.node_execution_id.as_deref() == Some("pending-node"))
+            .unwrap()
+            .failure_reason()
+            .as_deref(),
+        Some("provider could not start")
+    );
     // When
     append_single_fact(&store, &attached.meta, &attached.fact, 6000)
         .await
@@ -1839,6 +1850,92 @@ pub async fn test_準備中の会話詳細_起動失敗の理由を返し紐付�
     assert!(detail.error_reason.is_none());
     assert!(
         matches!(detail.content, WorkspaceNodeContentDto::Session(content) if content.session_id.as_deref() == Some("pending-agent"))
+    );
+}
+
+#[tokio::test]
+pub async fn test_準備中の会話詳細_中止後に観測した起動失敗の理由を詳細と実行木の両方で返す() {
+    use releashd::test_support::integration::workflow::{
+        append_single_fact, read_tree_records, NodeExecutionFailureKind, RuntimeFailureObservedFact,
+    };
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalEventStore::open(LocalEventStoreConfig::production(
+        directory.path().into(),
+        Arc::new(releashd::test_support::integration::platform::RetryLimiter::new()),
+    ))
+    .unwrap();
+    let tree_id = "00000000-0000-4000-8000-000000002065";
+    seed_workflow_session_facts(
+        &store,
+        WorkflowSessionFactSeed {
+            workflow_name: "preparing",
+            request: "test",
+            worktree_path: "/repo",
+            provider: ProviderKind::Codex,
+            workflow_execution_id: tree_id,
+            node_execution_id: "pending-node",
+            session_id: "pending-agent",
+            initial_instruction_admitted: false,
+        },
+    )
+    .await
+    .unwrap();
+    let records = read_tree_records(&store, tree_id).await.unwrap();
+    let attached = records
+        .iter()
+        .find(|record| matches!(record.fact, NodeFact::SessionAttached(_)))
+        .unwrap();
+    rusqlite::Connection::open(directory.path().join("local-event-store.sqlite3"))
+        .unwrap()
+        .execute(
+            "DELETE FROM node_events WHERE tree_id = ? AND event_type = 'session_attached'",
+            [tree_id],
+        )
+        .unwrap();
+    append_single_fact(
+        &store,
+        &records[0].meta,
+        &NodeFact::AbortRequested(Default::default()),
+        5000,
+    )
+    .await
+    .unwrap();
+    // When
+    append_single_fact(
+        &store,
+        &attached.meta,
+        &NodeFact::RuntimeFailureObserved(RuntimeFailureObservedFact {
+            reason: "provider could not start".into(),
+            failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+        }),
+        6000,
+    )
+    .await
+    .unwrap();
+    let repository = SqliteWorkspaceTreeRepository::new(
+        store.clone(),
+        std::sync::Arc::new(FailureRecordStore::default()),
+    );
+    let tree = load_tree(&repository, &WorkspaceIdentity::new("/repo")).await;
+    let node = tree
+        .nodes()
+        .iter()
+        .find(|node| node.node_execution_id.as_deref() == Some("pending-node"))
+        .unwrap();
+    let detail = service(&store)
+        .node_detail(&WorkspaceIdentity::new("/repo"), &node.id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Then
+    assert_eq!(
+        detail.error_reason.as_deref(),
+        Some("provider could not start")
+    );
+    assert_eq!(
+        node.failure_reason().as_deref(),
+        Some("provider could not start")
     );
 }
 

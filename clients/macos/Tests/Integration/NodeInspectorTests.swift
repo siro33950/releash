@@ -4,7 +4,7 @@ import XCTest
 @testable import Releash
 
 final class NodeInspectorTests: XCTestCase {
-  @MainActor func testInspectorActionsTargetSelectedNodeAndDisappearWhenCapabilitiesChange()
+  @MainActor func testInspectorActionsTargetSelectedNodeAndDisableWhenCapabilitiesChange()
     async throws
   {
     let http = TestHTTPClient()
@@ -21,8 +21,12 @@ final class NodeInspectorTests: XCTestCase {
     let host = await ViewHarness(
       NodeInspector(model: model, path: "/selected-worktree", nodeID: detail.id))
     defer { host.close() }
-    try await eventuallyView(host) { host.element("Retry") != nil && host.element("Abort") != nil }
+    try await eventuallyView(host) {
+      host.element("Retry")?.enabled == true && host.element("Abort")?.enabled == true
+    }
     XCTAssertTrue(host.texts().contains("Selected node failed"))
+    XCTAssertTrue(host.texts().contains("No Artifact"))
+    XCTAssertNil(host.element("artifact-json"))
     try await host.press("Retry")
     try await host.press("Abort")
     try await eventually {
@@ -41,8 +45,40 @@ final class NodeInspectorTests: XCTestCase {
     var payload = Releash_Client_V1_StatePayload()
     payload.nodeDetail.value = detail
     try http.publish(payload, target: "node-detail")
-    try await eventuallyView(host) { host.element("Retry") == nil && host.element("Abort") == nil }
+    try await eventuallyView(host) {
+      host.element("Retry")?.enabled == false && host.element("Abort")?.enabled == false
+    }
     XCTAssertFalse(host.texts().contains("Selected node failed"))
+    await model.stop()
+  }
+
+  @MainActor func testInspectorShowsSameHeaderAndIsolatedWorktreeForCompositeNodes() async throws {
+    let http = TestHTTPClient()
+    var sequence = Releash_Client_V1_WorkspaceNodeDetailDto()
+    sequence.id = "sequence"
+    sequence.title = "spec"
+    sequence.content.sequence = .init()
+    sequence.worktree.branch = "releash/isolated/spec"
+    sequence.worktree.path = "/isolated/spec"
+    var fanout = Releash_Client_V1_WorkspaceNodeDetailDto()
+    fanout.id = "fanout"
+    fanout.title = "review"
+    fanout.content.fanout = .init()
+    http.state.withLock { $0.nodeDetails = ["sequence": sequence, "fanout": fanout] }
+    let model = try await testModel(http)
+    for (id, title, worktree) in [
+      ("sequence", "spec", "releash/isolated/spec · /isolated/spec"), ("fanout", "review", nil),
+    ] {
+      let host = await ViewHarness(NodeInspector(model: model, path: "/repo", nodeID: id))
+      try await eventuallyView(host) { host.texts().contains(title) }
+      XCTAssertTrue(host.texts().contains("Elapsed — · Active — · Token — · Cost —"))
+      XCTAssertEqual(host.element("Retry")?.enabled, false)
+      XCTAssertEqual(host.element("Abort")?.enabled, false)
+      XCTAssertEqual(host.element("node-detail-worktree")?.value, worktree)
+      XCTAssertNil(host.element("node-detail-failure"))
+      XCTAssertTrue(host.texts().contains("No Artifact"))
+      host.close()
+    }
     await model.stop()
   }
 
@@ -71,11 +107,15 @@ final class NodeInspectorTests: XCTestCase {
       let host = await ViewHarness(AnyView(NodeInspector(model: model, path: "/repo", nodeID: id)))
       try await eventuallyView(host) { host.texts().contains(artifact) }
       XCTAssertTrue(host.texts().contains("Human session"))
-      XCTAssertTrue(host.texts().contains("model-1"))
+      XCTAssertTrue(host.texts().contains("model-1 · Elapsed — · Active — · Token — · Cost —"))
+      XCTAssertTrue(host.texts().contains("1 field"))
+      for column in ["FIELD", "TYPE", "VALUE", "string"] {
+        XCTAssertTrue(host.texts().contains(column), column)
+      }
       try await host.press("artifact-json")
       try await eventuallyView(host) { host.texts().contains("\"" + artifact + "\"") }
-      XCTAssertNil(host.element("Retry"))
-      XCTAssertNil(host.element("Abort"))
+      XCTAssertEqual(host.element("Retry")?.enabled, false)
+      XCTAssertEqual(host.element("Abort")?.enabled, false)
       let subscriptions = http.state.withLock { state in
         state.subscriptions.filter {
           ($0.target == "node-detail" && $0.args == ["/repo", id]) || $0.target == "node-artifact"

@@ -22,7 +22,7 @@ struct SessionHistoryView: View {
       Text("History").font(.headline)
       if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
       List {
-        Section("Archive 済みのSession") {
+        Section("Archived Sessions") {
           ForEach(archived, id: \.id) { session in
             HStack {
               Button("\(session.provider.displayName) · \(session.providerSessionID)") {
@@ -35,17 +35,17 @@ struct SessionHistoryView: View {
             }
           }
         }
-        Section("Archive 済みのWorkflow") {
+        Section("Archived Workflows") {
           ForEach(workflows, id: \.executionID) { workflow in
             Button(workflow.title) { restoreWorkflow(workflow.executionID) }
           }
         }
-        Section("Provider の履歴") {
+        Section("Provider History") {
           ForEach(page.items.items, id: \.historyID) { candidate in
             Button("\(candidate.provider.displayName) · \(candidate.label)") { resume(candidate) }
           }
           if page.hasMore_p {
-            Button("さらに読み込む") {
+            Button("Load more") {
               count += 20
               subscribe()
             }
@@ -55,7 +55,7 @@ struct SessionHistoryView: View {
       HStack {
         if busy { ProgressView().controlSize(.small) }
         Spacer()
-        Button("閉じる") { dismiss() }.disabled(busy)
+        Button("Close") { dismiss() }.disabled(busy)
       }
     }.padding(UIStyle.padding).frame(width: 520, height: 420)
       .onAppear { subscribe() }

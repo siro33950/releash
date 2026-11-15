@@ -111,19 +111,39 @@ final class LucideAcceptanceTests: XCTestCase {
     let http = TestHTTPClient()
     var worktree = Releash_Client_V1_WorkspaceWorktreeList()
     worktree.path = "/icons"
-    for command in [false, true] {
-      let id = command ? "command" : "session"
+    let kinds = [
+      ("session", "bot"), ("command", "terminal"), ("sequence", "waypoints"),
+      ("fanout", "git-fork"),
+    ]
+    for (id, _) in kinds {
       var item = Releash_Client_V1_WorkspaceTreeItem()
-      item.node.id = id
-      item.node.title = id
-      item.node.contentKind.value = command ? .command : .session
-      item.node.status.value = .active
-      worktree.snapshot.nodes.items.append(item)
       var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
+      switch id {
+      case "sequence":
+        item.sequence.id = id
+        item.sequence.title = id
+        item.sequence.status.value = .active
+        detail.content.sequence = .init()
+      case "fanout":
+        item.fanout.id = id
+        item.fanout.title = id
+        item.fanout.status.value = .active
+        detail.content.fanout = .init()
+      default:
+        item.node.id = id
+        item.node.title = id
+        item.node.contentKind.value = id == "command" ? .command : .session
+        item.node.status.value = .active
+        if id == "command" {
+          detail.content.command = .init()
+        } else {
+          detail.content.session = .init()
+        }
+      }
+      worktree.snapshot.nodes.items.append(item)
       detail.id = id
       detail.title = "Selected " + id
       detail.classification.value = .active
-      if command { detail.content.command = .init() } else { detail.content.session = .init() }
       http.state.withLock { $0.nodeDetails[id] = detail }
     }
     var repository = Releash_Client_V1_WorkspaceRepositoryList()
@@ -133,16 +153,65 @@ final class LucideAcceptanceTests: XCTestCase {
     let model = try await testModel(http)
     let host = await ViewHarness(RootListView(model: model, path: "/icons"))
     defer { host.close() }
-    for (id, icon) in [("session", "bot"), ("command", "terminal")] {
+    for (id, icon) in kinds {
       // When
       try await eventuallyView(host) { host.element("root:" + id) != nil }
       try await host.selectRow("root:" + id)
-      try await eventuallyView(host) { host.element("Selected " + id) != nil }
+      try await eventuallyView(host) { host.element("node-detail-title")?.value == id }
       // Then: limit the search to the selected detail header, excluding the tree rows.
-      let title = try frame("Selected " + id, in: host)
+      let title = try frame("node-detail-title", in: host)
       let header = NSRect(x: 0, y: title.minY - 4, width: title.maxX, height: title.height + 8)
       try await assertIcon(
         icon, in: host, rect: header, sizes: [8], color: .blue, onlyColoredMark: true)
+    }
+    await model.stop()
+  }
+
+  @MainActor func test_失敗した行と詳細に赤いcircle_alertが出て隔離worktreeの行にgit_branchが出る() async throws {
+    // Given
+    let http = TestHTTPClient()
+    var item = Releash_Client_V1_WorkspaceTreeItem()
+    item.node.id = "failed"
+    item.node.title = "failed"
+    item.node.contentKind.value = .session
+    item.node.status.value = .attention
+    item.node.errorReason = "Launch refused"
+    var detail = Releash_Client_V1_WorkspaceNodeDetailDto()
+    detail.id = "failed"
+    detail.title = "failed"
+    detail.classification.value = .attention
+    detail.content.session = .init()
+    detail.errorReason = "Launch refused"
+    detail.worktree.branch = "feat/isolated"
+    detail.worktree.path = "/worktrees/isolated"
+    var repository = Releash_Client_V1_WorkspaceRepositoryList()
+    repository.path = "/icons"
+    repository.worktrees.items = [
+      .with {
+        $0.path = "/icons"
+        $0.snapshot.nodes.items = [item]
+      }
+    ]
+    http.state.withLock {
+      $0.repositories = [repository]
+      $0.nodeDetails["failed"] = detail
+    }
+    let model = try await testModel(http)
+    let host = await ViewHarness(RootListView(model: model, path: "/icons"))
+    defer { host.close() }
+    // When
+    try await eventuallyView(host) { host.element("root:failed") != nil }
+    try await host.selectRow("root:failed")
+    try await eventuallyView(host) { host.element("node-detail-worktree") != nil }
+    // Then
+    try await assertIcon("circle-alert", in: host, element: "node-failure:failed", color: .red)
+    for (line, icon, color) in [
+      ("node-detail-failure", "circle-alert", Color.red as Color?),
+      ("node-detail-worktree", "git-branch", nil),
+    ] {
+      let text = try frame(line, in: host)
+      let leading = NSRect(x: 0, y: text.minY - 4, width: text.minX, height: text.height + 8)
+      try await assertIcon(icon, in: host, rect: leading, color: color)
     }
     await model.stop()
   }
@@ -243,7 +312,7 @@ final class LucideAcceptanceTests: XCTestCase {
     let host = await ViewHarness(RootListView(model: model, path: "/icons"))
     defer { host.close() }
     // Then
-    for (label, icon) in [("その他", "ellipsis"), ("開始", "plus"), ("過去の試行", "history")] {
+    for (label, icon) in [("More", "ellipsis"), ("New", "plus"), ("Past attempts", "history")] {
       try await assertIcon(icon, in: host, element: label)
     }
   }

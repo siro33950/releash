@@ -27,7 +27,7 @@ pub struct FoldedTree {
     /// root started に記録された木の実行構成。
     pub root: TreeRootFact,
     pub artifact_contracts: HashMap<String, String>,
-    pub command_failure_reasons: HashMap<String, String>,
+    pub runtime_failure_reasons: HashMap<String, String>,
     /// Session Node ごとに、同じ事実走査から導出した最新の provider 活動状態。
     pub session_activities: HashMap<String, AgentSessionActivity>,
     /// Session Node ごとに、同じ事実走査から導出した表示名の入力。
@@ -134,7 +134,7 @@ impl TreeFold {
                 aggregate: restore_aggregate(tree_id, &root, started_at),
                 root,
                 artifact_contracts: HashMap::new(),
-                command_failure_reasons: HashMap::new(),
+                runtime_failure_reasons: HashMap::new(),
                 session_activities: HashMap::new(),
                 session_display_names: HashMap::new(),
                 sessions: HashMap::new(),
@@ -181,22 +181,30 @@ impl TreeFold {
             record.fact,
             NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
         );
+        // 中止の後に Session の起動の準備の失敗が観測されることがあるため、終端の後でも記録する。
+        if let (NodeKindName::Session, NodeFact::RuntimeFailureObserved(failure)) =
+            (record.meta.kind, &record.fact)
+        {
+            self.folded.runtime_failure_reasons.insert(
+                record.meta.node_execution_id.clone(),
+                failure.reason.clone(),
+            );
+        }
         if before_terminal || tree_archive {
-            if record.meta.kind == NodeKindName::Command {
-                match &record.fact {
-                    NodeFact::RuntimeFailureObserved(failure) => {
-                        self.folded.command_failure_reasons.insert(
-                            record.meta.node_execution_id.clone(),
-                            failure.reason.clone(),
-                        );
-                    }
-                    NodeFact::CommandSpawned(_) => {
-                        self.folded
-                            .command_failure_reasons
-                            .remove(&record.meta.node_execution_id);
-                    }
-                    _ => {}
+            match (record.meta.kind, &record.fact) {
+                (NodeKindName::Command, NodeFact::RuntimeFailureObserved(failure)) => {
+                    self.folded.runtime_failure_reasons.insert(
+                        record.meta.node_execution_id.clone(),
+                        failure.reason.clone(),
+                    );
                 }
+                (NodeKindName::Command, NodeFact::CommandSpawned(_))
+                | (NodeKindName::Session, NodeFact::SessionAttached(_)) => {
+                    self.folded
+                        .runtime_failure_reasons
+                        .remove(&record.meta.node_execution_id);
+                }
+                _ => {}
             }
             if let NodeFact::ArtifactProduced(fact) = &record.fact {
                 if let Some(contract) = &fact.contract {

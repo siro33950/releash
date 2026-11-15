@@ -13,7 +13,7 @@ final class LucideAssetsTests: XCTestCase {
       "git-pull-request-closed", "list", "file", "message-square", "panel-right", "history",
       "ellipsis", "diff", "square-arrow-out-up-right", "unfold-vertical", "git-commit-horizontal",
       "rows-2", "columns-2", "triangle-alert", "sparkles", "server", "settings", "folder",
-      "monitor", "send",
+      "monitor", "circle-alert", "send",
     ]
     for name in names {
       // When

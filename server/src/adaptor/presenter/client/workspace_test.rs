@@ -5,7 +5,7 @@ use crate::domain::git::Worktree;
 use crate::domain::git_host::PrInfo;
 use crate::domain::workflow::{ExecutionStatus, ExecutionTreeArchiveRecord, ExecutionTreeLaunch};
 use crate::domain::workspace_tree::{
-    WorkspaceIdentity, WorkspaceNodeStatus, WorkspaceNodeStatusClassification,
+    WorkspaceIdentity, WorkspaceNodeStatus, WorkspaceNodeStatusClassification, WorkspaceTreeNode,
 };
 use serde_json::json;
 
@@ -478,36 +478,6 @@ fn test_workspaceツリー契約_completedでも終了時capabilityを維持す�
 }
 
 #[test]
-fn test_隔離合成子の表示_空のchildrenや終端でもそのattemptのbranchとpathを返す() {
-    for kind in [WorkspaceNodeKind::Sequence, WorkspaceNodeKind::Fanout] {
-        for status in [
-            WorkspaceNodeStatus::Running,
-            WorkspaceNodeStatus::Completed,
-            WorkspaceNodeStatus::Aborted,
-        ] {
-            // Given
-            let owner = tree_owner("tree");
-            let mut composite = child_node("composite", "tree", "tree", kind, "main");
-            let expected = crate::domain::workflow::IsolatedWorktree::for_attempt(
-                "/repo",
-                "composite-execution",
-                2,
-            );
-            composite.attempt = Some(2);
-            composite.status = status;
-            composite.worktree = Some(expected.clone());
-            let tree = WorkspaceTree::restore("/repo", vec![owner, composite]).unwrap();
-            // When
-            let items = nodes_json(&tree);
-            // Then
-            assert_eq!(items[0]["worktree"]["branch"], expected.branch);
-            assert_eq!(items[0]["worktree"]["path"], expected.path);
-            assert!(items[0]["children"].as_array().unwrap().is_empty());
-        }
-    }
-}
-
-#[test]
 fn test_delegate_親session配下に発火順の子を表示し子の部分木も保持する() {
     // Given
     let owner = tree_owner("tree");
@@ -619,6 +589,36 @@ fn test_delegate_親の過去attemptに当該attemptのchild部分木を投影�
         result[0]["pastAttempts"][0]["children"][0]["children"][0]["id"],
         "prior-judge"
     );
+}
+
+#[test]
+fn test_workspaceツリー投影_artifactの数と合成子の失敗理由を返す() {
+    for kind in [WorkspaceNodeKind::Sequence, WorkspaceNodeKind::Fanout] {
+        // Given
+        let owner = tree_owner("tree");
+        let mut composite = child_node("composite", "tree", "tree", kind, "main");
+        composite.error_reason = Some("child failed".into());
+        let session = WorkspaceNodeKind::WorkflowSession;
+        let mut past = child_node("past", "composite", "tree", session, "work");
+        past.attempt = Some(1);
+        past.status = WorkspaceNodeStatus::Aborted;
+        past.has_artifact = true;
+        let mut current = child_node("current", "composite", "tree", session, "work");
+        current.attempt = Some(2);
+        current.sibling_order = 1;
+        current.retry_predecessor_id = Some("past-execution".into());
+        current.has_artifact = true;
+        let mut other = child_node("other", "composite", "tree", session, "other");
+        other.sibling_order = 2;
+        let tree =
+            WorkspaceTree::restore("/repo", vec![owner, composite, past, current, other]).unwrap();
+        // When
+        let items = nodes_json(&tree);
+        // Then
+        assert_eq!(items[0]["errorReason"], "child failed");
+        assert_eq!(items[0]["children"][0]["artifactCount"], 2);
+        assert_eq!(items[0]["children"][1]["artifactCount"], 0);
+    }
 }
 
 #[test]
@@ -1110,6 +1110,6 @@ fn test_実行木の転送_nodeの実行識別とartifactとmodelと合成node�
     assert_eq!(node["executionId"], "execution");
     assert_eq!(node["nodeExecutionId"], "visit");
     assert_eq!(node["nodeName"], "review");
-    assert_eq!(node["hasArtifact"], true);
+    assert_eq!(node["artifactCount"], 1);
     assert_eq!(node["model"], "test-model");
 }
