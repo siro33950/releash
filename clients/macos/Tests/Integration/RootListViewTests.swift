@@ -367,13 +367,14 @@ final class RootListViewTests: XCTestCase {
     }
     for (id, title, modelValue, artifact) in [
       ("specified-session", "Specified session", "session-model", "◆×3"),
-      ("unset-session", "Unset session", "", ""),
+      ("unset-session", "Unset session", "—", ""),
       ("failed-command", "Failed command", "shell", "◆"),
     ] {
       XCTAssertEqual(
         try XCTUnwrap(host.element("node-model:\(id)")).label, "\(title), Model \(modelValue)")
       XCTAssertEqual(try XCTUnwrap(host.element("node-artifact:\(id)")).value, artifact)
     }
+    XCTAssertEqual(try XCTUnwrap(host.element("node-model:plain-fanout")).label, "Parallel, Model ")
     for (id, kind, title) in [
       ("specified-session", "Session", "Specified session"),
       ("failed-command", "Command", "Failed command"),

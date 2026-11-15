@@ -43,7 +43,7 @@ enum UIStyle {
   static let nodeModelWidth: CGFloat = 112
   static let nodeTimelineMinimumWidth: CGFloat = 80
   static let nodeTimelineWidth: CGFloat = 200
-  static let nodeTreeMinimumHeight: CGFloat = 160
+  static let nodeUpperMinimumHeight: CGFloat = 160
   static let nodeDetailMinimumHeight: CGFloat = 150
   static let nodeDetailHeightRatio: CGFloat = 1.0 / 3
   static let nodeEventsWidthRatio: CGFloat = 1.0 / 3

@@ -95,14 +95,14 @@ final class RootListViewTests: XCTestCase {
   }
 
   @MainActor func testDetailHeightStartsAtOneThirdAndKeepsBothPanesAboveTheirMinimums() {
-    let tree = UIStyle.nodeTreeMinimumHeight
+    let upper = UIStyle.nodeUpperMinimumHeight
     let detail = UIStyle.nodeDetailMinimumHeight
     XCTAssertEqual(RootListView.detailHeight(total: 900, chosen: nil), 300)
     XCTAssertEqual(RootListView.detailHeight(total: 900, chosen: 420), 420)
     XCTAssertEqual(RootListView.detailHeight(total: 900, chosen: 10), detail)
-    XCTAssertEqual(RootListView.detailHeight(total: 900, chosen: 5000), 900 - tree)
+    XCTAssertEqual(RootListView.detailHeight(total: 900, chosen: 5000), 900 - upper)
     XCTAssertEqual(RootListView.detailHeight(total: 400, chosen: nil), detail)
-    XCTAssertEqual(RootListView.detailHeight(total: tree + 40, chosen: nil), 40)
+    XCTAssertEqual(RootListView.detailHeight(total: upper + 40, chosen: nil), 40)
     XCTAssertEqual(RootListView.detailHeight(total: 60, chosen: nil), 0)
   }
 

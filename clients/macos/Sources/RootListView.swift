@@ -190,9 +190,9 @@ struct RootListView: View {
       }
     }
   }
-  /// 下段の高さの範囲。上段と下段のどちらも最小の高さを割らない。両方は入らない高さでは上段を優先する
+  /// 下段の高さの範囲。上段（右上の操作と表）と下段のどちらも最小の高さを割らない。両方は入らない高さでは上段を優先する
   static func detailBounds(total: CGFloat) -> ClosedRange<CGFloat> {
-    let upper = max(total - UIStyle.nodeTreeMinimumHeight, 0)
+    let upper = max(total - UIStyle.nodeUpperMinimumHeight, 0)
     return min(UIStyle.nodeDetailMinimumHeight, upper)...upper
   }
   static func detailHeight(total: CGFloat, chosen: CGFloat?) -> CGFloat {
@@ -224,13 +224,15 @@ struct RootListView: View {
       .modifier(RowActivation { open(item) })
   }
   func modelCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
-    HStack {
-      Text(item.nodeModel).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
-        .frame(maxWidth: .infinity, alignment: .trailing)
+    let model = item.nodeModel ?? "—"
+    let text = Text(model).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+      .frame(maxWidth: .infinity, alignment: .trailing)
+    return HStack {
+      if item.nodeModel == nil { text.foregroundStyle(.secondary) } else { text }
     }
     .accessibilityElement(children: .ignore).accessibilityIdentifier("node-model:\(item.rootID)")
-    .accessibilityLabel("\(item.rootTitle), Model \(item.nodeModel)")
-    .help(item.nodeModel)
+    .accessibilityLabel("\(item.rootTitle), Model \(model)")
+    .help(model)
     .modifier(RowActivation { open(item) })
   }
   func artifactCell(_ item: Releash_Client_V1_WorkspaceTreeItem) -> some View {
@@ -398,9 +400,9 @@ extension Releash_Client_V1_WorkspaceTreeItem {
       return item
     }
   }
-  var nodeModel: String {
+  var nodeModel: String? {
     guard case .node(let node) = variant else { return "" }
-    return kind?.modelLabel ?? node.model
+    return kind?.modelLabel ?? (node.model.isEmpty ? nil : node.model)
   }
   var artifactLabel: String {
     guard case .node(let node) = variant, node.artifactCount > 0 else { return "" }
