@@ -105,14 +105,14 @@ final class SessionHistoryViewTests: XCTestCase {
     try await eventually {
       http.state.withLock {
         $0.subscriptions.contains {
-          $0.target == "session-history"
+          $0.target == "session-history" && $0.args == ["/repo", "40"]
             && !previousSubscriptions.contains($0.subscriptionID)
         }
       }
     }
     var payload = Releash_Client_V1_StatePayload()
     payload.sessionHistory.items.items = [first, candidate("古い相談", id: "older")]
-    try http.publish(payload, target: "session-history")
+    try http.publish(payload, target: "session-history", args: ["/repo", "40"])
     // Then
     try await eventuallyView(host) { host.element("古い相談") != nil }
     XCTAssertNotNil(host.element("新しい相談"))
@@ -292,19 +292,23 @@ final class SessionHistoryViewTests: XCTestCase {
     try await host.setTextField("thread")
     try await eventually {
       http.state.withLock { state in
-        ["archived-history", "session-history"].allSatisfy { target in
+        [
+          ("archived-history", ["/repo", "search=thread"]),
+          ("session-history", ["/repo", "20", "search=thread"]),
+        ].allSatisfy { target, args in
           state.subscriptions.contains {
-            $0.target == target && !previousSubscriptions.contains($0.subscriptionID)
+            $0.target == target && $0.args == args
+              && !previousSubscriptions.contains($0.subscriptionID)
           }
         }
       }
     }
     var payload = Releash_Client_V1_StatePayload()
     payload.archivedHistory.items = [archive[0]]
-    try http.publish(payload, target: "archived-history")
+    try http.publish(payload, target: "archived-history", args: ["/repo", "search=thread"])
     payload = .init()
     payload.sessionHistory.items.items = [provider[0]]
-    try http.publish(payload, target: "session-history")
+    try http.publish(payload, target: "session-history", args: ["/repo", "20", "search=thread"])
     // Then
     try await eventuallyView(host) {
       host.element("development-v4") == nil && host.element("Push を足したい") == nil
@@ -329,19 +333,23 @@ final class SessionHistoryViewTests: XCTestCase {
     try await host.setTextField("")
     try await eventually {
       http.state.withLock { state in
-        ["archived-history", "session-history"].allSatisfy { target in
+        [
+          ("archived-history", ["/repo"]),
+          ("session-history", ["/repo", "20"]),
+        ].allSatisfy { target, args in
           state.subscriptions.contains {
-            $0.target == target && !previousSubscriptions.contains($0.subscriptionID)
+            $0.target == target && $0.args == args
+              && !previousSubscriptions.contains($0.subscriptionID)
           }
         }
       }
     }
     payload = .init()
     payload.archivedHistory.items = archive
-    try http.publish(payload, target: "archived-history")
+    try http.publish(payload, target: "archived-history", args: ["/repo"])
     payload = .init()
     payload.sessionHistory.items.items = provider
-    try http.publish(payload, target: "session-history")
+    try http.publish(payload, target: "session-history", args: ["/repo", "20"])
     // Then
     try await eventuallyView(host) {
       host.element("development-v4") != nil && host.element("Push を足したい") != nil
