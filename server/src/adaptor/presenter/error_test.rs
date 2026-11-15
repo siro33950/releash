@@ -146,3 +146,48 @@ mod repository_error_tests {
         }
     }
 }
+
+#[test]
+fn test_多段の結果_成功値をそのまま返す() {
+    // Given
+    let result = Ok(Ok(Ok(String::from("created"))));
+    // When
+    let actual = AppError::from_layered::<_, AppError, AppError, AppError>(result);
+    // Then
+    assert_eq!(actual.unwrap(), "created");
+}
+
+#[test]
+fn test_多段の結果_各段の失敗のコードと文言を保つ() {
+    use crate::domain::git::GitError;
+    use crate::domain::git_host::{GitHostError, PrCommentError, PullRequestCreationError};
+    // Given
+    let business = PullRequestCreationError::EmptyTitle;
+    let host = GitHostError::External("denied".into());
+    let repository = GitError::Rule("missing branch".into());
+    let cases = [
+        (
+            Ok(Ok(Err(business.clone()))),
+            AppError::from_failure(business),
+        ),
+        (Ok(Err(host.clone())), AppError::from_failure(host)),
+        (Err(repository.clone()), AppError::from_failure(repository)),
+    ];
+    for (result, expected) in cases {
+        // When
+        let actual = AppError::from_layered::<(), _, _, _>(result).unwrap_err();
+        // Then
+        assert_eq!(actual.connect_code(), expected.connect_code());
+        assert_eq!(actual.to_string(), expected.to_string());
+    }
+    // Given
+    let result = Ok(Ok(Err(PrCommentError::Empty)));
+    // When
+    let actual = AppError::from_layered::<(), _, GitHostError, GitError>(result).unwrap_err();
+    // Then
+    assert_eq!(
+        actual.connect_code(),
+        connectrpc::ErrorCode::InvalidArgument
+    );
+    assert_eq!(actual.to_string(), PrCommentError::Empty.to_string());
+}

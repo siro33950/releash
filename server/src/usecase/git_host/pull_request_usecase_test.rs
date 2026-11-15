@@ -1,5 +1,4 @@
 use super::*;
-use crate::domain::failure::{BusinessFailure, TechnicalFailureNature};
 use crate::domain::git::{Branch, RepositoryStatusScan, Worktree};
 use crate::domain::git_host::*;
 use crate::usecase::git_host::test_helpers::{FakeIssueCache, FakePrCache};
@@ -234,10 +233,14 @@ async fn test_pr操作_作成と投稿の後に取得し空入力は外部へ送
             true,
         )
         .await
+        .unwrap()
+        .unwrap()
         .unwrap();
     usecase
         .post_comment("/worktree", 42, "comment".into())
         .await
+        .unwrap()
+        .unwrap()
         .unwrap();
     // Then
     assert_eq!(
@@ -252,21 +255,19 @@ async fn test_pr操作_作成と投稿の後に取得し空入力は外部へ送
         usecase
             .create("/worktree", "".into(), "".into(), "main".into(), false)
             .await
+            .unwrap()
+            .unwrap()
             .unwrap_err(),
-        WorkFailure {
-            kind: Failure::Business(BusinessFailure::Other),
-            message: PullRequestCreationError::EmptyTitle.to_string()
-        }
+        PullRequestCreationError::EmptyTitle
     );
     assert_eq!(
         usecase
             .post_comment("/worktree", 42, "".into())
             .await
+            .unwrap()
+            .unwrap()
             .unwrap_err(),
-        WorkFailure {
-            kind: Failure::Business(BusinessFailure::Other),
-            message: PrCommentError::Empty.to_string()
-        }
+        PrCommentError::Empty
     );
     assert_eq!(host.calls.lock().unwrap().len(), 6);
 }
@@ -455,11 +456,15 @@ async fn test_pr操作_成功後のgit再取得失敗でも成功を返して購
                         true,
                     )
                     .await
+                    .unwrap()
+                    .unwrap()
                     .unwrap();
             } else {
                 usecase
                     .post_comment("/worktree", 42, "comment".into())
                     .await
+                    .unwrap()
+                    .unwrap()
                     .unwrap();
             }
             // Then
@@ -559,13 +564,7 @@ async fn test_pr作成_認可拒否では外部操作も購読通知もしない
             )
             .await;
         // Then
-        assert_eq!(
-            result.unwrap_err(),
-            WorkFailure {
-                kind: Failure::Business(BusinessFailure::Other),
-                message: expected.to_string(),
-            }
-        );
+        assert_eq!(result.unwrap().unwrap().unwrap_err(), expected);
         assert!(host.calls.lock().unwrap().is_empty());
         assert!(crate::test_support::state_subscription::take_changes(&mut changes).is_empty());
     }
@@ -597,19 +596,17 @@ async fn test_pr操作_provider失敗では再取得も購読通知もしない(
                     true,
                 )
                 .await
+                .unwrap()
+                .unwrap_err()
         } else {
             usecase
                 .post_comment("/worktree", 42, "comment".into())
                 .await
+                .unwrap()
+                .unwrap_err()
         };
         // Then
-        assert_eq!(
-            result.unwrap_err(),
-            WorkFailure {
-                kind: Failure::Technical(TechnicalFailureNature::Other),
-                message: error.to_string(),
-            }
-        );
+        assert_eq!(result, error);
         assert_eq!(
             *host.calls.lock().unwrap(),
             [if create { "create" } else { "comment" }]
@@ -637,23 +634,11 @@ fn test_pr購読開始_worktreeの内容を保持し始める() {
 async fn test_pr操作_git失敗の区別と理由を返し外部操作しない() {
     use crate::common::operation_context::OperationStopped;
     for create in [true, false] {
-        for (error, kind) in [
-            (
-                GitError::Rule("rule".into()),
-                Failure::Business(BusinessFailure::Other),
-            ),
-            (
-                GitError::External("io".into()),
-                Failure::Technical(TechnicalFailureNature::Other),
-            ),
-            (
-                GitError::Technical(OperationStopped::Cancelled.into()),
-                Failure::Technical(TechnicalFailureNature::Cancelled),
-            ),
-            (
-                GitError::Technical(OperationStopped::Expired.into()),
-                Failure::Technical(TechnicalFailureNature::TimedOut),
-            ),
+        for error in [
+            GitError::Rule("rule".into()),
+            GitError::External("io".into()),
+            GitError::Technical(OperationStopped::Cancelled.into()),
+            GitError::Technical(OperationStopped::Expired.into()),
         ] {
             // Given
             let git = Arc::new(Git::default());
@@ -679,19 +664,15 @@ async fn test_pr操作_git失敗の区別と理由を返し外部操作しない
                         true,
                     )
                     .await
+                    .unwrap_err()
             } else {
                 usecase
                     .post_comment("/worktree", 42, "comment".into())
                     .await
+                    .unwrap_err()
             };
             // Then
-            assert_eq!(
-                result.unwrap_err(),
-                WorkFailure {
-                    kind,
-                    message: error.to_string()
-                }
-            );
+            assert_eq!(result, error);
             assert!(host.calls.lock().unwrap().is_empty());
         }
     }

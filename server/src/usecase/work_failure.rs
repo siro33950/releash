@@ -12,18 +12,6 @@ impl From<&crate::domain::git_host::GitHostError> for Failure {
     }
 }
 
-impl From<&crate::domain::git_host::PullRequestCreationError> for Failure {
-    fn from(_: &crate::domain::git_host::PullRequestCreationError) -> Self {
-        Failure::Business(BusinessFailure::Other)
-    }
-}
-
-impl From<&crate::domain::git_host::PrCommentError> for Failure {
-    fn from(_: &crate::domain::git_host::PrCommentError) -> Self {
-        Failure::Business(BusinessFailure::Other)
-    }
-}
-
 impl From<&crate::usecase::code_error::CodeUsecaseError> for Failure {
     fn from(error: &crate::usecase::code_error::CodeUsecaseError) -> Self {
         use crate::usecase::code_error::CodeUsecaseError as E;

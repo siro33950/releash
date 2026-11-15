@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use crate::domain::failure::{Failure, WorkFailure};
+use crate::domain::failure::WorkFailure;
 use crate::domain::git::{GitError, GitService};
 use crate::domain::git_host::{
-    authorize_pull_request_creation, ActionsJobId, BranchPullRequest, GitHostProvider,
-    NewPullRequest, PrCommentText, PullRequestBases, PullRequestCache,
+    authorize_pull_request_creation, ActionsJobId, BranchPullRequest, GitHostError,
+    GitHostProvider, NewPullRequest, PrCommentError, PrCommentText, PullRequestBases,
+    PullRequestCache, PullRequestCreationError,
 };
 use crate::usecase::fetched::Fetched;
 use crate::usecase::git_host::GitHostUsecase;
@@ -98,7 +99,9 @@ impl PullRequestUsecase {
     /// Worktree のブランチを head とする PR を作る。
     /// 作れたら、ブランチの PR を取り直し、PR の面の購読へ知らせる。
     /// 取り直しの失敗は、作成の結果にしない。
-    /// 失敗は、業務の失敗か技術的な失敗かの区別と、PR の面に出す理由の文で返す。
+    ///
+    /// 失敗は、種類ごとに分けて返す。外側から順に、Worktree の Repository を読めなかった失敗、
+    /// GitHub が作成を拒んだか GitHub に届かなかった失敗、PR を作れない業務上の理由である。
     pub async fn create(
         &self,
         worktree_path: &str,
@@ -106,42 +109,59 @@ impl PullRequestUsecase {
         body: String,
         base: String,
         draft: bool,
-    ) -> Result<(), WorkFailure> {
-        let new = NewPullRequest::new(title, body, base, draft).map_err(failure)?;
-        let repo_path = self.git.main_repo_path(worktree_path).map_err(failure)?;
-        let head = self.git.current(worktree_path).map_err(failure)?;
-        let origin_url = self.git.origin_url(&repo_path).map_err(failure)?;
-        let branches = self.git.list_branches(&repo_path).map_err(failure)?;
-        authorize_pull_request_creation(origin_url.as_deref(), &head, &branches)
-            .map_err(failure)?;
-        self.provider
+    ) -> Result<Result<Result<(), PullRequestCreationError>, GitHostError>, GitError> {
+        let new = match NewPullRequest::new(title, body, base, draft) {
+            Ok(new) => new,
+            Err(refusal) => return Ok(Ok(Err(refusal))),
+        };
+        let repo_path = self.git.main_repo_path(worktree_path)?;
+        let head = self.git.current(worktree_path)?;
+        let origin_url = self.git.origin_url(&repo_path)?;
+        let branches = self.git.list_branches(&repo_path)?;
+        if let Err(refusal) =
+            authorize_pull_request_creation(origin_url.as_deref(), &head, &branches)
+        {
+            return Ok(Ok(Err(refusal)));
+        }
+        if let Err(error) = self
+            .provider
             .create_pull_request(&repo_path, &head, &new)
             .await
-            .map_err(failure)?;
+        {
+            return Ok(Err(error));
+        }
         let _ = self.refresh(worktree_path).await;
         self.notify(worktree_path);
-        Ok(())
+        Ok(Ok(Ok(())))
     }
 
     /// PR 全体への Comment を投稿する。
     /// 投稿できたら、ブランチの PR を取り直し、PR の面の購読へ知らせる。
     /// 取り直しの失敗は、投稿の結果にしない。
-    /// 失敗は、業務の失敗か技術的な失敗かの区別と、PR の面に出す理由の文で返す。
+    ///
+    /// 失敗は、種類ごとに分けて返す。外側から順に、Worktree の Repository を読めなかった失敗、
+    /// GitHub が投稿を拒んだか GitHub に届かなかった失敗、Comment を投稿できない業務上の理由である。
     pub async fn post_comment(
         &self,
         worktree_path: &str,
         number: u64,
         body: String,
-    ) -> Result<(), WorkFailure> {
-        let text = PrCommentText::new(body).map_err(failure)?;
-        let repo_path = self.git.main_repo_path(worktree_path).map_err(failure)?;
-        self.provider
+    ) -> Result<Result<Result<(), PrCommentError>, GitHostError>, GitError> {
+        let text = match PrCommentText::new(body) {
+            Ok(text) => text,
+            Err(refusal) => return Ok(Ok(Err(refusal))),
+        };
+        let repo_path = self.git.main_repo_path(worktree_path)?;
+        if let Err(error) = self
+            .provider
             .post_pull_request_comment(&repo_path, number, &text)
             .await
-            .map_err(failure)?;
+        {
+            return Ok(Err(error));
+        }
         let _ = self.refresh(worktree_path).await;
         self.notify(worktree_path);
-        Ok(())
+        Ok(Ok(Ok(())))
     }
 
     /// GitHub Actions の job のログの全体を GitHub から取る。
@@ -166,17 +186,6 @@ impl PullRequestUsecase {
         if let Some(publisher) = &self.state_publisher {
             publisher.notify(StateChangeSource::PullRequest(worktree_path.into()));
         }
-    }
-}
-
-/// 失敗を、業務の失敗か技術的な失敗かの区別と、PR の面に出す理由の文にする。
-fn failure<E: std::fmt::Display>(error: E) -> WorkFailure
-where
-    for<'a> Failure: From<&'a E>,
-{
-    WorkFailure {
-        kind: Failure::from(&error),
-        message: error.to_string(),
     }
 }
 

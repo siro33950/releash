@@ -17,7 +17,7 @@ pub(crate) fn register_shared(router: &mut ClientCommandDispatch, deps: &ClientD
                 };
                 let usecase =
                     usecase.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                let result = outcome(
+                let result = outcome(AppError::from_layered(
                     usecase
                         .create(
                             &args.worktree_path,
@@ -26,9 +26,8 @@ pub(crate) fn register_shared(router: &mut ClientCommandDispatch, deps: &ClientD
                             args.base,
                             args.draft,
                         )
-                        .await
-                        .map_err(AppError::from_failure),
-                )?;
+                        .await,
+                ))?;
                 Ok(wire::command_result::Command::CreatePullRequest(result))
             })
         }),
@@ -43,12 +42,11 @@ pub(crate) fn register_shared(router: &mut ClientCommandDispatch, deps: &ClientD
                 };
                 let usecase =
                     usecase.ok_or_else(|| invalid_request("Command dependency unavailable"))?;
-                let result = outcome(
+                let result = outcome(AppError::from_layered(
                     usecase
                         .post_comment(&args.worktree_path, args.number, args.body)
-                        .await
-                        .map_err(AppError::from_failure),
-                )?;
+                        .await,
+                ))?;
                 Ok(wire::command_result::Command::PostPullRequestComment(
                     result,
                 ))
