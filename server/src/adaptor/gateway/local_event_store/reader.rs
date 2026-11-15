@@ -464,6 +464,11 @@ impl ReaderPool {
                         connection
                             .progress_handler(0, None::<fn() -> bool>)
                             .map_err(|error| storage_unavailable(&error))?;
+                        if !connection.is_autocommit() {
+                            connection
+                                .execute_batch("ROLLBACK")
+                                .map_err(|error| storage_unavailable(&error))?;
+                        }
                         result
                     })
                     .map_err(LocalEventQueryError::from)
