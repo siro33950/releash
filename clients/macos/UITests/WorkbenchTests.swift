@@ -333,7 +333,8 @@ extension WorkbenchTests {
     try await fixture.startServer()
     let repository = try await fixture.repository("thread-panel-repository", threads: ["確認する本文"])
     var threadID = ""
-    try await fixture.waitForState(target: "review-threads", args: [repository.path]) { payload in
+    try await fixture.waitForState(target: "review-threads", args: [repository.path, "head"]) {
+      payload in
       guard case .threadExcerpts(let value) = payload.value, let item = value.items.first else {
         return false
       }
