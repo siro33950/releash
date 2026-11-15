@@ -307,11 +307,12 @@ struct CommentField: View {
   let placeholder: String
   @Binding var text: String
   let identifier: String
+  var minimumLines = 1
   let submit: () -> Void
 
   var body: some View {
     TextField(placeholder, text: $text, axis: .vertical)
-      .lineLimit(1...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
+      .lineLimit(minimumLines...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
       .onSubmit(submit)
       .accessibilityIdentifier(identifier)
   }

@@ -81,6 +81,16 @@ enum UIStyle {
     }
   }
 
+  static func checkAppearance(_ bucket: Releash_Client_V1_PullRequestCheckBucket) -> (
+    icon: String, color: Color
+  ) {
+    switch bucket {
+    case .fail: ("circle-alert", .red)
+    case .cancel: ("triangle-alert", .orange)
+    default: ("refresh-cw", .yellow)
+    }
+  }
+
   static func statusColor(_ status: String) -> Color {
     switch status {
     case "attention": attention

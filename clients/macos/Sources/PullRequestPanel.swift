@@ -98,12 +98,13 @@ struct PullRequestPanel: View {
             }
           }
           Divider()
-          TextField("Comment を書く…（Markdown）", text: $comment, axis: .vertical)
-            .lineLimit(3...UIStyle.commentInputLines).textFieldStyle(.roundedBorder)
-            .onSubmit {
-              if !comment.isEmpty && !busy { post(pr.number) }
-            }
-            .accessibilityIdentifier("pr-comment").accessibilityLabel("Comment")
+          CommentField(
+            placeholder: "Comment を書く…（Markdown）", text: $comment,
+            identifier: "pr-comment", minimumLines: 3
+          ) {
+            if !comment.isEmpty && !busy { post(pr.number) }
+          }
+          .accessibilityLabel("Comment")
           HStack {
             Spacer()
             Button("Comment") { post(pr.number) }.disabled(comment.isEmpty || busy)
@@ -169,13 +170,17 @@ struct PullRequestPanel: View {
         Text("CHECKS").font(.subheadline.bold()).foregroundStyle(.secondary)
         Spacer()
         if checks.failed > 0 {
-          checkCount(checks.failed, label: "失敗", icon: "circle-alert", color: .red)
+          let appearance = UIStyle.checkAppearance(.fail)
+          checkCount(checks.failed, label: "失敗", icon: appearance.icon, color: appearance.color)
         }
         if checks.cancelled > 0 {
-          checkCount(checks.cancelled, label: "取り消し", icon: "triangle-alert", color: .orange)
+          let appearance = UIStyle.checkAppearance(.cancel)
+          checkCount(
+            checks.cancelled, label: "取り消し", icon: appearance.icon, color: appearance.color)
         }
         if checks.pending > 0 {
-          checkCount(checks.pending, label: "実行中", icon: "refresh-cw", color: .yellow)
+          let appearance = UIStyle.checkAppearance(.pending)
+          checkCount(checks.pending, label: "実行中", icon: appearance.icon, color: appearance.color)
         }
         if checks.skipped > 0 {
           checkCount(checks.skipped, label: "skip", icon: "circle-check", color: .gray)
@@ -185,14 +190,11 @@ struct PullRequestPanel: View {
         }
       }
       ForEach(Array(checks.listed.enumerated()), id: \.offset) { _, check in
+        let appearance = UIStyle.checkAppearance(check.bucket)
         HStack {
-          Image(
-            check.bucket == .fail
-              ? "circle-alert" : check.bucket == .cancel ? "triangle-alert" : "refresh-cw"
-          )
-          .resizable().renderingMode(.template).scaledToFit().frame(width: 16, height: 16)
-          .foregroundStyle(
-            check.bucket == .fail ? Color.red : check.bucket == .cancel ? .orange : .yellow)
+          Image(appearance.icon)
+            .resizable().renderingMode(.template).scaledToFit().frame(width: 16, height: 16)
+            .foregroundStyle(appearance.color)
           Text(check.name)
           if check.hasFailureSeconds {
             HStack(spacing: 4) {

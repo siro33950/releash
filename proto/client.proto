@@ -2205,9 +2205,9 @@ message StatePayload {
     NotionTasksSnapshot notion_tasks = 60;
     NotionLabelOptionsSnapshot notion_label_options = 61;
     WorktreeBasesSnapshot worktree_bases = 79;
-    PullRequestSnapshot pull_request = 80;
-    PullRequestBasesSnapshot pull_request_bases = 81;
-    CheckLogSnapshot check_log = 82;
+    PullRequestSnapshot pull_request = 81;
+    PullRequestBasesSnapshot pull_request_bases = 82;
+    CheckLogSnapshot check_log = 83;
 
     NullableWorkspaceStateDto workspace_state = 17;
     ListReviewThreadDto review_threads = 32;
