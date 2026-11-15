@@ -889,8 +889,25 @@ pub async fn read_tree_records(
 pub(crate) fn decode_stored_fact(
     event_type: &str,
     detail: &str,
+    timestamp_ms: i64,
 ) -> Result<Option<NodeFact>, String> {
     match event_type {
+        "archive_requested" => {
+            let mut detail: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(detail).map_err(|error| error.to_string())?;
+            if detail
+                .get("archivedAt")
+                .is_none_or(serde_json::Value::is_null)
+            {
+                detail.insert(
+                    "archivedAt".into(),
+                    serde_json::json!(timestamp_ms as f64 / 1000.0),
+                );
+            }
+            fact_codec::decode(event_type, &serde_json::Value::Object(detail).to_string())
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
         "started" => super::stored_definition::decode_started(detail).map(Some),
         _ => fact_codec::decode(event_type, detail)
             .map(Some)
@@ -903,7 +920,7 @@ pub fn record_from_row(row: &NodeEventRow) -> Result<Option<NodeFactRecord>, Str
     let kind = kind_from_column(&row.kind)?;
     let attempt = u32::try_from(row.attempt)
         .map_err(|_| format!("stored attempt {} is invalid", row.attempt))?;
-    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail)? else {
+    let Some(fact) = decode_stored_fact(&row.event_type, &row.detail, row.timestamp_ms)? else {
         return Ok(None);
     };
     Ok(Some(NodeFactRecord {
