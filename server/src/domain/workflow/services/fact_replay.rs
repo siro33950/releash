@@ -181,12 +181,18 @@ impl TreeFold {
             record.fact,
             NodeFact::ArchiveRequested(_) | NodeFact::RestoreRequested
         );
+        // 中止の後に Session の起動の準備の失敗が観測されることがあるため、終端の後でも記録する。
+        if let (NodeKindName::Session, NodeFact::RuntimeFailureObserved(failure)) =
+            (record.meta.kind, &record.fact)
+        {
+            self.folded.runtime_failure_reasons.insert(
+                record.meta.node_execution_id.clone(),
+                failure.reason.clone(),
+            );
+        }
         if before_terminal || tree_archive {
             match (record.meta.kind, &record.fact) {
-                (
-                    NodeKindName::Command | NodeKindName::Session,
-                    NodeFact::RuntimeFailureObserved(failure),
-                ) => {
+                (NodeKindName::Command, NodeFact::RuntimeFailureObserved(failure)) => {
                     self.folded.runtime_failure_reasons.insert(
                         record.meta.node_execution_id.clone(),
                         failure.reason.clone(),
