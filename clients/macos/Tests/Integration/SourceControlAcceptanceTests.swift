@@ -188,13 +188,12 @@ final class SourceControlAcceptanceTests: XCTestCase {
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? title
   }
 
+  @MainActor private func messageEditor(_ view: NSView) -> NSTextView? {
+    if let editor = view as? NSTextView, !editor.isFieldEditor { return editor }
+    return view.subviews.lazy.compactMap(messageEditor).first
+  }
+
   @MainActor private func enterMessage(_ value: String, in host: ViewHarness) async throws {
-    func messageEditor(_ view: NSView) -> NSTextView? {
-      if let editor = view as? NSTextView, editor.isEditable, !editor.isFieldEditor {
-        return editor
-      }
-      return view.subviews.lazy.compactMap(messageEditor).first
-    }
     let editor: NSTextView
     if let area = messageEditor(try XCTUnwrap(host.window.contentView)) {
       XCTAssertTrue(host.window.makeFirstResponder(area))
@@ -674,7 +673,6 @@ final class SourceControlAcceptanceTests: XCTestCase {
     }
     // When
     try await enterMessage("commit message", in: host)
-    let editor = try XCTUnwrap(host.window.firstResponder as? NSTextView)
     try await eventuallyView(host) { host.element("Commit")?.enabled == true }
     try await host.press("Commit")
     // Then
@@ -684,7 +682,8 @@ final class SourceControlAcceptanceTests: XCTestCase {
     XCTAssertEqual(commit.worktreePath, "/repo")
     XCTAssertEqual(commit.message, "commit message")
     XCTAssertEqual(commit.followUp, .none)
-    try await eventuallyView(host) { editor.string.isEmpty }
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) { self.messageEditor(content)?.string == "" }
     snapshot.staged = []
     snapshot.changedFileCount = 0
     snapshot.canCommit = false
@@ -1076,10 +1075,6 @@ final class SourceControlAcceptanceTests: XCTestCase {
     // Then
     try await eventuallyView(host) { host.element("main への rebase の途中です") != nil }
     XCTAssertNotNil(host.element("中止"))
-    func messageEditor(_ view: NSView) -> NSTextView? {
-      if let editor = view as? NSTextView, !editor.isFieldEditor { return editor }
-      return view.subviews.lazy.compactMap(messageEditor).first
-    }
     let editor = try XCTUnwrap(messageEditor(try XCTUnwrap(host.window.contentView)))
     XCTAssertEqual(editor.string, "")
     XCTAssertFalse(editor.isEditable)
@@ -1242,6 +1237,46 @@ final class SourceControlAcceptanceTests: XCTestCase {
     }
   }
 
+  @MainActor func test_SourceControl_commitの応答待ち中はメッセージを編集できない() async throws {
+    for choice in ["Commit", "Commit & Push", "Commit & Sync"] {
+      // Given
+      let snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+        $0.branch = "main"
+        $0.tracking.upstream = "origin/main"
+        $0.changedFileCount = 1
+        $0.staged = [change("file.txt")]
+        $0.canCommit = true
+      }
+      let (model, host, http) = try await show(snapshot)
+      defer { host.close() }
+      http.state.withLock { $0.deferGitCommit = true }
+      try await enterMessage("sent message", in: host)
+      let editor = try XCTUnwrap(host.window.firstResponder as? NSTextView)
+      XCTAssertTrue(editor.isEditable)
+      try await eventuallyView(host) { host.element("Commit")?.enabled == true }
+      // When
+      if choice == "Commit" {
+        try await host.press("Commit")
+      } else {
+        try await menu(host, selecting: choice)
+      }
+      try await eventually { http.state.withLock { $0.pendingGitCommit != nil } }
+      // Then
+      let content = try XCTUnwrap(host.window.contentView)
+      try await eventuallyView(host) { self.messageEditor(content)?.isEditable == false }
+      XCTAssertEqual(messageEditor(content)?.string, "sent message")
+      let respond = try XCTUnwrap(http.state.withLock { $0.pendingGitCommit })
+      respond(
+        HTTPResponse(
+          code: .ok, headers: ["content-type": ["application/proto"]], message: Data(),
+          trailers: [:], error: nil, tracingInfo: nil))
+      try await eventuallyView(host) {
+        self.messageEditor(content)?.isEditable == true && self.messageEditor(content)?.string == ""
+      }
+      await model.stop()
+    }
+  }
+
   @MainActor func test_SourceControl_commit後の失敗だけ入力欄を消して理由を表示する() async throws {
     for code in ["GIT_COMMIT_FOLLOW_UP_FAILED", "OTHER_FAILURE"] {
       // Given
@@ -1265,12 +1300,13 @@ final class SourceControlAcceptanceTests: XCTestCase {
         $0.failureDetail = failure
       }
       try await enterMessage("commit message", in: host)
-      let editor = try XCTUnwrap(host.window.firstResponder as? NSTextView)
       // When
       try await menu(host, selecting: "Commit & Push")
       // Then
       try await eventuallyView(host) { host.texts().contains("Push rejected") }
-      XCTAssertEqual(editor.string, code == "GIT_COMMIT_FOLLOW_UP_FAILED" ? "" : "commit message")
+      XCTAssertEqual(
+        messageEditor(try XCTUnwrap(host.window.contentView))?.string,
+        code == "GIT_COMMIT_FOLLOW_UP_FAILED" ? "" : "commit message")
       await model.stop()
     }
   }

@@ -154,7 +154,7 @@ fn test_conflict分類_indexの全7種類を返す() {
     assert_eq!(scan.status.len(), cases.len());
     for (_, name) in cases {
         let file = scan.status.iter().find(|file| file.path == name).unwrap();
-        assert_eq!(file.conflict.unwrap().as_str(), name);
+        assert_eq!(serde_json::to_value(file.conflict.unwrap()).unwrap(), name);
     }
 }
 
@@ -499,4 +499,252 @@ async fn test_fetch_upstreamが無い場合はremote設定があってもorigin�
     })
     .await
     .unwrap();
+}
+
+fn init_source_repo(path: &std::path::Path) {
+    git(path, &["init", "-b", "main"], "");
+    git(path, &["config", "user.name", "Test"], "");
+    git(path, &["config", "user.email", "test@example.invalid"], "");
+    git(path, &["config", "commit.gpgSign", "false"], "");
+    git(path, &["config", "core.hooksPath", "/dev/null"], "");
+    git(path, &["config", "pull.rebase", "false"], "");
+    commit_file(path, "base");
+}
+
+fn commit_file(path: &std::path::Path, content: &str) {
+    std::fs::write(path.join("conflict.txt"), format!("{content}\n")).unwrap();
+    git(path, &["add", "conflict.txt"], "");
+    git(path, &["commit", "-m", content], "");
+}
+
+fn remote_heads(path: &std::path::Path) -> Vec<(String, git2::Oid)> {
+    let repo = git2::Repository::open_bare(path).unwrap();
+    let mut refs: Vec<_> = repo
+        .references_glob("refs/heads/*")
+        .unwrap()
+        .map(|r| {
+            let r = r.unwrap();
+            (r.name().unwrap().to_owned(), r.target().unwrap())
+        })
+        .collect();
+    refs.sort();
+    refs
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_push_detachedは失敗しremoteのブランチを増減更新しない() {
+    use releashd::test_support::client_api_acceptance::Push;
+    tokio::task::spawn_blocking(|| {
+        // Given
+        let root = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        init_source_repo(root.path());
+        git(remote.path(), &["init", "--bare"], "");
+        git(
+            root.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+            "",
+        );
+        gateway()
+            .push(root.path().to_str().unwrap(), Push::Publish)
+            .unwrap();
+        git(root.path(), &["checkout", "--detach"], "");
+        commit_file(root.path(), "detached");
+        let before = remote_heads(remote.path());
+        // When
+        let result = gateway().push(root.path().to_str().unwrap(), Push::Publish);
+        // Then
+        assert!(result.is_err());
+        assert_eq!(remote_heads(remote.path()), before);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_forcepush_古いleaseでは別cloneのcommitを上書きしない() {
+    use releashd::test_support::client_api_acceptance::Push;
+    tokio::task::spawn_blocking(|| {
+        // Given
+        let root = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        init_source_repo(root.path());
+        git(remote.path(), &["init", "--bare"], "");
+        git(
+            root.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+            "",
+        );
+        gateway()
+            .push(root.path().to_str().unwrap(), Push::Publish)
+            .unwrap();
+        git(
+            other.path(),
+            &["clone", "-b", "main", remote.path().to_str().unwrap(), "."],
+            "",
+        );
+        git(other.path(), &["config", "user.name", "Other"], "");
+        git(
+            other.path(),
+            &["config", "user.email", "other@example.invalid"],
+            "",
+        );
+        git(other.path(), &["config", "commit.gpgSign", "false"], "");
+        commit_file(other.path(), "remote advance");
+        git(other.path(), &["push"], "");
+        commit_file(root.path(), "local advance");
+        let before = remote_heads(remote.path());
+        let repo = git2::Repository::open(root.path()).unwrap();
+        assert_ne!(
+            repo.refname_to_id("refs/remotes/origin/main").unwrap(),
+            before[0].1
+        );
+        // When
+        let result = gateway().push(root.path().to_str().unwrap(), Push::ForceWithLease);
+        // Then
+        assert!(result.is_err());
+        assert_eq!(remote_heads(remote.path()), before);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_pull競合_失敗理由とmergeメッセージを保ちコメントをcommitへ入れない() {
+    use releashd::test_support::client_api_acceptance::{BranchState, CommitMessage};
+    tokio::task::spawn_blocking(|| {
+        // Given
+        let root = tempfile::tempdir().unwrap();
+        init_source_repo(root.path());
+        git(root.path(), &["checkout", "-b", "other"], "");
+        commit_file(root.path(), "other");
+        git(root.path(), &["checkout", "main"], "");
+        commit_file(root.path(), "main");
+        git(root.path(), &["config", "branch.main.remote", "."], "");
+        git(
+            root.path(),
+            &["config", "branch.main.merge", "refs/heads/other"],
+            "",
+        );
+        let path = root.path().to_str().unwrap();
+        // When
+        let error = gateway().pull(path).unwrap_err();
+        // Then
+        assert!(error.to_string().contains("conflict.txt"), "{error}");
+        let repo = git2::Repository::open(root.path()).unwrap();
+        let raw = std::fs::read_to_string(repo.path().join("MERGE_MSG")).unwrap();
+        assert!(raw.lines().any(|line| line.starts_with('#')), "{raw}");
+        let BranchState::Operating(operation) = gateway().worktree_branch(path).unwrap().state
+        else {
+            panic!("expected merge")
+        };
+        let message = operation.message.unwrap();
+        assert!(
+            !message.lines().any(|line| line.starts_with('#')),
+            "{message}"
+        );
+        std::fs::write(root.path().join("conflict.txt"), "resolved\n").unwrap();
+        git(root.path(), &["add", "conflict.txt"], "");
+        gateway()
+            .continue_operation(
+                path,
+                &operation.kind,
+                Some(&CommitMessage::new(&message).unwrap()),
+            )
+            .unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.message().unwrap().trim(), message);
+        assert_eq!(commit.parent_count(), 2);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_merge続行_メッセージ無しではrebaseを続けない() {
+    use releashd::test_support::client_api_acceptance::OperationKind;
+    tokio::task::spawn_blocking(|| {
+        // Given
+        let root = tempfile::tempdir().unwrap();
+        init_source_repo(root.path());
+        // When
+        let result = gateway().continue_operation(
+            root.path().to_str().unwrap(),
+            &OperationKind::Merge,
+            None,
+        );
+        // Then
+        assert!(matches!(
+            result,
+            Err(releashd::test_support::client_api_acceptance::GitError::Rule(_))
+        ));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_rebase続行_両方式でメッセージを変えてauthorを保つ() {
+    use releashd::test_support::client_api_acceptance::{BranchState, CommitMessage};
+    for backend in ["--merge", "--apply"] {
+        tokio::task::spawn_blocking(move || {
+            // Given
+            let root = tempfile::tempdir().unwrap();
+            init_source_repo(root.path());
+            git(root.path(), &["checkout", "-b", "feature"], "");
+            git(root.path(), &["config", "user.name", "Original Author"], "");
+            git(
+                root.path(),
+                &["config", "user.email", "author@example.invalid"],
+                "",
+            );
+            commit_file(root.path(), "feature");
+            let repo = git2::Repository::open(root.path()).unwrap();
+            let original = repo.head().unwrap().peel_to_commit().unwrap();
+            git(root.path(), &["config", "user.name", "Committer"], "");
+            git(
+                root.path(),
+                &["config", "user.email", "committer@example.invalid"],
+                "",
+            );
+            git(root.path(), &["checkout", "main"], "");
+            commit_file(root.path(), "main");
+            git(root.path(), &["checkout", "feature"], "");
+            let result = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root.path())
+                .args(["rebase", backend, "main"])
+                .output()
+                .unwrap();
+            assert!(!result.status.success());
+            let path = root.path().to_str().unwrap();
+            let BranchState::Operating(operation) = gateway().worktree_branch(path).unwrap().state
+            else {
+                panic!("expected rebase")
+            };
+            std::fs::write(root.path().join("conflict.txt"), "resolved\n").unwrap();
+            git(root.path(), &["add", "conflict.txt"], "");
+            let message = "edited 'quoted' \"message\"\n\n$(touch injected); `false`";
+            // When
+            gateway()
+                .continue_operation(
+                    path,
+                    &operation.kind,
+                    Some(&CommitMessage::new(message).unwrap()),
+                )
+                .unwrap();
+            // Then
+            let commit = repo.head().unwrap().peel_to_commit().unwrap();
+            assert_eq!(commit.message().unwrap().trim(), message, "{backend}");
+            assert_eq!(commit.author().name(), original.author().name());
+            assert_eq!(commit.author().email(), original.author().email());
+            assert_eq!(commit.author().when(), original.author().when());
+            assert!(!repo.path().join("rebase-merge").exists());
+            assert!(!repo.path().join("rebase-apply").exists());
+            assert!(!root.path().join("injected").exists());
+        })
+        .await
+        .unwrap();
+    }
 }

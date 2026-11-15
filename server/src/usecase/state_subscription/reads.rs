@@ -390,6 +390,7 @@ impl WorkspaceStateReads {
                         .worktree_status(path, scan)
                         .map_err(error)?
                         .searching(search.clone()),
+                    self.repository.line_changes(path).map_err(error)?,
                 )
             }
             T::FileThreads(path, file) => {

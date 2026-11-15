@@ -5,7 +5,8 @@ use crate::domain::git::entities::file_status::{ChangeKind, ConflictKind};
 use crate::domain::git::{CommitMessage, GitError, RepositoryStatusScan};
 use crate::domain::search_term::SearchTerm;
 
-/// worktree の Git の状態。ブランチの状態と、変更したファイルを持つ。
+/// worktree の Git の状態。ブランチの状態と、変更したファイルを持つ。操作を受け付けるかは、この状態が決める。
+/// 変更の行数は持たない。行数は `LineChanges` が持つ。
 ///
 /// 変更したファイルは、conflict しているもの、stage 済みの変更、まだ stage していない変更に分けて持つ。
 /// 同じファイルに stage 済みの変更とまだ stage していない変更があるとき、そのファイルは両方にある。
@@ -25,8 +26,6 @@ pub struct FileChange {
     /// worktree からの相対 path。
     pub path: String,
     pub kind: ChangeKind,
-    /// この側の変更の行数。
-    pub lines: LineCount,
 }
 
 /// conflict しているファイル。
@@ -44,13 +43,25 @@ pub struct LineCount {
     pub deletions: u32,
 }
 
-/// ファイルごとの変更の行数。キーは worktree からの相対 path。
+/// ファイルごとの変更の行数。キーは worktree からの相対 path。表示にだけ使う。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineChanges {
     /// stage 済みの変更の行数。
     pub staged: HashMap<String, LineCount>,
     /// まだ stage していない変更の行数。git が追跡していないファイルは、全部の行を追加として数える。
     pub unstaged: HashMap<String, LineCount>,
+}
+
+impl LineChanges {
+    /// ファイルの、stage 済みの変更の行数を返す。行数を持っていないファイルは 0 である。
+    pub fn staged_lines(&self, path: &str) -> LineCount {
+        self.staged.get(path).copied().unwrap_or_default()
+    }
+
+    /// ファイルの、まだ stage していない変更の行数を返す。行数を持っていないファイルは 0 である。
+    pub fn unstaged_lines(&self, path: &str) -> LineCount {
+        self.unstaged.get(path).copied().unwrap_or_default()
+    }
 }
 
 /// まだ stage していない変更の破棄のしかた。
@@ -78,13 +89,12 @@ impl WorktreeStatus {
             .is_none_or(|search| search.matches(path.rsplit('/').next().unwrap_or(path)))
     }
 
-    /// ブランチの状態、変更の走査結果、変更の行数から、worktree の Git の状態を作る。
+    /// ブランチの状態と変更の走査結果から、worktree の Git の状態を作る。
     ///
     /// - 走査結果のファイルを、`FileStatus::conflict`、`FileStatus::staged_change`、`FileStatus::unstaged_change` で分ける。
     /// - 変更したファイルの数は、走査結果の `dirty_count` である。
-    /// - 行数は `lines` から path で引く。`lines` に無いファイルの行数は 0 である。
     /// - conflict しているファイル、stage 済みの変更、まだ stage していない変更は、それぞれ path の順に並べる。
-    pub fn new(branch: WorktreeBranch, scan: RepositoryStatusScan, lines: LineChanges) -> Self {
+    pub fn new(branch: WorktreeBranch, scan: RepositoryStatusScan) -> Self {
         let mut status = Self {
             branch,
             changed_file_count: scan.dirty_count,
@@ -104,14 +114,12 @@ impl WorktreeStatus {
                 status.staged.push(FileChange {
                     path: file.path.clone(),
                     kind,
-                    lines: lines.staged.get(&file.path).copied().unwrap_or_default(),
                 });
             }
             if let Some(kind) = file.unstaged_change() {
                 status.unstaged.push(FileChange {
                     path: file.path.clone(),
                     kind,
-                    lines: lines.unstaged.get(&file.path).copied().unwrap_or_default(),
                 });
             }
         }
@@ -269,17 +277,16 @@ impl WorktreeStatus {
         Ok(plan)
     }
 
-    /// `unstaged` が返す全部を破棄したときに起きることを返す。
-    pub fn discard_summary(&self) -> DiscardSummary {
+    /// `unstaged` が返す全部を破棄したときに起きることを返す。消える行数は `lines` から引く。
+    pub fn discard_summary(&self, lines: &LineChanges) -> DiscardSummary {
         let mut summary = DiscardSummary::default();
         for file in self.unstaged() {
             if file.kind == ChangeKind::Untracked {
                 summary.trashed_files += 1;
             } else {
-                summary.lines.additions =
-                    summary.lines.additions.saturating_add(file.lines.additions);
-                summary.lines.deletions =
-                    summary.lines.deletions.saturating_add(file.lines.deletions);
+                let count = lines.unstaged_lines(&file.path);
+                summary.lines.additions = summary.lines.additions.saturating_add(count.additions);
+                summary.lines.deletions = summary.lines.deletions.saturating_add(count.deletions);
             }
         }
         summary

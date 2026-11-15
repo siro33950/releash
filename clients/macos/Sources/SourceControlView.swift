@@ -47,8 +47,8 @@ struct SourceControlView: View {
       if let operation { operationBanner(operation) }
       branchRow
       Group {
-        if operation?.hasMessage == false {
-          EmptyCommitMessage()
+        if operation?.hasMessage == false || busy {
+          ReadOnlyCommitMessage(message: operation?.hasMessage == false ? "" : message)
         } else {
           TextEditor(text: $message)
         }
@@ -387,14 +387,18 @@ private struct SourceControlChangeRow: View {
   }
 }
 
-private struct EmptyCommitMessage: NSViewRepresentable {
+private struct ReadOnlyCommitMessage: NSViewRepresentable {
+  let message: String
   func makeNSView(context: Context) -> NSScrollView {
     let scrollView = NSTextView.scrollableTextView()
     if let textView = scrollView.documentView as? NSTextView {
       textView.isEditable = false
+      textView.string = message
     }
     return scrollView
   }
 
-  func updateNSView(_ view: NSScrollView, context: Context) {}
+  func updateNSView(_ view: NSScrollView, context: Context) {
+    (view.documentView as? NSTextView)?.string = message
+  }
 }

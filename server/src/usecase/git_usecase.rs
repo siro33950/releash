@@ -121,15 +121,22 @@ impl GitUsecase {
 
     // ── worktree の Git の状態（読み取り） ──
 
-    /// 変更の走査結果に、ブランチの状態と変更の行数を合わせて、worktree の Git の状態を返す。
+    /// 変更の走査結果に、ブランチの状態を合わせて、worktree の Git の状態を返す。
     pub fn worktree_status(
         &self,
         worktree: &str,
         scan: RepositoryStatusScan,
     ) -> Result<WorktreeStatus, UsecaseError> {
         let branch = self.git.worktree_branch(worktree)?;
-        let lines = self.git.line_changes(worktree)?;
-        Ok(WorktreeStatus::new(branch, scan, lines))
+        Ok(WorktreeStatus::new(branch, scan))
+    }
+
+    /// 変更の行数を返す。面の表示にだけ使う。操作を受け付けるかを決めるときは読まない。
+    pub fn line_changes(
+        &self,
+        worktree: &str,
+    ) -> Result<crate::domain::git::LineChanges, UsecaseError> {
+        Ok(self.git.line_changes(worktree)?)
     }
 
     /// worktree を今走査して、Git の状態を返す。操作を受け付けるかは、この状態で決める。

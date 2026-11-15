@@ -37,6 +37,7 @@ pub type WorktreeCreation = (String, String, bool, Option<String>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitCall {
+    Lines,
     Commit(String),
     Push(crate::domain::git::Push),
     Pull,
@@ -145,12 +146,16 @@ impl GitService for FakeRepo {
         &self,
         _worktree: &str,
     ) -> Result<crate::domain::git::WorktreeBranch, GitError> {
+        if self.git_failure == Some("branch") {
+            return Err(GitError::External("branch failed".into()));
+        }
         Ok(self
             .source_branch
             .clone()
             .expect("Source Control branch fixture"))
     }
     fn line_changes(&self, _worktree: &str) -> Result<crate::domain::git::LineChanges, GitError> {
+        self.record_git("lines", GitCall::Lines)?;
         Ok(Default::default())
     }
     fn commit(

@@ -54,9 +54,6 @@ impl GitService for GitGateway {
         let repo = git_operation::run(|| client::open(worktree))?;
         let head = git_operation::run(|| repo.head())?;
         let name = git_operation::run(|| head.shorthand())?;
-        if !head.is_branch() {
-            return Err(GitError::rule("Cannot push detached HEAD"));
-        }
         match push {
             Push::Publish => source_control::git(
                 worktree,
@@ -133,7 +130,12 @@ impl GitService for GitGateway {
             (OperationKind::Rebase(_), Some(message)) => {
                 source_control::continue_rebase(worktree, message)
             }
-            (_, None) => source_control::git(worktree, &["rebase", "--continue"]).map(|_| ()),
+            (OperationKind::Merge, None) => Err(GitError::rule(
+                "Merge continuation requires a commit message",
+            )),
+            (OperationKind::Rebase(_), None) => {
+                source_control::git(worktree, &["rebase", "--continue"]).map(|_| ())
+            }
         }
     }
     fn abort_operation(&self, worktree: &str, operation: &OperationKind) -> Result<(), GitError> {

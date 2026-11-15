@@ -29,16 +29,6 @@ fn status(state: BranchState, conflict: bool) -> WorktreeStatus {
                 },
             ],
         },
-        LineChanges {
-            staged: HashMap::new(),
-            unstaged: HashMap::from([(
-                "z/a.txt".into(),
-                LineCount {
-                    additions: 2,
-                    deletions: 3,
-                },
-            )]),
-        },
     )
 }
 #[test]
@@ -64,7 +54,7 @@ fn test_変更一覧_分類と並び順と検索と破棄() {
     );
     assert_eq!(state.conflicts()[0].path, "conflict.txt");
     assert_eq!(
-        state.discard_summary(),
+        state.discard_summary(&lines()),
         DiscardSummary {
             lines: LineCount {
                 additions: 2,
@@ -89,7 +79,7 @@ fn test_変更一覧_分類と並び順と検索と破棄() {
     assert_eq!(filtered.conflict_count(), 1);
     assert!(filtered.conflicts().is_empty());
     assert_eq!(filtered.unstaged().len(), 1);
-    assert_eq!(filtered.discard_summary().trashed_files, 0);
+    assert_eq!(filtered.discard_summary(&lines()).trashed_files, 0);
     assert!(filtered.discard_plan(&["new.txt".into()]).is_ok());
     assert!(filtered.ensure_can_commit().is_ok());
     assert_eq!(filtered.push_plan(true), Ok(Push::Publish));
@@ -130,7 +120,6 @@ fn test_操作受理_競合中は続行不可で中止可能() {
             status: vec![],
             dirty_count: 0,
         },
-        LineChanges::default(),
     );
     assert!(empty.ensure_can_commit().is_err());
 }
@@ -163,4 +152,61 @@ fn test_続行メッセージ_commitの有無に応じて入力を検証する()
     assert!(status(BranchState::Unpublished { unpushed: 0 }, false)
         .continue_message("message")
         .is_err());
+}
+
+fn lines() -> LineChanges {
+    LineChanges {
+        staged: HashMap::from([(
+            "z/a.txt".into(),
+            LineCount {
+                additions: 7,
+                deletions: 8,
+            },
+        )]),
+        unstaged: HashMap::from([
+            (
+                "z/a.txt".into(),
+                LineCount {
+                    additions: 2,
+                    deletions: 3,
+                },
+            ),
+            (
+                "new.txt".into(),
+                LineCount {
+                    additions: 99,
+                    deletions: 0,
+                },
+            ),
+        ]),
+    }
+}
+
+#[test]
+fn test_変更行数_側ごとに取得し未登録のファイルはゼロを返す() {
+    // Given
+    let lines = lines();
+    // When / Then
+    assert_eq!(
+        lines.staged_lines("z/a.txt"),
+        LineCount {
+            additions: 7,
+            deletions: 8
+        }
+    );
+    assert_eq!(
+        lines.unstaged_lines("z/a.txt"),
+        LineCount {
+            additions: 2,
+            deletions: 3
+        }
+    );
+    assert_eq!(lines.staged_lines("missing"), LineCount::default());
+    assert_eq!(lines.unstaged_lines("missing"), LineCount::default());
+    assert_eq!(
+        status(BranchState::Unpublished { unpushed: 0 }, false)
+            .discard_summary(&LineChanges::default())
+            .lines,
+        LineCount::default()
+    );
 }

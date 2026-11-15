@@ -1556,3 +1556,71 @@ fn test_archive履歴配信_workflowの実行情報と検索結果を届ける()
         }
     }
 }
+
+#[test]
+fn test_変更一覧_同じpathでも側ごとの行数を転送する() {
+    use crate::domain::git::{
+        BranchState, FileStatus, LineChanges, LineCount, RepositoryStatusScan, WorktreeBranch,
+        WorktreeStatus,
+    };
+    // Given
+    let status = WorktreeStatus::new(
+        WorktreeBranch {
+            name: "main".into(),
+            state: BranchState::Unpublished { unpushed: 0 },
+        },
+        RepositoryStatusScan {
+            dirty_count: 2,
+            status: ["dir/a", "missing"]
+                .map(|path| FileStatus {
+                    path: path.into(),
+                    index_status: "modified".into(),
+                    worktree_status: "modified".into(),
+                    conflict: None,
+                })
+                .to_vec(),
+        },
+    );
+    let lines = LineChanges {
+        staged: [(
+            "dir/a".into(),
+            LineCount {
+                additions: 1,
+                deletions: 2,
+            },
+        )]
+        .into(),
+        unstaged: [(
+            "dir/a".into(),
+            LineCount {
+                additions: 3,
+                deletions: 4,
+            },
+        )]
+        .into(),
+    };
+    // When
+    let result = source_control(&status, &lines);
+    // Then
+    assert_eq!(
+        (result.staged[0].additions, result.staged[0].deletions),
+        (1, 2)
+    );
+    assert_eq!(
+        (result.unstaged[0].additions, result.unstaged[0].deletions),
+        (3, 4)
+    );
+    assert_eq!(
+        (&*result.staged[0].name, &*result.staged[0].directory),
+        ("a", "dir")
+    );
+    assert_eq!(
+        (result.staged[1].additions, result.unstaged[1].deletions),
+        (0, 0)
+    );
+    let summary = result.discard_all.unwrap();
+    assert_eq!(
+        (summary.additions, summary.deletions, summary.trashed_files),
+        (3, 4, 0)
+    );
+}

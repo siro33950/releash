@@ -162,3 +162,20 @@ impl From<CodeUsecaseError> for AppError {
 #[cfg(test)]
 #[path = "error_test.rs"]
 pub(crate) mod error_tests;
+
+/// ユースケースエラー → アプリエラーの集約変換（adaptor 層が担う）。
+/// `#[error(transparent)]` な `crate::usecase::repository_error::UsecaseError` の `Display` を保持するため、
+/// serialize 表現は移行前と等価に保たれる。
+///
+/// commit を作った後の失敗（`crate::usecase::repository_error::UsecaseError::AfterCommit`）は、中身の失敗の分類と文を保ち、
+/// code `GIT_COMMIT_FOLLOW_UP_FAILED` を付ける。
+impl From<crate::usecase::repository_error::UsecaseError> for AppError {
+    fn from(e: crate::usecase::repository_error::UsecaseError) -> Self {
+        match e {
+            crate::usecase::repository_error::UsecaseError::AfterCommit(error) => {
+                AppError::from(*error).with_code("GIT_COMMIT_FOLLOW_UP_FAILED")
+            }
+            e => AppError::from_failure(e),
+        }
+    }
+}

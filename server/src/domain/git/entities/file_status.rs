@@ -1,5 +1,3 @@
-use crate::domain::git::GitError;
-
 /// 作業ツリー上の 1 ファイルの index / worktree ステータス。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStatus {
@@ -58,7 +56,11 @@ pub enum ChangeKind {
 }
 
 /// conflict の種類。git の status が出す区別と同じである。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 走査結果を運ぶときは、`both_modified`、`both_added`、`both_deleted`、`added_by_us`、
+/// `added_by_them`、`deleted_by_us`、`deleted_by_them` のどれかの文字列になる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConflictKind {
     /// 両方の側が変更した。
     BothModified,
@@ -74,36 +76,6 @@ pub enum ConflictKind {
     DeletedByUs,
     /// 相手の側が削除し、こちらの側が変更した。
     DeletedByThem,
-}
-
-impl ConflictKind {
-    /// `as_str` が返す文字列から種類を読む。ほかの文字列は失敗する。
-    pub fn parse(value: &str) -> Result<Self, GitError> {
-        match value {
-            "both_modified" => Ok(Self::BothModified),
-            "both_added" => Ok(Self::BothAdded),
-            "both_deleted" => Ok(Self::BothDeleted),
-            "added_by_us" => Ok(Self::AddedByUs),
-            "added_by_them" => Ok(Self::AddedByThem),
-            "deleted_by_us" => Ok(Self::DeletedByUs),
-            "deleted_by_them" => Ok(Self::DeletedByThem),
-            _ => Err(GitError::rule(format!("Unknown conflict kind: {value}"))),
-        }
-    }
-
-    /// 種類を表す文字列を返す。`both_modified`、`both_added`、`both_deleted`、`added_by_us`、
-    /// `added_by_them`、`deleted_by_us`、`deleted_by_them` のどれかである。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::BothModified => "both_modified",
-            Self::BothAdded => "both_added",
-            Self::BothDeleted => "both_deleted",
-            Self::AddedByUs => "added_by_us",
-            Self::AddedByThem => "added_by_them",
-            Self::DeletedByUs => "deleted_by_us",
-            Self::DeletedByThem => "deleted_by_them",
-        }
-    }
 }
 
 /// 1 scan サイクル内で同一 repository handle から導出した status 系 read model。

@@ -189,25 +189,8 @@ impl ReviewUsecase {
         worktree: &str,
     ) -> Result<crate::domain::git::RepositoryStatusScan, CodeUsecaseError> {
         let snapshot = self.snapshot(worktree)?;
-        let status = snapshot
-            .status
-            .iter()
-            .cloned()
-            .map(crate::domain::git::FileStatus::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| match error {
-                crate::domain::git::GitError::Technical(error) => {
-                    crate::domain::code::CodeError::Technical(error)
-                }
-                crate::domain::git::GitError::External(message) => {
-                    crate::domain::code::CodeError::External(message)
-                }
-                crate::domain::git::GitError::Rule(message) => {
-                    crate::domain::code::CodeError::Rule(message)
-                }
-            })?;
         Ok(crate::domain::git::RepositoryStatusScan {
-            status,
+            status: snapshot.status.iter().cloned().map(Into::into).collect(),
             dirty_count: snapshot.dirty_count,
         })
     }

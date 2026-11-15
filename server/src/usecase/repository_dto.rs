@@ -28,8 +28,8 @@ pub struct FileStatusDto {
     pub path: String,
     pub index_status: String,
     pub worktree_status: String,
-    /// conflict しているファイルでは、`ConflictKind::as_str` の文字列。conflict していないファイルでは `None`。
-    pub conflict: Option<String>,
+    /// conflict しているファイルでは、その種類。conflict していないファイルでは `None`。
+    pub conflict: Option<crate::domain::git::ConflictKind>,
 }
 
 impl From<FileStatus> for FileStatusDto {
@@ -38,26 +38,20 @@ impl From<FileStatus> for FileStatusDto {
             path: status.path,
             index_status: status.index_status,
             worktree_status: status.worktree_status,
-            conflict: status.conflict.map(|kind| kind.as_str().to_owned()),
+            conflict: status.conflict,
         }
     }
 }
 
-impl TryFrom<FileStatusDto> for FileStatus {
-    type Error = crate::domain::git::GitError;
-
-    /// 運んできた走査結果を、domain の走査結果に戻す。`conflict` は `ConflictKind::parse` で読む。
-    fn try_from(status: FileStatusDto) -> Result<Self, Self::Error> {
-        Ok(Self {
+impl From<FileStatusDto> for FileStatus {
+    /// 運んできた走査結果を、domain の走査結果に戻す。
+    fn from(status: FileStatusDto) -> Self {
+        Self {
             path: status.path,
             index_status: status.index_status,
             worktree_status: status.worktree_status,
-            conflict: status
-                .conflict
-                .as_deref()
-                .map(crate::domain::git::ConflictKind::parse)
-                .transpose()?,
-        })
+            conflict: status.conflict,
+        }
     }
 }
 

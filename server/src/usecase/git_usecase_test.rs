@@ -902,3 +902,49 @@ fn test_続行_commitを作らないときはメッセージ無しで委譲す�
     // Then
     assert_eq!(*fake.git_calls.lock(), [GitCall::Continue(kind, None)]);
 }
+
+#[test]
+fn test_作業状態_走査結果とブランチを合成し取得失敗を返す() {
+    // Given
+    for failure in [None, Some("branch")] {
+        let fake = source_fake(failure);
+        let scan = crate::domain::git::RepositoryStatusScan {
+            status: fake.source_files.clone(),
+            dirty_count: 2,
+        };
+        // When
+        let result = usecase(fake.clone()).worktree_status("/r", scan);
+        // Then
+        if failure.is_some() {
+            assert!(
+                matches!(result, Err(UsecaseError::Repository(GitError::External(message))) if message == "branch failed")
+            );
+        } else {
+            let status = result.unwrap();
+            assert_eq!(status.branch(), fake.source_branch.as_ref().unwrap());
+            assert_eq!(status.changed_file_count(), 2);
+            assert_eq!(status.staged()[0].path, "a");
+            assert_eq!(status.unstaged().len(), 2);
+        }
+        assert!(fake.git_calls.lock().is_empty());
+    }
+}
+
+#[test]
+fn test_表示行数_取得結果と失敗を返す() {
+    // Given
+    for failure in [None, Some("lines")] {
+        let fake = source_fake(failure);
+        // When
+        let result = usecase(fake.clone()).line_changes("/r");
+        // Then
+        if failure.is_some() {
+            assert!(
+                matches!(result, Err(UsecaseError::Repository(GitError::External(message))) if message == "lines failed")
+            );
+        } else {
+            assert_eq!(result.unwrap(), Default::default());
+        }
+        assert_eq!(*fake.git_calls.lock(), [GitCall::Lines]);
+    }
+}

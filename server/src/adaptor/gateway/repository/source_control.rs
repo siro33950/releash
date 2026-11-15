@@ -10,31 +10,27 @@ use crate::domain::git::{
 use crate::infrastructure::git::client;
 
 pub(super) fn git(worktree: &str, args: &[&str]) -> Result<String, GitError> {
+    git_with_env(worktree, args, &[])
+}
+
+fn git_with_env(worktree: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, GitError> {
     let mut command = tokio::process::Command::new("git");
     command
         .arg("-C")
         .arg(worktree)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_EDITOR", "true");
-    let output = tokio::runtime::Handle::current()
-        .block_on(crate::infrastructure::process::output::output(
-            command,
-            Vec::new(),
-        ))
-        .map_err(|error| match error {
-            crate::infrastructure::process::output::ProcessError::Io(error) => {
-                GitError::from(error)
-            }
-            crate::infrastructure::process::output::ProcessError::Stopped(error) => {
-                GitError::from(error)
-            }
-        })?;
+        .env("GIT_EDITOR", "true")
+        .envs(env.iter().copied());
+    let output = tokio::runtime::Handle::current().block_on(
+        crate::infrastructure::process::output::output(command, Vec::new()),
+    )?;
     if !output.status.success() {
         return Err(GitError::External(format!(
-            "Git operation failed ({}): {}",
+            "Git operation failed ({}): {}\n{}",
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
         )));
     }
     String::from_utf8(output.stdout).map_err(|error| GitError::External(error.to_string()))
@@ -94,7 +90,15 @@ pub(super) fn worktree_branch(worktree: &str) -> Result<WorktreeBranch, GitError
             name,
             state: BranchState::Operating(Operation {
                 kind: OperationKind::Merge,
-                message: Some(read(&repo.path().join("MERGE_MSG"))?),
+                message: Some(
+                    read(&repo.path().join("MERGE_MSG"))?
+                        .lines()
+                        .filter(|line| !line.starts_with('#'))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim()
+                        .to_owned(),
+                ),
             }),
         });
     }
@@ -239,24 +243,13 @@ pub(super) fn trash_files(worktree: &str, paths: &[String]) -> Result<(), GitErr
     validate_paths(worktree, paths)?;
     #[cfg(target_os = "macos")]
     {
-        let mut command = tokio::process::Command::new("osascript");
-        command.args(["-l", "JavaScript", "-e", "ObjC.import('Foundation'); function run(paths) { for (const path of paths) { const error = Ref(); if (!$.NSFileManager.defaultManager.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath(path), null, error)) throw Error(ObjC.unwrap(error[0].localizedDescription)); } }"]);
-        for path in paths {
-            command.arg(Path::new(worktree).join(path));
-        }
-        let output = tokio::runtime::Handle::current()
-            .block_on(crate::infrastructure::process::output::output(
-                command,
-                Vec::new(),
-            ))
-            .map_err(|error| match error {
-                crate::infrastructure::process::output::ProcessError::Io(error) => {
-                    GitError::from(error)
-                }
-                crate::infrastructure::process::output::ProcessError::Stopped(error) => {
-                    GitError::from(error)
-                }
-            })?;
+        let paths = paths
+            .iter()
+            .map(|path| Path::new(worktree).join(path))
+            .collect::<Vec<_>>();
+        let output = tokio::runtime::Handle::current().block_on(
+            crate::infrastructure::platform::trash::move_to_trash(&paths),
+        )?;
         if !output.status.success() {
             return Err(GitError::External(
                 String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -272,11 +265,25 @@ pub(super) fn trash_files(worktree: &str, paths: &[String]) -> Result<(), GitErr
 
 pub(super) fn continue_rebase(worktree: &str, message: &CommitMessage) -> Result<(), GitError> {
     let repo = git_operation::run(|| client::open(worktree))?;
-    let path = if repo.path().join("rebase-merge").is_dir() {
-        repo.path().join("rebase-merge/message")
+    if repo.path().join("rebase-merge").is_dir() {
+        git_with_env(
+            worktree,
+            &["rebase", "--continue"],
+            &[
+                (
+                    "GIT_EDITOR",
+                    r#"sh -c 'printf "%s\n" "$RELEASH_COMMIT_MESSAGE" > "$1"' -"#,
+                ),
+                ("RELEASH_COMMIT_MESSAGE", message.as_str()),
+            ],
+        )
+        .map(|_| ())
     } else {
-        repo.path().join("rebase-apply/final-commit")
-    };
-    std::fs::write(path, format!("{}\n", message.as_str()))?;
-    git(worktree, &["rebase", "--continue"]).map(|_| ())
+        // shortcut: apply 方式は editor を呼ばないため、Git がメッセージ変更の入口を提供したら置き換える。
+        std::fs::write(
+            repo.path().join("rebase-apply/final-commit"),
+            format!("{}\n", message.as_str()),
+        )?;
+        git(worktree, &["rebase", "--continue"]).map(|_| ())
+    }
 }
