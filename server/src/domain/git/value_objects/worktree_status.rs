@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::branch_state::{Continuation, OperationKind, Push, WorktreeBranch};
+use super::branch_state::{Continuation, Operation, OperationKind, Push, WorktreeBranch};
 use crate::domain::git::entities::file_status::{ChangeKind, ConflictKind};
 use crate::domain::git::{CommitMessage, GitError, RepositoryStatusScan};
 use crate::domain::search_term::SearchTerm;
@@ -197,7 +197,13 @@ impl WorktreeStatus {
     ///
     /// merge か rebase の途中でないときと、conflict しているファイルが残っているときは、受け付けない。
     pub fn ensure_can_continue(&self) -> Result<&OperationKind, GitError> {
-        let operation = self.ensure_can_abort()?;
+        Ok(&self.continuable_operation()?.kind)
+    }
+
+    fn continuable_operation(&self) -> Result<&Operation, GitError> {
+        let super::branch_state::BranchState::Operating(operation) = &self.branch.state else {
+            return Err(GitError::rule("No merge or rebase in progress"));
+        };
         if !self.conflicts.is_empty() {
             return Err(GitError::rule("Resolve all conflicts before continuing"));
         }
@@ -213,10 +219,7 @@ impl WorktreeStatus {
     ///   メッセージで作る。空なら失敗する。
     /// - rebase の続行が commit を作らないとき（`Operation::message` が無いとき）は、入力を見ない。
     pub fn continuation(&self, input: &str) -> Result<Continuation, GitError> {
-        self.ensure_can_continue()?;
-        let super::branch_state::BranchState::Operating(operation) = &self.branch.state else {
-            return Err(GitError::rule("No merge or rebase in progress"));
-        };
+        let operation = self.continuable_operation()?;
         match (&operation.kind, &operation.message) {
             (OperationKind::Merge, Some(_)) => Ok(Continuation::Merge(CommitMessage::new(input)?)),
             (OperationKind::Merge, None) => Err(GitError::rule("Missing merge commit message")),

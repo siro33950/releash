@@ -98,7 +98,10 @@ fn test_操作受理_競合中は続行不可で中止可能() {
     // When / Then
     assert!(conflicted.ensure_can_commit().is_err());
     assert!(conflicted.push_plan(false).is_err());
-    assert!(conflicted.ensure_can_continue().is_err());
+    assert_eq!(
+        conflicted.ensure_can_continue(),
+        Err(GitError::rule("Resolve all conflicts before continuing"))
+    );
     assert_eq!(conflicted.ensure_can_abort(), Ok(&OperationKind::Merge));
     assert_eq!(
         status(operation, false).ensure_can_continue(),
@@ -148,8 +151,13 @@ fn test_続行_操作とcommitの有無に応じて入力を検証する() {
                 // When
                 let result = state.continuation(" edited ");
                 // Then
-                if conflict || (kind == OperationKind::Merge && message.is_none()) {
-                    assert!(result.is_err());
+                if conflict {
+                    assert_eq!(
+                        result,
+                        Err(GitError::rule("Resolve all conflicts before continuing"))
+                    );
+                } else if kind == OperationKind::Merge && message.is_none() {
+                    assert_eq!(result, Err(GitError::rule("Missing merge commit message")));
                 } else {
                     let edited = CommitMessage::new("edited").unwrap();
                     let expected = match kind {
@@ -167,9 +175,17 @@ fn test_続行_操作とcommitの有無に応じて入力を検証する() {
             }
         }
     }
-    assert!(status(BranchState::Unpublished { unpushed: 0 }, false)
-        .continuation("message")
-        .is_err());
+    for conflict in [false, true] {
+        let state = status(BranchState::Unpublished { unpushed: 0 }, conflict);
+        assert_eq!(
+            state.ensure_can_continue(),
+            Err(GitError::rule("No merge or rebase in progress"))
+        );
+        assert_eq!(
+            state.continuation("message"),
+            Err(GitError::rule("No merge or rebase in progress"))
+        );
+    }
 }
 
 fn lines() -> LineChanges {
