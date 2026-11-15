@@ -12,9 +12,9 @@ pub use repository::{RepoLocator, RepoPathsRepository};
 pub use service::GitService;
 pub use value_objects::{
     normalize_repo_path, repository_names, validate_worktree_branches, worktree_dir, worktree_path,
-    BranchState, CommitMessage, ConflictedFile, DiscardPlan, DiscardSummary, FileChange,
-    GitHubRepository, LineChanges, LineCount, Operation, OperationKind, Push, RebaseProgress,
-    RepositoryNameSource, Tracking, WorktreeBranch, WorktreeStatus,
+    BranchState, CommitMessage, ConflictedFile, Continuation, DiscardPlan, DiscardSummary,
+    FileChange, GitHubRepository, LineChanges, LineCount, Operation, OperationKind, Push,
+    RebaseProgress, RepositoryNameSource, Tracking, WorktreeBranch, WorktreeStatus,
 };
 
 pub(crate) mod file_watcher;

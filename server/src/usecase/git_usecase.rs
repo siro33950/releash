@@ -217,13 +217,12 @@ impl GitUsecase {
 
     // ── merge・rebase の続行と中止（書き込み） ──
 
-    /// 進行中の merge か rebase を先へ進める。commit を作るかと、そのメッセージは、worktree の Git の状態が決める。
+    /// 進行中の merge か rebase を先へ進める。受け付けるかと続け方は、worktree の Git の状態が決める。
     pub fn continue_operation(&self, worktree: &str, message: &str) -> Result<(), UsecaseError> {
-        let status = self.current_worktree_status(worktree)?;
-        let operation = status.ensure_can_continue()?;
-        let message = status.continue_message(message)?;
-        self.git
-            .continue_operation(worktree, operation, message.as_ref())?;
+        let continuation = self
+            .current_worktree_status(worktree)?
+            .continuation(message)?;
+        self.git.continue_operation(worktree, &continuation)?;
         self.notify_repository_changed(worktree);
         Ok(())
     }

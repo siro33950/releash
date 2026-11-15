@@ -330,7 +330,8 @@ mod tests {
         // Given
         let mut snapshot = snapshot_with_single_status(7, "a", "modified", "modified");
         snapshot.dirty_count = 4;
-        snapshot.status[0].conflict = Some(crate::domain::git::ConflictKind::BothModified);
+        snapshot.status[0].conflict =
+            Some(crate::usecase::repository_dto::ConflictKindDto::BothModified);
         let usecase = usecase_with_code(vec![snapshot], FakeReviewCode::new());
         // When
         let scan = usecase.status_scan("/repo").unwrap();

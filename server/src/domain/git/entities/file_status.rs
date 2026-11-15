@@ -56,11 +56,7 @@ pub enum ChangeKind {
 }
 
 /// conflict の種類。git の status が出す区別と同じである。
-///
-/// 走査結果を運ぶときは、`both_modified`、`both_added`、`both_deleted`、`added_by_us`、
-/// `added_by_them`、`deleted_by_us`、`deleted_by_them` のどれかの文字列になる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictKind {
     /// 両方の側が変更した。
     BothModified,

@@ -58,7 +58,6 @@ pub enum StateValue {
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FilteredFiles(crate::domain::code::value_objects::file_list::FilteredFiles),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
-    /// worktree の Git の状態。
     /// worktree の Git の状態と、表示に使う変更の行数。
     SourceControl(
         crate::domain::git::WorktreeStatus,

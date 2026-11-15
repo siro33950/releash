@@ -1,6 +1,6 @@
 use super::{
-    Branch, CommitMessage, GitError, LineChanges, OperationKind, Push, RepositoryStatusScan,
-    Worktree, WorktreeBranch,
+    Branch, CommitMessage, Continuation, GitError, LineChanges, OperationKind, Push,
+    RepositoryStatusScan, Worktree, WorktreeBranch,
 };
 
 /// Git のブランチ、作業ツリー、履歴を操作するドメインサービス。
@@ -40,14 +40,13 @@ pub trait GitService: Send + Sync {
     fn restore_worktree_files(&self, worktree: &str, paths: &[String]) -> Result<(), GitError>;
     /// 指定したファイルを OS のゴミ箱に移す。`paths` が空なら何もしない。
     fn trash_files(&self, worktree: &str, paths: &[String]) -> Result<(), GitError>;
-    /// 進行中の merge か rebase を先へ進める。`message` があれば、そのメッセージの commit を作る。
-    /// `message` が無ければ、commit を作らない。
+    /// 進行中の merge か rebase を、指定した続け方で先へ進める。
+    /// rebase のメッセージは、止まっている commit だけに使う。同じ続行で進む後の commit のメッセージは変えない。
     /// rebase が次の commit の conflict で止まったときは失敗を返し、worktree は rebase の途中のまま残る。
     fn continue_operation(
         &self,
         worktree: &str,
-        operation: &OperationKind,
-        message: Option<&CommitMessage>,
+        continuation: &Continuation,
     ) -> Result<(), GitError>;
     /// 進行中の merge か rebase を中止し、ブランチと worktree のファイルを、始める前の状態に戻す。
     fn abort_operation(&self, worktree: &str, operation: &OperationKind) -> Result<(), GitError>;

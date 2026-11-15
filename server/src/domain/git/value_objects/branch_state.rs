@@ -1,3 +1,5 @@
+use super::commit_message::CommitMessage;
+
 /// worktree が checkout しているブランチと、その状態。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeBranch {
@@ -63,6 +65,16 @@ pub struct RebaseProgress {
     pub step: u32,
     /// rebase で適用する commit の数。
     pub total: u32,
+}
+
+/// 進行中の merge か rebase の続け方。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Continuation {
+    /// merge の commit を、このメッセージで作る。
+    Merge(CommitMessage),
+    /// rebase を先へ進める。メッセージがあれば、適用している commit をそのメッセージで作る。
+    /// メッセージが無ければ、commit を作らない。
+    Rebase(Option<CommitMessage>),
 }
 
 /// ブランチの commit の送り方。送り先も決める。

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::app_config::RepositoryConfigRepository;
 use crate::domain::git::{
-    Branch, CommitMessage, GitError, GitService, LineChanges, OperationKind, Push,
+    Branch, CommitMessage, Continuation, GitError, GitService, LineChanges, OperationKind, Push,
     RepositoryStatusScan, Worktree, WorktreeBranch,
 };
 
@@ -120,20 +120,16 @@ impl GitService for GitGateway {
     fn continue_operation(
         &self,
         worktree: &str,
-        operation: &OperationKind,
-        message: Option<&CommitMessage>,
+        continuation: &Continuation,
     ) -> Result<(), GitError> {
-        match (operation, message) {
-            (OperationKind::Merge, Some(message)) => {
+        match continuation {
+            Continuation::Merge(message) => {
                 source_control::git(worktree, &["commit", "-m", message.as_str()]).map(|_| ())
             }
-            (OperationKind::Rebase(_), Some(message)) => {
+            Continuation::Rebase(Some(message)) => {
                 source_control::continue_rebase(worktree, message)
             }
-            (OperationKind::Merge, None) => Err(GitError::rule(
-                "Merge continuation requires a commit message",
-            )),
-            (OperationKind::Rebase(_), None) => {
+            Continuation::Rebase(None) => {
                 source_control::git(worktree, &["rebase", "--continue"]).map(|_| ())
             }
         }

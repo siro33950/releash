@@ -16,7 +16,7 @@ fn test_走査結果_競合種別の転送形式と復元を保つ() {
             path: "a".into(),
             index_status: "modified".into(),
             worktree_status: "modified".into(),
-            conflict: Some(kind),
+            conflict: Some(kind.into()),
         };
         // When
         let value = serde_json::to_value(&dto).unwrap();

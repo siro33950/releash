@@ -851,7 +851,14 @@ fn test_git進行操作_続行と中止に操作種別とメッセージを渡�
                 };
                 // Then
                 let expected = if action == "continue" {
-                    GitCall::Continue(kind.clone(), Some("edited".into()))
+                    GitCall::Continue(match kind {
+                        OperationKind::Merge => crate::domain::git::Continuation::Merge(
+                            crate::domain::git::CommitMessage::new("edited").unwrap(),
+                        ),
+                        OperationKind::Rebase(_) => crate::domain::git::Continuation::Rebase(Some(
+                            crate::domain::git::CommitMessage::new("edited").unwrap(),
+                        )),
+                    })
                 } else {
                     GitCall::Abort(kind.clone())
                 };
@@ -900,7 +907,12 @@ fn test_続行_commitを作らないときはメッセージ無しで委譲す�
     // When
     usecase(fake.clone()).continue_operation("/r", "").unwrap();
     // Then
-    assert_eq!(*fake.git_calls.lock(), [GitCall::Continue(kind, None)]);
+    assert_eq!(
+        *fake.git_calls.lock(),
+        [GitCall::Continue(crate::domain::git::Continuation::Rebase(
+            None
+        ))]
+    );
 }
 
 #[test]

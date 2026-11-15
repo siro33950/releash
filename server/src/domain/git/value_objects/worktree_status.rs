@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::branch_state::{OperationKind, Push, WorktreeBranch};
+use super::branch_state::{Continuation, OperationKind, Push, WorktreeBranch};
 use crate::domain::git::entities::file_status::{ChangeKind, ConflictKind};
 use crate::domain::git::{CommitMessage, GitError, RepositoryStatusScan};
 use crate::domain::search_term::SearchTerm;
@@ -204,19 +204,26 @@ impl WorktreeStatus {
         Ok(operation)
     }
 
-    /// 続行で作る commit のメッセージを、入力から決める。
+    /// 進行中の merge か rebase の続行を受け付けるかを決め、受け付けるなら続け方を返す。
     ///
-    /// - 続行が commit を作るときは、入力の前後の空白を除いたメッセージを返す。空なら失敗する。
-    /// - 続行が commit を作らないときは、入力を見ずに `None` を返す。
-    /// - merge か rebase の途中でないときは失敗する。
-    pub fn continue_message(&self, input: &str) -> Result<Option<CommitMessage>, GitError> {
-        match &self.branch.state {
-            super::branch_state::BranchState::Operating(operation) => operation
-                .message
-                .as_ref()
-                .map(|_| CommitMessage::new(input))
-                .transpose(),
-            _ => Err(GitError::rule("No merge or rebase in progress")),
+    /// - 受け付けるかは `ensure_can_continue` と同じである。
+    /// - merge の続行は、必ず commit を作る。入力の前後の空白を除いたメッセージで作る。空なら失敗する。
+    ///   merge の途中なのに `Operation::message` が無いときも失敗する。
+    /// - rebase の続行が commit を作るとき（`Operation::message` があるとき）は、入力の前後の空白を除いた
+    ///   メッセージで作る。空なら失敗する。
+    /// - rebase の続行が commit を作らないとき（`Operation::message` が無いとき）は、入力を見ない。
+    pub fn continuation(&self, input: &str) -> Result<Continuation, GitError> {
+        self.ensure_can_continue()?;
+        let super::branch_state::BranchState::Operating(operation) = &self.branch.state else {
+            return Err(GitError::rule("No merge or rebase in progress"));
+        };
+        match (&operation.kind, &operation.message) {
+            (OperationKind::Merge, Some(_)) => Ok(Continuation::Merge(CommitMessage::new(input)?)),
+            (OperationKind::Merge, None) => Err(GitError::rule("Missing merge commit message")),
+            (OperationKind::Rebase(_), Some(_)) => {
+                Ok(Continuation::Rebase(Some(CommitMessage::new(input)?)))
+            }
+            (OperationKind::Rebase(_), None) => Ok(Continuation::Rebase(None)),
         }
     }
 

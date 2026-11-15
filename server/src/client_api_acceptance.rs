@@ -12,8 +12,8 @@ pub use crate::adaptor::presenter::workflow_wire::{
     DiagnosticReport, DiagnosticSpan, DiagnosticStage, Severity,
 };
 pub use crate::domain::git::{
-    Branch, BranchState, CommitMessage, GitError, GitService, LineChanges, OperationKind, Push,
-    RebaseProgress, WorktreeBranch,
+    Branch, BranchState, CommitMessage, ConflictKind, Continuation, GitError, GitService,
+    LineChanges, OperationKind, Push, RebaseProgress, WorktreeBranch,
 };
 
 #[derive(serde::Serialize)]

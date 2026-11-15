@@ -6,7 +6,8 @@ pub mod worktree_path;
 pub mod worktree_status;
 
 pub use branch_state::{
-    BranchState, Operation, OperationKind, Push, RebaseProgress, Tracking, WorktreeBranch,
+    BranchState, Continuation, Operation, OperationKind, Push, RebaseProgress, Tracking,
+    WorktreeBranch,
 };
 pub use commit_message::CommitMessage;
 pub use repo_path::normalize_repo_path;

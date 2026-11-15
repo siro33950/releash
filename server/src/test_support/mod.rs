@@ -122,9 +122,9 @@ pub mod agent_session_tui_acceptance {
 pub mod client_api_acceptance {
     pub use crate::client_api_acceptance::{
         connect_client, read_current_branch, read_state, request_client, rpc, Branch, BranchState,
-        ClientApiAcceptanceHost, ClientEndpoint, CommitMessage, DiagnosticReport, DiagnosticSpan,
-        DiagnosticStage, GitError, GitGateway, GitService, LineChanges, NativeClient,
-        OperationKind, Push, RebaseProgress, Severity, WorktreeBranch,
+        ClientApiAcceptanceHost, ClientEndpoint, CommitMessage, ConflictKind, Continuation,
+        DiagnosticReport, DiagnosticSpan, DiagnosticStage, GitError, GitGateway, GitService,
+        LineChanges, NativeClient, OperationKind, Push, RebaseProgress, Severity, WorktreeBranch,
     };
 }
 

@@ -208,8 +208,7 @@ where
     fn continue_operation(
         &self,
         _worktree: &str,
-        _operation: &OperationKind,
-        _message: Option<&CommitMessage>,
+        _continuation: &releashd::test_support::client_api_acceptance::Continuation,
     ) -> Result<(), GitError> {
         panic!("BranchStub does not support source control operations")
     }

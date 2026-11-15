@@ -29,7 +29,51 @@ pub struct FileStatusDto {
     pub index_status: String,
     pub worktree_status: String,
     /// conflict しているファイルでは、その種類。conflict していないファイルでは `None`。
-    pub conflict: Option<crate::domain::git::ConflictKind>,
+    pub conflict: Option<ConflictKindDto>,
+}
+
+/// 走査結果を運ぶときの、conflict の種類。`ConflictKind` と 1 対 1 に対応する。
+///
+/// 運ぶときは、`both_modified`、`both_added`、`both_deleted`、`added_by_us`、
+/// `added_by_them`、`deleted_by_us`、`deleted_by_them` のどれかの文字列になる。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictKindDto {
+    BothModified,
+    BothAdded,
+    BothDeleted,
+    AddedByUs,
+    AddedByThem,
+    DeletedByUs,
+    DeletedByThem,
+}
+
+impl From<crate::domain::git::ConflictKind> for ConflictKindDto {
+    fn from(kind: crate::domain::git::ConflictKind) -> Self {
+        match kind {
+            crate::domain::git::ConflictKind::BothModified => Self::BothModified,
+            crate::domain::git::ConflictKind::BothAdded => Self::BothAdded,
+            crate::domain::git::ConflictKind::BothDeleted => Self::BothDeleted,
+            crate::domain::git::ConflictKind::AddedByUs => Self::AddedByUs,
+            crate::domain::git::ConflictKind::AddedByThem => Self::AddedByThem,
+            crate::domain::git::ConflictKind::DeletedByUs => Self::DeletedByUs,
+            crate::domain::git::ConflictKind::DeletedByThem => Self::DeletedByThem,
+        }
+    }
+}
+
+impl From<ConflictKindDto> for crate::domain::git::ConflictKind {
+    fn from(kind: ConflictKindDto) -> Self {
+        match kind {
+            ConflictKindDto::BothModified => Self::BothModified,
+            ConflictKindDto::BothAdded => Self::BothAdded,
+            ConflictKindDto::BothDeleted => Self::BothDeleted,
+            ConflictKindDto::AddedByUs => Self::AddedByUs,
+            ConflictKindDto::AddedByThem => Self::AddedByThem,
+            ConflictKindDto::DeletedByUs => Self::DeletedByUs,
+            ConflictKindDto::DeletedByThem => Self::DeletedByThem,
+        }
+    }
 }
 
 impl From<FileStatus> for FileStatusDto {
@@ -38,7 +82,7 @@ impl From<FileStatus> for FileStatusDto {
             path: status.path,
             index_status: status.index_status,
             worktree_status: status.worktree_status,
-            conflict: status.conflict,
+            conflict: status.conflict.map(Into::into),
         }
     }
 }
@@ -50,7 +94,7 @@ impl From<FileStatusDto> for FileStatus {
             path: status.path,
             index_status: status.index_status,
             worktree_status: status.worktree_status,
-            conflict: status.conflict,
+            conflict: status.conflict.map(Into::into),
         }
     }
 }

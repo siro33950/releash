@@ -44,7 +44,7 @@ pub enum GitCall {
     Fetch,
     Restore(Vec<String>),
     Trash(Vec<String>),
-    Continue(crate::domain::git::OperationKind, Option<String>),
+    Continue(crate::domain::git::Continuation),
     Abort(crate::domain::git::OperationKind),
 }
 
@@ -183,16 +183,9 @@ impl GitService for FakeRepo {
     fn continue_operation(
         &self,
         _worktree: &str,
-        operation: &crate::domain::git::OperationKind,
-        message: Option<&crate::domain::git::CommitMessage>,
+        continuation: &crate::domain::git::Continuation,
     ) -> Result<(), GitError> {
-        self.record_git(
-            "continue",
-            GitCall::Continue(
-                operation.clone(),
-                message.map(|message| message.as_str().into()),
-            ),
-        )
+        self.record_git("continue", GitCall::Continue(continuation.clone()))
     }
     fn abort_operation(
         &self,

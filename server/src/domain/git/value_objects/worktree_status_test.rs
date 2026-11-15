@@ -125,32 +125,50 @@ fn test_操作受理_競合中は続行不可で中止可能() {
 }
 
 #[test]
-fn test_続行メッセージ_commitの有無に応じて入力を検証する() {
+fn test_続行_操作とcommitの有無に応じて入力を検証する() {
+    use crate::domain::git::{CommitMessage, Continuation, RebaseProgress};
     // Given
-    for message in [Some("original".into()), None] {
-        let state = status(
-            BranchState::Operating(Operation {
-                kind: OperationKind::Rebase(crate::domain::git::RebaseProgress {
-                    onto: "main".into(),
-                    step: 1,
-                    total: 2,
-                }),
-                message: message.clone(),
-            }),
-            false,
-        );
-        // When / Then
-        assert_eq!(
-            state
-                .continue_message(" edited ")
-                .unwrap()
-                .map(|m| m.as_str().to_owned()),
-            message.as_ref().map(|_| "edited".to_owned())
-        );
-        assert_eq!(state.continue_message(" ").is_err(), message.is_some());
+    for kind in [
+        OperationKind::Merge,
+        OperationKind::Rebase(RebaseProgress {
+            onto: "main".into(),
+            step: 1,
+            total: 2,
+        }),
+    ] {
+        for message in [Some("original".into()), None] {
+            for conflict in [false, true] {
+                let state = status(
+                    BranchState::Operating(Operation {
+                        kind: kind.clone(),
+                        message: message.clone(),
+                    }),
+                    conflict,
+                );
+                // When
+                let result = state.continuation(" edited ");
+                // Then
+                if conflict || (kind == OperationKind::Merge && message.is_none()) {
+                    assert!(result.is_err());
+                } else {
+                    let edited = CommitMessage::new("edited").unwrap();
+                    let expected = match kind {
+                        OperationKind::Merge => Continuation::Merge(edited),
+                        OperationKind::Rebase(_) => {
+                            Continuation::Rebase(message.as_ref().map(|_| edited))
+                        }
+                    };
+                    assert_eq!(result.unwrap(), expected);
+                }
+                assert_eq!(
+                    state.continuation(" ").is_err(),
+                    conflict || kind == OperationKind::Merge || message.is_some()
+                );
+            }
+        }
     }
     assert!(status(BranchState::Unpublished { unpushed: 0 }, false)
-        .continue_message("message")
+        .continuation("message")
         .is_err());
 }
 

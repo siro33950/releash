@@ -10,20 +10,19 @@ use crate::domain::git::{
 use crate::infrastructure::git::client;
 
 pub(super) fn git(worktree: &str, args: &[&str]) -> Result<String, GitError> {
-    git_with_env(worktree, args, &[])
+    git_with_input(worktree, args, Vec::new())
 }
 
-fn git_with_env(worktree: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, GitError> {
+fn git_with_input(worktree: &str, args: &[&str], input: Vec<u8>) -> Result<String, GitError> {
     let mut command = tokio::process::Command::new("git");
     command
         .arg("-C")
         .arg(worktree)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_EDITOR", "true")
-        .envs(env.iter().copied());
+        .env("GIT_EDITOR", "true");
     let output = tokio::runtime::Handle::current().block_on(
-        crate::infrastructure::process::output::output(command, Vec::new()),
+        crate::infrastructure::process::output::output(command, input),
     )?;
     if !output.status.success() {
         return Err(GitError::External(format!(
@@ -49,11 +48,14 @@ pub(super) fn worktree_branch(worktree: &str) -> Result<WorktreeBranch, GitError
             let mut onto_name = None;
             let mut references = git_operation::run(|| repo.references())?;
             while let Some(reference) = git_operation::run(|| references.next().transpose())? {
-                if reference.is_branch()
-                    && reference.target().is_some_and(|id| id.to_string() == onto)
-                {
-                    onto_name = Some(git_operation::run(|| reference.shorthand())?.to_owned());
-                    break;
+                if reference.target().is_some_and(|id| id.to_string() == onto) {
+                    if reference.is_branch() {
+                        onto_name = Some(git_operation::run(|| reference.shorthand())?.to_owned());
+                        break;
+                    }
+                    if reference.is_remote() && onto_name.is_none() {
+                        onto_name = Some(git_operation::run(|| reference.shorthand())?.to_owned());
+                    }
                 }
             }
             let onto = onto_name.unwrap_or_else(|| onto.chars().take(7).collect());
@@ -91,13 +93,13 @@ pub(super) fn worktree_branch(worktree: &str) -> Result<WorktreeBranch, GitError
             state: BranchState::Operating(Operation {
                 kind: OperationKind::Merge,
                 message: Some(
-                    read(&repo.path().join("MERGE_MSG"))?
-                        .lines()
-                        .filter(|line| !line.starts_with('#'))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                        .trim()
-                        .to_owned(),
+                    git_with_input(
+                        worktree,
+                        &["stripspace", "--strip-comments"],
+                        std::fs::read(repo.path().join("MERGE_MSG"))?,
+                    )?
+                    .trim()
+                    .to_owned(),
                 ),
             }),
         });
@@ -265,25 +267,12 @@ pub(super) fn trash_files(worktree: &str, paths: &[String]) -> Result<(), GitErr
 
 pub(super) fn continue_rebase(worktree: &str, message: &CommitMessage) -> Result<(), GitError> {
     let repo = git_operation::run(|| client::open(worktree))?;
-    if repo.path().join("rebase-merge").is_dir() {
-        git_with_env(
-            worktree,
-            &["rebase", "--continue"],
-            &[
-                (
-                    "GIT_EDITOR",
-                    r#"sh -c 'printf "%s\n" "$RELEASH_COMMIT_MESSAGE" > "$1"' -"#,
-                ),
-                ("RELEASH_COMMIT_MESSAGE", message.as_str()),
-            ],
-        )
-        .map(|_| ())
+    // GIT_EDITOR は後続 commit にも効き、apply 方式には編集の入口が無いため、停止中のメッセージファイルだけを書き換える。
+    let message_path = if repo.path().join("rebase-merge").is_dir() {
+        repo.path().join("rebase-merge/message")
     } else {
-        // shortcut: apply 方式は editor を呼ばないため、Git がメッセージ変更の入口を提供したら置き換える。
-        std::fs::write(
-            repo.path().join("rebase-apply/final-commit"),
-            format!("{}\n", message.as_str()),
-        )?;
-        git(worktree, &["rebase", "--continue"]).map(|_| ())
-    }
+        repo.path().join("rebase-apply/final-commit")
+    };
+    std::fs::write(message_path, format!("{}\n", message.as_str()))?;
+    git(worktree, &["rebase", "--continue"]).map(|_| ())
 }
