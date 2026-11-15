@@ -39,15 +39,10 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
-            StateValue::ArchivedHistory(entries) => wire::state_payload::Value::ArchivedHistory(
-                wire::ListArchivedHistoryItem {
-                    items: entries
-                        .iter()
-                        .map(archived_history_item)
-                        .collect::<Result<_, _>>()
-                        .map_err(crate::adaptor::presenter::connect::command_error)?,
-                },
-            ),
+            StateValue::ArchivedHistory(tree, search) => wire::state_payload::Value::ArchivedHistory(wire::ListArchivedHistoryItem {
+                items: tree.archived_history(search.as_ref()).iter().map(archived_history_item).collect::<Result<_, _>>()
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
             StateValue::Providers(value) => wire::state_payload::Value::Providers(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -372,43 +367,37 @@ fn directory_entry(
 }
 
 fn archived_history_item(
-    entry: &crate::domain::workspace_tree::ArchivedHistoryEntry,
+    entry: &crate::domain::workspace_tree::ArchivedExecution<'_>,
 ) -> Result<wire::ArchivedHistoryItem, wire::CommandFailure> {
     use crate::adaptor::presenter::client::value;
-    use crate::domain::workspace_tree::{
-        ArchivedHistoryEntry, ArchivedSessionEntry, ArchivedWorkflowEntry,
-    };
+    use crate::domain::workflow::ExecutionTreeLaunch;
     use wire::archived_history_item::Variant;
+    let execution = entry.execution();
     Ok(wire::ArchivedHistoryItem {
-        variant: Some(match entry {
-            ArchivedHistoryEntry::Session(ArchivedSessionEntry {
-                agent_session_id,
-                provider,
-                name,
-                archived_at,
-                can_delete,
-            }) => Variant::Session(wire::ArchivedSessionHistoryItem {
-                agent_session_id: agent_session_id.clone(),
-                name: name.clone(),
-                provider: Some(value(
-                    crate::usecase::provider_dto::AgentSessionProviderDto::from(*provider),
-                )?),
-                archived_at: *archived_at,
-                can_delete: *can_delete,
-            }),
-            ArchivedHistoryEntry::Workflow(ArchivedWorkflowEntry {
-                execution_id,
-                worktree_path,
-                title,
-                status,
-                updated_at,
-            }) => Variant::Workflow(wire::WorkspaceWorkflowHistoryItem {
-                execution_id: Some(execution_id.clone()),
-                worktree_path: Some(worktree_path.clone()),
-                title: Some(title.clone()),
-                status: Some(value(status.as_str())?),
-                updated_at: Some(*updated_at),
-            }),
+        variant: Some(match execution.launched_as {
+            ExecutionTreeLaunch::Session => {
+                let session = execution.session.as_ref().expect("archived session");
+                Variant::Session(wire::ArchivedSessionHistoryItem {
+                    agent_session_id: session.id().to_owned(),
+                    name: entry.name().to_owned(),
+                    provider: Some(value(
+                        crate::usecase::provider_dto::AgentSessionProviderDto::from(
+                            session.provider(),
+                        ),
+                    )?),
+                    archived_at: entry.ordered_at(),
+                    can_delete: session.operations().can_delete,
+                })
+            }
+            ExecutionTreeLaunch::Workflow => {
+                Variant::Workflow(wire::WorkspaceWorkflowHistoryItem {
+                    execution_id: Some(execution.execution_id.clone()),
+                    worktree_path: Some(execution.worktree_path.clone()),
+                    title: Some(entry.name().to_owned()),
+                    status: Some(value(execution.status.as_str())?),
+                    updated_at: Some(entry.ordered_at()),
+                })
+            }
         }),
     })
 }

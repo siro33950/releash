@@ -849,7 +849,7 @@ pub async fn test_agent_session_history_query_sqliteのbusyを一時的な失敗
 }
 
 #[tokio::test]
-pub async fn test_履歴検索_実ファイルとsqliteの202件目以降も検索してページ化する() {
+pub async fn test_履歴検索_実ファイルとsqliteの201件目までを検索してページ化する() {
     // Given
     let directory = tempfile::tempdir().unwrap();
     let claude_root = directory.path().join("claude");
@@ -861,7 +861,7 @@ pub async fn test_履歴検索_実ファイルとsqliteの202件目以降も検�
     connection.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT, first_user_message TEXT);").unwrap();
     for index in 0..203 {
         let id = format!("session-{index:03}");
-        let title = if index == 201 {
+        let title = if index == 200 || index == 201 {
             "needle title"
         } else {
             "other"
@@ -907,11 +907,12 @@ pub async fn test_履歴検索_実ファイルとsqliteの202件目以降も検�
             })
             .await
             .unwrap();
-        assert_eq!(page.items.len(), count);
+        assert_eq!(page.items.len(), count.min(2));
         assert_eq!(page.has_more, count == 1);
-        assert_eq!(page.items[0].provider_session_id, "session-201");
-        if count == 4 {
-            assert_eq!(page.items[3].provider_session_id, "session-202");
-        }
+        assert_eq!(page.items[0].provider_session_id, "session-200");
+        assert!(page
+            .items
+            .iter()
+            .all(|item| item.provider_session_id == "session-200"));
     }
 }

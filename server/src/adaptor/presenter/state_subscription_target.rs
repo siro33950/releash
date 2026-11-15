@@ -76,16 +76,13 @@ impl SubscriptionTarget {
                 Ok(Self::SessionHistory(
                     (*path).into(),
                     parsed,
-                    args.get(2)
-                        .map(|search| parse_history_search(search))
-                        .transpose()?
-                        .flatten(),
+                    args.get(2).map(|search| parse_search(search)).transpose()?,
                 ))
             }
             ("archived-history", [path]) => Ok(Self::ArchivedHistory((*path).into(), None)),
             ("archived-history", [path, search]) => Ok(Self::ArchivedHistory(
                 (*path).into(),
-                parse_history_search(search)?,
+                Some(parse_search(search)?),
             )),
             ("providers", []) => Ok(Self::Providers),
             ("branches", [path]) => Ok(Self::Branches((*path).into(), None)),
@@ -330,14 +327,6 @@ const SEARCH_PREFIX: &str = "search=";
 fn parse_search(arg: &str) -> Result<crate::domain::search_term::SearchTerm, SubscriptionError> {
     arg.strip_prefix(SEARCH_PREFIX)
         .and_then(crate::domain::search_term::SearchTerm::new)
-        .ok_or(SubscriptionError::InvalidId)
-}
-
-fn parse_history_search(
-    arg: &str,
-) -> Result<Option<crate::domain::search_term::SearchTerm>, SubscriptionError> {
-    arg.strip_prefix(SEARCH_PREFIX)
-        .map(crate::domain::search_term::SearchTerm::new)
         .ok_or(SubscriptionError::InvalidId)
 }
 

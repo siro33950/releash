@@ -1203,7 +1203,7 @@ pub mod workspace {
     pub use crate::domain::workspace_tree::value_objects::WorkspaceNodeStatusClassification;
     pub use crate::domain::workspace_tree::value_objects::WorkspaceTreeNode;
     pub use crate::domain::workspace_tree::visible::WorkspaceVisibleNode;
-    pub use crate::domain::workspace_tree::ArchivedHistoryEntry;
+    pub use crate::domain::workspace_tree::ArchivedExecution;
     pub use crate::usecase::workspace_tree::list::WorkspaceList;
     pub use crate::usecase::workspace_tree::list::WorkspaceListUsecase;
     pub use crate::usecase::workspace_tree::list::WorkspaceListWorktree;

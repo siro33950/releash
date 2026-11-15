@@ -40,32 +40,9 @@ struct SessionHistoryView: View {
               ForEach(archive.items, id: \.historyID) { item in
                 switch item.variant {
                 case .session(let session):
-                  historyRow(id: item.historyID, title: session.name, action: { restore(session) })
-                  {
-                    Text(
-                      "Session · \(session.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: session.archivedAt)))に Archive"
-                    )
-                  } buttons: {
-                    Button("復元") { restore(session) }
-                    if session.canDelete {
-                      Button("削除", role: .destructive) { deleting = session }
-                    }
-                  }
+                  sessionRow(session, id: item.historyID)
                 case .workflow(let workflow):
-                  historyRow(
-                    id: item.historyID, title: workflow.title,
-                    action: { restoreWorkflow(workflow.executionID) }
-                  ) {
-                    HStack {
-                      Text("Workflow ·")
-                      Circle().fill(workflow.status.value == .completed ? Color.green : Color.red)
-                        .frame(width: 7, height: 7).accessibilityHidden(true)
-                      Text(workflow.status.value == .completed ? "完了" : "中止")
-                      Text("· \(historyTime(Date(timeIntervalSince1970: workflow.updatedAt)))")
-                    }
-                  } buttons: {
-                    Button("復元") { restoreWorkflow(workflow.executionID) }
-                  }
+                  workflowRow(workflow, id: item.historyID)
                 case nil: EmptyView()
                 }
               }
@@ -79,16 +56,7 @@ struct SessionHistoryView: View {
           if section != "Archive 済み" {
             Section {
               ForEach(page.items.items, id: \.historyID) { candidate in
-                historyRow(
-                  id: "provider:" + candidate.historyID, title: candidate.label,
-                  action: { resume(candidate) }
-                ) {
-                  Text(
-                    "\(candidate.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: candidate.updatedAt)))"
-                  )
-                } buttons: {
-                  Button("再開") { resume(candidate) }
-                }
+                providerRow(candidate)
               }
               if page.hasMore_p {
                 Button("さらに読み込む") {
@@ -134,6 +102,64 @@ struct SessionHistoryView: View {
         }
       } message: {
         Text("削除した Session は History から消え、復元できません。")
+      }
+  }
+
+  private func sessionRow(_ session: Releash_Client_V1_ArchivedSessionHistoryItem, id: String)
+    -> some View
+  {
+    let action = { restore(session) }
+    return
+      historyRow(id: id, title: session.name, action: action) {
+        Text(
+          "Session · \(session.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: session.archivedAt)))に Archive"
+        )
+      } buttons: {
+        Button("復元", action: action)
+        if session.canDelete {
+          Button("削除", role: .destructive) { deleting = session }
+        }
+      }
+  }
+
+  private func workflowRow(_ workflow: Releash_Client_V1_WorkspaceWorkflowHistoryItem, id: String)
+    -> some View
+  {
+    let action = { restoreWorkflow(workflow.executionID) }
+    let status: (color: Color, text: String) =
+      workflow.status.value == .completed
+      ? (.green, "完了") : (.red, "中止")
+    return
+      historyRow(
+        id: id, title: workflow.title,
+        action: action
+      ) {
+        HStack {
+          Text("Workflow ·")
+          Circle().fill(status.color)
+            .frame(width: 7, height: 7).accessibilityHidden(true)
+          Text(status.text)
+          Text("· \(historyTime(Date(timeIntervalSince1970: workflow.updatedAt)))")
+        }
+      } buttons: {
+        Button("復元", action: action)
+      }
+  }
+
+  private func providerRow(_ candidate: Releash_Client_V1_AgentSessionHistoryCandidateDto)
+    -> some View
+  {
+    let action = { resume(candidate) }
+    return
+      historyRow(
+        id: "provider:" + candidate.historyID, title: candidate.label,
+        action: action
+      ) {
+        Text(
+          "\(candidate.provider.displayName) · \(historyTime(Date(timeIntervalSince1970: candidate.updatedAt)))"
+        )
+      } buttons: {
+        Button("再開", action: action)
       }
   }
 

@@ -1,4 +1,3 @@
-use super::*;
 use crate::domain::workflow::{ExecutionTreeArchiveRecord, ExecutionTreeLaunch};
 use crate::domain::workspace_tree::{test_helpers::*, WorkspaceExecution};
 
@@ -31,9 +30,18 @@ fn test_archive履歴_混在を更新時刻順と識別子順に並べ名前で�
         tree.archived_history(crate::domain::search_term::SearchTerm::new(" THREAD ").as_ref());
     // Then
     assert_eq!(history.len(), 2);
-    assert!(matches!(&history[0], ArchivedHistoryEntry::Session(s)
-        if s.agent_session_id == "session-a" && s.archived_at == 10.0 && s.name == "node-session-a" && s.can_delete));
-    assert_eq!(filtered, history[1..]);
+    assert_eq!(
+        history[0].execution().session.as_ref().unwrap().id(),
+        "session-a"
+    );
+    assert_eq!(history[0].ordered_at(), 10.0);
+    assert_eq!(history[0].name(), "node-session-a");
+    assert_eq!(history[1].ordered_at(), 5.0);
+    assert_eq!(filtered.len(), 1);
+    assert!(std::ptr::eq(
+        filtered[0].execution(),
+        history[1].execution()
+    ));
 }
 
 #[test]
@@ -54,8 +62,30 @@ fn test_archive履歴_同時刻は識別子順で他worktreeと未archiveを除�
         tree.archived_history(crate::domain::search_term::SearchTerm::new("node-b").as_ref());
     // Then
     assert_eq!(history.len(), 2);
-    assert!(
-        matches!(&history[0], ArchivedHistoryEntry::Session(value) if value.agent_session_id == "a")
+    assert_eq!(history[0].execution().session.as_ref().unwrap().id(), "a");
+    assert_eq!(filtered.len(), 1);
+    assert!(std::ptr::eq(
+        filtered[0].execution(),
+        history[1].execution()
+    ));
+}
+
+#[test]
+fn test_archive履歴_sessionの欠損と未archiveを除く() {
+    // Given
+    let (nodes, active) = session_execution("active", false);
+    let (_, missing_node) = session_execution("missing-node", true);
+    let tree = tree(
+        nodes,
+        vec![
+            archived(active, 1.0),
+            archived(missing_node, 1.0),
+            archived(
+                execution("missing-session", ExecutionTreeLaunch::Session),
+                1.0,
+            ),
+        ],
     );
-    assert_eq!(filtered, history[1..]);
+    // When / Then
+    assert!(tree.archived_history(None).is_empty());
 }

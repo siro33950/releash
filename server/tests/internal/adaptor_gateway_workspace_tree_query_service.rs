@@ -16,7 +16,6 @@ use releashd::test_support::integration::workflow::NodeFact;
 use releashd::test_support::integration::workflow::StopReceivedFact;
 use releashd::test_support::integration::workflow::WorkflowSessionFactSeed;
 use releashd::test_support::integration::workflow::WorkspaceNodeContentDto;
-use releashd::test_support::integration::workspace::ArchivedHistoryEntry;
 use releashd::test_support::integration::workspace::SqliteWorkspaceQueryService;
 use releashd::test_support::integration::workspace::SqliteWorkspaceTreeRepository;
 use releashd::test_support::integration::workspace::WorkspaceIdentity;
@@ -718,11 +717,9 @@ pub async fn test_workspaceツリー投影_同じfoldのworkflow履歴と表示�
     assert_ne!(tree_title, "main");
     assert!(archived.visible().roots().is_empty());
     assert_eq!(history.len(), 1);
-    let ArchivedHistoryEntry::Workflow(item) = &history[0] else {
-        panic!("workflow history")
-    };
+    let item = history[0].execution();
     assert_eq!(item.execution_id, execution_id);
-    assert_eq!(item.title, tree_title);
+    assert_eq!(history[0].name(), tree_title);
 }
 
 #[tokio::test]
@@ -975,20 +972,14 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
     }
     // When
     let tree = load_tree(&repository, &WorkspaceIdentity::new("/repo")).await;
-    let history = tree
-        .archived_history(None)
-        .into_iter()
-        .map(|entry| {
-            let ArchivedHistoryEntry::Workflow(item) = entry else {
-                panic!("workflow history")
-            };
-            item
-        })
-        .collect::<Vec<_>>();
+    let history = tree.archived_history(None);
     // Then
     assert_eq!(history.len(), 2);
     for (id, updated_at_ms, at) in fixtures {
-        let item = history.iter().find(|item| item.execution_id == id).unwrap();
+        let item = history
+            .iter()
+            .find(|item| item.execution().execution_id == id)
+            .unwrap();
         let archive = tree
             .executions()
             .iter()
@@ -998,13 +989,13 @@ pub async fn test_archive履歴_手動とworktree消失の事実の時刻と理�
             .as_ref()
             .unwrap();
         assert_eq!(archive.archived_at, at);
-        assert_eq!(item.updated_at, updated_at_ms as f64 / 1_000.0);
-        assert_eq!(item.status, ExecutionStatus::Aborted);
+        assert_eq!(item.ordered_at(), updated_at_ms as f64 / 1_000.0);
+        assert_eq!(item.execution().status, ExecutionStatus::Aborted);
     }
     assert_eq!(
         history
             .iter()
-            .map(|item| item.execution_id.as_str())
+            .map(|item| item.execution().execution_id.as_str())
             .collect::<Vec<_>>(),
         vec![fixtures[0].0, fixtures[1].0]
     );

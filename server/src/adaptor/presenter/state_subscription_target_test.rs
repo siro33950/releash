@@ -527,16 +527,22 @@ fn test_履歴購読_検索語を往復し不正な件数を拒否する() {
 }
 
 #[test]
-fn test_履歴購読_空検索を解除し前後の空白を無視する() {
+fn test_履歴購読_空検索を拒否し前後の空白を無視する() {
     // Given / When / Then
-    for (input, expected) in [
-        ("search=", None),
-        ("search=  ", None),
-        (
-            "search= Thread ",
-            crate::domain::search_term::SearchTerm::new("Thread"),
-        ),
-    ] {
+    for input in ["search=", "search=  "] {
+        assert!(matches!(
+            SubscriptionTarget::from_parts("session-history", &["/repo", "20", input]),
+            Err(SubscriptionError::InvalidId)
+        ));
+        assert!(matches!(
+            SubscriptionTarget::from_parts("archived-history", &["/repo", input]),
+            Err(SubscriptionError::InvalidId)
+        ));
+    }
+    for (input, expected) in [(
+        "search= Thread ",
+        crate::domain::search_term::SearchTerm::new("Thread"),
+    )] {
         let raw = format!("session-history:5:/repo2:20{}:{input}", input.len());
         assert!(SubscriptionTarget::parse(&raw).is_err());
         assert_eq!(

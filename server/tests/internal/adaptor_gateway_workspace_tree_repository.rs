@@ -2031,15 +2031,7 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
     assert_eq!(
         tree.archived_history(None)
             .iter()
-            .map(|entry| {
-                let releashd::test_support::integration::workspace::ArchivedHistoryEntry::Session(
-                    session,
-                ) = entry
-                else {
-                    panic!("session history")
-                };
-                session.agent_session_id.as_str()
-            })
+            .map(|entry| { entry.execution().session.as_ref().unwrap().id() })
             .collect::<Vec<_>>(),
         vec!["archived-session"]
     );

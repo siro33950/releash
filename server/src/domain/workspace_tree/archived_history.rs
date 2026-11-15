@@ -1,112 +1,103 @@
-//! Archive 済みの Session と Workflow の読み取り。
+//! Archive 済みの実行の読み取り。
 //!
 //! どれを出すか、どの順に並べるか、検索語でどう絞るかは集約が決める。
 
-use super::WorkspaceTree;
-use crate::domain::provider_lifecycle::ProviderKind;
+use super::{WorkspaceExecution, WorkspaceTree};
+use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
 use crate::domain::search_term::SearchTerm;
-use crate::domain::workflow::ExecutionStatus;
+use crate::domain::workflow::ExecutionTreeLaunch;
 
-/// Archive 済みの一覧の 1 行。Archive 済みの Session か、Archive 済みの Workflow である。
-#[derive(Debug, Clone, PartialEq)]
-pub enum ArchivedHistoryEntry {
-    Session(ArchivedSessionEntry),
-    Workflow(ArchivedWorkflowEntry),
+/// Archive 済みの実行。Session として起動した実行か、Workflow として起動した実行である。
+#[derive(Debug, Clone, Copy)]
+pub struct ArchivedExecution<'a> {
+    execution: &'a WorkspaceExecution,
+    name: &'a str,
 }
 
-/// Archive 済みの Session。
-#[derive(Debug, Clone, PartialEq)]
-pub struct ArchivedSessionEntry {
-    pub agent_session_id: String,
-    pub provider: ProviderKind,
-    /// Node 面がその Session に出す名前。
-    pub name: String,
-    /// Archive した時刻。1970 年からの秒。
-    pub archived_at: f64,
-    /// 削除できるか。`AgentSession::operations` が決める。
-    pub can_delete: bool,
-}
+impl<'a> ArchivedExecution<'a> {
+    pub fn execution(&self) -> &'a WorkspaceExecution {
+        self.execution
+    }
 
-/// Archive 済みの Workflow。
-#[derive(Debug, Clone, PartialEq)]
-pub struct ArchivedWorkflowEntry {
-    pub execution_id: String,
-    pub worktree_path: String,
-    pub title: String,
-    pub status: ExecutionStatus,
-    /// 更新時刻。1970 年からの秒。
-    pub updated_at: f64,
+    /// 名前。Session として起動した実行は Session の名前、Workflow として起動した実行はタイトルである。
+    /// 検索語はこの名前に当てる。
+    pub fn name(&self) -> &'a str {
+        self.name
+    }
+
+    /// 並べる時刻。1970 年からの秒。
+    /// Session として起動した実行は Archive した時刻、Workflow として起動した実行は更新時刻である。
+    pub fn ordered_at(&self) -> f64 {
+        match self.execution.launched_as {
+            ExecutionTreeLaunch::Session => {
+                self.execution
+                    .archive
+                    .as_ref()
+                    .expect("archived execution")
+                    .archived_at
+            }
+            ExecutionTreeLaunch::Workflow => self.execution.updated_at,
+        }
+    }
 }
 
 impl WorkspaceTree {
-    /// Archive 済みの Session と Workflow を、一つの並びで時刻の新しい順に返す。
+    /// Archive 済みの実行を、一つの並びで時刻の新しい順に返す。
     ///
-    /// Archive 済みの Session は、Session として起動した実行のうち、Session が Archive 済みのもの。
-    /// Archive 済みの Workflow は、Workflow として起動し、この Workspace の worktree で動いた実行のうち、
-    /// Archive の記録があるもの。
+    /// Session として起動した実行は、Session が Archive 済みのものを返す。
+    /// Workflow として起動した実行は、この Workspace の worktree で動き、Archive の記録があるものを返す。
     ///
-    /// 並べる時刻は、Session では Archive した時刻、Workflow では更新時刻である。
-    /// 時刻が同じ行は、識別子（Session は Session の ID、Workflow は実行の ID）の順に並べる。
+    /// 並べる時刻は `ArchivedExecution::ordered_at` が決める。
+    /// 時刻が同じ実行は、識別子（Session として起動した実行は Session の ID、
+    /// Workflow として起動した実行は実行の ID）の順に並べる。
     ///
-    /// 検索語があれば、Session は名前、Workflow はタイトルが検索語を含む行に絞る。
-    pub fn archived_history(&self, search: Option<&SearchTerm>) -> Vec<ArchivedHistoryEntry> {
-        use crate::domain::agent_session::aggregates::AgentSessionLifecycle;
-        use crate::domain::workflow::ExecutionTreeLaunch;
+    /// 検索語があれば、`ArchivedExecution::name` が検索語を含む実行に絞る。
+    pub fn archived_history(&self, search: Option<&SearchTerm>) -> Vec<ArchivedExecution<'_>> {
         let mut entries = self
             .executions()
             .iter()
             .filter_map(|execution| {
-                let archive = execution.archive.as_ref()?;
-                match execution.launched_as {
+                execution.archive.as_ref()?;
+                let name = match execution.launched_as {
                     ExecutionTreeLaunch::Session => {
                         let session = execution.session.as_ref()?;
                         if session.lifecycle() != AgentSessionLifecycle::Archived {
                             return None;
                         }
-                        let node = self.session_node(session.id())?;
-                        if search.is_some_and(|term| !term.matches(&node.title)) {
-                            return None;
-                        }
-                        Some(ArchivedHistoryEntry::Session(ArchivedSessionEntry {
-                            agent_session_id: session.id().to_owned(),
-                            provider: session.provider(),
-                            name: node.title.clone(),
-                            archived_at: archive.archived_at,
-                            can_delete: session.operations().can_delete,
-                        }))
+                        self.session_node(session.id())?.title.as_str()
                     }
                     ExecutionTreeLaunch::Workflow => {
-                        if execution.worktree_path != self.workspace_identity().as_str()
-                            || search.is_some_and(|term| !term.matches(&execution.workflow_name))
-                        {
+                        if execution.worktree_path != self.workspace_identity().as_str() {
                             return None;
                         }
-                        Some(ArchivedHistoryEntry::Workflow(ArchivedWorkflowEntry {
-                            execution_id: execution.execution_id.clone(),
-                            worktree_path: execution.worktree_path.clone(),
-                            title: execution.workflow_name.clone(),
-                            status: execution.status,
-                            updated_at: execution.updated_at,
-                        }))
+                        execution.workflow_name.as_str()
                     }
+                };
+                if search.is_some_and(|term| !term.matches(name)) {
+                    return None;
                 }
+                Some(ArchivedExecution { execution, name })
             })
             .collect::<Vec<_>>();
         entries.sort_by(|left, right| {
-            let (left_time, left_id) = history_order(left);
-            let (right_time, right_id) = history_order(right);
-            right_time
-                .total_cmp(&left_time)
-                .then_with(|| left_id.cmp(right_id))
+            right
+                .ordered_at()
+                .total_cmp(&left.ordered_at())
+                .then_with(|| history_id(left).cmp(history_id(right)))
         });
         entries
     }
 }
 
-fn history_order(entry: &ArchivedHistoryEntry) -> (f64, &str) {
-    match entry {
-        ArchivedHistoryEntry::Session(value) => (value.archived_at, &value.agent_session_id),
-        ArchivedHistoryEntry::Workflow(value) => (value.updated_at, &value.execution_id),
+fn history_id<'a>(entry: &ArchivedExecution<'a>) -> &'a str {
+    match entry.execution.launched_as {
+        ExecutionTreeLaunch::Session => entry
+            .execution
+            .session
+            .as_ref()
+            .expect("archived session")
+            .id(),
+        ExecutionTreeLaunch::Workflow => &entry.execution.execution_id,
     }
 }
 

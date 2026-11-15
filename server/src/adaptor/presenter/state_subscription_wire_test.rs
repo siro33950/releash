@@ -1472,17 +1472,32 @@ fn test_thread一覧購読_対象行の差分と読めなかった理由を転�
 #[test]
 fn test_archive履歴配信_sessionの名前と時刻と操作権限を届ける() {
     // Given
-    let state = crate::usecase::state_subscription::StateValue::ArchivedHistory(vec![
-        crate::domain::workspace_tree::ArchivedHistoryEntry::Session(
-            crate::domain::workspace_tree::ArchivedSessionEntry {
-                agent_session_id: "session".into(),
-                provider: crate::domain::provider_lifecycle::ProviderKind::Codex,
-                name: "相談".into(),
-                archived_at: 123.5,
-                can_delete: true,
-            },
-        ),
-    ]);
+    let mut tree = overview_tree(
+        "/repo",
+        Some(ProviderKind::Codex),
+        WorkspaceNodeStatus::Completed,
+        WorkspaceNodeStatus::Completed,
+    );
+    let mut executions = tree.executions().to_vec();
+    executions[0].archive = Some(ExecutionTreeArchiveRecord {
+        execution_id: "execution".into(),
+        archived_at: 123.5,
+    });
+    executions[0]
+        .session
+        .as_mut()
+        .unwrap()
+        .take_uncommitted_events();
+    executions[0]
+        .session
+        .as_mut()
+        .unwrap()
+        .restore_derived_lifecycle(
+            crate::domain::agent_session::aggregates::AgentSessionLifecycle::Archived,
+            crate::domain::workflow::AgentSessionActivity::default(),
+        );
+    tree.record_executions(executions);
+    let state = StateValue::ArchivedHistory(tree, None);
     // When
     let value = super::payload(&state).unwrap();
     // Then
@@ -1493,7 +1508,52 @@ fn test_archive履歴配信_sessionの名前と時刻と操作権限を届ける
     else {
         panic!("session")
     };
-    assert_eq!(session.name, "相談");
+    assert_eq!(session.name, "Owner title");
+    assert_eq!(session.agent_session_id, "session");
     assert_eq!(session.archived_at, 123.5);
     assert!(session.can_delete);
+}
+
+#[test]
+fn test_archive履歴配信_workflowの実行情報と検索結果を届ける() {
+    // Given
+    let mut tree = overview_tree(
+        "/repo",
+        None,
+        WorkspaceNodeStatus::Completed,
+        WorkspaceNodeStatus::Completed,
+    );
+    let mut executions = tree.executions().to_vec();
+    executions[0].archive = Some(ExecutionTreeArchiveRecord {
+        execution_id: "execution".into(),
+        archived_at: 99.0,
+    });
+    executions[0].status = ExecutionStatus::Completed;
+    executions[0].updated_at = 12.5;
+    tree.record_executions(executions);
+    // When / Then
+    for (search, count) in [("review", 1), ("missing", 0)] {
+        let state = StateValue::ArchivedHistory(
+            tree.clone(),
+            crate::domain::search_term::SearchTerm::new(search),
+        );
+        let Some(wire::state_payload::Value::ArchivedHistory(list)) =
+            payload(&state).unwrap().value
+        else {
+            panic!("archive history")
+        };
+        assert_eq!(list.items.len(), count);
+        if count == 1 {
+            let Some(wire::archived_history_item::Variant::Workflow(workflow)) =
+                &list.items[0].variant
+            else {
+                panic!("workflow")
+            };
+            assert_eq!(workflow.execution_id.as_deref(), Some("execution"));
+            assert_eq!(workflow.worktree_path.as_deref(), Some("/repo"));
+            assert_eq!(workflow.title.as_deref(), Some("review-workflow"));
+            assert_eq!(workflow.updated_at, Some(12.5));
+            assert_eq!(workflow.status, Some(wire::value("completed").unwrap()));
+        }
+    }
 }

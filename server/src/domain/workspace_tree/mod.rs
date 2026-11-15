@@ -11,7 +11,7 @@ pub(crate) mod services;
 pub(crate) mod value_objects;
 pub(crate) mod visible;
 
-pub use archived_history::{ArchivedHistoryEntry, ArchivedSessionEntry, ArchivedWorkflowEntry};
+pub use archived_history::ArchivedExecution;
 pub use entities::{WorkspaceTree, WorkspaceTreeProjector};
 pub use projection::{runtime_snapshot_nodes, RuntimeSnapshotNodeProjection};
 pub use repository::WorkspaceTreeRepository;
