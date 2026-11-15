@@ -2029,9 +2029,9 @@ pub async fn test_workspace_tree読取_sessionのlifecycleと操作の可否を�
         assert_eq!(operations.can_delete, can_restore);
     }
     assert_eq!(
-        tree.archived_sessions()
+        tree.archived_history(None)
             .iter()
-            .map(|execution| execution.execution_id.as_str())
+            .map(|entry| entry.id())
             .collect::<Vec<_>>(),
         vec!["archived-session"]
     );

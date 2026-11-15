@@ -21,6 +21,8 @@ enum UIStyle {
   static let settingsSidebarWidth: CGFloat = 200
   static let worktreeDialogWidth = settingsWidth
   static let worktreeDialogHeight = settingsHeight
+  static let historyWidth = settingsWidth
+  static let historyHeight = settingsHeight
   static let createDialogWidth: CGFloat = 560
   static let windowWidth: CGFloat = 1200
   static let windowHeight: CGFloat = 900

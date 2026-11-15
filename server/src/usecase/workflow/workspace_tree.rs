@@ -170,6 +170,18 @@ impl WorkflowUsecase {
         self.workspace_nodes.load_all_trees().await
     }
 
+    /// worktree の実行木を読む。実行木を持たない worktree は空の木になる。
+    pub(crate) async fn workspace_tree(
+        &self,
+        worktree_path: &str,
+    ) -> Result<WorkspaceTree, WorkflowError> {
+        let workspace = WorkspaceIdentity::new(self.resolve_worktree_path(worktree_path)?);
+        self.load_workspace_trees(&[workspace])
+            .await
+            .pop()
+            .unwrap_or_else(|| Err(WorkflowError::NotFound(worktree_path.to_owned())))
+    }
+
     pub(crate) async fn get_workspace_node_detail(
         &self,
         worktree_path: &str,

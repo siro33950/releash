@@ -1420,3 +1420,182 @@ async fn test_daemon状態購読_server_infoと一致し停止受理後にstoppi
 
 #[path = "daemon_smoke/file_workspace_acceptance.rs"]
 mod file_workspace_acceptance;
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_履歴_B007_B020_ArchiveのSessionとWorkflowを時刻順に購読し名前で絞る() {
+    use std::os::unix::fs::PermissionsExt;
+    use wire::command_request::Command as C;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let repo_path = root.join("repository");
+    let repository = git2::Repository::init(&repo_path).unwrap();
+    let signature = git2::Signature::now("history acceptance", "history@example.test").unwrap();
+    let tree = repository.index().unwrap().write_tree().unwrap();
+    repository
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "initial",
+            &repository.find_tree(tree).unwrap(),
+            &[],
+        )
+        .unwrap();
+    let worktree = repo_path.to_str().unwrap();
+    let fixture = root.join("provider-fixture");
+    std::fs::write(&fixture, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'claude 1.0.0'; exit; fi\nexec sleep 3600\n").unwrap();
+    std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (mut daemon, discovery) = start(&root);
+    let (mut socket, _) = connect(&discovery).await;
+    request(
+        &mut socket,
+        "repository",
+        C::AddRepoPath(wire::AddRepoPathRequest {
+            path: Some(worktree.into()),
+        }),
+    )
+    .await;
+    request(
+        &mut socket,
+        "provider",
+        C::UpdateProviderExecutable(wire::UpdateProviderExecutableRequest {
+            provider: Some("claude".into()),
+            executable: Some(fixture.to_str().unwrap().into()),
+        }),
+    )
+    .await;
+    let mut sessions = Vec::new();
+    for name in ["Thread 面の見せ方", "Session B"] {
+        let created = request(
+            &mut socket,
+            "session",
+            C::CreateAgentSession(wire::CreateAgentSessionRequest {
+                workspace_identity: Some(worktree.into()),
+                worktree_path: Some(worktree.into()),
+                provider: Some("claude".into()),
+                rows: Some(24),
+                cols: Some(80),
+                caller_request_id: Some(uuid::Uuid::new_v4().to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        let wire::command_result::Command::CreateAgentSession(created) = created else {
+            panic!("session creation")
+        };
+        let node = created.node_id.unwrap();
+        request(
+            &mut socket,
+            "rename",
+            C::RenameWorkspaceSessionNode(wire::RenameWorkspaceSessionNodeRequest {
+                worktree_path: Some(worktree.into()),
+                node_id: Some(node.clone()),
+                name: Some(name.into()),
+            }),
+        )
+        .await;
+        sessions.push((created.agent_session_id.unwrap(), node));
+    }
+    let workflows = if cfg!(target_os = "macos") {
+        root.join("Library/Application Support/releash/workflows")
+    } else {
+        root.join("config/releash/workflows")
+    };
+    std::fs::write(workflows.join("development-v4.yml"), "name: development-v4\ndescription: history acceptance\nnodes:\n  main:\n    command: printf done\n    completion:\n      require: approval\n").unwrap();
+    let started = request(
+        &mut socket,
+        "workflow",
+        C::StartWorkflow(wire::StartWorkflowRequest {
+            workflow_name: Some("development-v4".into()),
+            worktree_path: Some(worktree.into()),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let wire::command_result::Command::StartWorkflow(started) = started else {
+        panic!("workflow start")
+    };
+    let workflow = started.value.unwrap();
+    // 作成順と Archive 順を変え、異なる秒に操作して時刻の同値を避ける。
+    for execution in [&sessions[1].1, &workflow, &sessions[0].1] {
+        request(
+            &mut socket,
+            "archive",
+            C::ArchiveWorkspaceWorkflowExecution(wire::ArchiveWorkspaceWorkflowExecutionRequest {
+                worktree_path: Some(worktree.into()),
+                execution_id: Some(execution.clone()),
+            }),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+    }
+    // When
+    let mut history = subscribe_state(&socket, "archived-history", vec![worktree.into()]).await;
+    let snapshot = expect_state(&mut history, "three archived rows", |value| {
+        matches!(value,
+            wire::state_payload::Value::ArchivedHistory(list) if list.items.len() == 3
+        )
+    })
+    .await;
+    // Then
+    let wire::state_payload::Value::ArchivedHistory(list) = snapshot else {
+        unreachable!()
+    };
+    let ids = list
+        .items
+        .iter()
+        .map(|item| match item.variant.as_ref().unwrap() {
+            wire::archived_history_item::Variant::Session(session) => {
+                session.agent_session_id.as_str()
+            }
+            wire::archived_history_item::Variant::Workflow(workflow) => {
+                workflow.execution_id.as_deref().unwrap()
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        [
+            sessions[0].0.as_str(),
+            workflow.as_str(),
+            sessions[1].0.as_str()
+        ]
+    );
+    let titles = list
+        .items
+        .iter()
+        .map(|item| match item.variant.as_ref().unwrap() {
+            wire::archived_history_item::Variant::Session(session) => session.name.as_str(),
+            wire::archived_history_item::Variant::Workflow(workflow) => {
+                workflow.title.as_deref().unwrap()
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(titles, ["Thread 面の見せ方", "development-v4", "Session B"]);
+    // When
+    let mut filtered = subscribe_state(
+        &socket,
+        "archived-history",
+        vec![worktree.into(), "search=thread".into()],
+    )
+    .await;
+    let snapshot = expect_state(&mut filtered, "name search", |value| {
+        matches!(value, wire::state_payload::Value::ArchivedHistory(_))
+    })
+    .await;
+    // Then
+    let wire::state_payload::Value::ArchivedHistory(list) = snapshot else {
+        unreachable!()
+    };
+    assert_eq!(list.items.len(), 1);
+    let Some(wire::archived_history_item::Variant::Session(session)) = &list.items[0].variant
+    else {
+        panic!("only the matching Session remains")
+    };
+    assert_eq!(session.agent_session_id, sessions[0].0);
+    assert_eq!(session.name, "Thread 面の見せ方");
+    drop((history, filtered));
+    quit(&mut daemon, &mut socket).await;
+}

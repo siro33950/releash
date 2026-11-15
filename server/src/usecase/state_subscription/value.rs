@@ -26,6 +26,8 @@ pub enum StateValue {
         node: Option<Box<(crate::domain::workspace_tree::WorkspaceTreeNode, bool)>>,
     },
     SessionHistory(AgentSessionHistoryPageDto),
+    /// Archive 済みの実行。時刻の新しい順に並ぶ。
+    ArchivedHistory(Vec<crate::domain::workspace_tree::ArchivedExecution>),
     Providers(Vec<AgentSessionProviderDto>),
     Branches(Vec<BranchDto>),
     /// ブランチと、その worktree があるか。

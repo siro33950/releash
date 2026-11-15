@@ -1005,8 +1005,9 @@ message ExecutionOverviewEntryDto {
 }
 
 message WorkspaceTreeSnapshot {
+  reserved 2;
+  reserved "archived_sessions";
   optional ListWorkspaceTreeItem nodes = 1 [json_name = "nodes", (json_required) = true];
-  optional ListAgentSessionItemDto archived_sessions = 2 [json_name = "archivedSessions", (json_required) = true];
 }
 
 message WorkspaceTreeItem {
@@ -1090,11 +1091,6 @@ message WorkspaceFanout {
   optional string error_reason = 9 [json_name = "errorReason", (json_nullable) = true, (json_omit_none) = true];
 }
 
-message ListAgentSessionItemDto {
-  option (json_wrapper) = "items";
-  repeated AgentSessionItemDto items = 1;
-}
-
 message GitCreateBranchRequest {
   optional string repo_path = 1 [json_name = "repoPath", (json_required) = true];
   optional string branch_name = 2 [json_name = "branchName", (json_required) = true];
@@ -1114,15 +1110,52 @@ message KillTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
 }
 
+// Provider の履歴の 1 ページ。購読の対象 `session-history` で届く。
+// 購読の引数は、worktree の path、出す件数。続けて `search=<検索語>` を渡すと、
+// 題か最初の指示に検索語を含む履歴に絞る。まだ出していない履歴も絞り込みの対象にする。
 message AgentSessionHistoryPageDto {
+  // 最終更新の新しい順に並ぶ。
   optional ListAgentSessionHistoryCandidateDto items = 1 [json_name = "items", (json_required) = true];
+  // 出した件数の先に、続きがあるか。
   optional bool has_more = 3 [json_name = "hasMore", (json_required) = true];
 }
 
+// Provider の履歴の 1 件。
 message AgentSessionHistoryCandidateDto {
   optional AgentSessionProviderDto provider = 1 [json_name = "provider", (json_required) = true];
   optional string provider_session_id = 2 [json_name = "providerSessionId", (json_required) = true];
   optional string label = 3 [json_name = "label", (json_required) = true];
+  // 最終更新の時刻。1970 年からの秒。
+  optional double updated_at = 4 [json_name = "updatedAt", (json_required) = true];
+}
+
+// Archive 済みの Session と Workflow の一覧。購読の対象 `archived-history` で届く。
+// 購読の引数は、worktree の path。続けて `search=<検索語>` を渡すと、
+// Session は名前、Workflow はタイトルに検索語を含む行に絞る。
+message ListArchivedHistoryItem {
+  // 一つの並びで、時刻の新しい順に並ぶ。
+  // 並べる時刻は、Session では Archive した時刻、Workflow では更新時刻である。
+  repeated ArchivedHistoryItem items = 1;
+}
+
+// Archive 済みの Session か、Archive 済みの Workflow。
+message ArchivedHistoryItem {
+  oneof variant {
+    ArchivedSessionHistoryItem session = 1;
+    WorkspaceWorkflowHistoryItem workflow = 2;
+  }
+}
+
+// Archive 済みの Session。
+message ArchivedSessionHistoryItem {
+  string agent_session_id = 1;
+  // Node 面がその Session に出す名前。
+  string name = 2;
+  AgentSessionProviderDto provider = 3;
+  // Archive した時刻。1970 年からの秒。
+  double archived_at = 4;
+  // 削除できるか。
+  bool can_delete = 5;
 }
 
 message ListAgentSessionHistoryCandidateDto {
@@ -1208,17 +1241,13 @@ message ListWorkflowSummaryDto {
   repeated WorkflowSummaryDto items = 1;
 }
 
+// Archive 済みの Workflow。
 message WorkspaceWorkflowHistoryItem {
   optional string execution_id = 1 [json_name = "executionId", (json_required) = true];
   optional string worktree_path = 2 [json_name = "worktreePath", (json_required) = true];
   optional string title = 3 [json_name = "title", (json_required) = true];
   optional WorkspaceHistoryStatus status = 4 [json_name = "status", (json_required) = true];
   optional double updated_at = 5 [json_name = "updatedAt", (json_required) = true];
-}
-
-message ListWorkspaceWorkflowHistoryItem {
-  option (json_wrapper) = "items";
-  repeated WorkspaceWorkflowHistoryItem items = 1;
 }
 
 message PaneLayout {
@@ -1832,11 +1861,12 @@ message WorktreeExecutionSummary {
   uint64 node_count = 6;
 }
 message WorkspaceWorktreeList {
+  reserved 4;
+  reserved "workflow_history";
   repeated WorktreeExecutionSummary executions = 6;
   optional string path = 1 [json_name = "path", (json_required) = true];
   optional WorkspaceListStatus status = 2 [json_name = "status", (json_required) = true];
   optional WorkspaceTreeSnapshot snapshot = 3 [json_name = "snapshot", (json_nullable) = true];
-  optional ListWorkspaceWorkflowHistoryItem workflow_history = 4 [json_name = "workflowHistory", (json_required) = true];
 }
 message WorkspaceRepositoryList {
   optional string path = 1 [json_name = "path", (json_required) = true];
@@ -1933,6 +1963,7 @@ message StatePayload {
     SessionTabSnapshot session_tab = 75;
 
     AgentSessionHistoryPageDto session_history = 7;
+    ListArchivedHistoryItem archived_history = 80;
     ListAgentSessionProviderDto providers = 8;
     ListBranchDto branches = 9;
     // worktree が無いローカルのブランチ。購読の対象 `available-branches` で届く。

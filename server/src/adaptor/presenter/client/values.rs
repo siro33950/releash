@@ -94,18 +94,6 @@ where
         })
     }
 }
-impl<T> TryFrom<Vec<T>> for wire::ListAgentSessionItemDto
-where
-    wire::AgentSessionItemDto: TryFrom<T>,
-    <wire::AgentSessionItemDto as TryFrom<T>>::Error: std::fmt::Display,
-{
-    type Error = String;
-    fn try_from(value: Vec<T>) -> Result<Self, String> {
-        Ok(Self {
-            items: value.into_iter().map(cv).collect::<Result<_, _>>()?,
-        })
-    }
-}
 impl<T> TryFrom<Vec<T>> for wire::ListAgentSessionProviderDto
 where
     wire::AgentSessionProviderDto: TryFrom<T>,

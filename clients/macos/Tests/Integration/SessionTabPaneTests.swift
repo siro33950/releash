@@ -803,13 +803,12 @@ final class SessionTabPaneTests: XCTestCase {
           $0.nodeDetails["session-tree"] = detail
           $0.sessionTabs["agent-session"] = snapshot
         }
-        var archived = Releash_Client_V1_AgentSessionItemDto()
-        archived.id = "agent-session"
+        var archived = Releash_Client_V1_ArchivedSessionHistoryItem()
+        archived.agentSessionID = "agent-session"
         archived.provider.value = .codex
-        archived.providerSessionID = "history"
+        archived.name = "history"
         var worktree = Releash_Client_V1_WorkspaceWorktreeList()
         worktree.path = "/repo"
-        worktree.snapshot.archivedSessions.items = [archived]
         var repository = Releash_Client_V1_WorkspaceRepositoryList()
         repository.path = "/repo"
         repository.worktrees.items = [worktree]
@@ -838,8 +837,16 @@ final class SessionTabPaneTests: XCTestCase {
         if history {
           let harness = await ViewHarness(SessionHistoryView(model: model, path: "/repo"))
           historyHost = harness
-          try await eventuallyView(harness) { harness.element("Codex · history") != nil }
-          try await harness.press("Codex · history")
+          try await eventually {
+            http.state.withLock { $0.subscriptions.contains { $0.target == "archived-history" } }
+          }
+          var archivePayload = Releash_Client_V1_StatePayload()
+          archivePayload.archivedHistory.items = [.with { $0.session = archived }]
+          try http.publish(archivePayload, target: "archived-history")
+          try await eventuallyView(harness) { harness.element("history") != nil }
+          try await harness.press("history")
+          XCTAssertTrue(http.requests("RestoreAgentSession").isEmpty)
+          try await harness.press("復元")
           try await eventually { http.requests("RestoreAgentSession").count == 1 }
         } else {
           try await model.startSession(provider: "codex", path: "/repo")

@@ -96,7 +96,7 @@ fn test_automation購読_定義の変化に反応し置き場の監視を要求�
     );
     assert!(!SubscriptionTarget::Workspaces.affected_by(&StateChangeSource::WorkflowDefinitions));
     assert_eq!(
-        SubscriptionTarget::SessionHistory("/repo".into(), 20).watches(
+        SubscriptionTarget::SessionHistory("/repo".into(), 20, None).watches(
             &[],
             &["/claude".into()],
             "",

@@ -20,8 +20,9 @@ impl TryFrom<crate::usecase::agent_session::AgentSessionHistoryCandidateDto>
     ) -> Result<Self, String> {
         Ok(Self {
             provider: Some(cv(value.provider)?),
-            provider_session_id: Some(cv(value.provider_session_id)?),
-            label: Some(cv(value.label)?),
+            provider_session_id: Some(value.provider_session_id),
+            label: Some(value.label),
+            updated_at: Some(value.updated_at_ms as f64 / 1000.0),
         })
     }
 }

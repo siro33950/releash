@@ -15,6 +15,20 @@ pub struct ProviderSessionTitleEntry {
     pub first_user_prompt: Option<String>,
 }
 
+impl ProviderSessionTitleEntry {
+    /// この履歴が検索語に当たるかを決める。
+    /// 対象は Session の題と最初の指示であり、どちらかが検索語を含めば当たる。
+    pub(crate) fn matches(&self, term: &crate::domain::search_term::SearchTerm) -> bool {
+        self.session_title
+            .as_deref()
+            .is_some_and(|title| term.matches(title))
+            || self
+                .first_user_prompt
+                .as_deref()
+                .is_some_and(|prompt| term.matches(prompt))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSessionHistoryGatewayError {
     Conflict,
@@ -50,3 +64,7 @@ pub trait AgentSessionOwnershipQuery: Send + Sync {
         provider_session_id: &str,
     ) -> Result<bool, AgentSessionHistoryGatewayError>;
 }
+
+#[cfg(test)]
+#[path = "provider_history_gateway_test.rs"]
+mod provider_history_gateway_tests;

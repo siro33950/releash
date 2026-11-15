@@ -471,6 +471,7 @@ mod driver_tests {
                     crate::usecase::state_subscription::SubscriptionTarget::SessionHistory(
                         _,
                         _,
+                        _,
                     ) => StateValue::SessionHistory(
                         crate::usecase::agent_session::AgentSessionHistoryPageDto {
                             items: vec![],
@@ -587,13 +588,13 @@ mod driver_tests {
             );
             let first = usecase.open("first".into()).unwrap();
             let second = usecase.open("second".into()).unwrap();
-            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
+            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20, None).to_string();
             start_read(&usecase, "first", &target).await.unwrap();
             start_read(&usecase, "second", &target).await.unwrap();
             assert_eq!(files.active.lock().unwrap().len(), 2);
             assert_eq!(usecase.test_worker_count(), 1);
             stop_read(&usecase, "first", &target).await.unwrap();
-            let expanded = SubscriptionTarget::SessionHistory("/repo".into(), 40).to_string();
+            let expanded = SubscriptionTarget::SessionHistory("/repo".into(), 40, None).to_string();
             start_read(&usecase, "first", &expanded).await.unwrap();
             assert_eq!(files.active.lock().unwrap().len(), 2);
             drop(second);
@@ -746,7 +747,7 @@ mod driver_tests {
             );
             let mut stream = Box::pin(usecase.open("client".into()).unwrap());
             stream.next().await;
-            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
+            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20, None).to_string();
             start_read(&usecase, "client", &target).await.unwrap();
             assert!(matches!(stream.next().await,
         Some(StateSubscriptionEvent::Item(_, Event::Snapshot(_, value)))
@@ -820,7 +821,7 @@ mod driver_tests {
                 String::new(),
             );
             let _stream = usecase.open("client".into()).unwrap();
-            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20).to_string();
+            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20, None).to_string();
             let started = tokio::spawn({
                 let usecase = usecase.clone();
                 let target = target.clone();
@@ -1101,7 +1102,7 @@ mod driver_tests {
             )
             .with_reads(reads.clone(), None, vec![], String::new());
             let stream = usecase.open("client".into()).unwrap();
-            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20);
+            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20, None);
             let started = tokio::spawn({
                 let usecase = usecase.clone();
                 let raw = target.to_string();
@@ -1171,7 +1172,7 @@ mod driver_tests {
                 String::new(),
             );
             let _stream = usecase.open("client".into()).unwrap();
-            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20);
+            let target = SubscriptionTarget::SessionHistory("/repo".into(), 20, None);
             // When
             let error = start_read(&usecase, "client", &target.to_string())
                 .await

@@ -1,10 +1,10 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::domain::agent_session::{
     provider_history_label, AgentSessionHistoryGateway, AgentSessionHistoryGatewayError,
-    AgentSessionHistoryMetadata, AgentSessionOwnershipQuery,
+    AgentSessionHistoryMetadata, AgentSessionOwnershipQuery, ProviderSessionTitleEntry,
 };
 use crate::domain::provider_lifecycle::ProviderKind;
 use crate::usecase::agent_session::{
@@ -13,6 +13,9 @@ use crate::usecase::agent_session::{
 };
 
 const MAX_SCAN_PER_PROVIDER: usize = 201;
+const TITLE_BATCH_SIZE: usize = 64;
+
+type HistoryTitles = HashMap<(ProviderKind, String), ProviderSessionTitleEntry>;
 
 pub struct LocalAgentSessionHistoryQueryService {
     history: Arc<dyn AgentSessionHistoryGateway>,
@@ -67,11 +70,49 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
         }
         let mut candidates = unique.into_values().collect::<Vec<_>>();
         candidates.sort_by(compare_metadata);
-        let mut visible = Vec::with_capacity(
-            candidates
-                .len()
-                .min(request.visible_count.saturating_add(1)),
-        );
+        let (mut visible, mut titles) = if let Some(search) = &request.search {
+            self.search_unowned(&request, &candidates, search).await?
+        } else {
+            self.list_unowned(&request, candidates).await?
+        };
+        let has_more = visible.len() > request.visible_count;
+        visible.truncate(request.visible_count);
+        Ok(AgentSessionHistoryPageDto {
+            items: visible
+                .into_iter()
+                .map(|entry| {
+                    let title = titles.remove(&(entry.provider, entry.provider_session_id.clone()));
+                    let label = provider_history_label(
+                        entry.provider,
+                        &entry.provider_session_id,
+                        title
+                            .as_ref()
+                            .and_then(|title| title.session_title.as_deref()),
+                        title
+                            .as_ref()
+                            .and_then(|title| title.first_user_prompt.as_deref()),
+                    );
+                    AgentSessionHistoryCandidateDto {
+                        provider: entry.provider.into(),
+                        provider_session_id: entry.provider_session_id,
+                        label,
+                        updated_at_ms: entry.updated_at_ms,
+                    }
+                })
+                .collect(),
+            has_more,
+        })
+    }
+}
+
+impl LocalAgentSessionHistoryQueryService {
+    async fn list_unowned(
+        &self,
+        request: &AgentSessionHistoryRequest,
+        candidates: Vec<AgentSessionHistoryMetadata>,
+    ) -> Result<(Vec<AgentSessionHistoryMetadata>, HistoryTitles), AgentSessionHistoryQueryError>
+    {
+        let mut visible = Vec::new();
         for candidate in candidates {
             if self
                 .ownership
@@ -86,62 +127,85 @@ impl AgentSessionHistoryQueryService for LocalAgentSessionHistoryQueryService {
                 break;
             }
         }
-        let has_more = visible.len() > request.visible_count;
-        visible.truncate(request.visible_count);
-        let mut titles = HashMap::new();
+        let titles = self
+            .read_titles(
+                &request.worktree_path,
+                &visible[..visible.len().min(request.visible_count)],
+            )
+            .await?;
+        Ok((visible, titles))
+    }
+
+    async fn search_unowned(
+        &self,
+        request: &AgentSessionHistoryRequest,
+        candidates: &[AgentSessionHistoryMetadata],
+        search: &crate::domain::search_term::SearchTerm,
+    ) -> Result<(Vec<AgentSessionHistoryMetadata>, HistoryTitles), AgentSessionHistoryQueryError>
+    {
+        let mut visible = Vec::new();
+        let mut titles = HistoryTitles::new();
+        for batch in candidates.chunks(TITLE_BATCH_SIZE) {
+            let mut unowned = Vec::new();
+            for candidate in batch {
+                if !self
+                    .ownership
+                    .is_owned(candidate.provider, &candidate.provider_session_id)
+                    .await
+                    .map_err(map_gateway_error)?
+                {
+                    unowned.push(candidate.clone());
+                }
+            }
+            let mut batch_titles = self.read_titles(&request.worktree_path, &unowned).await?;
+            for candidate in unowned {
+                let key = (candidate.provider, candidate.provider_session_id.clone());
+                let title = batch_titles.remove(&key).expect("validated title response");
+                if !title.matches(search) {
+                    continue;
+                }
+                visible.push(candidate);
+                titles.insert(key, title);
+                if visible.len() > request.visible_count {
+                    return Ok((visible, titles));
+                }
+            }
+        }
+        Ok((visible, titles))
+    }
+
+    async fn read_titles(
+        &self,
+        worktree_path: &str,
+        candidates: &[AgentSessionHistoryMetadata],
+    ) -> Result<HistoryTitles, AgentSessionHistoryQueryError> {
+        let mut titles = HistoryTitles::new();
         for provider in ProviderKind::supported() {
-            let provider_session_ids = visible
+            let ids = candidates
                 .iter()
                 .filter(|entry| entry.provider == *provider)
                 .map(|entry| entry.provider_session_id.clone())
                 .collect::<Vec<_>>();
-            if provider_session_ids.is_empty() {
+            if ids.is_empty() {
                 continue;
             }
             let entries = self
                 .history
-                .list_session_titles(*provider, &request.worktree_path, &provider_session_ids)
+                .list_session_titles(*provider, worktree_path, &ids)
                 .await
                 .map_err(map_gateway_error)?;
-            if entries.len() != provider_session_ids.len() {
+            if entries.len() != ids.len() {
                 return Err(AgentSessionHistoryQueryError::Corrupt);
             }
+            let mut expected = ids.iter().map(String::as_str).collect::<HashSet<_>>();
             for entry in entries {
-                if !provider_session_ids.contains(&entry.provider_session_id)
-                    || titles
-                        .insert(
-                            (*provider, entry.provider_session_id),
-                            (entry.session_title, entry.first_user_prompt),
-                        )
-                        .is_some()
-                {
+                if !expected.remove(entry.provider_session_id.as_str()) {
                     return Err(AgentSessionHistoryQueryError::Corrupt);
                 }
+                titles.insert((*provider, entry.provider_session_id.clone()), entry);
             }
         }
-        Ok(AgentSessionHistoryPageDto {
-            items: visible
-                .into_iter()
-                .map(|entry| {
-                    let (title, first_user_prompt) = titles
-                        .remove(&(entry.provider, entry.provider_session_id.clone()))
-                        .unwrap_or((None, None));
-                    let label = provider_history_label(
-                        entry.provider,
-                        &entry.provider_session_id,
-                        title.as_deref(),
-                        first_user_prompt.as_deref(),
-                    );
-                    AgentSessionHistoryCandidateDto {
-                        provider: entry.provider.into(),
-                        provider_session_id: entry.provider_session_id,
-                        label,
-                        updated_at_ms: entry.updated_at_ms,
-                    }
-                })
-                .collect(),
-            has_more,
-        })
+        Ok(titles)
     }
 }
 

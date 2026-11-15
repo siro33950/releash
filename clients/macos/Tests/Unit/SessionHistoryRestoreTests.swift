@@ -20,8 +20,8 @@ final class SessionHistoryRestoreTests: XCTestCase {
     } onChange: {
       changed.fulfill()
     }
-    var session = Releash_Client_V1_AgentSessionItemDto()
-    session.id = "archived"
+    var session = Releash_Client_V1_ArchivedSessionHistoryItem()
+    session.agentSessionID = "archived"
 
     SessionHistoryView(model: model, path: "/repo").restore(session)
 
@@ -30,7 +30,7 @@ final class SessionHistoryRestoreTests: XCTestCase {
     XCTAssertEqual(model.panes.layoutInput, layout)
     let request = try Releash_Client_V1_RestoreAgentSessionRequest(
       serializedBytes: XCTUnwrap(http.requests("RestoreAgentSession").first?.message))
-    XCTAssertEqual(request.agentSessionID, session.id)
+    XCTAssertEqual(request.agentSessionID, session.agentSessionID)
     XCTAssertEqual(request.rows, UIStyle.terminalRows)
     XCTAssertEqual(request.cols, UIStyle.terminalColumns)
     XCTAssertFalse(request.callerRequestID.isEmpty)

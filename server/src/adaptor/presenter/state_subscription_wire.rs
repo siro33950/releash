@@ -39,6 +39,10 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
             ),
+            StateValue::ArchivedHistory(executions) => wire::state_payload::Value::ArchivedHistory(wire::ListArchivedHistoryItem {
+                items: executions.iter().map(archived_history_item).collect::<Result<_, _>>()
+                    .map_err(crate::adaptor::presenter::connect::command_error)?,
+            }),
             StateValue::Providers(value) => wire::state_payload::Value::Providers(
                 crate::adaptor::presenter::client::value(value.clone())
                     .map_err(crate::adaptor::presenter::connect::command_error)?,
@@ -360,6 +364,40 @@ fn directory_entry(
         }
         .into(),
     }
+}
+
+fn archived_history_item(
+    entry: &crate::domain::workspace_tree::ArchivedExecution,
+) -> Result<wire::ArchivedHistoryItem, wire::CommandFailure> {
+    use crate::adaptor::presenter::client::value;
+    use crate::domain::workspace_tree::ArchivedExecution;
+    use wire::archived_history_item::Variant;
+    Ok(wire::ArchivedHistoryItem {
+        variant: Some(match entry {
+            ArchivedExecution::Session {
+                session,
+                name,
+                archived_at,
+            } => Variant::Session(wire::ArchivedSessionHistoryItem {
+                agent_session_id: session.id().to_owned(),
+                name: name.clone(),
+                provider: Some(value(
+                    crate::usecase::provider_dto::AgentSessionProviderDto::from(session.provider()),
+                )?),
+                archived_at: *archived_at,
+                can_delete: session.operations().can_delete,
+            }),
+            ArchivedExecution::Workflow(execution) => {
+                Variant::Workflow(wire::WorkspaceWorkflowHistoryItem {
+                    execution_id: Some(execution.execution_id.clone()),
+                    worktree_path: Some(execution.worktree_path.clone()),
+                    title: Some(execution.workflow_name.clone()),
+                    status: Some(value(execution.status.as_str())?),
+                    updated_at: Some(execution.updated_at),
+                })
+            }
+        }),
+    })
 }
 
 #[cfg(test)]

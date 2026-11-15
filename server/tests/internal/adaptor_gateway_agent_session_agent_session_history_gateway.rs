@@ -566,6 +566,7 @@ pub async fn test_agent_session_history_query_claudeのタイトルが読めな�
 
     let result = query
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 3,
         })
@@ -642,6 +643,7 @@ pub async fn test_agent_session_history_query_codexのdbが無いときpageを�
 
     let result = query
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".to_string(),
             visible_count: 2,
         })
@@ -835,6 +837,7 @@ pub async fn test_agent_session_history_query_sqliteのbusyを一時的な失敗
     // When
     let result = query
         .list(AgentSessionHistoryRequest {
+            search: None,
             worktree_path: "/repo/worktree".into(),
             visible_count: 1,
         })
@@ -843,4 +846,73 @@ pub async fn test_agent_session_history_query_sqliteのbusyを一時的な失敗
     assert!(
         matches!(result, Err(releashd::test_support::integration::sessions::AgentSessionHistoryQueryError::Technical(failure)) if failure.nature == releashd::test_support::integration::platform::TechnicalFailureNature::Transient)
     );
+}
+
+#[tokio::test]
+pub async fn test_履歴検索_実ファイルとsqliteの201件目までを検索してページ化する() {
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let claude_root = directory.path().join("claude");
+    let codex_root = directory.path().join("codex");
+    let project = claude_root.join("projects/-repo-worktree");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&codex_root).unwrap();
+    let connection = rusqlite::Connection::open(codex_root.join("state_5.sqlite")).unwrap();
+    connection.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT, first_user_message TEXT);").unwrap();
+    for index in 0..203 {
+        let id = format!("session-{index:03}");
+        let title = if index == 200 || index == 201 {
+            "needle title"
+        } else {
+            "other"
+        };
+        let prompt = if index == 202 {
+            "needle prompt"
+        } else {
+            "other"
+        };
+        let updated = 1_700_000_203 - index;
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, '/repo/worktree', ?2, ?3, ?4)",
+                rusqlite::params![id, updated, title, prompt],
+            )
+            .unwrap();
+        let path = project.join(format!("{id}.jsonl"));
+        fs::write(&path, format!("{}\n{}\n", serde_json::json!({"type":"user", "sessionId":id, "cwd":"/repo/worktree", "message":{"content":prompt}}), serde_json::json!({"type":"ai-title", "aiTitle":title}))).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(updated as u64),
+            ))
+            .unwrap();
+    }
+    drop(connection);
+    let query = LocalAgentSessionHistoryQueryService::new(
+        Arc::new(LocalAgentSessionHistoryGateway::new(
+            claude_root,
+            codex_root,
+        )),
+        Arc::new(UnownedProviderSessions),
+    );
+    // When / Then
+    for count in [1, 4] {
+        let page = query
+            .list(AgentSessionHistoryRequest {
+                worktree_path: "/repo/worktree".into(),
+                visible_count: count,
+                search: releashd::test_support::integration::repository::SearchTerm::new("needle"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), count.min(2));
+        assert_eq!(page.has_more, count == 1);
+        assert_eq!(page.items[0].provider_session_id, "session-200");
+        assert!(page
+            .items
+            .iter()
+            .all(|item| item.provider_session_id == "session-200"));
+    }
 }

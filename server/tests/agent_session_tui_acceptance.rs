@@ -1475,3 +1475,122 @@ async fn test_atui_030_provider実行fileが無くてもrestoreできresumeだ�
     );
     host.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_履歴_B008_B009_B020_B021_B022_B023_provider購読の順序と追加読込と未表示の指示の検索()
+{
+    // Given
+    let root = tempfile::TempDir::new().unwrap();
+    let workspace = root.path().join("worktree");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.to_string_lossy().into_owned();
+    let (host, _, codex_home) = host(root.path(), 1);
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let connection = rusqlite::Connection::open(codex_home.join("state_5.sqlite")).unwrap();
+    connection.execute_batch(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, updated_at INTEGER, name TEXT, first_user_message TEXT);",
+    ).unwrap();
+    for (id, updated, title, prompt) in [
+        ("older", 10, "古い相談", "古い相談を続けたい"),
+        (
+            "prompt",
+            20,
+            "Push を足したい",
+            "Commit メニューに Push を足す",
+        ),
+        ("newer", 30, "Thread の並び順", "並び順を直す"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, workspace, updated, title, prompt],
+            )
+            .unwrap();
+    }
+    drop(connection);
+    let read = |count: &str, search: Option<&str>| {
+        let mut target = format!(
+            "session-history:{}:{workspace}{}:{count}",
+            workspace.len(),
+            count.len()
+        );
+        if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
+            let argument = format!("search={search}");
+            target.push_str(&format!("{}:{argument}", argument.len()));
+        }
+        host.read_state::<serde_json::Value>(&target).unwrap()
+    };
+    let ids = |page: &serde_json::Value| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["providerSessionId"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    // When
+    let initial = read("1", None);
+    let expanded = read("3", None);
+    // Then
+    assert_eq!(ids(&initial), ["newer"]);
+    assert_eq!(ids(&expanded), ["newer", "prompt", "older"]);
+    // When
+    let named = read("1", Some("thread"));
+    let prompt = read("1", Some("Commit メニュー"));
+    let older = read("1", Some("古い相談"));
+    let cleared = read("1", Some(""));
+    // Then
+    assert_eq!(ids(&named), ["newer"]);
+    assert_eq!(ids(&prompt), ["prompt"]);
+    assert_eq!(ids(&older), ["older"]);
+    assert_eq!(ids(&cleared), ids(&initial));
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_履歴_B014_B015_題がないClaude履歴は最初の指示か短縮IDをラベルにする() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("worktree");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.to_str().unwrap();
+    let (host, claude_home, _) = host(root.path(), 1);
+    let project = workspace
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let project = claude_home.join("projects").join(project);
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("prompt-only.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "user", "sessionId": "prompt-only", "cwd": workspace,
+                "message": { "content": "PR 面の CHECKS の並び順を相談したい" }
+            })
+        ),
+    )
+    .unwrap();
+    std::fs::write(project.join("1a2b3c4d-rest.jsonl"), "{}\n").unwrap();
+    // When
+    let page: serde_json::Value = host
+        .read_state(&format!(
+            "session-history:{}:{workspace}2:20",
+            workspace.len()
+        ))
+        .unwrap();
+    // Then
+    let items = page["items"].as_array().unwrap();
+    for (id, expected) in [
+        ("prompt-only", "PR 面の CHECKS の並び順を相談したい"),
+        ("1a2b3c4d-rest", "Claude 1a2b3c4d…"),
+    ] {
+        let item = items
+            .iter()
+            .find(|item| item["providerSessionId"] == id)
+            .unwrap();
+        assert_eq!(item["label"], expected);
+    }
+    host.shutdown().await.unwrap();
+}
