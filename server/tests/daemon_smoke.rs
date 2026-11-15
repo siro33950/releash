@@ -931,19 +931,61 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
     drop((execution, output, missing, session_threads, history, thread));
 
     // When / Then: review threads reach the subscription after a comment command
-    let mut threads = subscribe_state(&socket, "review-threads", vec!["repository".into()]).await;
-    expect_state(&mut threads, "initial review threads", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if !list.items.iter().any(|thread| thread.comments.as_ref().unwrap().items.iter().any(|comment| comment.content.as_deref() == Some("production comment"))))).await;
+    let has_production_comment = |list: &wire::ThreadExcerptsSnapshot| {
+        list.items.iter().any(|item| {
+            item.thread
+                .as_ref()
+                .unwrap()
+                .comments
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .any(|comment| comment.content.as_deref() == Some("production comment"))
+        })
+    };
+    let mut threads = subscribe_state(
+        &socket,
+        "review-threads",
+        vec![worktree.into(), "head".into()],
+    )
+    .await;
+    expect_state(&mut threads, "initial review threads", |value| matches!(value, wire::state_payload::Value::ThreadExcerpts(list) if !has_production_comment(list))).await;
     request(
         &mut socket,
         "comment",
         C::CreateReviewThread(wire::CreateReviewThreadRequest {
-            worktree_name: Some("repository".into()),
+            worktree_name: Some(worktree.into()),
             content: Some("production comment".into()),
             ..Default::default()
         }),
     )
     .await;
-    expect_state(&mut threads, "comment creation", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.iter().any(|thread| thread.comments.as_ref().unwrap().items.iter().any(|comment| comment.content.as_deref() == Some("production comment"))))).await;
+    expect_state(&mut threads, "comment creation", |value| matches!(value, wire::state_payload::Value::ThreadExcerpts(list) if has_production_comment(list))).await;
+    // When / Then: a thread on a line carries that line and the lines before it from the worktree diff
+    std::fs::write(repo_path.join("excerpt.txt"), "first\nsecond\n").unwrap();
+    request(
+        &mut socket,
+        "line comment",
+        C::CreateReviewThread(wire::CreateReviewThreadRequest {
+            worktree_name: Some(worktree.into()),
+            file_path: Some("excerpt.txt".into()),
+            line_number: Some(2),
+            content: Some("line comment".into()),
+            ..Default::default()
+        }),
+    )
+    .await;
+    expect_state(&mut threads, "thread excerpt", |value| {
+        matches!(value, wire::state_payload::Value::ThreadExcerpts(list) if list.items.iter().any(|item| {
+            item.lines
+                .iter()
+                .map(|line| (line.old_line, line.new_line, line.text.as_str(), line.targeted))
+                .eq([(None, Some(1), "first", false), (None, Some(2), "second", true)])
+        }))
+    })
+    .await;
+    std::fs::remove_file(repo_path.join("excerpt.txt")).unwrap();
     // When / Then: the subscription owns the review-comments watch, without a comment command
     for entry in std::fs::read_dir(root.join("review-comments")).unwrap() {
         let path = entry.unwrap().path();
@@ -951,7 +993,7 @@ async fn test_daemon本番配線_状態を購読へ配信する() {
             std::fs::write(&path, "[]").unwrap();
         }
     }
-    expect_state(&mut threads, "external comment edit", |value| matches!(value, wire::state_payload::Value::ReviewThreads(list) if list.items.is_empty())).await;
+    expect_state(&mut threads, "external comment edit", |value| matches!(value, wire::state_payload::Value::ThreadExcerpts(list) if list.items.is_empty())).await;
     // When / Then: the directory subscription owns the worktree watch.
     let mut directory =
         subscribe_state(&socket, "directory", vec![worktree.into(), ".".into()]).await;

@@ -33,7 +33,8 @@ pub enum SubscriptionTarget {
     ),
     FileTab(String, String, ReviewBase),
     FileThreads(String, String),
-    ReviewThreads(String),
+    /// worktree の Thread の一覧。差分の比較の基準と、解決済みでも対象の行の差分を添える Thread の ID を持つ。
+    ReviewThreads(String, ReviewBase, Vec<String>),
     WorkflowExecution(String),
     WorkflowOutput(String, String),
     NodeArtifact(String),
@@ -113,8 +114,15 @@ impl SubscriptionTarget {
                 .cloned()
                 .map(|path| WatchRequirement::Files(path, StateChangeSource::ProviderHistory))
                 .collect(),
+            Self::ReviewThreads(path, ..) => vec![
+                WatchRequirement::Git(path.clone()),
+                WatchRequirement::Files(path.clone(), StateChangeSource::Worktree(path.clone())),
+                WatchRequirement::Files(
+                    review_comments_dir.into(),
+                    StateChangeSource::ReviewComments(None),
+                ),
+            ],
             Self::FileThreads(..)
-            | Self::ReviewThreads(_)
             | Self::ReviewSessionThreads(..)
             | Self::ReviewWorktreeThreads(..)
             | Self::ReviewSessionThread(..)
@@ -196,6 +204,7 @@ impl SubscriptionTarget {
                 | Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
+                | Self::ReviewThreads(p, ..)
                 | Self::ReleashBase(p) => paths.contains(p),
                 _ => false,
             },
@@ -209,6 +218,7 @@ impl SubscriptionTarget {
                 Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::FileTab(p, _, _)
+                | Self::ReviewThreads(p, ..)
                 | Self::NodeDetail(p, _)
                 | Self::SessionHistory(p, _) => p == path,
                 _ => false,
@@ -229,7 +239,7 @@ impl SubscriptionTarget {
                             | Self::ReviewSessionThread(..)
                             | Self::ReviewSessionThreadHistory(..)
                     )
-                    || matches!(self, Self::ReviewThreads(name) if worktree.as_ref().is_none_or(|w| w == name))
+                    || matches!(self, Self::ReviewThreads(name, ..) if worktree.as_ref().is_none_or(|w| w == name))
             }
             C::WorkflowDefinitions => matches!(
                 self,

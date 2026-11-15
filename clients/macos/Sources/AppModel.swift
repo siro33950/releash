@@ -64,6 +64,7 @@ import SwiftProtobuf
     return alert.runModal() == .alertFirstButtonReturn
   }
   @ObservationIgnored private var terminals: [String: TerminalSession] = [:]
+  @ObservationIgnored private var threadPanels: [String: ThreadPanelState] = [:]
   @ObservationIgnored private var workspaceState = Releash_Client_V1_WorkspaceStateDto()
   @ObservationIgnored private var cli: CLI?
   @ObservationIgnored private var policy: TransportPolicy?
@@ -589,6 +590,13 @@ import SwiftProtobuf
         }
       }
     }
+  }
+  /// worktree の Thread 面の状態。面を離れても、チェック、開いた Thread、書きかけの入力を保つ。
+  func threadPanelState(_ worktree: String) -> ThreadPanelState {
+    if let state = threadPanels[worktree] { return state }
+    let state = ThreadPanelState()
+    threadPanels[worktree] = state
+    return state
   }
   func terminal(path: String, id: String, agent: Bool = false) -> TerminalSession {
     let key = subscriptionKey(agent ? "terminal" : "workspace-terminal", [path, id])

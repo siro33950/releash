@@ -322,11 +322,12 @@ extension WorkbenchTests {
     try await fixture.startServer()
     let repository = try await fixture.repository("thread-panel-repository", threads: ["確認する本文"])
     var threadID = ""
-    try await fixture.waitForState(target: "review-threads", args: [repository.path]) { payload in
-      guard case .reviewThreads(let value) = payload.value, let thread = value.items.first else {
+    try await fixture.waitForState(target: "review-threads", args: [repository.path, "head"]) {
+      payload in
+      guard case .threadExcerpts(let value) = payload.value, let item = value.items.first else {
         return false
       }
-      threadID = thread.id
+      threadID = item.thread.id
       return true
     }
     let (client, headers) = try fixture.client()
@@ -371,29 +372,27 @@ extension WorkbenchTests {
     app.checkBoxes["Thread"].click()
     let row = app.descendants(matching: .any).matching(identifier: "thread:\(threadID)").firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 30), app.debugDescription)
-    let comments = app.staticTexts["thread-comments:\(threadID)"]
-    XCTAssertEqual(comments.value as? String, "Comment 1件")
-    app.buttons["thread-reply:\(threadID)"].click()
-    let editor = app.textViews["thread-reply-content:\(threadID)"]
+    let editor = app.descendants(matching: .any).matching(
+      identifier: "thread-reply-content:\(threadID)"
+    ).firstMatch
     XCTAssertTrue(editor.waitForExistence(timeout: 10), app.debugDescription)
     editor.click()
     editor.typeText("E2E reply")
     app.buttons["thread-reply-send:\(threadID)"].click()
-    let replied = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "value == %@", "Comment 2件"), object: comments)
-    let replyResult = await XCTWaiter.fulfillment(of: [replied], timeout: 10)
-    XCTAssertEqual(replyResult, .completed, app.debugDescription)
+    let reply = row.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "E2E reply"))
+      .firstMatch
+    XCTAssertTrue(reply.waitForExistence(timeout: 10), app.debugDescription)
     app.buttons["thread-resolve:\(threadID)"].click()
-    let removed = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "exists == false"), object: row)
-    let removedResult = await XCTWaiter.fulfillment(of: [removed], timeout: 10)
-    XCTAssertEqual(removedResult, .completed, app.debugDescription)
-    app.radioButtons["解決済み 1"].click()
-    XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
-    XCTAssertTrue(
-      app.descendants(matching: .any).matching(identifier: "thread-resolved:\(threadID)")
-        .firstMatch.exists)
-    app.checkBoxes["thread-check:\(threadID)"].click()
+    let resolved = app.descendants(matching: .any).matching(
+      identifier: "thread-resolved:\(threadID)"
+    ).firstMatch
+    XCTAssertTrue(resolved.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertFalse(editor.exists, app.debugDescription)
+    app.buttons["thread-toggle:\(threadID)"].click()
+    let check = app.checkBoxes["thread-check:\(threadID)"]
+    XCTAssertTrue(check.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertTrue(reply.exists, app.debugDescription)
+    check.click()
     let send = app.menuButtons["thread-send"]
     let canSend = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "enabled == true"), object: send)

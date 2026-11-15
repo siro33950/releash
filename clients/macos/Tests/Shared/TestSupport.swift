@@ -54,6 +54,8 @@ final class TestHTTPClient: HTTPClientInterface {
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
     var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
     var reviewThreads: [String: Releash_Client_V1_ListReviewThreadDto] = [:]
+    /// Thread の ID ごとの、対象の行の差分。`review-threads` の購読で Thread に添えて配信する。
+    var threadLines: [String: [Releash_Client_V1_ThreadDiffLine]] = [:]
     var history = Releash_Client_V1_AgentSessionHistoryPageDto()
     var failedMethod: String?
     var failedMethodCode: Code = .internalError
@@ -157,7 +159,8 @@ final class TestHTTPClient: HTTPClientInterface {
           } else if subscription.target == "session-tab" {
             payload.sessionTab = state.sessionTabs[subscription.args[0]] ?? .init()
           } else if subscription.target == "review-threads" {
-            payload.reviewThreads = state.reviewThreads[subscription.args[0]] ?? .init()
+            payload.threadExcerpts = testThreadExcerpts(
+              state.reviewThreads[subscription.args[0]]?.items ?? [], lines: state.threadLines)
           } else if subscription.target == "session-history" {
             payload.sessionHistory = state.history
           } else if subscription.target == "workspaces" {
@@ -360,8 +363,11 @@ final class TestHTTPClient: HTTPClientInterface {
         if value.hasValue { state.nodeDetails[value.value.id] = value.value }
       case .sessionTab(let value):
         if let id = args?.first { state.sessionTabs[id] = value }
-      case .reviewThreads(let value):
-        if let path = args?.first { state.reviewThreads[path] = value }
+      case .threadExcerpts(let value):
+        if let path = args?.first {
+          state.reviewThreads[path] = .with { $0.items = value.items.map(\.thread) }
+          for item in value.items { state.threadLines[item.thread.id] = item.lines }
+        }
       default: break
       }
       for (id, delivery) in state.initialDeliveries
@@ -424,6 +430,20 @@ func testReviewThread(_ id: String, resolved: Bool = false) -> Releash_Client_V1
   comment.createdAt = 1_700_000_000
   thread.comments.items = [comment]
   return thread
+}
+
+func testThreadExcerpts(
+  _ threads: [Releash_Client_V1_ReviewThreadDto],
+  lines: [String: [Releash_Client_V1_ThreadDiffLine]] = [:]
+) -> Releash_Client_V1_ThreadExcerptsSnapshot {
+  .with {
+    $0.items = threads.map { thread in
+      .with {
+        $0.thread = thread
+        $0.lines = lines[thread.id] ?? []
+      }
+    }
+  }
 }
 
 @MainActor func eventually(

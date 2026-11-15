@@ -175,6 +175,27 @@ fn test_ファイルthread購読_該当worktreeのcomment変更だけを受け�
 }
 
 #[test]
+fn test_thread一覧購読_該当worktreeのcommentとファイルとgitの変化を受ける() {
+    // Given
+    let target = SubscriptionTarget::ReviewThreads("/repo".into(), ReviewBase::Head, vec![]);
+    // When / Then
+    assert!(target.affected_by(&StateChangeSource::ReviewComments(Some("/repo".into()))));
+    assert!(target.affected_by(&StateChangeSource::ReviewComments(None)));
+    assert!(target.affected_by(&StateChangeSource::Worktree("/repo".into())));
+    assert!(target.affected_by(&StateChangeSource::Repository(vec!["/repo".into()])));
+    assert!(!target.affected_by(&StateChangeSource::ReviewComments(Some("/other".into()))));
+    assert!(!target.affected_by(&StateChangeSource::Worktree("/other".into())));
+    assert_eq!(
+        target.watches(&[], &[], "/comments", "", ""),
+        vec![
+            WatchRequirement::Git("/repo".into()),
+            WatchRequirement::Files("/repo".into(), StateChangeSource::Worktree("/repo".into())),
+            WatchRequirement::Files("/comments".into(), StateChangeSource::ReviewComments(None)),
+        ]
+    );
+}
+
+#[test]
 fn test_sessionタブ購読_idだけを受け取りworktree変化で更新する() {
     // Given
     let args = ["agent-session"];

@@ -142,7 +142,7 @@ fn test_監視後始末_停止失敗は保持して次のreconcileで止め直�
         vec![],
         String::new(),
     );
-    let target = SubscriptionTarget::ReviewThreads("/repo".into());
+    let target = SubscriptionTarget::FileThreads("/repo".into(), "file.rs".into());
     subscriptions.open_client("client".into()).unwrap();
     subscriptions.start("client", &target).unwrap();
     assert!(subscriptions.reconcile_watches().is_empty());

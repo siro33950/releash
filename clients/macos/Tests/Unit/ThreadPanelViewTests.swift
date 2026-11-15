@@ -31,65 +31,121 @@ final class ThreadPanelViewTests: XCTestCase {
     XCTAssertFalse(handled)
   }
 
-  func test_Thread行_位置と件数と最終発言と解決済みを表示する() {
+  func test_Thread表示_場所と行と解決済みを表す() {
     // Given
     var thread = testReviewThread("thread")
     // Then
-    XCTAssertEqual(thread.locationLabel, "General")
-    XCTAssertEqual(thread.commentCountLabel, "Comment 1件")
+    XCTAssertEqual(thread.pathLabel, "General")
+    XCTAssertNil(thread.lineLabel)
+    XCTAssertEqual(thread.compactLocationLabel, "General")
     XCTAssertFalse(thread.isResolved)
     // When
     thread.target.filePath = "src/main.rs"
     // Then
-    XCTAssertEqual(thread.locationLabel, "src/main.rs")
+    XCTAssertEqual(thread.pathLabel, "src/main.rs")
+    XCTAssertNil(thread.lineLabel)
+    XCTAssertEqual(thread.compactLocationLabel, "main.rs")
     // When
     thread.target.lineNumber = 12
     thread.target.endLine = 12
     // Then
-    XCTAssertEqual(thread.locationLabel, "src/main.rs:12")
+    XCTAssertEqual(thread.lineLabel, "L12")
     // When
     thread.target.endLine = 18
     thread.state.value = .resolved
-    var reply = Releash_Client_V1_ReviewCommentDto()
-    reply.author.displayName = "Agent"
-    reply.createdAt = 1_700_000_100
-    thread.comments.items.append(reply)
     // Then
-    XCTAssertEqual(thread.locationLabel, "src/main.rs:12–18")
-    XCTAssertEqual(thread.commentCountLabel, "Comment 2件")
+    XCTAssertEqual(thread.lineLabel, "L12–18")
+    XCTAssertEqual(thread.compactLocationLabel, "main.rs L12–18")
     XCTAssertTrue(thread.isResolved)
-    XCTAssertEqual(
-      thread.lastCommentLabel,
-      "Agent · \(Date(timeIntervalSince1970: reply.createdAt).formatted(date: .abbreviated, time: .shortened))"
-    )
-    // When
-    thread.comments.items = []
-    // Then
-    XCTAssertEqual(thread.commentCountLabel, "Comment 0件")
-    XCTAssertEqual(thread.lastCommentLabel, "")
   }
 
-  @MainActor func test_Thread選択_状態を切り替えても保持し削除されたIDだけ外す() {
+  func test_相対時刻_年と日と時間と分の区切りで表す() {
+    // Given
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    for (elapsed, expected) in [
+      (-10.0, "たった今"), (0, "たった今"), (59, "たった今"), (60, "1 分前"), (3_599, "59 分前"),
+      (3_600, "1 時間前"), (86_399, "23 時間前"), (86_400, "1 日前"), (31_535_999, "364 日前"),
+      (31_536_000, "1 年前"),
+    ] {
+      // When
+      let label = relativeTimeLabel(now.timeIntervalSince1970 - elapsed, now: now)
+      // Then
+      XCTAssertEqual(label, expected, "\(elapsed)")
+    }
+    XCTAssertEqual(relativeTimeLabel(.nan, now: now), "")
+  }
+
+  func test_差分の行_追加と削除と変更なしを記号と読み上げで表す() {
+    // Given
+    let added = Releash_Client_V1_ThreadDiffLine.with { $0.newLine = 3 }
+    let removed = Releash_Client_V1_ThreadDiffLine.with { $0.oldLine = 3 }
+    let context = Releash_Client_V1_ThreadDiffLine.with {
+      $0.oldLine = 3
+      $0.newLine = 4
+    }
+    // Then
+    XCTAssertEqual([added.sign, removed.sign, context.sign], ["+", "-", " "])
+    XCTAssertEqual(added.accessibilityDescription, "追加")
+    XCTAssertEqual(removed.accessibilityDescription, "削除")
+    XCTAssertEqual(context.accessibilityDescription, "")
+    XCTAssertEqual(
+      Releash_Client_V1_ThreadDiffLine.with {
+        $0.newLine = 3
+        $0.targeted = true
+      }.accessibilityDescription, "追加、指摘された行")
+  }
+
+  @MainActor func test_Thread一覧_未解決と解決済みに分け無くなったThreadの選択と下書きを外す() {
     // Given
     let state = ThreadPanelState()
     let open = testReviewThread("open")
     let resolved = testReviewThread("resolved", resolved: true)
-    state.receive([open, resolved])
+    state.receive(testThreadExcerpts([open, resolved]).items)
     XCTAssertTrue(state.selectedIDs.isEmpty)
-    XCTAssertEqual(state.visibleThreads.map(\.id), ["open"])
+    XCTAssertEqual(state.openItems.map(\.thread.id), ["open"])
+    XCTAssertEqual(state.resolvedItems.map(\.thread.id), ["resolved"])
     // When
-    state.checked.insert("open")
-    state.showResolved = true
-    state.checked.insert("resolved")
+    state.checked = ["resolved", "open"]
+    state.expanded = ["resolved"]
+    state.drafts = ["open": "返信の下書き"]
     // Then
-    XCTAssertEqual(state.visibleThreads.map(\.id), ["resolved"])
     XCTAssertEqual(state.selectedIDs, ["open", "resolved"])
-    XCTAssertEqual(state.selectedIDs.count, 2)
+    XCTAssertEqual(state.expandedResolvedIDs, ["resolved"])
     // When
-    state.receive([resolved])
+    state.expanded.insert("open")
+    // Then
+    XCTAssertEqual(state.expandedResolvedIDs, ["resolved"])
+    // When
+    state.receive(testThreadExcerpts([resolved]).items)
     // Then
     XCTAssertEqual(state.selectedIDs, ["resolved"])
     XCTAssertEqual(state.checked, ["resolved"])
+    XCTAssertEqual(state.expanded, ["resolved"])
+    XCTAssertTrue(state.drafts.isEmpty)
+  }
+
+  @MainActor func test_購読の引数_基準に続けて開いた解決済みのThreadを並べ状態はworktreeごとに保つ() {
+    // Given
+    let defaults = UserDefaults.standard
+    let saved = defaults.object(forKey: "diffBase")
+    defer { defaults.set(saved, forKey: "diffBase") }
+    defaults.set("branch-base", forKey: "diffBase")
+    let model = AppModel()
+    let view = ThreadPanelView(model: model, worktree: "/repo")
+    view.state.receive(
+      testThreadExcerpts([
+        testReviewThread("b", resolved: true), testReviewThread("a", resolved: true),
+        testReviewThread("open"),
+      ]).items)
+    // Then
+    XCTAssertEqual(view.subscriptionArguments, ["/repo", "branch-base"])
+    // When
+    view.state.expanded = ["b", "a"]
+    // Then
+    XCTAssertEqual(
+      view.subscriptionArguments, ["/repo", "branch-base", "thread=a", "thread=b"])
+    XCTAssertTrue(ThreadPanelView(model: model, worktree: "/repo").state === view.state)
+    XCTAssertFalse(ThreadPanelView(model: model, worktree: "/other").state === view.state)
   }
 
   @MainActor func test_送り先_選択worktreeの子孫を含むliveのSessionだけを表示する() {
@@ -174,14 +230,15 @@ final class ThreadPanelViewTests: XCTestCase {
     let http = TestHTTPClient()
     let model = try await testModel(http)
     let view = ThreadPanelView(model: model, worktree: "/repo")
-    view.state.receive([testReviewThread("a"), testReviewThread("b", resolved: true)])
+    view.state.receive(
+      testThreadExcerpts([testReviewThread("a"), testReviewThread("b", resolved: true)]).items)
     view.state.checked = ["a", "b"]
     var replies = 0
     var creations = 0
     // When
-    view.reply(to: "a", content: "返信") { replies += 1 }
+    view.reply(to: "a", content: "返信") { if $0 { replies += 1 } }
     view.resolve("a")
-    view.createGeneral(content: "General本文") { creations += 1 }
+    view.createGeneral(content: "General本文") { if $0 { creations += 1 } }
     view.send(to: "session")
     // Then
     try await eventually {
@@ -223,8 +280,8 @@ final class ThreadPanelViewTests: XCTestCase {
       model.failure = nil
       // When
       switch method {
-      case "AppendReviewComment": view.reply(to: "a", content: "本文") { accepted = true }
-      case "CreateReviewThread": view.createGeneral(content: "本文") { accepted = true }
+      case "AppendReviewComment": view.reply(to: "a", content: "本文") { accepted = $0 }
+      case "CreateReviewThread": view.createGeneral(content: "本文") { accepted = $0 }
       default: view.resolve("a")
       }
       // Then
@@ -242,6 +299,44 @@ final class ThreadPanelViewTests: XCTestCase {
       // Then
       try await eventually { model.failure == "SendThreadsToSession failed" }
     }
+    await model.stop()
+  }
+
+  @MainActor func test_その場の入力_送れたら入力欄を空にし失敗と空白では残す() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = ThreadPanelView(model: model, worktree: "/repo")
+    view.state.receive(testThreadExcerpts([testReviewThread("a")]).items)
+    view.state.drafts["a"] = "返信"
+    view.state.generalDraft = "General本文"
+    // When
+    view.sendReply("a")
+    view.sendReply("a")
+    view.addGeneral()
+    // Then
+    try await eventually {
+      view.state.drafts["a"] == nil && view.state.generalDraft.isEmpty
+        && view.state.sending.isEmpty && !view.state.creatingGeneral
+    }
+    XCTAssertEqual(http.requests("AppendReviewComment").count, 1)
+    XCTAssertEqual(http.requests("CreateReviewThread").count, 1)
+    // When
+    view.state.drafts["a"] = "  "
+    view.state.generalDraft = "\n"
+    view.sendReply("a")
+    view.addGeneral()
+    // Then
+    XCTAssertTrue(view.state.sending.isEmpty)
+    XCTAssertFalse(view.state.creatingGeneral)
+    // When
+    http.state.withLock { $0.failedMethod = "AppendReviewComment" }
+    view.state.drafts["a"] = "再送する返信"
+    view.sendReply("a")
+    // Then
+    try await eventually { model.failure == "AppendReviewComment failed" }
+    XCTAssertEqual(view.state.drafts["a"], "再送する返信")
+    XCTAssertTrue(view.state.sending.isEmpty)
     await model.stop()
   }
 }

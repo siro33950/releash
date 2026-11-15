@@ -62,7 +62,8 @@ final class SettingsAcceptanceTests: XCTestCase {
       ("外部エディタ", "settings-external-editor"), ("Diff base の既定", "settings-diff-base"),
       ("Terminal の起動コマンド", "settings-terminal-command"), ("承認の自動化", "settings-approval-automation"),
     ] { try assertRow(label, control: control, host) }
-    try assertDescription("Diff base の既定", "ファイルタブで差分を開いたときに、最初に比べる相手です。", host)
+    try assertDescription(
+      "Diff base の既定", "ファイルタブで差分を開いたときに、最初に比べる相手です。Thread 面の差分も、この相手と比べます。", host)
     try assertDescription(
       "Terminal の起動コマンド", "新しい Terminal のタブで shell が起動した直後に、このコマンドを入力して実行します。空なら何もしません。", host)
     try assertDescription("承認の自動化", "承認を求める Node を、人の確認なしに完了させます。", host)

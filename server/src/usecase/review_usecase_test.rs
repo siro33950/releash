@@ -34,6 +34,7 @@ mod tests {
         source_bytes: HashMap<(String, &'static str), ReviewSideBytes>,
         source_byte_sequences: Mutex<HashMap<(String, &'static str), VecDeque<ReviewSideBytes>>>,
         binary_attributes: HashMap<String, bool>,
+        read_failures: Vec<String>,
         hunk_count_by_path: HashMap<String, usize>,
         diff_results: HashMap<(String, String), DiffHunksResultDto>,
     }
@@ -47,6 +48,7 @@ mod tests {
                 source_bytes: HashMap::new(),
                 source_byte_sequences: Mutex::new(HashMap::new()),
                 binary_attributes: HashMap::new(),
+                read_failures: Vec::new(),
                 hunk_count_by_path: HashMap::new(),
                 diff_results: HashMap::new(),
             }
@@ -80,6 +82,11 @@ mod tests {
 
         fn with_binary_attribute(mut self, file_path: &str, binary: bool) -> Self {
             self.binary_attributes.insert(file_path.to_string(), binary);
+            self
+        }
+
+        fn with_read_failure(mut self, file_path: &str) -> Self {
+            self.read_failures.push(file_path.into());
             self
         }
 
@@ -166,6 +173,9 @@ mod tests {
             side: ReviewBlobSide,
             base: ReviewBase,
         ) -> Result<SelectedReviewSide, CodeUsecaseError> {
+            if self.read_failures.iter().any(|path| path == file_path) {
+                return Err(CodeError::External("read failed".into()).into());
+            }
             let source = review_content_source_for(side, base);
             Ok(SelectedReviewSide {
                 source,
@@ -679,5 +689,196 @@ mod tests {
                 .calls()
                 .contains(&format!("matches:{original_source:?}")));
         }
+    }
+
+    fn thread(id: &str, file_path: Option<&str>, line_number: Option<u32>) -> Thread {
+        Thread {
+            id: id.into(),
+            worktree_name: "/repo".into(),
+            target: crate::domain::comment::Target {
+                file_path: file_path.map(Into::into),
+                line_number,
+                end_line: None,
+                side: None,
+                end_side: None,
+            },
+            state: crate::domain::comment::State::Open,
+            comments: Vec::new(),
+            resolve: None,
+            created_at: 0.0,
+            updated_at: 0.0,
+            version: 1,
+            can_resolve: true,
+        }
+    }
+
+    fn resolved(mut thread: Thread) -> Thread {
+        thread.state = crate::domain::comment::State::Resolved;
+        thread
+    }
+
+    fn added_line_code() -> FakeReviewCode {
+        FakeReviewCode::new()
+            .with_source_bytes(
+                "/repo/file.rs",
+                ReviewContentSource::BranchBaseTip,
+                present_text("a\n"),
+            )
+            .with_source_bytes(
+                "/repo/file.rs",
+                ReviewContentSource::WorkingTree,
+                present_text("a\nb\n"),
+            )
+            .with_diff_result(
+                "a\n",
+                "a\nb\n",
+                DiffHunksResultDto {
+                    hunks: vec![HunkDto {
+                        old_start: 1,
+                        old_lines: 1,
+                        new_start: 1,
+                        new_lines: 2,
+                        lines: vec![" a".into(), "+b".into()],
+                    }],
+                },
+            )
+    }
+
+    #[test]
+    fn test_Threadの差分_基準との差分から対象行を添えファイルは一度だけ読む() {
+        // Given
+        let code = Arc::new(added_line_code());
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![])),
+            code.clone(),
+        );
+        // When
+        let value = usecase.threads_with_excerpts(
+            "/repo",
+            ReviewBase::BranchBase,
+            vec![
+                thread("added", Some("file.rs"), Some(2)),
+                thread("first", Some("file.rs"), Some(1)),
+                thread("general", None, None),
+            ],
+            &[],
+        );
+        // Then
+        assert_eq!(
+            value[0].1,
+            Ok(vec![
+                ExcerptLine {
+                    line: DiffLine::Context {
+                        old: 1,
+                        new: 1,
+                        text: "a".into()
+                    },
+                    targeted: false
+                },
+                ExcerptLine {
+                    line: DiffLine::Addition {
+                        new: 2,
+                        text: "b".into()
+                    },
+                    targeted: true
+                },
+            ])
+        );
+        assert_eq!(value[1].1.as_ref().map(Vec::len), Ok(1));
+        assert_eq!(value[2].1, Ok(vec![]));
+        assert_eq!(code.reads.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_Threadの差分_解決済みは求められたThreadにだけ添える() {
+        // Given
+        let code = Arc::new(added_line_code());
+        let usecase = ReviewUsecase::new_with_ports(
+            Arc::new(FakeSnapshotProvider::new(vec![])),
+            code.clone(),
+        );
+        let threads = || {
+            vec![
+                resolved(thread("shown", Some("file.rs"), Some(2))),
+                resolved(thread("folded", Some("file.rs"), Some(2))),
+            ]
+        };
+        // When
+        let folded = usecase.threads_with_excerpts("/repo", ReviewBase::BranchBase, threads(), &[]);
+        // Then
+        assert!(folded.iter().all(|(_, excerpt)| excerpt == &Ok(vec![])));
+        assert!(code.reads.lock().unwrap().is_empty());
+        // When
+        let value = usecase.threads_with_excerpts(
+            "/repo",
+            ReviewBase::BranchBase,
+            threads(),
+            &["shown".into()],
+        );
+        // Then
+        assert_eq!(value[0].1.as_ref().map(Vec::len), Ok(2));
+        assert_eq!(value[1].1, Ok(vec![]));
+    }
+
+    #[test]
+    fn test_Threadの差分_文字にできないファイルと無いファイルには空を添える() {
+        // Given
+        let code = FakeReviewCode::new()
+            .with_source_bytes(
+                "/repo/data.bin",
+                ReviewContentSource::WorkingTree,
+                ReviewSideBytes::Present(vec![0, 1, 2]),
+            )
+            .with_source_bytes(
+                "/repo/image.png",
+                ReviewContentSource::WorkingTree,
+                present_text("png"),
+            );
+        let usecase = usecase_with_code(vec![], code);
+        // When
+        let value = usecase.threads_with_excerpts(
+            "/repo",
+            ReviewBase::Head,
+            vec![
+                thread("binary", Some("data.bin"), Some(1)),
+                thread("image", Some("image.png"), Some(1)),
+                thread("missing", Some("missing.rs"), Some(1)),
+            ],
+            &[],
+        );
+        // Then
+        assert!(value.iter().all(|(_, excerpt)| excerpt == &Ok(vec![])));
+        assert_eq!(
+            value
+                .iter()
+                .map(|(thread, _)| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["binary", "image", "missing"]
+        );
+    }
+
+    #[test]
+    fn test_Threadの差分_読み取りの失敗はそのファイルのThreadにだけ添える() {
+        // Given
+        let code = added_line_code().with_read_failure("/repo/broken.rs");
+        let usecase = usecase_with_code(vec![], code);
+        // When
+        let value = usecase.threads_with_excerpts(
+            "/repo",
+            ReviewBase::BranchBase,
+            vec![
+                thread("broken", Some("broken.rs"), Some(1)),
+                thread("added", Some("file.rs"), Some(2)),
+            ],
+            &[],
+        );
+        // Then
+        let failure = value[0].1.as_ref().unwrap_err();
+        assert_eq!(failure.message, "read failed");
+        assert!(matches!(
+            failure.kind,
+            crate::domain::failure::Failure::Technical(_)
+        ));
+        assert_eq!(value[1].1.as_ref().map(Vec::len), Ok(2));
     }
 }

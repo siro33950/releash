@@ -455,3 +455,44 @@ fn test_絞込購読_空条件と不正な順序と重複と未知の条件を�
         assert_eq!(result, Err(SubscriptionError::InvalidId), "{args:?}");
     }
 }
+
+#[test]
+fn test_thread一覧購読対象_基準と差分を添えるthreadを正規の順で受け取る() {
+    // Given
+    let args = ["/repo", "branch-base", "thread=b", "thread=a", "thread=b"];
+    // When
+    let target = SubscriptionTarget::from_parts("review-threads", &args).unwrap();
+    // Then
+    assert_eq!(
+        target,
+        SubscriptionTarget::ReviewThreads(
+            "/repo".into(),
+            ReviewBase::BranchBase,
+            vec!["a".into(), "b".into()]
+        )
+    );
+    assert_eq!(
+        target.parts(),
+        (
+            "review-threads",
+            vec![
+                "/repo".to_string(),
+                "branch-base".into(),
+                "thread=a".into(),
+                "thread=b".into()
+            ]
+        )
+    );
+    assert_eq!(
+        SubscriptionTarget::parse(&target.to_string()).unwrap(),
+        target
+    );
+    for invalid in [
+        &["/repo"][..],
+        &["/repo", "index"],
+        &["/repo", "head", "thread="],
+        &["/repo", "head", "file=a.rs"],
+    ] {
+        assert!(SubscriptionTarget::from_parts("review-threads", invalid).is_err());
+    }
+}
