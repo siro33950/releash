@@ -13,7 +13,7 @@ struct PullRequestPanel: View {
   @State private var base = ""
   @State private var draft = false
   @State private var creating = false
-  @State private var comment = ""
+  @State private var comments: [UInt64: String] = [:]
   @State private var error: String?
   @State private var busy = false
   @State private var passedExpanded = false
@@ -99,15 +99,19 @@ struct PullRequestPanel: View {
           }
           Divider()
           CommentField(
-            placeholder: "Comment を書く…（Markdown）", text: $comment,
+            placeholder: "Comment を書く…（Markdown）",
+            text: Binding(
+              get: { comments[pr.number, default: ""] },
+              set: { comments[pr.number] = $0 }),
             identifier: "pr-comment", minimumLines: 3
           ) {
-            if !comment.isEmpty && !busy { post(pr.number) }
+            if !comments[pr.number, default: ""].isEmpty && !busy { post(pr.number) }
           }
           .accessibilityLabel("Comment")
           HStack {
             Spacer()
-            Button("Comment") { post(pr.number) }.disabled(comment.isEmpty || busy)
+            Button("Comment") { post(pr.number) }
+              .disabled(comments[pr.number, default: ""].isEmpty || busy)
               .buttonStyle(.borderedProminent).tint(.blue)
           }
         }
@@ -283,7 +287,7 @@ struct PullRequestPanel: View {
 
   private func post(_ number: UInt64) {
     guard let client = model.client else { return }
-    let sent = comment
+    let sent = comments[number, default: ""]
     var request = Releash_Client_V1_PostPullRequestCommentRequest()
     request.worktreePath = worktree
     request.number = number
@@ -295,7 +299,7 @@ struct PullRequestPanel: View {
       do {
         _ = try await client.postPullRequestComment(request: request, headers: model.headers).result
           .get()
-        if comment == sent { comment = "" }
+        if comments[number] == sent { comments[number] = nil }
       } catch { self.error = model.failureMessage(error) }
     }
   }

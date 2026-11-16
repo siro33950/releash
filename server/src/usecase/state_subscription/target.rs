@@ -29,7 +29,7 @@ pub enum SubscriptionTarget {
     WorktreeBases(String),
     Issues(String),
     FilteredIssues(String, crate::domain::git_host::IssueFilter),
-    /// worktree のブランチの PR。GitHub から 30 秒の周期で取り直す。
+    /// worktree のブランチの PR。30 秒ごとと、変化を受けてブランチの PR の内容が不足するときに GitHub から取り直す。
     PullRequest(String),
     /// worktree のブランチから作る PR の base に選べるブランチ。
     PullRequestBases(String),

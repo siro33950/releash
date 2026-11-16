@@ -445,6 +445,52 @@ async fn test_pr取得_本文とcheckとcommentを読み取る() {
 }
 
 #[tokio::test]
+async fn test_pr取得_書き手がnullのcommentと提出済みreviewをghostとして読み取る() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            let value = match args {
+                ["pr", "view", ..] => {
+                    r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":"body"}"#
+                }
+                ["pr", "checks", ..] => r#"[{"name":"test","bucket":"fail","link":""}]"#,
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/comments") => {
+                    r#"[[{"user":null,"body":"comment","created_at":"2026-01-01T00:00:00Z"},{"user":{"login":"bot","type":"Bot"},"body":"other comment","created_at":"2026-01-01T00:02:00Z"}]]"#
+                }
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/reviews") => {
+                    r#"[[{"user":null,"body":"review","submitted_at":"2026-01-01T00:01:00Z"}]]"#
+                }
+                _ => panic!("unexpected arguments: {args:?}"),
+            };
+            GhCommandOutput::Success(value.into())
+        }
+    }
+    // When
+    let pr = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(pr.title, "title");
+    assert_eq!(pr.body, "body");
+    assert_eq!(pr.checks.listed().len(), 1);
+    assert_eq!(pr.checks.listed()[0].name, "test");
+    let entries = pr.conversation.entries();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].body, "comment");
+    assert_eq!(entries[1].body, "review");
+    for entry in &entries[..2] {
+        assert_eq!(entry.author.login, "ghost");
+        assert!(!entry.author.is_bot);
+    }
+    assert_eq!(entries[2].body, "other comment");
+    assert_eq!(entries[2].author.login, "bot");
+    assert!(entries[2].author.is_bot);
+}
+
+#[tokio::test]
 async fn test_pr取得_不正な応答を失敗として返す() {
     struct Runner(&'static str, &'static str, &'static str);
     #[async_trait::async_trait]

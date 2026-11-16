@@ -107,19 +107,30 @@ impl GitService for Git {
     }
 }
 #[derive(Default)]
-struct Cache(Mutex<CachedResult<PullRequest>>, Mutex<Vec<String>>);
+struct Cache(
+    Mutex<std::collections::HashMap<String, CachedResult<PullRequest>>>,
+    Mutex<Vec<String>>,
+);
 impl PullRequestCache for Cache {
     fn hold(&self, path: &str) {
+        self.0.lock().unwrap().entry(path.into()).or_default();
         self.1.lock().unwrap().push(path.into());
     }
-    fn forget(&self, _: &str) {
-        *self.0.lock().unwrap() = CachedResult::default();
+    fn forget(&self, path: &str) {
+        self.0.lock().unwrap().remove(path);
     }
-    fn result(&self, _: &str) -> CachedResult<PullRequest> {
-        self.0.lock().unwrap().clone()
+    fn result(&self, path: &str) -> CachedResult<PullRequest> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .unwrap_or_default()
     }
-    fn record(&self, _: &str, value: Result<PullRequest, GitHostError>) {
-        self.0.lock().unwrap().record(value);
+    fn record(&self, path: &str, value: Result<PullRequest, GitHostError>) {
+        if let Some(entry) = self.0.lock().unwrap().get_mut(path) {
+            entry.record(value);
+        }
     }
 }
 struct Host {
@@ -223,6 +234,7 @@ async fn test_pr操作_作成と投稿の後に取得し空入力は外部へ送
         host.clone(),
         Arc::new(Cache::default()),
     );
+    usecase.acquire("/worktree");
     // When
     usecase
         .create(
@@ -293,9 +305,10 @@ fn test_pr読み取り_保持値と失敗を返し外部取得しない() {
     )));
     let details = Arc::new(Cache::default());
     let error = GitHostError::External("detail unavailable".into());
+    let usecase = reader(host.clone(), status, details.clone());
+    usecase.acquire("/worktree");
     details.record("/worktree", Ok(pr()));
     details.record("/worktree", Err(error.clone()));
-    let usecase = reader(host.clone(), status, details);
     // When
     let fetched = usecase.read("/worktree").unwrap();
     // Then
@@ -312,6 +325,7 @@ async fn test_pr更新_一覧の後に内容を取得し内容取得失敗を読
         Arc::new(FakePrCache::default()),
         Arc::new(Cache::default()),
     );
+    usecase.acquire("/worktree");
     // When
     usecase.refresh("/worktree").await.unwrap();
     // Then
@@ -513,9 +527,10 @@ fn test_pr解放_保持していた内容と失敗を捨てる() {
         host.status.lock().unwrap().clone().unwrap(),
     )));
     let cache = Arc::new(Cache::default());
+    let usecase = reader(host.clone(), status, cache.clone());
+    usecase.acquire("/worktree");
     cache.record("/worktree", Ok(pr()));
     cache.record("/worktree", Err(GitHostError::External("offline".into())));
-    let usecase = reader(host.clone(), status, cache);
     assert!(usecase.read("/worktree").unwrap().value.is_some());
     // When
     usecase.release("/worktree");
@@ -676,4 +691,29 @@ async fn test_pr操作_git失敗の区別と理由を返し外部操作しない
             assert!(host.calls.lock().unwrap().is_empty());
         }
     }
+}
+
+#[tokio::test]
+async fn test_pr条件付き更新_番号が違えば取得して保持し同じなら外部を呼ばない() {
+    // Given
+    let host = Arc::new(Host::default());
+    let status = Arc::new(FakePrCache::with_lookup(Some(
+        host.status.lock().unwrap().clone().unwrap(),
+    )));
+    let details = Arc::new(Cache::default());
+    let usecase = reader(host.clone(), status, details.clone());
+    usecase.acquire("/worktree");
+    let mut old = pr();
+    old.info.number = 1;
+    details.record("/worktree", Ok(old));
+    // When
+    usecase.refresh_if_needed("/worktree").await.unwrap();
+    // Then
+    assert_eq!(details.result("/worktree").value, Some(pr()));
+    assert_eq!(*host.calls.lock().unwrap(), ["list", "detail"]);
+    host.calls.lock().unwrap().clear();
+    // When
+    usecase.refresh_if_needed("/worktree").await.unwrap();
+    // Then
+    assert!(host.calls.lock().unwrap().is_empty());
 }

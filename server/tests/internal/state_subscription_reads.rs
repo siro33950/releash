@@ -161,6 +161,7 @@ struct Issues {
     own_runtime: AtomicBool,
     failure: Mutex<bool>,
     pull_request: Mutex<Option<PullRequest>>,
+    pr_status: Mutex<Option<PrStatus>>,
     detail_gate: Mutex<Option<Arc<(tokio::sync::Notify, tokio::sync::Notify)>>>,
     log_calls: Mutex<Vec<(String, ActionsJobId)>>,
 }
@@ -196,6 +197,9 @@ impl GitHostProvider for Issues {
     }
 
     async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
+        if let Some(status) = self.pr_status.lock().clone() {
+            return Ok(status);
+        }
         Ok(PrStatus {
             open_prs: self
                 .pull_request
@@ -2003,16 +2007,108 @@ async fn test_pr購読解放_最後の購読終了後に完了した取得結果
         let target = target.clone();
         async move { reads.refresh_external(&target).await }
     });
-    gate.0.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.0.notified())
+        .await
+        .expect("PR の内容の取得が始まらない");
     subscriptions
         .deps()
         .stop_subscription(&format!("second:{target}"))
         .await
         .unwrap();
     gate.1.notify_one();
-    refresh.await.unwrap().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), refresh)
+        .await
+        .expect("PR の内容の取得が終わらない")
+        .unwrap()
+        .unwrap();
     // Then
     assert!(
         matches!(reads.read(&target).await.unwrap(), StateValue::PullRequest(value) if value.value.is_none() && value.error.is_none())
     );
+}
+
+#[tokio::test]
+async fn test_pr購読_ブランチ変更後の内容を周期を待たずに配信する() {
+    use releashd::test_support::integration::client_protocol::wire;
+    use releashd::test_support::integration::platform::{PrInfo, PrState};
+    use releashd::test_support::integration::subscriptions::{PublishedState, StateChangeSource};
+
+    // Given
+    let fixture = Fixture::new();
+    let git = git2::Repository::open(&fixture.path).unwrap();
+    let branch = git.head().unwrap().shorthand().unwrap().to_string();
+    let old = PullRequest {
+        info: PrInfo {
+            number: 1,
+            url: "old".into(),
+            state: PrState::Open,
+            draft: false,
+        },
+        title: "old title".into(),
+        body: "old body".into(),
+        checks: Default::default(),
+        conversation: Default::default(),
+    };
+    let next = PullRequest {
+        info: PrInfo {
+            number: 2,
+            url: "next".into(),
+            ..old.info.clone()
+        },
+        title: "next title".into(),
+        body: "next body".into(),
+        ..old.clone()
+    };
+    *fixture.issues.pr_status.lock() = Some(PrStatus {
+        open_prs: vec![
+            (branch, old.info.clone()),
+            ("feature".into(), next.info.clone()),
+        ],
+        completed_prs: vec![],
+    });
+    *fixture.issues.pull_request.lock() = Some(old);
+    let subscriptions = fixture.subscriptions.with_reads(
+        Arc::new(StateSubscriptionReads(fixture.reads.clone())),
+        None,
+        vec![],
+        String::new(),
+    );
+    let mut stream = Box::pin(subscriptions.open("client".into()).unwrap());
+    let target = T::PullRequest(fixture.path.clone());
+    start_read(&subscriptions, "client", &target.to_string())
+        .await
+        .unwrap();
+
+    // When
+    *fixture.issues.pull_request.lock() = Some(next.clone());
+    git.set_head("refs/heads/feature").unwrap();
+    subscriptions.notify(StateChangeSource::Repository(vec![fixture.path.clone()]));
+
+    // Then
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(event) = stream.next().await {
+            if let StateSubscriptionEvent::Item(id, Event::Change(_, _, value)) = event {
+                assert_eq!(id, format!("client:{target}"));
+                let PublishedState::Value(value) = value.as_ref() else {
+                    panic!("PR の読み取りに失敗した");
+                };
+                let Some(wire::state_payload::Value::PullRequest(snapshot)) = &value.value else {
+                    panic!("PR の配信ではない");
+                };
+                let Some(wire::pull_request_snapshot::BranchPullRequest::Present(pr)) =
+                    &snapshot.branch_pull_request
+                else {
+                    panic!("ブランチの PR の内容がない");
+                };
+                assert_eq!(
+                    (pr.number, &pr.title, &pr.body),
+                    (next.info.number, &next.title, &next.body)
+                );
+                return;
+            }
+        }
+        panic!("PR の配信前に購読が終了した");
+    })
+    .await
+    .expect("ブランチ変更後の PR が配信されない");
 }

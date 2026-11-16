@@ -57,6 +57,19 @@ impl PullRequestUsecase {
         })
     }
 
+    pub async fn refresh_if_needed(&self, worktree_path: &str) -> Result<(), GitError> {
+        let repo_path = self.git.main_repo_path(worktree_path)?;
+        let branch = self.git.current(worktree_path)?;
+        if BranchPullRequest::needs_refresh(
+            &self.git_host.pr_status(&repo_path),
+            &branch,
+            &self.pull_requests.result(worktree_path),
+        ) {
+            self.refresh(worktree_path).await?;
+        }
+        Ok(())
+    }
+
     /// Worktree のブランチの PR を GitHub から取り直して持つ。
     /// Repository の PR の一覧を取り直し、ブランチの PR があれば、その内容を取る。
     /// GitHub から取れなかった失敗は、持っている値に記録し、戻り値では返さない。

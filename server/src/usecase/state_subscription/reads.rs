@@ -531,6 +531,9 @@ pub trait StateSubscriptionRead: Send + Sync {
     async fn refresh_external(&self, _target: &SubscriptionTarget) -> Result<(), StateReadError> {
         Ok(())
     }
+    async fn refresh_changed(&self, _target: &SubscriptionTarget) -> Result<(), StateReadError> {
+        Ok(())
+    }
     fn acquire_external(&self, _target: &SubscriptionTarget) {}
     fn release_external(&self, _target: &SubscriptionTarget) {}
     fn repositories(&self) -> Vec<String>;
@@ -557,6 +560,15 @@ impl StateSubscriptionRead for WorkspaceStateReads {
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
         self.refresh_external_blocking(target).await
+    }
+    async fn refresh_changed(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
+        if let SubscriptionTarget::PullRequest(path) = target {
+            self.pull_request
+                .refresh_if_needed(path)
+                .await
+                .map_err(|e| error(crate::usecase::repository_error::UsecaseError::from(e)))?;
+        }
+        Ok(())
     }
     fn acquire_external(&self, target: &SubscriptionTarget) {
         match target {

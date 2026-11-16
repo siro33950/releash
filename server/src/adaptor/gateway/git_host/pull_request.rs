@@ -92,8 +92,14 @@ struct User {
     #[serde(rename = "type")]
     kind: String,
 }
-impl From<User> for PrCommentAuthor {
-    fn from(user: User) -> Self {
+impl From<Option<User>> for PrCommentAuthor {
+    fn from(user: Option<User>) -> Self {
+        let Some(user) = user else {
+            return Self {
+                login: "ghost".into(),
+                is_bot: false,
+            };
+        };
         Self {
             login: user.login,
             is_bot: user.kind == "Bot",
@@ -102,7 +108,7 @@ impl From<User> for PrCommentAuthor {
 }
 #[derive(Deserialize)]
 pub(super) struct Comment {
-    user: User,
+    user: Option<User>,
     body: String,
     created_at: String,
 }
@@ -118,7 +124,7 @@ impl Comment {
 
 #[derive(Deserialize)]
 pub(super) struct Review {
-    user: User,
+    user: Option<User>,
     body: String,
     submitted_at: Option<String>,
 }

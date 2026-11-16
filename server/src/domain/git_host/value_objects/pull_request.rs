@@ -25,6 +25,22 @@ pub enum BranchPullRequest {
 }
 
 impl BranchPullRequest {
+    pub fn needs_refresh(
+        status: &CachedResult<PrStatus>,
+        branch: &str,
+        held: &CachedResult<PullRequest>,
+    ) -> bool {
+        status
+            .value
+            .as_ref()
+            .and_then(|list| list.for_branch(branch))
+            .is_some_and(|info| !Self::matches(info, held.value.as_ref()))
+    }
+
+    fn matches(info: &PrInfo, held: Option<&PullRequest>) -> bool {
+        held.is_some_and(|pr| pr.info.number == info.number)
+    }
+
     /// PR の面に出すブランチの PR を決める。
     ///
     /// ブランチの PR は、Repository の PR の一覧 `status` から `PrStatus::for_branch` で決める。
@@ -34,6 +50,7 @@ impl BranchPullRequest {
     /// - 一覧をまだ取れていないときは、無い。
     /// - ブランチの PR が無いときは、`Absent`。
     /// - ブランチの PR があり、持っている内容 `held` がその番号の PR のものであるときは、`Present`。
+    ///   `info`（番号、URL、状態、draft）は一覧の値にし、title、body、checks、conversation は保持中の値を使う。
     /// - ブランチの PR があり、`held` が無いか、別の番号の PR のものであるときは、無い。
     ///
     /// 失敗は、一覧の取得の失敗があればそれにする。
@@ -57,8 +74,13 @@ impl BranchPullRequest {
             Some(info) => CachedResult {
                 value: held
                     .value
-                    .filter(|pr| pr.info.number == info.number)
-                    .map(Self::Present),
+                    .filter(|pr| Self::matches(info, Some(pr)))
+                    .map(|pr| {
+                        Self::Present(PullRequest {
+                            info: info.clone(),
+                            ..pr
+                        })
+                    }),
                 error: status.error.or(held.error),
             },
         }
