@@ -161,13 +161,15 @@ struct Issues {
     own_runtime: AtomicBool,
     failure: Mutex<bool>,
     pull_request: Mutex<Option<PullRequest>>,
+    pull_request_calls: Mutex<Vec<u64>>,
     pr_status: Mutex<Option<PrStatus>>,
     detail_gate: Mutex<Option<Arc<(tokio::sync::Notify, tokio::sync::Notify)>>>,
     log_calls: Mutex<Vec<(String, ActionsJobId)>>,
 }
 #[async_trait::async_trait]
 impl GitHostProvider for Issues {
-    async fn fetch_pull_request(&self, _: &str, _: u64) -> Result<PullRequest, GitHostError> {
+    async fn fetch_pull_request(&self, _: &str, number: u64) -> Result<PullRequest, GitHostError> {
+        self.pull_request_calls.lock().push(number);
         let gate = self.detail_gate.lock().clone();
         if let Some(gate) = gate {
             gate.0.notify_one();
@@ -2081,6 +2083,7 @@ async fn test_pr購読_ブランチ変更後の内容を周期を待たずに配
 
     // When
     *fixture.issues.pull_request.lock() = Some(next.clone());
+    fixture.issues.pull_request_calls.lock().clear();
     git.set_head("refs/heads/feature").unwrap();
     subscriptions.notify(StateChangeSource::Repository(vec![fixture.path.clone()]));
 
@@ -2111,4 +2114,5 @@ async fn test_pr購読_ブランチ変更後の内容を周期を待たずに配
     })
     .await
     .expect("ブランチ変更後の PR が配信されない");
+    assert_eq!(fixture.issues.pull_request_calls.lock().last(), Some(&2));
 }

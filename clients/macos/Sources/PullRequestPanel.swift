@@ -160,7 +160,8 @@ struct PullRequestPanel: View {
         .labelsHidden().fixedSize()
         Toggle("draft で作る", isOn: $draft).toggleStyle(.checkbox)
         Spacer(minLength: 0)
-        Button("PR を作成", action: create).disabled(title.isEmpty || busy)
+        Button("PR を作成", action: create)
+          .disabled(title.isEmpty || busy || !bases.branches.contains(base))
           .buttonStyle(.borderedProminent).tint(.blue)
       }
       Divider()
