@@ -1364,6 +1364,46 @@ final class SourceControlAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_SourceControl_初回snapshot前にメッセージ入力と絞り込みをしてもmerge終了後にメッセージが残る() async throws {
+    // Given
+    var snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.operation.merge = .init()
+      $0.operation.message = "merge message"
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    // When
+    try await host.press("right-panel:roots")
+    try await eventuallyView(host) { host.element("Merge を続ける") == nil }
+    snapshot.branchState = .tracking(.with { $0.upstream = "origin/main" })
+    try await host.press("right-panel:sourceControl")
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
+      }
+    }
+    try await enterMessage("new commit message", in: host)
+    try await host.focusTextField(index: 0)
+    let editor = try XCTUnwrap(host.window.firstResponder as? NSTextView)
+    editor.insertText(
+      "bridge", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+    let args = ["/repo", "search=bridge"]
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.contains { $0.target == "source-control" && $0.args == args }
+      }
+    }
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: args)
+    // Then
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) {
+      host.texts().contains("origin/main") && host.element("Merge を続ける") == nil
+        && self.messageEditor(content)?.string == "new commit message"
+    }
+    await model.stop()
+  }
+
   @MainActor func test_SourceControl_再購読の初回snapshotまで入力しなければmerge終了後にメッセージが空になる() async throws {
     // Given
     var snapshot = Releash_Client_V1_SourceControlSnapshot.with {

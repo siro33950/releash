@@ -12,6 +12,8 @@ struct SourceControlView: View {
   }
   @State private var snapshot = Releash_Client_V1_SourceControlSnapshot()
   @State private var subscription: UUID?
+  @State private var initialMessage: String?
+  @State private var isFirstSnapshot = true
   @State private var busy = false
   private var operationFailure: String? {
     get { model.sourceControlDrafts[worktree, default: .init()].operationFailure }
@@ -116,8 +118,7 @@ struct SourceControlView: View {
     }
     .task(id: arguments) {
       if let subscription { model.unsubscribe(subscription) }
-      let initialMessage = message
-      var isFirstSnapshot = true
+      if initialMessage == nil { initialMessage = message }
       subscription = model.subscribe("source-control", arguments) { payload in
         guard case .sourceControl(let value) = payload.value else { return }
         let previous = model.sourceControlDrafts[worktree]?.operation
