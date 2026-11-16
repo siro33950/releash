@@ -2,6 +2,48 @@ use super::*;
 use crate::usecase::test_helpers::state_subscription::*;
 
 #[tokio::test]
+async fn test_購読手順_通知を取りこぼしたときは変更を反映してから読む() {
+    // Given
+    struct Reads(Mutex<Vec<&'static str>>);
+    #[async_trait::async_trait]
+    impl StateSubscriptionRead for Reads {
+        async fn refresh_changed(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
+            self.0.lock().push("refresh_changed");
+            Ok(())
+        }
+        async fn refresh_external(&self, _: &SubscriptionTarget) -> Result<(), StateReadError> {
+            self.0.lock().push("refresh_external");
+            Ok(())
+        }
+        async fn read(&self, _: &SubscriptionTarget) -> Result<StateValue, StateReadError> {
+            self.0.lock().push("read");
+            Ok(StateValue::TerminalStartupCommand(String::new()))
+        }
+        fn repositories(&self) -> Vec<String> {
+            vec![]
+        }
+    }
+    let reads = Arc::new(Reads(Mutex::new(vec![])));
+    let usecase = StateSubscriptionUsecase::new_with_output(
+        Arc::new(RecordingOutput::default()),
+        crate::test_support::state_subscription::pending_read_driver(),
+    )
+    .with_reads(reads.clone(), None, vec![], String::new());
+    let target = SubscriptionTarget::TerminalStartupCommand;
+    usecase.open_client("client".into()).unwrap();
+    usecase.start("client", &target).unwrap();
+    let mut changes = usecase.changes.subscribe();
+
+    // When
+    usecase
+        .refresh_read(&target, ReadSignal::Lagged, &mut changes)
+        .await;
+
+    // Then
+    assert_eq!(*reads.0.lock(), vec!["refresh_changed", "read"]);
+}
+
+#[tokio::test]
 async fn test_購読手順_開始と停止で購読状態と出力を更新する() {
     // Given
     let output = Arc::new(RecordingOutput::default());

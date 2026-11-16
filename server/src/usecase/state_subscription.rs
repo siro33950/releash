@@ -282,7 +282,7 @@ impl StateSubscriptionUsecase {
                 }
                 refresh_external = target.external_information();
             }
-            ReadSignal::Lagged => {}
+            ReadSignal::Lagged => changed = true,
         }
         loop {
             use tokio::sync::broadcast::error::TryRecvError;
@@ -291,7 +291,7 @@ impl StateSubscriptionUsecase {
                     refresh_external |= adds_external_information(target, &change.source);
                     changed |= target.affected_by(&change.source);
                 }
-                Err(TryRecvError::Lagged(_)) => continue,
+                Err(TryRecvError::Lagged(_)) => changed = true,
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }
         }
