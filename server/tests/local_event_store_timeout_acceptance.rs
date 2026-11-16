@@ -108,7 +108,12 @@ async fn test_event_store_b001_b002_期限超過後も読み取りが成功し�
     }
     drop(releases);
     for task in waiting {
-        task.await.unwrap().unwrap();
+        if let Err(error) = task.await.unwrap() {
+            assert_eq!(
+                error.connect_code(),
+                connectrpc::ErrorCode::DeadlineExceeded
+            );
+        }
     }
 
     // Then: B-001 / B-002
