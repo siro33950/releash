@@ -1334,6 +1334,65 @@ final class SourceControlAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_SourceControl_再購読の初回snapshotを待つ間に入力したメッセージはmerge終了後も残る() async throws {
+    // Given
+    var snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.operation.merge = .init()
+      $0.operation.message = "merge message"
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    // When
+    try await host.press("right-panel:roots")
+    try await eventuallyView(host) { host.element("Merge を続ける") == nil }
+    try await host.press("right-panel:sourceControl")
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
+      }
+    }
+    try await enterMessage("new commit message", in: host)
+    snapshot.branchState = .tracking(.with { $0.upstream = "origin/main" })
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
+    // Then
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) {
+      host.texts().contains("origin/main") && host.element("Merge を続ける") == nil
+        && self.messageEditor(content)?.string == "new commit message"
+    }
+    await model.stop()
+  }
+
+  @MainActor func test_SourceControl_再購読の初回snapshotまで入力しなければmerge終了後にメッセージが空になる() async throws {
+    // Given
+    var snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.operation.merge = .init()
+      $0.operation.message = "merge message"
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    // When
+    try await host.press("right-panel:roots")
+    try await eventuallyView(host) { host.element("Merge を続ける") == nil }
+    try await host.press("right-panel:sourceControl")
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
+      }
+    }
+    snapshot.branchState = .tracking(.with { $0.upstream = "origin/main" })
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
+    // Then
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) {
+      host.texts().contains("origin/main") && host.element("Merge を続ける") == nil
+        && self.messageEditor(content)?.string == ""
+    }
+    await model.stop()
+  }
+
   @MainActor func test_SourceControl_commit後の失敗応答より先に届いたmergeメッセージを残す() async throws {
     // Given
     var snapshot = Releash_Client_V1_SourceControlSnapshot.with {

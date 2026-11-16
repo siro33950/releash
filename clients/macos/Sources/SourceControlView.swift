@@ -116,6 +116,8 @@ struct SourceControlView: View {
     }
     .task(id: arguments) {
       if let subscription { model.unsubscribe(subscription) }
+      let initialMessage = message
+      var isFirstSnapshot = true
       subscription = model.subscribe("source-control", arguments) { payload in
         guard case .sourceControl(let value) = payload.value else { return }
         let previous = model.sourceControlDrafts[worktree]?.operation
@@ -126,7 +128,12 @@ struct SourceControlView: View {
         {
           message = current.message
         }
-        if previous != nil && operation == nil { message = "" }
+        if previous != nil && operation == nil,
+          !isFirstSnapshot || message == initialMessage
+        {
+          message = ""
+        }
+        isFirstSnapshot = false
         model.sourceControlDrafts[worktree, default: .init()].operation = operation
       }
     }
