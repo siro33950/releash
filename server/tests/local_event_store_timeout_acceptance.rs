@@ -31,7 +31,7 @@ async fn test_event_store_b001_b002_期限超過後も読み取りが成功し�
             store
                 .submit_query(move |_| {
                     started.send(()).unwrap();
-                    let _ = wait.recv_timeout(Duration::from_secs(10));
+                    let _ = wait.recv();
                     Ok(())
                 })
                 .await
