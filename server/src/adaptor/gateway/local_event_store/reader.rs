@@ -16,6 +16,7 @@ use crate::adaptor::gateway::local_event_store::envelope::{
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::decode_session_projection_record_v1;
 use crate::common::operation_context::OperationContext;
+use crate::infrastructure::local_event_store_connection::rollback_pending_transaction;
 
 use crate::domain::local_event::{
     CanonicalRuntimeOwnerView, CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId,
@@ -463,6 +464,8 @@ impl ReaderPool {
                         });
                         connection
                             .progress_handler(0, None::<fn() -> bool>)
+                            .map_err(|error| storage_unavailable(&error))?;
+                        rollback_pending_transaction(connection)
                             .map_err(|error| storage_unavailable(&error))?;
                         result
                     })

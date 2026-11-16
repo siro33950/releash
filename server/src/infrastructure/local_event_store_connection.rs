@@ -7,6 +7,13 @@ use rusqlite::{Connection, OpenFlags};
 
 pub const MIN_SQLITE_VERSION_NUMBER: i32 = 3_051_003;
 
+pub(crate) fn rollback_pending_transaction(connection: &Connection) -> rusqlite::Result<()> {
+    if !connection.is_autocommit() {
+        connection.execute_batch("ROLLBACK")?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum ConnectionError {
     SqliteTooOld { version_number: i32 },
