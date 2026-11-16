@@ -45,11 +45,26 @@ async fn test_破棄_worktree外のパスとsymlink経由を拒否する() {
     let path = root.path().to_str().unwrap().to_owned();
     // When / Then
     tokio::task::spawn_blocking(move || {
-        for file in ["../keep", "/keep", "link/keep"] {
-            assert!(gateway()
-                .restore_worktree_files(&path, &[file.into()])
-                .is_err());
-            assert!(gateway().trash_files(&path, &[file.into()]).is_err());
+        for (file, expected) in [
+            ("../keep", "Expected a relative file path"),
+            ("/keep", "Expected a relative file path"),
+            #[cfg(unix)]
+            ("link/keep", "Path escapes worktree"),
+        ] {
+            assert_eq!(
+                gateway()
+                    .restore_worktree_files(&path, &[file.into()])
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+            assert_eq!(
+                gateway()
+                    .trash_files(&path, &[file.into()])
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
         }
     })
     .await

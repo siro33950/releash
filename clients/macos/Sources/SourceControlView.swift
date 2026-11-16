@@ -6,11 +6,19 @@ struct SourceControlView: View {
   let worktree: String
   let openFile: (String) -> Void
   @State private var query = ""
-  @State private var message = ""
+  private var message: String {
+    get { model.sourceControlDrafts[worktree, default: .init()].message }
+    nonmutating set { model.sourceControlDrafts[worktree, default: .init()].message = newValue }
+  }
   @State private var snapshot = Releash_Client_V1_SourceControlSnapshot()
   @State private var subscription: UUID?
   @State private var busy = false
-  @State private var operationFailure: String?
+  private var operationFailure: String? {
+    get { model.sourceControlDrafts[worktree, default: .init()].operationFailure }
+    nonmutating set {
+      model.sourceControlDrafts[worktree, default: .init()].operationFailure = newValue
+    }
+  }
   @State private var forceConfirmation = false
   @State private var discardConfirmation = false
   @State private var discardPaths: [String] = []
@@ -50,7 +58,7 @@ struct SourceControlView: View {
         if operation?.hasMessage == false || busy {
           ReadOnlyCommitMessage(message: operation?.hasMessage == false ? "" : message)
         } else {
-          TextEditor(text: $message)
+          TextEditor(text: Binding(get: { message }, set: { message = $0 }))
         }
       }.frame(height: 75)
         .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
@@ -110,7 +118,7 @@ struct SourceControlView: View {
       if let subscription { model.unsubscribe(subscription) }
       subscription = model.subscribe("source-control", arguments) { payload in
         guard case .sourceControl(let value) = payload.value else { return }
-        let previous = operation
+        let previous = model.sourceControlDrafts[worktree]?.operation
         snapshot = value
         if let current = operation,
           current.message != previous?.message || current.hasMessage != previous?.hasMessage
@@ -119,6 +127,7 @@ struct SourceControlView: View {
           message = current.message
         }
         if previous != nil && operation == nil { message = "" }
+        model.sourceControlDrafts[worktree, default: .init()].operation = operation
       }
     }
     .onDisappear {
@@ -256,14 +265,14 @@ struct SourceControlView: View {
     perform { client in
       do {
         _ = try await client.gitCommit(request: request, headers: model.headers).result.get()
-        message = ""
+        if message == request.message { message = "" }
       } catch {
         if let error = error as? ConnectError {
           let detail: Releash_Client_V1_CommandError? = error.unpackedDetails().first
           if case .coded(let coded) = detail?.variant,
             coded.code == "GIT_COMMIT_FOLLOW_UP_FAILED"
           {
-            message = ""
+            if message == request.message { message = "" }
           }
         }
         throw error

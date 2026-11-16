@@ -7,6 +7,12 @@ import SwiftProtobuf
 
 @MainActor @Observable final class AppModel {
   let updater = AppUpdater()
+  struct SourceControlDraft {
+    var message = ""
+    var operationFailure: String?
+    var operation: Releash_Client_V1_SourceControlOperation?
+  }
+  var sourceControlDrafts: [String: SourceControlDraft] = [:]
   var pendingRoots: [String: String] = [:]
   var repositories: [Releash_Client_V1_WorkspaceRepositoryList] = [] {
     didSet { updateSelectedBranch() }

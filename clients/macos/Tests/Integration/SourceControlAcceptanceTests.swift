@@ -715,6 +715,45 @@ final class SourceControlAcceptanceTests: XCTestCase {
     await model.stop()
   }
 
+  @MainActor func test_SourceControl_ファイル面でpushが失敗しても戻ると理由が出る() async throws {
+    // Given
+    let snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.branch = "main"
+      $0.tracking.upstream = "origin/main"
+      $0.changedFileCount = 1
+      $0.unstaged = [change("bridge.js")]
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    try await eventually { model.layoutLoaded }
+    http.state.withLock { $0.deferGitPush = true }
+    // When
+    try await menu(host, selecting: "Push")
+    try await eventually { http.state.withLock { $0.pendingGitPush != nil } }
+    try await host.press("bridge.js")
+    try await eventuallyView(host) { host.element("right-panel:files")?.value == "1" }
+    let respond = try XCTUnwrap(http.state.withLock { $0.pendingGitPush })
+    respond(
+      HTTPResponse(
+        code: .internalError, headers: [:], message: nil, trailers: [:],
+        error: ConnectError(code: .internalError, message: "GitPush failed"), tracingInfo: nil))
+    await host.refresh()
+    try await host.press("right-panel:sourceControl")
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
+      }
+    }
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
+    // Then
+    try await eventuallyView(host) {
+      host.element("bridge.js") != nil && host.texts().contains { $0.contains("GitPush failed") }
+    }
+    XCTAssertNil(model.failure)
+    await model.stop()
+  }
+
   // B-003: 確認の取りやめと了承を、画面と公開 RPC で確かめる。
   @MainActor func test_SourceControl_forcePushは確認後だけ送信する() async throws {
     // Given
@@ -1235,6 +1274,109 @@ final class SourceControlAcceptanceTests: XCTestCase {
       XCTAssertNil(host.element("Merge を続ける"))
       await model.stop()
     }
+  }
+
+  @MainActor func test_SourceControl_ファイル面から戻ると入力したメッセージが残る() async throws {
+    // Given
+    let snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.changedFileCount = 1
+      $0.unstaged = [change("bridge.js")]
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    try await eventually { model.layoutLoaded }
+    try await enterMessage("draft message", in: host)
+    // When
+    try await host.press("bridge.js")
+    try await eventuallyView(host) { host.element("right-panel:files")?.value == "1" }
+    try await host.press("right-panel:sourceControl")
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
+      }
+    }
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
+    // Then
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) {
+      host.element("bridge.js") != nil && self.messageEditor(content)?.string == "draft message"
+    }
+    await model.stop()
+  }
+
+  @MainActor func test_SourceControl_merge中に書き換えたメッセージがパネルを戻っても残る() async throws {
+    // Given
+    let snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.operation.merge = .init()
+      $0.operation.message = "merge message"
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    try await enterMessage("edited merge message", in: host)
+    // When
+    try await host.press("right-panel:roots")
+    try await eventuallyView(host) { host.element("Merge を続ける") == nil }
+    try await host.press("right-panel:sourceControl")
+    try await eventually {
+      http.state.withLock {
+        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
+      }
+    }
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
+    // Then
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) {
+      host.element("Merge を続ける") != nil
+        && self.messageEditor(content)?.string == "edited merge message"
+    }
+    await model.stop()
+  }
+
+  @MainActor func test_SourceControl_commit後の失敗応答より先に届いたmergeメッセージを残す() async throws {
+    // Given
+    var snapshot = Releash_Client_V1_SourceControlSnapshot.with {
+      $0.branch = "main"
+      $0.tracking.upstream = "origin/main"
+      $0.changedFileCount = 1
+      $0.staged = [change("file.txt")]
+      $0.canCommit = true
+    }
+    let (model, host, http) = try await show(snapshot)
+    defer { host.close() }
+    http.state.withLock { $0.deferGitCommit = true }
+    try await enterMessage("sent message", in: host)
+    // When
+    try await menu(host, selecting: "Commit & Sync")
+    try await eventually { http.state.withLock { $0.pendingGitCommit != nil } }
+    snapshot.operation = .with {
+      $0.merge = .init()
+      $0.message = "merge message"
+      $0.conflictCount = 1
+    }
+    try http.publish(
+      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
+    let content = try XCTUnwrap(host.window.contentView)
+    try await eventuallyView(host) { self.messageEditor(content)?.string == "merge message" }
+    let detail = Releash_Client_V1_CommandError.with {
+      $0.coded.code = "GIT_COMMIT_FOLLOW_UP_FAILED"
+      $0.coded.message = "Pull conflict"
+    }
+    let failure = ConnectError.Detail(
+      type: Releash_Client_V1_CommandError.protoMessageName, payload: try detail.serializedData())
+    let respond = try XCTUnwrap(http.state.withLock { $0.pendingGitCommit })
+    respond(
+      HTTPResponse(
+        code: .internalError, headers: [:], message: nil, trailers: [:],
+        error: ConnectError(code: .internalError, message: "GitCommit failed", details: [failure]),
+        tracingInfo: nil))
+    // Then
+    try await eventuallyView(host) {
+      host.texts().contains("Pull conflict") && self.messageEditor(content)?.isEditable == true
+    }
+    XCTAssertEqual(messageEditor(content)?.string, "merge message")
+    await model.stop()
   }
 
   @MainActor func test_SourceControl_commitの応答待ち中はメッセージを編集できない() async throws {

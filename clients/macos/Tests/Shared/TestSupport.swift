@@ -70,6 +70,8 @@ final class TestHTTPClient: HTTPClientInterface {
     var pendingSave: (@Sendable (HTTPResponse) -> Void)?
     var deferGitCommit = false
     var pendingGitCommit: (@Sendable (HTTPResponse) -> Void)?
+    var deferGitPush = false
+    var pendingGitPush: (@Sendable (HTTPResponse) -> Void)?
     var deferredTerminalMethod: String?
     var pendingTerminal: (@Sendable (HTTPResponse) -> Void)?
   }
@@ -114,6 +116,10 @@ final class TestHTTPClient: HTTPClientInterface {
       }
       if method == "GitCommit", state.withLock({ $0.deferGitCommit }) {
         state.withLock { $0.pendingGitCommit = onResponse }
+        return Cancelable(cancel: {})
+      }
+      if method == "GitPush", state.withLock({ $0.deferGitPush }) {
+        state.withLock { $0.pendingGitPush = onResponse }
         return Cancelable(cancel: {})
       }
       if state.withLock({ $0.deferredTerminalMethod == method }) {
