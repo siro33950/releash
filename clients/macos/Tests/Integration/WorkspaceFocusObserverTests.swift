@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class WorkspaceFocusObserverTests: XCTestCase {
+final class WorkspaceFocusObserverTests: IntegrationTestCase {
   @MainActor func test_フォーカス_子ビューのクリックを妨げず操作領域を切り替える() async throws {
     // Given
     var focused = ""

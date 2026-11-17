@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class SessionHistoryFailureTests: XCTestCase {
+final class SessionHistoryFailureTests: IntegrationTestCase {
   @MainActor func testSessionRestoreFailureKeepsSheetAndTabsAndCanRetry() async throws {
     try await checkFailure(method: "RestoreAgentSession", row: "Archived session", action: "復元")
   }

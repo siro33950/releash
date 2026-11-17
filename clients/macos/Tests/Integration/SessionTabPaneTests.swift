@@ -7,7 +7,7 @@ import XCTest
 
 @testable import Releash
 
-final class SessionTabPaneTests: XCTestCase {
+final class SessionTabPaneTests: IntegrationTestCase {
   @MainActor func test_会話タブ_停止中にNodeから開き直すと停止表示とResumeを保つ() async throws {
     // Given
     let http = TestHTTPClient()

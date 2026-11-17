@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import XCTest
 
-@MainActor final class ViewHarnessTests: XCTestCase {
+@MainActor final class ViewHarnessTests: IntegrationTestCase {
   @Observable fileprivate final class ButtonState {
     var visible = false
     var presses = 0

@@ -307,3 +307,26 @@ struct ViewElement {
   } while ContinuousClock.now < deadline
   XCTAssertTrue(condition(), host.debugDump(), file: file, line: line)
 }
+
+class IntegrationTestCase: XCTestCase {
+  override func record(_ issue: XCTIssue) {
+    var issue = issue
+    let images: [(String, Data)] =
+      Thread.isMainThread
+      ? MainActor.assumeIsolated {
+        NSApp.windows.filter(\.isVisible).compactMap { window in
+          guard let view = window.contentView,
+            let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+          else { return nil }
+          view.cacheDisplay(in: view.bounds, to: bitmap)
+          return bitmap.representation(using: .png, properties: [:]).map { (window.title, $0) }
+        }
+      } : []
+    for (title, png) in images {
+      let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+      attachment.name = title
+      issue.add(attachment)
+    }
+    super.record(issue)
+  }
+}

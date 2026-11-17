@@ -7,7 +7,7 @@ import XCTest
 
 @testable import Releash
 
-final class SourceControlAcceptanceTests: XCTestCase {
+final class SourceControlAcceptanceTests: IntegrationTestCase {
   @MainActor private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     AXUIElementCopyAttributeValue(element, name as CFString, &value)

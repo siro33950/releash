@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class SidebarAcceptanceTests: XCTestCase {
+final class SidebarAcceptanceTests: IntegrationTestCase {
   @MainActor private func repository(_ names: [String]) -> Releash_Client_V1_WorkspaceRepositoryList
   {
     .with {

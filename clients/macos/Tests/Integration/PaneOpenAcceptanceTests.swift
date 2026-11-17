@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class PaneOpenAcceptanceTests: XCTestCase {
+final class PaneOpenAcceptanceTests: IntegrationTestCase {
 
   @MainActor func test_B001_中央メニューの項目と順序() async throws {
     // Given

@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsRepositoriesTests: XCTestCase {
+final class SettingsRepositoriesTests: IntegrationTestCase {
   @MainActor func test_Notion初回購読待ち_無効中は接続せず復元後の入力で成功したLabelsを保持する() async throws {
     // Given
     let http = TestHTTPClient()

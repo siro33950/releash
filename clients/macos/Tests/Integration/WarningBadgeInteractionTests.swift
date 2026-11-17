@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class WarningBadgeInteractionTests: XCTestCase {
+final class WarningBadgeInteractionTests: IntegrationTestCase {
   @MainActor func test_警告バッジ_クリックしてworktreeを選択できる() async throws {
     // Given
     let model = AppModel()

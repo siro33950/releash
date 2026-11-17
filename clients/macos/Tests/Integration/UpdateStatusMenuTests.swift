@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Releash
 
-final class UpdateStatusMenuTests: XCTestCase {
+final class UpdateStatusMenuTests: IntegrationTestCase {
   @MainActor func test_更新確認メニュー_確認可否に応じて有効状態が変わる() throws {
     // Given
     let model = AppModel()

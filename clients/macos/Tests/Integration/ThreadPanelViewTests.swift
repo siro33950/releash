@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Releash
 
-final class ThreadPanelViewTests: XCTestCase {
+final class ThreadPanelViewTests: IntegrationTestCase {
   private var savedDiffBase: Any?
 
   override func setUp() {

@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class FileWorkspaceAcceptanceTests: XCTestCase {
+final class FileWorkspaceAcceptanceTests: IntegrationTestCase {
   @MainActor private func panel(center: Bool = false) async throws -> (
     TestHTTPClient, AppModel, ViewHarness
   ) {

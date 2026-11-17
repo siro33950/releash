@@ -7,7 +7,7 @@ import XCTest
 
 @testable import Releash
 
-final class PullRequestAcceptanceTests: XCTestCase {
+final class PullRequestAcceptanceTests: IntegrationTestCase {
   @MainActor func test_PR作成欄_baseとdraftと作成ボタンが同じ行に並ぶ() async throws {
     // Given
     try await withPanel { http, _, host in
@@ -896,9 +896,8 @@ final class PullRequestAcceptanceTests: XCTestCase {
   }
 
   @MainActor private func edit(_ name: String, text: String, _ host: ViewHarness) async throws {
-    await host.refresh()
-    let element = try find(name, host, editable: true)
-    try await eventually {
+    try await eventuallyView(host) {
+      guard let element = try? find(name, host, editable: true) else { return false }
       NSApp.activate()
       host.window.makeKeyAndOrderFront(nil)
       AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)

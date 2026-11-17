@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class TerminalSessionTests: XCTestCase {
+final class TerminalSessionTests: IntegrationTestCase {
   @MainActor func testFileDropSendsUnquotedPathsOnlyToTheDestinationOwner() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)

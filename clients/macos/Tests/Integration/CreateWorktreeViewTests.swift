@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class CreateWorktreeViewTests: XCTestCase {
+final class CreateWorktreeViewTests: IntegrationTestCase {
   private let size = NSSize(
     width: UIStyle.worktreeDialogWidth, height: UIStyle.worktreeDialogHeight)
 

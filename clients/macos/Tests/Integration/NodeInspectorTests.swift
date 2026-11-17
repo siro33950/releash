@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Releash
 
-final class NodeInspectorTests: XCTestCase {
+final class NodeInspectorTests: IntegrationTestCase {
   @MainActor func testInspectorActionsTargetSelectedNodeAndDisableWhenCapabilitiesChange()
     async throws
   {

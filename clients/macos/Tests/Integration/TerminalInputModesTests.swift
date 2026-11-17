@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Releash
 
-final class TerminalInputModesTests: XCTestCase {
+final class TerminalInputModesTests: IntegrationTestCase {
   private final class FocusOutput: TerminalDelegate {
     var data: [UInt8] = []
     func send(source: Terminal, data: ArraySlice<UInt8>) { self.data.append(contentsOf: data) }

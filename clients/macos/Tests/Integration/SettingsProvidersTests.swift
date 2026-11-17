@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsProvidersTests: XCTestCase {
+final class SettingsProvidersTests: IntegrationTestCase {
   @MainActor func test_Providersタブ_購読から各Providerの可用性と実行ファイルを表示する() async throws {
     // Given
     let http = TestHTTPClient()

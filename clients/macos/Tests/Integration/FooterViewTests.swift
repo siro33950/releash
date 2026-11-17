@@ -59,7 +59,7 @@ import XCTest
   }
 }
 
-final class FooterViewTests: XCTestCase {
+final class FooterViewTests: IntegrationTestCase {
   @MainActor private func usage(plan: String?) -> Releash_Client_V1_ProviderUsageEntry {
     var usage = Releash_Client_V1_ProviderUsageEntry()
     usage.provider = "claude"

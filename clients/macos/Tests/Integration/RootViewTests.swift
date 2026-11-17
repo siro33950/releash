@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Releash
 
-final class RootViewTests: XCTestCase {
+final class RootViewTests: IntegrationTestCase {
   @MainActor func test_作成ボタン_中央クリックで作成画面を開く() async throws {
     // Given
     let model = try await testModel(TestHTTPClient())

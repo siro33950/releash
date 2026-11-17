@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class NodePaneTests: XCTestCase {
+final class NodePaneTests: IntegrationTestCase {
   @MainActor func testNodeTabsSaveAndRestoreTheirSubscriptionsAndContent() async throws {
     // Given
     let http = TestHTTPClient()

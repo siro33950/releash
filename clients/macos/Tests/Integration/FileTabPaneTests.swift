@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class FileTabPaneTests: XCTestCase {
+final class FileTabPaneTests: IntegrationTestCase {
   @MainActor func pane(_ model: AppModel, value: Releash_Client_V1_FileTabView? = nil) throws
     -> FileTabPane
   {

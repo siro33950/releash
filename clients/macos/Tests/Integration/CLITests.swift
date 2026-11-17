@@ -10,7 +10,7 @@ private actor Calls {
   }
 }
 
-final class CLITests: XCTestCase {
+final class CLITests: IntegrationTestCase {
   func testBundledHelpersAreSeparateFromAppExecutable() throws {
     let bundle = Bundle.main
     let app = try XCTUnwrap(bundle.executableURL)

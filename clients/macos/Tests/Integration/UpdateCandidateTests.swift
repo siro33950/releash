@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class UpdateCandidateTests: XCTestCase {
+final class UpdateCandidateTests: IntegrationTestCase {
   @MainActor func test_更新候補_チャンネルと現在版で選別し昇格で再提示しない() async throws {
     for (behavior, current, stable, nightly, acceptsNightly, expected) in [
       ("B-015", "0.4.20", "0.4.20", Optional("0.4.21"), false, Optional<String>.none),
