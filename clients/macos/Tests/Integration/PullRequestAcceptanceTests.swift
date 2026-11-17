@@ -408,6 +408,7 @@ final class PullRequestAcceptanceTests: XCTestCase {
     closed.canCreateNew = true
     try await withPanel { http, _, host in
       try await show(closed, http, host)
+      try await deliverBases(http)
       // When
       try await host.press("新しい PR を作る")
       // Then
@@ -791,13 +792,17 @@ final class PullRequestAcceptanceTests: XCTestCase {
   @MainActor private func creationForm(_ http: TestHTTPClient, _ host: ViewHarness) async throws {
     try await host.press("PR")
     try await deliver(.with { $0.absent = .init() }, http: http)
+    try await deliverBases(http)
+    try await eventuallyView(host) { host.element("PR を作成") != nil }
+  }
+
+  @MainActor private func deliverBases(_ http: TestHTTPClient) async throws {
     try await waitForSubscription("pull-request-bases", args: ["/repo/a"], http)
     try http.publish(
       .with {
         $0.pullRequestBases.branches = ["develop", "main"]
         $0.pullRequestBases.defaultBranch = "main"
       }, target: "pull-request-bases", args: ["/repo/a"])
-    try await eventuallyView(host) { host.element("PR を作成") != nil }
   }
 
   @MainActor private func creationRequest(_ http: TestHTTPClient) async throws

@@ -12,7 +12,7 @@ struct PullRequestPanel: View {
   @State private var description = ""
   @State private var base = ""
   @State private var draft = false
-  @State private var creating = false
+  @State private var creatingFor: UInt64?
   @State private var comments: [UInt64: String] = [:]
   @State private var error: String?
   @State private var busy = false
@@ -26,7 +26,7 @@ struct PullRequestPanel: View {
       switch snapshot.branchPullRequest {
       case .absent: creation
       case .present(let pr):
-        if creating {
+        if creatingFor == pr.number {
           creation
         } else {
           ScrollView {
@@ -50,7 +50,7 @@ struct PullRequestPanel: View {
                 .environment(
                   \.openURL, OpenURLAction { openCommentLink($0) ? .handled : .discarded })
               if pr.canCreateNew {
-                Button("新しい PR を作る") { Task { @MainActor in creating = true } }
+                Button("新しい PR を作る") { Task { @MainActor in creatingFor = pr.number } }
               }
               Divider()
               checks(pr.checks)
@@ -281,7 +281,7 @@ struct PullRequestPanel: View {
       do {
         _ = try await client.createPullRequest(request: request, headers: model.headers).result
           .get()
-        creating = false
+        creatingFor = nil
       } catch { self.error = model.failureMessage(error) }
     }
   }
