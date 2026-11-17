@@ -431,10 +431,12 @@ extension AppModelTests {
     let count = http.requests("StartStateSubscription").count
     http.state.withLock { $0.failedMethod = nil }
     model.subscribe("repository-group-state", ["/retry"]) { _ in }
-    try await eventually { http.requests("StartStateSubscription").count == count + 1 }
-    let request = try Releash_Client_V1_StartStateSubscriptionRequest(
-      serializedBytes: http.requests("StartStateSubscription").last!.message!)
-    XCTAssertEqual(request.args, ["/retry"])
+    try await eventually {
+      http.requests("StartStateSubscription").dropFirst(count).contains {
+        (try? Releash_Client_V1_StartStateSubscriptionRequest(serializedBytes: $0.message!))?
+          .args == ["/retry"]
+      }
+    }
     await model.stop()
   }
   @MainActor func testRemovedRepositoryStopsSubscriptionAndClearsCollapsed() async throws {

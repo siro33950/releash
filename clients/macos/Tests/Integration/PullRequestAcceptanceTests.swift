@@ -899,6 +899,7 @@ final class PullRequestAcceptanceTests: XCTestCase {
     await host.refresh()
     let element = try find(name, host, editable: true)
     try await eventually {
+      NSApp.activate()
       host.window.makeKeyAndOrderFront(nil)
       AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
       return (attribute(element, kAXFocusedAttribute) as? Bool) == true
