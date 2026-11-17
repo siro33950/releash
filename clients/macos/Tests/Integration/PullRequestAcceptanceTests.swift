@@ -872,21 +872,27 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
     }
   }
 
+  @MainActor private func lookup(
+    _ name: String, _ host: ViewHarness, role: String? = nil, editable: Bool = false
+  ) -> AXUIElement? {
+    elements(host).first { element in
+      let actualRole = attribute(element, kAXRoleAttribute) as? String
+      let matches = [
+        kAXIdentifierAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+        kAXValueAttribute, kAXPlaceholderValueAttribute,
+      ].contains {
+        attribute(element, $0) as? String == name
+      }
+      return matches && (role == nil || role == actualRole)
+        && (!editable || [kAXTextFieldRole, kAXTextAreaRole].contains(actualRole ?? ""))
+    }
+  }
+
   @MainActor private func find(
     _ name: String, _ host: ViewHarness, role: String? = nil, editable: Bool = false
   ) throws -> AXUIElement {
     try XCTUnwrap(
-      elements(host).first { element in
-        let actualRole = attribute(element, kAXRoleAttribute) as? String
-        let matches = [
-          kAXIdentifierAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
-          kAXValueAttribute, kAXPlaceholderValueAttribute,
-        ].contains {
-          attribute(element, $0) as? String == name
-        }
-        return matches && (role == nil || role == actualRole)
-          && (!editable || [kAXTextFieldRole, kAXTextAreaRole].contains(actualRole ?? ""))
-      }, name + ": " + host.debugDump())
+      lookup(name, host, role: role, editable: editable), name + ": " + host.debugDump())
   }
 
   @MainActor private func value(
@@ -897,7 +903,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
 
   @MainActor private func edit(_ name: String, text: String, _ host: ViewHarness) async throws {
     try await eventuallyView(host) {
-      guard let element = try? find(name, host, editable: true) else { return false }
+      guard let element = lookup(name, host, editable: true) else { return false }
       NSApp.activate()
       host.window.makeKeyAndOrderFront(nil)
       AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)

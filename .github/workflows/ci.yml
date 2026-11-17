@@ -175,6 +175,7 @@ jobs:
           name: macos-${{ matrix.target }}-${{ github.run_attempt }}
           path: clients/macos/.build/Tests-*/Logs/Test
           if-no-files-found: warn
+          include-hidden-files: true
       - name: Report flaky tests
         if: always() && steps.flaky.outputs.found == 'true'
         uses: actions/github-script@v9
