@@ -584,7 +584,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
       XCTAssertGreaterThan(
         try screenFrame(find("posted comment", host)).midY,
         try screenFrame(find("existing comment", host)).midY)
-      try await eventuallyView(host) { (try? value("Comment", host, editable: true)) == "" }
+      try await eventuallyView(host) { currentValue("Comment", host, editable: true) == "" }
     }
   }
 
@@ -901,6 +901,12 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
     try XCTUnwrap(attribute(find(name, host, editable: editable), kAXValueAttribute) as? String)
   }
 
+  @MainActor private func currentValue(
+    _ name: String, _ host: ViewHarness, editable: Bool = false
+  ) -> String? {
+    lookup(name, host, editable: editable).flatMap { attribute($0, kAXValueAttribute) as? String }
+  }
+
   @MainActor private func edit(_ name: String, text: String, _ host: ViewHarness) async throws {
     try await eventuallyView(host) {
       guard let element = lookup(name, host, editable: true) else { return false }
@@ -914,12 +920,12 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
     editor.insertText(
       text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
     XCTAssertTrue(host.window.makeFirstResponder(nil))
-    try await eventuallyView(host) { (try? value(name, host, editable: true)) == text }
+    try await eventuallyView(host) { currentValue(name, host, editable: true) == text }
   }
 
   @MainActor private func pressButton(_ name: String, _ host: ViewHarness) async throws {
     try await eventuallyView(host) {
-      guard let button = try? find(name, host, role: kAXButtonRole) else { return false }
+      guard let button = lookup(name, host, role: kAXButtonRole) else { return false }
       return attribute(button, kAXEnabledAttribute) as? Bool == true
     }
     let button = try find(name, host, role: kAXButtonRole)
