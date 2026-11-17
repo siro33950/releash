@@ -683,7 +683,10 @@ final class SourceControlAcceptanceTests: XCTestCase {
     XCTAssertEqual(commit.message, "commit message")
     XCTAssertEqual(commit.followUp, .none)
     let content = try XCTUnwrap(host.window.contentView)
-    try await eventuallyView(host) { self.messageEditor(content)?.string == "" }
+    try await eventuallyView(host) {
+      self.messageEditor(content)?.isEditable == true && self.messageEditor(content)?.string == ""
+    }
+    XCTAssertEqual(messageEditor(content)?.string, "")
     snapshot.staged = []
     snapshot.changedFileCount = 0
     snapshot.canCommit = false
@@ -1544,10 +1547,13 @@ final class SourceControlAcceptanceTests: XCTestCase {
       // When
       try await menu(host, selecting: "Commit & Push")
       // Then
-      try await eventuallyView(host) { host.texts().contains("Push rejected") }
-      XCTAssertEqual(
-        messageEditor(try XCTUnwrap(host.window.contentView))?.string,
-        code == "GIT_COMMIT_FOLLOW_UP_FAILED" ? "" : "commit message")
+      let content = try XCTUnwrap(host.window.contentView)
+      let expectedMessage = code == "GIT_COMMIT_FOLLOW_UP_FAILED" ? "" : "commit message"
+      try await eventuallyView(host) {
+        host.texts().contains("Push rejected") && self.messageEditor(content)?.isEditable == true
+          && self.messageEditor(content)?.string == expectedMessage
+      }
+      XCTAssertEqual(messageEditor(content)?.string, expectedMessage)
       await model.stop()
     }
   }
