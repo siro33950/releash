@@ -7,7 +7,7 @@ import XCTest
 
 @testable import Releash
 
-final class PullRequestAcceptanceTests: XCTestCase {
+final class PullRequestAcceptanceTests: IntegrationTestCase {
   @MainActor func test_PR作成欄_baseとdraftと作成ボタンが同じ行に並ぶ() async throws {
     // Given
     try await withPanel { http, _, host in
@@ -584,7 +584,7 @@ final class PullRequestAcceptanceTests: XCTestCase {
       XCTAssertGreaterThan(
         try screenFrame(find("posted comment", host)).midY,
         try screenFrame(find("existing comment", host)).midY)
-      try await eventuallyView(host) { (try? value("Comment", host, editable: true)) == "" }
+      try await eventuallyView(host) { currentValue("Comment", host, editable: true) == "" }
     }
   }
 
@@ -872,21 +872,27 @@ final class PullRequestAcceptanceTests: XCTestCase {
     }
   }
 
+  @MainActor private func lookup(
+    _ name: String, _ host: ViewHarness, role: String? = nil, editable: Bool = false
+  ) -> AXUIElement? {
+    elements(host).first { element in
+      let actualRole = attribute(element, kAXRoleAttribute) as? String
+      let matches = [
+        kAXIdentifierAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+        kAXValueAttribute, kAXPlaceholderValueAttribute,
+      ].contains {
+        attribute(element, $0) as? String == name
+      }
+      return matches && (role == nil || role == actualRole)
+        && (!editable || [kAXTextFieldRole, kAXTextAreaRole].contains(actualRole ?? ""))
+    }
+  }
+
   @MainActor private func find(
     _ name: String, _ host: ViewHarness, role: String? = nil, editable: Bool = false
   ) throws -> AXUIElement {
     try XCTUnwrap(
-      elements(host).first { element in
-        let actualRole = attribute(element, kAXRoleAttribute) as? String
-        let matches = [
-          kAXIdentifierAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
-          kAXValueAttribute, kAXPlaceholderValueAttribute,
-        ].contains {
-          attribute(element, $0) as? String == name
-        }
-        return matches && (role == nil || role == actualRole)
-          && (!editable || [kAXTextFieldRole, kAXTextAreaRole].contains(actualRole ?? ""))
-      }, name + ": " + host.debugDump())
+      lookup(name, host, role: role, editable: editable), name + ": " + host.debugDump())
   }
 
   @MainActor private func value(
@@ -895,10 +901,15 @@ final class PullRequestAcceptanceTests: XCTestCase {
     try XCTUnwrap(attribute(find(name, host, editable: editable), kAXValueAttribute) as? String)
   }
 
+  @MainActor private func currentValue(
+    _ name: String, _ host: ViewHarness, editable: Bool = false
+  ) -> String? {
+    lookup(name, host, editable: editable).flatMap { attribute($0, kAXValueAttribute) as? String }
+  }
+
   @MainActor private func edit(_ name: String, text: String, _ host: ViewHarness) async throws {
-    await host.refresh()
-    let element = try find(name, host, editable: true)
-    try await eventually {
+    try await eventuallyView(host) {
+      guard let element = lookup(name, host, editable: true) else { return false }
       NSApp.activate()
       host.window.makeKeyAndOrderFront(nil)
       AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
@@ -909,12 +920,12 @@ final class PullRequestAcceptanceTests: XCTestCase {
     editor.insertText(
       text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
     XCTAssertTrue(host.window.makeFirstResponder(nil))
-    try await eventuallyView(host) { (try? value(name, host, editable: true)) == text }
+    try await eventuallyView(host) { currentValue(name, host, editable: true) == text }
   }
 
   @MainActor private func pressButton(_ name: String, _ host: ViewHarness) async throws {
     try await eventuallyView(host) {
-      guard let button = try? find(name, host, role: kAXButtonRole) else { return false }
+      guard let button = lookup(name, host, role: kAXButtonRole) else { return false }
       return attribute(button, kAXEnabledAttribute) as? Bool == true
     }
     let button = try find(name, host, role: kAXButtonRole)

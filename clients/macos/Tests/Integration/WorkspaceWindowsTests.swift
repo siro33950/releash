@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class WorkspaceWindowsTests: XCTestCase {
+final class WorkspaceWindowsTests: IntegrationTestCase {
   @MainActor func test_起動_ログイン起動と初回設定に応じてウィンドウを表示する() async throws {
     for login in [false, true] {
       for autoLaunch in [false, true] {

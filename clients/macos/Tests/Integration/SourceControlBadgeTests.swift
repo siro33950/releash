@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Releash
 
-final class SourceControlBadgeTests: XCTestCase {
+final class SourceControlBadgeTests: IntegrationTestCase {
   @MainActor func test_変更数バッジ_境界値と取得失敗後の回復を表示する() async throws {
     // Given
     let model = AppModel()

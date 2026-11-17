@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsTabsTests: XCTestCase {
+final class SettingsTabsTests: IntegrationTestCase {
   @MainActor func test_Settings_ナビゲーションの各項目を選択して対応する設定を表示する() async throws {
     // Given
     let model = AppModel()

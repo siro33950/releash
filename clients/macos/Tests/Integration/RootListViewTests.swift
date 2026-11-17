@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class RootListViewTests: XCTestCase {
+final class RootListViewTests: IntegrationTestCase {
   @MainActor func testChildRowsDefaultExpansionFollowsStatus() async throws {
     for status in [Releash_Client_V1_WorkspaceStatusClassification.Value.idle, .active, .attention]
     {

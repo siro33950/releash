@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Releash
 
-final class WindowControlsTests: XCTestCase {
+final class WindowControlsTests: IntegrationTestCase {
   @MainActor func testControlsTargetTheirFocusableWindowWithoutATitleBar() throws {
     let window = WorkspaceWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),

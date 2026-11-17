@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsWorkflowsTests: XCTestCase {
+final class SettingsWorkflowsTests: IntegrationTestCase {
   @MainActor func test_Workflows一覧_名前と印を表示し購読更新に追従する() async throws {
     // Given
     let http = TestHTTPClient()

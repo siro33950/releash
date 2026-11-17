@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Releash
 
-final class CreateBranchViewTests: XCTestCase {
+final class CreateBranchViewTests: IntegrationTestCase {
   @MainActor func testBranchSheetRetainsDestinationAndInputAcrossDaemonConnectionChanges()
     async throws
   {

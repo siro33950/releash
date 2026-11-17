@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Releash
 
-final class WorktreeWarningTests: XCTestCase {
+final class WorktreeWarningTests: IntegrationTestCase {
   @MainActor func test_リポジトリ警告_幅を変更しても見出しの右端に追随する() async throws {
     // Given
     let model = AppModel()

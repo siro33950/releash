@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class StatusMenuTests: XCTestCase {
+final class StatusMenuTests: IntegrationTestCase {
   @MainActor func test_メニューバー_設定項目は既存のSettingsウィンドウを開く() async throws {
     // Given
     let status = StatusMenu(model: AppModel()) {}

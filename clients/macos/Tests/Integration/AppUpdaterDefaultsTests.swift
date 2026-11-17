@@ -1,7 +1,7 @@
 import Sparkle
 import XCTest
 
-final class AppUpdaterDefaultsTests: XCTestCase {
+final class AppUpdaterDefaultsTests: IntegrationTestCase {
   @MainActor func test_初回起動_製品の設定から自動確認とダウンロードが有効になる() throws {
     // Given
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

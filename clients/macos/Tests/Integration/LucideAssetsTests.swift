@@ -3,7 +3,7 @@ import XCTest
 
 @testable import Releash
 
-final class LucideAssetsTests: XCTestCase {
+final class LucideAssetsTests: IntegrationTestCase {
   @MainActor func test_Lucide画像_全画像をテンプレートとして読み込める() throws {
     // Given
     let bundle = Bundle(for: AppModel.self)

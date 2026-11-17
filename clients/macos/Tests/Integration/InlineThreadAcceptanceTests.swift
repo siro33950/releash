@@ -10,7 +10,7 @@ import XCTest
 
 @testable import Releash
 
-@MainActor final class InlineThreadAcceptanceTests: XCTestCase {
+@MainActor final class InlineThreadAcceptanceTests: IntegrationTestCase {
   private let path = "acceptance.rs"
   private let firstBody = "先の本文"
   private let secondBody = "後の本文"

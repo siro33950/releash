@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsAcceptanceTests: XCTestCase {
+final class SettingsAcceptanceTests: IntegrationTestCase {
   @MainActor func test_設定画面_B001_B002_設定の自然サイズと左ナビゲーションから右ページへ切り替える() async throws {
     // Given
     let model = try await testModel(TestHTTPClient())

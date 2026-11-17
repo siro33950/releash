@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Releash
 
-final class TransportPolicyTests: XCTestCase {
+final class TransportPolicyTests: IntegrationTestCase {
   func testReadsDeadlinesAndBackoffFromBundledDescriptor() throws {
     let policy = try TransportPolicy()
     XCTAssertEqual(policy.timeout, 120)

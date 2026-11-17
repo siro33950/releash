@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class SessionHistoryViewTests: XCTestCase {
+final class SessionHistoryViewTests: IntegrationTestCase {
   @MainActor func test_B001_B002_B003_B004_B005_Historyの入口と見出しと閉じる操作() async throws {
     // Given
     let (_, model) = try await setup()

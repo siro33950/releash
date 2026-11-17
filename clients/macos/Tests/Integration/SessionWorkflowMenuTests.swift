@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class SessionWorkflowMenuTests: XCTestCase {
+final class SessionWorkflowMenuTests: IntegrationTestCase {
   @MainActor func test_NodeのWorkflowメニュー_Root配信待ちでは一覧を表示せず無効になる() async throws {
     // Given
     let model = AppModel()

@@ -94,6 +94,10 @@ jobs:
         target: [lint, test-unit, test-integration]
     runs-on: xcode-27
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      issues: write
     steps:
       - uses: actions/checkout@v7
         if: contains(fromJSON(needs.plan.outputs.projects), 'macos')
@@ -146,6 +150,7 @@ jobs:
           NX_TARGET: ${{ matrix.target }}
           RELEASH_HELPERS_RESTORED: ${{ steps.helpers.outputs.cache-hit }}
           XCODE_XCCONFIG_FILE: ${{ runner.temp }}/ci.xcconfig
+          RELEASH_TEST_RETRY: ${{ matrix.target == 'test-integration' && '-retry-tests-on-failure -test-iterations 2 -test-repetition-relaunch-enabled YES' || '' }}
         run: |
           cat > "$XCODE_XCCONFIG_FILE" <<'EOF'
           CODE_SIGN_IDENTITY = -
@@ -153,6 +158,36 @@ jobs:
           DEVELOPMENT_TEAM =
           EOF
           ./nx run "macos:$NX_TARGET" --parallel=2 --outputStyle=stream
+      - name: Find flaky tests
+        id: flaky
+        if: always() && matrix.target == 'test-integration' && contains(fromJSON(needs.plan.outputs.projects), 'macos')
+        uses: actions/github-script@v9
+        with:
+          script: |
+            require('./.github/scripts/macos-flaky-tests.cjs').detect({
+              core, directory: 'clients/macos/.build/Tests-integration/Logs/Test',
+            });
+      - name: Upload test results
+        id: results
+        if: (failure() || cancelled() || steps.flaky.outputs.found == 'true') && matrix.target != 'lint'
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-${{ matrix.target }}-${{ github.run_attempt }}
+          path: clients/macos/.build/Tests-*/Logs/Test
+          if-no-files-found: warn
+          include-hidden-files: true
+      - name: Report flaky tests
+        if: always() && steps.flaky.outputs.found == 'true'
+        uses: actions/github-script@v9
+        env:
+          FLAKY_TESTS: ${{ steps.flaky.outputs.tests }}
+          ARTIFACT_URL: ${{ steps.results.outputs.artifact-url }}
+        with:
+          script: |
+            await require('./.github/scripts/macos-flaky-tests.cjs').report({
+              github, context, core, tests: JSON.parse(process.env.FLAKY_TESTS),
+              artifactUrl: process.env.ARTIFACT_URL,
+            });
 
   server-required:
     needs: [plan, server-checks]

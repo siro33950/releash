@@ -129,6 +129,8 @@ macos は macOS runner、それ以外は Linux runner で実行する。
 server と cli の `test` は `test-unit`（単体・doc）と `test-integration` を集約する。
 バイナリの build 依存は Rust の統合テストにだけ置く。
 macOS の CI は `lint`、`test-unit`、`test-integration` を別々の job で実行する。
+CI の `test-integration` は、失敗したテストを 1 回だけ再試行する。再試行で通ったテストは関門を通し、main push では Issue に記録し、PR では警告として表示する。
+テストが失敗した job、cancel された job、不安定なテストが出た job は、xcresult を artifact に保存する。統合テストの失敗には、アプリのウィンドウ画像が添付される。
 `macos:test` は単体と統合を集約する。各テストは必要なアプリをビルドするため、CI で `macos:build` を重ねて実行しない。
 同じ Nx 実行内では macOS の単体・統合テストを直列に実行し、アプリとウィンドウの競合を避ける。CI では別々の runner で並列に実行する。
 Swift の lint は Xcode 付属の `swift-format lint --strict` を使い、`Sources/`、`Tests/`、`UITests/` と `BuildTools/Package.swift` を対象にする。生成コードと依存ライブラリは対象に含めない。

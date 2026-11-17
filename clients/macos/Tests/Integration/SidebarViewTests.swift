@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class SidebarViewTests: XCTestCase {
+final class SidebarViewTests: IntegrationTestCase {
   @MainActor func testCreatedWorkflowsKeepSidebarAndFooterUpdatingWithMainWorktrees() async throws {
     continueAfterFailure = false
     let http = TestHTTPClient()

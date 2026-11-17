@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Releash
 
-final class LucideAcceptanceTests: XCTestCase {
+final class LucideAcceptanceTests: IntegrationTestCase {
   @MainActor private var menuImageInspected: XCTestExpectation?
   @MainActor private var trackingMenu: NSMenu?
 

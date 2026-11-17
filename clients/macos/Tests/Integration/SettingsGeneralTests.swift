@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsGeneralTests: XCTestCase {
+final class SettingsGeneralTests: IntegrationTestCase {
   @MainActor func test_Settings_四つのタブとGeneralの購読値を表示する() async throws {
     // Given
     let http = TestHTTPClient()

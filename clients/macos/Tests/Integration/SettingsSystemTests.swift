@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Releash
 
-final class SettingsSystemTests: XCTestCase {
+final class SettingsSystemTests: IntegrationTestCase {
   @MainActor func test_ログイン項目_設定を開いたまま登録後の承認待ちと解除後の表示を更新する() async throws {
     // Given
     let http = TestHTTPClient()
