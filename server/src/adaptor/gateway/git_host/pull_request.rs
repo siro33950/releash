@@ -81,9 +81,9 @@ fn optional_time(value: Option<&str>) -> Result<Option<u64>, GitHostError> {
         .transpose()
 }
 fn timestamp(value: &str) -> Result<u64, GitHostError> {
-    chrono::DateTime::parse_from_rfc3339(value)
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
-        .and_then(|date| u64::try_from(date.timestamp()).ok())
+        .and_then(|date| u64::try_from(date.unix_timestamp()).ok())
         .ok_or_else(|| GitHostError::External(format!("Invalid GitHub timestamp: {value}")))
 }
 #[derive(Deserialize)]

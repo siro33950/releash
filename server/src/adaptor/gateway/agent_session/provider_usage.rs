@@ -261,13 +261,12 @@ where
 }
 
 fn parse_timestamp(value: &str) -> Result<std::time::SystemTime, UsageError> {
-    let timestamp = chrono::DateTime::parse_from_rfc3339(value).map_err(|_| UsageError::Invalid)?;
-    let seconds = u64::try_from(timestamp.timestamp()).map_err(|_| UsageError::Invalid)?;
+    let timestamp =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .map_err(|_| UsageError::Invalid)?;
+    let seconds = u64::try_from(timestamp.unix_timestamp()).map_err(|_| UsageError::Invalid)?;
     std::time::UNIX_EPOCH
-        .checked_add(std::time::Duration::new(
-            seconds,
-            timestamp.timestamp_subsec_nanos(),
-        ))
+        .checked_add(std::time::Duration::new(seconds, timestamp.nanosecond()))
         .ok_or(UsageError::Invalid)
 }
 
