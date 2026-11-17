@@ -5,12 +5,13 @@ struct RightPanelView: View {
   var model: AppModel
   @State private var selected = Panel.roots
   enum Panel: String, CaseIterable, Identifiable {
-    case roots, files, sourceControl, threads
+    case roots, files, sourceControl, pullRequest, threads
     var id: Self { self }
     var title: String {
       switch self {
       case .files: "ファイル"
       case .sourceControl: "Source Control"
+      case .pullRequest: "PR"
       case .threads: "Thread"
       case .roots: "Node"
       }
@@ -19,6 +20,7 @@ struct RightPanelView: View {
       switch self {
       case .files: "file"
       case .sourceControl: "git-branch"
+      case .pullRequest: "git-pull-request"
       case .threads: "message-square"
       case .roots: "list"
       }
@@ -73,6 +75,8 @@ struct RightPanelView: View {
           model.filesFocused = true
           selected = .files
         }.id(path)
+      } else if expanded, selected == .pullRequest, let path = model.selectedWorktree {
+        PullRequestPanel(model: model, worktree: path).id(path)
       } else if expanded, selected == .threads, let path = model.selectedWorktree {
         ThreadPanelView(model: model, worktree: path).id(path)
       } else {

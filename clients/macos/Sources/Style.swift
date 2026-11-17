@@ -72,6 +72,25 @@ enum UIStyle {
   static let idle = Color.green
   static let failure = Color.red
 
+  static func prAppearance(_ value: String) -> (icon: String, color: Color) {
+    switch value {
+    case "open": ("git-pull-request", .green)
+    case "draft": ("git-pull-request-draft", .gray)
+    case "merged": ("git-merge", .purple)
+    default: ("git-pull-request-closed", .red)
+    }
+  }
+
+  static func checkAppearance(_ bucket: Releash_Client_V1_PullRequestCheckBucket) -> (
+    icon: String, color: Color
+  ) {
+    switch bucket {
+    case .fail: ("circle-alert", .red)
+    case .cancel: ("triangle-alert", .orange)
+    default: ("refresh-cw", .yellow)
+    }
+  }
+
   static func statusColor(_ status: String) -> Color {
     switch status {
     case "attention": attention

@@ -19,6 +19,7 @@ fn generate_client_protocol() {
     let mut config = prost_build::Config::new();
     config.boxed(".releash.client.v1.Push.event.workflow_execution_changed");
     config.boxed(".releash.client.v1.SessionTabSnapshot.node");
+    config.boxed(".releash.client.v1.PullRequestSnapshot.branch_pull_request.present");
     for message in ["CommandRequest", "CommandResult"] {
         config.message_attribute(
             format!(".releash.client.v1.{message}"),

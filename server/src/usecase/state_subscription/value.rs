@@ -37,6 +37,12 @@ pub enum StateValue {
     Issues(
         crate::usecase::fetched::Fetched<crate::usecase::git_host::git_host_usecase::IssueListing>,
     ),
+    /// worktree のブランチの PR。
+    PullRequest(crate::usecase::fetched::Fetched<crate::domain::git_host::BranchPullRequest>),
+    /// PR の base に選べるブランチ。
+    PullRequestBases(crate::domain::git_host::PullRequestBases),
+    /// GitHub Actions の job のログの全体。
+    CheckLog(crate::usecase::fetched::Fetched<String>),
     NotionTasks(
         crate::usecase::fetched::Fetched<
             crate::domain::notion::NotionTaskPage,

@@ -4,6 +4,20 @@ import XCTest
 @testable import Releash
 
 final class PaneWorkspaceTests: XCTestCase {
+  @MainActor func test_チェックログ_タブを再利用してサーバ保存対象から除く() throws {
+    // Given
+    let workspace = PaneWorkspace()
+    workspace.openCheckLog(worktree: "/repo", job: 42, title: "build")
+    let first = workspace.controller.allTabIds
+    // When
+    workspace.openCheckLog(worktree: "/repo", job: 42, title: "build")
+    // Then
+    XCTAssertEqual(workspace.controller.allTabIds, first)
+    let layout = try workspace.layout()
+    XCTAssertEqual(layout.tabs.first?.checkJob, 42)
+    XCTAssertTrue(try PaneLayout(layout.message).tabs.isEmpty)
+  }
+
   @MainActor func testRestorationPreservesFocusAndTabIdentifiersOnNonUUIDSecondPane() throws {
     let workspace = PaneWorkspace()
     let layout = PaneLayout.split(

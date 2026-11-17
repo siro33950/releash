@@ -280,6 +280,37 @@ struct UnusedGitHostProvider;
 
 #[async_trait::async_trait]
 impl crate::domain::git_host::GitHostProvider for UnusedGitHostProvider {
+    async fn fetch_pull_request(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> Result<crate::domain::git_host::PullRequest, crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+    async fn create_pull_request(
+        &self,
+        _: &str,
+        _: &str,
+        _: &crate::domain::git_host::NewPullRequest,
+    ) -> Result<(), crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+    async fn post_pull_request_comment(
+        &self,
+        _: &str,
+        _: u64,
+        _: &crate::domain::git_host::PrCommentText,
+    ) -> Result<(), crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+    async fn fetch_check_log(
+        &self,
+        _: &str,
+        _: crate::domain::git_host::ActionsJobId,
+    ) -> Result<String, crate::domain::git_host::GitHostError> {
+        panic!("unused")
+    }
+
     async fn fetch_pr_status(
         &self,
         _: &str,

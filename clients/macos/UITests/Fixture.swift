@@ -14,7 +14,7 @@ final class Fixture: Sendable {
   let providerExecutable: String
   let environment: [String: String]
 
-  init(providerUsage: Bool = false) throws {
+  init(providerUsage: Bool = false, pullRequest: Bool = false) throws {
     guard let path = ProcessInfo.processInfo.environment["RELEASH_E2E_ROOT"] else {
       throw NSError(
         domain: "E2E", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing RELEASH_E2E_ROOT"])
@@ -57,6 +57,20 @@ final class Fixture: Sendable {
       launchEnvironment["CLAUDE_CONFIG_DIR"] = directory.appendingPathComponent("claude").path
       launchEnvironment["RELEASH_AGENT_TUI_FIXTURE_STATUSLINE"] =
         #"{"rate_limits":{"five_hour":{"used_percentage":81,"resets_at":4102444800},"seven_day":{"used_percentage":41,"resets_at":4102444800}}}"#
+    }
+    if pullRequest {
+      let bin = directory.appendingPathComponent("bin")
+      try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+      try "export PATH=\"$RELEASH_PR_BIN:$PATH\"\n".write(
+        to: bin.appendingPathComponent(".zprofile"), atomically: true, encoding: .utf8)
+      launchEnvironment["SHELL"] = "/bin/zsh"
+      launchEnvironment["ZDOTDIR"] = bin.path
+      launchEnvironment["RELEASH_PR_BIN"] = bin.path
+      let gh = bin.appendingPathComponent("gh")
+      try Self.pullRequestScript.write(to: gh, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: gh.path)
+      launchEnvironment["PATH"] =
+        bin.path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")
     }
     environment = launchEnvironment
     try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
@@ -284,4 +298,31 @@ final class Fixture: Sendable {
     try stopped.get()
     try removed.get()
   }
+}
+
+extension Fixture {
+  private static let pullRequestScript = #"""
+    #!/usr/bin/python3
+    import json, sys
+    args = sys.argv[1:]
+    pr = {"number": 42, "url": "https://github.com/e2e/repository/pull/42",
+          "state": "OPEN", "isDraft": False, "headRefName": "main",
+          "title": "E2E pull request", "body": "E2E description"}
+    if args[:2] == ["pr", "list"]:
+        result = [pr] if args[args.index("--state") + 1] == "open" else []
+    elif args[:2] == ["pr", "view"]:
+        result = pr
+    elif args[:2] == ["pr", "checks"]:
+        result = [{"name": "E2E check", "bucket": "pending", "startedAt": "2026-01-01T00:00:00Z",
+                   "completedAt": "0001-01-01T00:00:00Z", "link": ""}]
+    elif args[:1] == ["api"]:
+        result = [] if args[1].endswith("/reviews") else [
+            {"user": {"login": "tester", "type": "User"}, "body": "E2E comment",
+             "created_at": "2026-01-01T00:00:00Z"}]
+        if "--slurp" in args:
+            result = [result]
+    else:
+        sys.exit("Unsupported gh command: " + " ".join(args))
+    print(json.dumps(result))
+    """#
 }

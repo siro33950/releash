@@ -8,6 +8,9 @@ use releashd::test_support::integration::platform::PrState;
 use releashd::test_support::integration::platform::PrStatus;
 use releashd::test_support::integration::platform::RepoPathsUsecase;
 use releashd::test_support::integration::platform::RepositoryStateService;
+use releashd::test_support::integration::platform::{
+    ActionsJobId, NewPullRequest, PrCommentText, PullRequest,
+};
 use releashd::test_support::integration::repository::Worktree;
 use releashd::test_support::integration::workspace::WorkspaceList;
 use releashd::test_support::integration::workspace::WorkspaceListUsecase;
@@ -68,6 +71,29 @@ struct PullRequests {
 
 #[async_trait::async_trait]
 impl GitHostProvider for PullRequests {
+    async fn fetch_pull_request(&self, _: &str, _: u64) -> Result<PullRequest, GitHostError> {
+        panic!("unused")
+    }
+    async fn create_pull_request(
+        &self,
+        _: &str,
+        _: &str,
+        _: &NewPullRequest,
+    ) -> Result<(), GitHostError> {
+        panic!("unused")
+    }
+    async fn post_pull_request_comment(
+        &self,
+        _: &str,
+        _: u64,
+        _: &PrCommentText,
+    ) -> Result<(), GitHostError> {
+        panic!("unused")
+    }
+    async fn fetch_check_log(&self, _: &str, _: ActionsJobId) -> Result<String, GitHostError> {
+        panic!("unused")
+    }
+
     async fn fetch_pr_status(&self, _: &str) -> Result<PrStatus, GitHostError> {
         if let Some(release) = &self.release {
             let release = release.clone();

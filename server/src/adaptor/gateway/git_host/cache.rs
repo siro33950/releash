@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::domain::git_host::{
     CacheTtl, CachedResult, GitHostError, IssueCache, IssueInfo, PrStatus, PrStatusCache,
+    PullRequest, PullRequestCache,
 };
 
 struct Entry<T> {
@@ -82,6 +83,27 @@ impl IssueCache for InMemoryTtlCache<Vec<IssueInfo>> {
     }
     fn record(&self, repo_path: &str, result: Result<Vec<IssueInfo>, GitHostError>) {
         self.record_result(repo_path, result);
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LatestPullRequests {
+    entries: Mutex<HashMap<String, CachedResult<PullRequest>>>,
+}
+impl PullRequestCache for LatestPullRequests {
+    fn hold(&self, path: &str) {
+        self.entries.lock().entry(path.into()).or_default();
+    }
+    fn result(&self, path: &str) -> CachedResult<PullRequest> {
+        self.entries.lock().get(path).cloned().unwrap_or_default()
+    }
+    fn record(&self, path: &str, result: Result<PullRequest, GitHostError>) {
+        if let Some(entry) = self.entries.lock().get_mut(path) {
+            entry.record(result);
+        }
+    }
+    fn forget(&self, path: &str) {
+        self.entries.lock().remove(path);
     }
 }
 

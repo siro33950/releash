@@ -35,6 +35,20 @@ impl AppError {
         Self::new(error.to_string()).with_status(kind)
     }
 
+    pub(crate) fn from_layered<T, B, H, R>(
+        result: Result<Result<Result<T, B>, H>, R>,
+    ) -> Result<T, Self>
+    where
+        B: crate::adaptor::presenter::connect::ConnectFailure + std::fmt::Display,
+        H: crate::adaptor::presenter::connect::ConnectFailure + std::fmt::Display,
+        R: crate::adaptor::presenter::connect::ConnectFailure + std::fmt::Display,
+    {
+        result
+            .map_err(Self::from_failure)?
+            .map_err(Self::from_failure)?
+            .map_err(Self::from_failure)
+    }
+
     pub(crate) fn invalid_request(message: impl Into<String>) -> Self {
         Self::new(message).with_status(connectrpc::ErrorCode::InvalidArgument)
     }

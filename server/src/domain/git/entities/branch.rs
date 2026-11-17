@@ -25,6 +25,16 @@ impl Branch {
         !self.is_remote || self.name.starts_with("origin/")
     }
 
+    /// origin にあるブランチなら、origin 上の名前（`origin/` を除いた名前）を返す。
+    /// ローカルのブランチと、origin 以外の remote のブランチでは `None`。
+    pub fn origin_name(&self) -> Option<&str> {
+        if self.is_remote {
+            self.name.strip_prefix("origin/")
+        } else {
+            None
+        }
+    }
+
     pub fn local(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),

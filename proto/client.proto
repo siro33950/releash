@@ -52,6 +52,8 @@ message CommandRequest {
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
     OpenWorkflowDirectoryInEditorRequest open_workflow_directory_in_editor = 207;
+    CreatePullRequestRequest create_pull_request = 216;
+    PostPullRequestCommentRequest post_pull_request_comment = 217;
     RefreshProviderAvailabilityRequest refresh_provider_availability = 105;
     RemoveRepoPathRequest remove_repo_path = 106;
     RemoveWorktreeRequest remove_worktree = 107;
@@ -127,6 +129,8 @@ message CommandResult {
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
     Unit open_workflow_directory_in_editor = 207;
+    Unit create_pull_request = 216;
+    Unit post_pull_request_comment = 217;
     Unit refresh_provider_availability = 105;
     ResultBool remove_repo_path = 106;
     Unit remove_worktree = 107;
@@ -1909,6 +1913,11 @@ service ClientService {
   rpc ReceiveProviderSignal(ReceiveProviderSignalRequest) returns (ReceiveProviderSignalResponse) { option (scope) = SCOPE_HOOK; }
   rpc InstallCli(InstallCliRequest) returns (InstallCliResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc CheckLoginRegistration(CheckLoginRegistrationRequest) returns (LoginRegistrationResult) { option (scope) = SCOPE_OPERATOR; }
+  // 選んでいる Worktree のブランチを head とする PR を GitHub に作る。ブランチを push することはない。
+  // できた PR は、購読の対象 `pull-request` で届く。
+  rpc CreatePullRequest(CreatePullRequestRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  // PR 全体への Comment を GitHub に投稿する。投稿した Comment は、購読の対象 `pull-request` で届く。
+  rpc PostPullRequestComment(PostPullRequestCommentRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc GetServerInfo(Unit) returns (ServerInfo) { option (scope) = SCOPE_OPERATOR; option (scope) = SCOPE_HOOK; }
 }
 
@@ -2051,6 +2060,120 @@ message WorktreeBasesSnapshot {
   optional string default_branch = 2;
 }
 
+// 選んでいる Worktree のブランチの PR。購読の対象 `pull-request` で届く。引数は worktree の path。
+// ブランチの PR は、そのブランチを head とする PR のうち、open、merged、closed の順で最初に見つかる 1 件である。
+// GitHub で変わった内容は、30 秒の周期で届く。
+message PullRequestSnapshot {
+  // ブランチの PR。PR があるかをまだ確かめられていないときと、PR の内容をまだ取れていないときは、どちらも無い。
+  oneof branch_pull_request {
+    // ブランチの PR が無い。origin が GitHub のリポジトリでないときも、これが届く。
+    Unit absent = 1;
+    // ブランチの PR と、その内容。
+    PullRequestView present = 2;
+  }
+  // PR の内容を GitHub から取れない理由。取れたときは無い。
+  optional string read_error = 3;
+}
+// PR の面に出す PR の内容。
+message PullRequestView {
+  uint64 number = 1;
+  string title = 2;
+  // 本文。Markdown。
+  string body = 3;
+  // GitHub の PR のページの URL。
+  string url = 4;
+  PullRequestState state = 5;
+  // 新しい PR を作る操作を出すか。状態が Closed のときだけ true。
+  bool can_create_new = 6;
+  PullRequestChecks checks = 7;
+  // PR 全体への Comment と、本文があるレビューの本文。書いた時刻の古い順。
+  repeated PullRequestComment comments = 8;
+}
+enum PullRequestState {
+  PULL_REQUEST_STATE_UNSPECIFIED = 0;
+  PULL_REQUEST_STATE_OPEN = 1 [(json_enum_name) = "open"];
+  PULL_REQUEST_STATE_DRAFT = 2 [(json_enum_name) = "draft"];
+  PULL_REQUEST_STATE_MERGED = 3 [(json_enum_name) = "merged"];
+  PULL_REQUEST_STATE_CLOSED = 4 [(json_enum_name) = "closed"];
+}
+// PR の check。分類は gh の分類に従う。
+message PullRequestChecks {
+  // 分類ごとの check の件数。
+  uint32 failed = 1;
+  uint32 cancelled = 2;
+  uint32 pending = 3;
+  uint32 skipped = 4;
+  uint32 passed = 5;
+  // 1 行ずつ出す check。失敗、取り消し、実行中の順に並ぶ。
+  repeated PullRequestCheck listed = 6;
+  // 通過した check の名前。
+  repeated string passed_names = 7;
+  // skip した check の名前。
+  repeated string skipped_names = 8;
+}
+// 1 行で出す check。分類は、失敗、取り消し、実行中のいずれかである。
+message PullRequestCheck {
+  string name = 1;
+  PullRequestCheckBucket bucket = 2;
+  // 失敗までにかかった秒数。失敗の check で、開始と終了の時刻が分かるときだけある。
+  optional uint64 failure_seconds = 3;
+  // 開始の時刻（UNIX 秒）。実行中の check で、開始の時刻が分かるときだけある。
+  optional uint64 started_at = 4;
+  // ログを開ける job の ID。失敗した GitHub Actions の job のときだけある。購読の対象 `check-log` の引数に使う。
+  optional uint64 log_job_id = 5;
+}
+enum PullRequestCheckBucket {
+  PULL_REQUEST_CHECK_BUCKET_UNSPECIFIED = 0;
+  PULL_REQUEST_CHECK_BUCKET_FAIL = 1 [(json_enum_name) = "fail"];
+  PULL_REQUEST_CHECK_BUCKET_CANCEL = 2 [(json_enum_name) = "cancel"];
+  PULL_REQUEST_CHECK_BUCKET_PENDING = 3 [(json_enum_name) = "pending"];
+}
+// PR 全体への Comment、またはレビューの本文の 1 件。
+message PullRequestComment {
+  // 書き手の名前。
+  string author = 1;
+  // 書き手が bot か。
+  bool bot = 2;
+  // 書いた時刻（UNIX 秒）。
+  uint64 written_at = 3;
+  // 本文。Markdown。
+  string body = 4;
+}
+// PR の base に選べるブランチ。購読の対象 `pull-request-bases` で届く。引数は worktree の path。
+message PullRequestBasesSnapshot {
+  // origin にあるブランチの名前。`origin/` は付かない。名前の順に並ぶ。
+  repeated string branches = 1;
+  // リポジトリの既定のブランチの名前。`branches` に無いときと、決められないときは無い。
+  optional string default_branch = 2;
+}
+// 失敗した GitHub Actions の job のログ。購読の対象 `check-log` で届く。
+// 引数は、worktree の path と、`PullRequestCheck.log_job_id` の job の ID。
+message CheckLogSnapshot {
+  // job のログの全体。取れなかったときは無い。
+  optional string log = 1;
+  // ログを取れない理由。取れたときは無い。
+  optional string read_error = 2;
+}
+message CreatePullRequestRequest {
+  // head にするブランチの worktree の path。
+  string worktree_path = 1;
+  // PR のタイトル。空は受け付けない。
+  string title = 2;
+  // PR の本文。空でもよい。
+  string body = 3;
+  // base にするブランチの名前。`PullRequestBasesSnapshot.branches` の名前。
+  string base = 4;
+  // draft で作るか。
+  bool draft = 5;
+}
+message PostPullRequestCommentRequest {
+  string worktree_path = 1;
+  // Comment を書く PR の番号。
+  uint64 number = 2;
+  // Comment の本文。空は受け付けない。
+  string body = 3;
+}
+
 message OpenStateStreamRequest { string client_id = 1; }
 message StartStateSubscriptionRequest {
   string client_id = 1;
@@ -2082,6 +2205,9 @@ message StatePayload {
     NotionTasksSnapshot notion_tasks = 60;
     NotionLabelOptionsSnapshot notion_label_options = 61;
     WorktreeBasesSnapshot worktree_bases = 79;
+    PullRequestSnapshot pull_request = 84;
+    PullRequestBasesSnapshot pull_request_bases = 85;
+    CheckLogSnapshot check_log = 86;
 
     NullableWorkspaceStateDto workspace_state = 17;
     ListReviewThreadDto review_threads = 32;

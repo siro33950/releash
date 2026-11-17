@@ -29,6 +29,12 @@ pub enum SubscriptionTarget {
     WorktreeBases(String),
     Issues(String),
     FilteredIssues(String, crate::domain::git_host::IssueFilter),
+    /// worktree のブランチの PR。30 秒ごとと、変化を受けてブランチの PR の内容が不足するときに GitHub から取り直す。
+    PullRequest(String),
+    /// worktree のブランチから作る PR の base に選べるブランチ。
+    PullRequestBases(String),
+    /// worktree の Repository の、失敗した GitHub Actions の job のログ。
+    CheckLog(String, crate::domain::git_host::ActionsJobId),
     NotionTasks(crate::usecase::notion::usecase::NotionTaskListRequest),
     /// Repository の Notion の設定で Labels に選んだプロパティと、その選択肢。
     NotionLabelOptions(String),
@@ -117,6 +123,8 @@ impl SubscriptionTarget {
             Self::Branches(path, _)
             | Self::AvailableBranches(path, _)
             | Self::WorktreeBases(path)
+            | Self::PullRequest(path)
+            | Self::PullRequestBases(path)
             | Self::ReleashBase(path) => {
                 vec![WatchRequirement::Git(path.clone())]
             }
@@ -161,6 +169,7 @@ impl SubscriptionTarget {
             Self::Workspaces
                 | Self::Issues(_)
                 | Self::FilteredIssues(..)
+                | Self::PullRequest(_)
                 | Self::NotionTasks(..)
                 | Self::NotionLabelOptions(_)
         )
@@ -182,6 +191,8 @@ pub enum StateChangeSource {
     RepositoryGroupState(String),
     Providers,
     Issues(String),
+    /// worktree のブランチの PR を取り直した。PR の作成と Comment の投稿の後に出す。
+    PullRequest(String),
     ProviderHistory,
     /// review comment の変化。`None` は worktree を特定できない外部の書き込み。
     ReviewComments(Option<String>),
@@ -212,6 +223,8 @@ impl SubscriptionTarget {
                 Self::Branches(p, _)
                 | Self::AvailableBranches(p, _)
                 | Self::WorktreeBases(p)
+                | Self::PullRequest(p)
+                | Self::PullRequestBases(p)
                 | Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
                 | Self::SourceControl(p, _)
@@ -244,6 +257,7 @@ impl SubscriptionTarget {
             C::Issues(path) => {
                 matches!(self, Self::Issues(p) | Self::FilteredIssues(p, _) if p == path)
             }
+            C::PullRequest(path) => matches!(self, Self::PullRequest(p) if p == path),
             C::ReviewComments(worktree) => {
                 matches!(self, Self::FileThreads(path, _) if worktree.as_ref().is_none_or(|p| p == path))
                     || matches!(

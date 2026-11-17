@@ -4,8 +4,9 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::domain::git_host::{
-    GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone, PrAuthor, PrInfo, PrState,
-    PrStatus,
+    ActionsJobId, Checks, GitHostError, GitHostProvider, IssueInfo, IssueLabel, Milestone,
+    NewPullRequest, PrAuthor, PrCommentText, PrConversation, PrInfo, PrState, PrStatus,
+    PullRequest,
 };
 
 use super::discovery::is_github_repository;
@@ -65,9 +66,29 @@ impl GhCommandRunner for SystemGhCommandRunner {
         })
         .await
         {
-            Ok(Ok(output)) if output.status.success() => String::from_utf8(output.stdout)
-                .map(GhCommandOutput::Success)
-                .unwrap_or(GhCommandOutput::InvalidUtf8),
+            Ok(Ok(output))
+                if output.status.success()
+                    || (args.starts_with(&["pr", "checks"])
+                        && matches!(output.status.code(), Some(1 | 8))
+                        && serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout)
+                            .is_ok()) =>
+            {
+                String::from_utf8(output.stdout)
+                    .map(GhCommandOutput::Success)
+                    .unwrap_or(GhCommandOutput::InvalidUtf8)
+            }
+            Ok(Ok(output))
+                if args.starts_with(&["pr", "checks"])
+                    && output.status.code() == Some(1)
+                    && output.stdout.is_empty()
+                    && String::from_utf8_lossy(&output.stderr)
+                        .trim_end()
+                        .strip_prefix("no checks reported on the '")
+                        .and_then(|branch| branch.strip_suffix("' branch"))
+                        .is_some() =>
+            {
+                GhCommandOutput::Success("[]".into())
+            }
             Ok(Ok(output)) => GhCommandOutput::NonZero {
                 status: output.status.to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -120,9 +141,155 @@ impl GitHostProvider for GitHubGitHostGateway {
         .await;
         parse_gh_issue_list_output(&output?)
     }
+
+    async fn fetch_pull_request(
+        &self,
+        repo_path: &str,
+        number: u64,
+    ) -> Result<PullRequest, GitHostError> {
+        use super::pull_request::{decode, Comment, Detail, GhCheck, Review};
+        let number = number.to_string();
+        let detail: Detail = decode(
+            &run_gh_with_timeout(
+                self.runner.as_ref(),
+                &[
+                    "pr",
+                    "view",
+                    &number,
+                    "--json",
+                    "number,url,state,isDraft,title,body",
+                ],
+                repo_path,
+            )
+            .await?,
+        )?;
+        let checks: Vec<GhCheck> = decode(
+            &run_gh_with_timeout(
+                self.runner.as_ref(),
+                &[
+                    "pr",
+                    "checks",
+                    &number,
+                    "--json",
+                    "name,bucket,startedAt,completedAt,link",
+                ],
+                repo_path,
+            )
+            .await?,
+        )?;
+        let comments = self
+            .fetch_pages::<Comment>(
+                repo_path,
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"),
+            )
+            .await?
+            .into_iter()
+            .map(Comment::into_comment)
+            .collect::<Result<_, _>>()?;
+        let reviews = self
+            .fetch_pages::<Review>(
+                repo_path,
+                &format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews"),
+            )
+            .await?
+            .into_iter()
+            .map(Review::into_comment)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(PullRequest {
+            info: detail.info()?,
+            title: detail.title,
+            body: detail.body,
+            checks: Checks::new(
+                checks
+                    .into_iter()
+                    .map(GhCheck::into_check)
+                    .collect::<Result<_, _>>()?,
+            ),
+            conversation: PrConversation::new(comments, reviews),
+        })
+    }
+
+    async fn create_pull_request(
+        &self,
+        repo_path: &str,
+        head: &str,
+        new: &NewPullRequest,
+    ) -> Result<(), GitHostError> {
+        let mut args = vec![
+            "pr",
+            "create",
+            "--head",
+            head,
+            "--base",
+            new.base(),
+            "--title",
+            new.title(),
+            "--body",
+            new.body(),
+        ];
+        if new.draft() {
+            args.push("--draft");
+        }
+        run_gh_with_timeout(self.runner.as_ref(), &args, repo_path)
+            .await
+            .map(|_| ())
+    }
+
+    async fn post_pull_request_comment(
+        &self,
+        repo_path: &str,
+        number: u64,
+        text: &PrCommentText,
+    ) -> Result<(), GitHostError> {
+        run_gh_with_timeout(
+            self.runner.as_ref(),
+            &[
+                "pr",
+                "comment",
+                &number.to_string(),
+                "--body",
+                text.as_str(),
+            ],
+            repo_path,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn fetch_check_log(
+        &self,
+        repo_path: &str,
+        job: ActionsJobId,
+    ) -> Result<String, GitHostError> {
+        run_gh_with_timeout(
+            self.runner.as_ref(),
+            &["run", "view", "--job", &job.0.to_string(), "--log"],
+            repo_path,
+        )
+        .await
+    }
 }
 
 impl GitHubGitHostGateway {
+    async fn fetch_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        repo_path: &str,
+        endpoint: &str,
+    ) -> Result<Vec<T>, GitHostError> {
+        let pages: Vec<Vec<T>> = super::pull_request::decode(
+            &run_gh_with_timeout(
+                self.runner.as_ref(),
+                &["api", endpoint, "--paginate", "--slurp"],
+                repo_path,
+            )
+            .await?,
+        )?;
+        Ok(pages.into_iter().flatten().collect())
+    }
+
     async fn fetch_github_prs(&self, repo_path: &str) -> Result<PrStatus, GitHostError> {
         let open_prs = detect_prs(self.runner.as_ref(), repo_path, "open", PrState::Open).await?;
         let merged = detect_prs(self.runner.as_ref(), repo_path, "merged", PrState::Merged).await?;

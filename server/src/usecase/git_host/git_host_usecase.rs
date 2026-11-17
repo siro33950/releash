@@ -48,6 +48,14 @@ impl GitHostUsecase {
         }
     }
 
+    /// Repository の PR の一覧の、最後に取れた値と、直近の取得の失敗。
+    pub(crate) fn pr_status(
+        &self,
+        repo_path: &str,
+    ) -> crate::domain::git_host::CachedResult<PrStatus> {
+        self.pr_cache.result(repo_path)
+    }
+
     /// PR の状態を取りに行って保持する。変わったときは Workspaces の購読へ知らせる。
     pub async fn refresh_pr_status(&self, repo_path: &str) -> Result<(), GitHostError> {
         let result = self.provider.fetch_pr_status(repo_path).await;

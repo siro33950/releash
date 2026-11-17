@@ -433,3 +433,93 @@ pub(crate) mod tests {
         assert!(issues.is_err());
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+pub async fn test_gh実runner_checkの失敗と実行中のjsonを読み認証失敗は返す() {
+    use std::os::unix::fs::PermissionsExt;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let program = directory.path().join("gh");
+    let runner = SystemGhCommandRunner::test_new(Some(program.clone()));
+    for (status, body, success) in [
+        (1, "[]", true),
+        (8, "[]", true),
+        (4, "[]", false),
+        (1, "unauthorized", false),
+    ] {
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf '%s' '{body}'\nexit {status}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // When
+        let output = runner
+            .output(
+                &["pr", "checks", "42", "--json", "bucket"],
+                directory.path().to_str().unwrap(),
+            )
+            .await;
+        // Then
+        assert_eq!(matches!(output, GhCommandOutput::Success(_)), success);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+pub async fn test_pr取得_check無しの非json終了でも本文とcommentを返す() {
+    use releashd::test_support::integration::platform::{GitHostProvider, GitHubGitHostGateway};
+    use std::os::unix::fs::PermissionsExt;
+    // Given
+    let directory = tempfile::tempdir().unwrap();
+    let program = directory.path().join("gh");
+    let script = r#"#!/bin/sh
+case "$1 $2" in
+  'pr view') printf '%s' '{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":"body"}' ;;
+  'pr checks') printf "no checks reported on the 'topic' branch\n" >&2; exit 1 ;;
+  *) printf '%s' '[[{"user":{"login":"author","type":"User"},"body":"comment","created_at":"2026-01-01T00:00:00Z","submitted_at":"2026-01-01T00:00:00Z"}]]' ;;
+esac
+"#;
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gateway = GitHubGitHostGateway::with_runner(Arc::new(SystemGhCommandRunner::test_new(
+        Some(program.clone()),
+    )));
+    // When
+    let pr = gateway
+        .fetch_pull_request(directory.path().to_str().unwrap(), 42)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(pr.title, "title");
+    assert_eq!(pr.body, "body");
+    assert!(pr.checks.listed().is_empty());
+    assert!(pr.checks.passed_names().is_empty());
+    assert!(pr.checks.skipped_names().is_empty());
+    assert_eq!(pr.conversation.entries()[0].body, "comment");
+    // Given / When / Then
+    for message in ["authentication required", "GraphQL request failed"] {
+        std::fs::write(
+            &program,
+            script.replace("no checks reported on the 'topic' branch", message),
+        )
+        .unwrap();
+        assert!(gateway
+            .fetch_pull_request(directory.path().to_str().unwrap(), 42)
+            .await
+            .is_err());
+    }
+    std::fs::write(
+        &program,
+        "#!/bin/sh\nprintf \"no checks reported on the 'topic' branch\\n\" >&2\nexit 1\n",
+    )
+    .unwrap();
+    let runner = SystemGhCommandRunner::test_new(Some(program));
+    assert!(matches!(
+        runner
+            .output(&["pr", "create"], directory.path().to_str().unwrap())
+            .await,
+        GhCommandOutput::NonZero { .. }
+    ));
+}

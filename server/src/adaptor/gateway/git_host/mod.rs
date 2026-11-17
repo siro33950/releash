@@ -4,3 +4,5 @@ pub(crate) mod github;
 
 pub(crate) use cache::{InMemoryTtlCache, LatestPrStatuses};
 pub(crate) use github::GitHubGitHostGateway;
+
+mod pull_request;

@@ -337,3 +337,326 @@ fn test_pr解析_同じbranchの同状態prを取得順のまま残す() {
         [1, 2]
     );
 }
+
+#[tokio::test]
+async fn test_pr操作_headを明示し入力を別引数で渡す() {
+    // Given
+    struct Runner(parking_lot::Mutex<Vec<Vec<String>>>);
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            self.0
+                .lock()
+                .push(args.iter().map(|arg| (*arg).into()).collect());
+            GhCommandOutput::Success("".into())
+        }
+    }
+    let runner = Arc::new(Runner(Default::default()));
+    let gateway = GitHubGitHostGateway::with_runner(runner.clone());
+    let new = crate::domain::git_host::NewPullRequest::new(
+        "title".into(),
+        "body; command".into(),
+        "main".into(),
+        true,
+    )
+    .unwrap();
+    // When
+    gateway
+        .create_pull_request("/repo", "topic", &new)
+        .await
+        .unwrap();
+    gateway
+        .post_pull_request_comment(
+            "/repo",
+            42,
+            &crate::domain::git_host::PrCommentText::new("comment".into()).unwrap(),
+        )
+        .await
+        .unwrap();
+    gateway
+        .fetch_check_log("/repo", crate::domain::git_host::ActionsJobId(7))
+        .await
+        .unwrap();
+    // Then
+    let calls = runner.0.lock();
+    assert_eq!(
+        calls[0],
+        [
+            "pr",
+            "create",
+            "--head",
+            "topic",
+            "--base",
+            "main",
+            "--title",
+            "title",
+            "--body",
+            "body; command",
+            "--draft"
+        ]
+    );
+    assert_eq!(calls[1], ["pr", "comment", "42", "--body", "comment"]);
+    assert_eq!(calls[2], ["run", "view", "--job", "7", "--log"]);
+}
+
+#[tokio::test]
+async fn test_pr取得_本文とcheckとcommentを読み取る() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            let value = if args[0..2] == ["pr", "view"] {
+                r#"{"number":42,"url":"url","state":"OPEN","isDraft":true,"title":"title","body":"body"}"#
+            } else if args[0..2] == ["pr", "checks"] {
+                r#"[{"name":"test","bucket":"fail","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:04:00Z","link":"https://github.com/a/b/actions/runs/1/job/7"},{"name":"running","bucket":"pending","startedAt":"2026-01-01T00:00:00Z","completedAt":"0001-01-01T00:00:00Z","link":""},{"name":"external","bucket":"fail","startedAt":"0001-01-01T00:00:00Z","completedAt":"0001-01-01T00:00:00Z","link":"https://example.com/check"}]"#
+            } else if args[1].ends_with("/reviews") {
+                r#"[[{"user":{"login":"reviewer","type":"User"},"body":"review","submitted_at":"2026-01-01T00:02:00Z"},{"user":{"login":"empty","type":"User"},"body":"pending review","submitted_at":null}]]"#
+            } else {
+                r#"[[{"user":{"login":"bot","type":"Bot"},"body":"comment","created_at":"2026-01-01T00:01:00Z"}]]"#
+            };
+            GhCommandOutput::Success(value.into())
+        }
+    }
+    // When
+    let pr = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(pr.title, "title");
+    assert!(pr.info.draft);
+    assert_eq!(pr.body, "body");
+    assert_eq!(pr.checks.listed()[1].started_at, None);
+    assert_eq!(pr.checks.listed()[1].completed_at, None);
+    assert_eq!(pr.checks.listed()[1].failure_seconds(), None);
+    assert!(pr.checks.listed()[2].running_since().is_some());
+    assert_eq!(pr.checks.listed()[2].completed_at, None);
+    assert_eq!(pr.checks.listed()[0].failure_seconds(), Some(240));
+    assert_eq!(
+        pr.checks.listed()[0].log_job(),
+        Some(crate::domain::git_host::ActionsJobId(7))
+    );
+    assert_eq!(pr.conversation.entries().len(), 2);
+    assert!(pr.conversation.entries()[0].author.is_bot);
+    assert_eq!(pr.conversation.entries()[0].author.login, "bot");
+    assert!(!pr.conversation.entries()[1].author.is_bot);
+    assert_eq!(pr.conversation.entries()[1].author.login, "reviewer");
+}
+
+#[tokio::test]
+async fn test_pr取得_書き手がnullのcommentと提出済みreviewをghostとして読み取る() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            let value = match args {
+                ["pr", "view", ..] => {
+                    r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":"body"}"#
+                }
+                ["pr", "checks", ..] => r#"[{"name":"test","bucket":"fail","link":""}]"#,
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/comments") => {
+                    r#"[[{"user":null,"body":"comment","created_at":"2026-01-01T00:00:00Z"},{"user":{"login":"bot","type":"Bot"},"body":"other comment","created_at":"2026-01-01T00:02:00Z"}]]"#
+                }
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/reviews") => {
+                    r#"[[{"user":null,"body":"review","submitted_at":"2026-01-01T00:01:00Z"}]]"#
+                }
+                _ => panic!("unexpected arguments: {args:?}"),
+            };
+            GhCommandOutput::Success(value.into())
+        }
+    }
+    // When
+    let pr = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(pr.title, "title");
+    assert_eq!(pr.body, "body");
+    assert_eq!(pr.checks.listed().len(), 1);
+    assert_eq!(pr.checks.listed()[0].name, "test");
+    let entries = pr.conversation.entries();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].body, "comment");
+    assert_eq!(entries[1].body, "review");
+    for entry in &entries[..2] {
+        assert_eq!(entry.author.login, "ghost");
+        assert!(!entry.author.is_bot);
+    }
+    assert_eq!(entries[2].body, "other comment");
+    assert_eq!(entries[2].author.login, "bot");
+    assert!(entries[2].author.is_bot);
+}
+
+#[tokio::test]
+async fn test_pr取得_不正な応答を失敗として返す() {
+    struct Runner(&'static str, &'static str, &'static str);
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            GhCommandOutput::Success(
+                if args[0..2] == ["pr", "view"] {
+                    self.0
+                } else if args[0..2] == ["pr", "checks"] {
+                    self.1
+                } else {
+                    self.2
+                }
+                .into(),
+            )
+        }
+    }
+    let valid =
+        r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":""}"#;
+    // Given
+    for runner in [
+        Runner("not json", "[]", "[]"),
+        Runner(
+            r#"{"number":42,"url":"url","state":"UNKNOWN","isDraft":false,"title":"title","body":""}"#,
+            "[]",
+            "[]",
+        ),
+        Runner(
+            valid,
+            r#"[{"name":"test","bucket":"unknown","link":""}]"#,
+            "[]",
+        ),
+        Runner(
+            valid,
+            r#"[{"name":"test","bucket":"fail","link":"","startedAt":"invalid"}]"#,
+            "[]",
+        ),
+        Runner(
+            valid,
+            r#"[{"name":"test","bucket":"fail","link":"","startedAt":"1969-12-31T23:59:59Z"}]"#,
+            "[]",
+        ),
+        Runner(
+            valid,
+            "[]",
+            r#"[[{"user":{"login":"user","type":"User"},"body":"comment"}]]"#,
+        ),
+    ] {
+        // When
+        let result = GitHubGitHostGateway::with_runner(Arc::new(runner))
+            .fetch_pull_request("/repo", 42)
+            .await;
+        // Then
+        assert!(matches!(result, Err(GitHostError::External(_))));
+    }
+}
+
+#[tokio::test]
+async fn test_pr操作_外部コマンドの失敗理由を返す() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, _: &[&str], _: &str) -> GhCommandOutput {
+            GhCommandOutput::NonZero {
+                status: "1".into(),
+                stderr: "permission denied".into(),
+            }
+        }
+    }
+    let gateway = GitHubGitHostGateway::with_runner(Arc::new(Runner));
+    let new = crate::domain::git_host::NewPullRequest::new(
+        "title".into(),
+        "".into(),
+        "main".into(),
+        false,
+    )
+    .unwrap();
+    let comment = crate::domain::git_host::PrCommentText::new("comment".into()).unwrap();
+    // When / Then
+    assert!(gateway
+        .fetch_pull_request("/repo", 42)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("permission denied"));
+    assert!(gateway
+        .create_pull_request("/repo", "topic", &new)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("permission denied"));
+    assert!(gateway
+        .post_pull_request_comment("/repo", 42, &comment)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("permission denied"));
+    assert!(gateway
+        .fetch_check_log("/repo", crate::domain::git_host::ActionsJobId(7))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("permission denied"));
+}
+
+#[tokio::test]
+async fn test_pr取得_複数ページのcommentと提出済みreviewだけを返す() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            let value = match args {
+                ["pr", "view", ..] => {
+                    r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":""}"#
+                }
+                ["pr", "checks", ..] => "[]",
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/comments") => {
+                    r#"[[{"user":{"login":"alice","type":"User"},"body":"first","created_at":"2026-01-01T00:00:00Z"}],[{"user":{"login":"bot","type":"Bot"},"body":"last","created_at":"2026-01-01T00:02:00Z"}]]"#
+                }
+                ["api", endpoint, "--paginate", "--slurp"] if endpoint.ends_with("/reviews") => {
+                    r#"[[{"user":{"login":"alice","type":"User"},"body":"pending","submitted_at":null}],[{"user":{"login":"bob","type":"User"},"body":"review","submitted_at":"2026-01-01T00:01:00Z"}]]"#
+                }
+                _ => panic!("unexpected arguments: {args:?}"),
+            };
+            GhCommandOutput::Success(value.into())
+        }
+    }
+    // When
+    let pr = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await
+        .unwrap();
+    // Then
+    assert_eq!(
+        pr.conversation
+            .entries()
+            .iter()
+            .map(|entry| entry.body.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "review", "last"]
+    );
+    assert!(pr.conversation.entries()[2].author.is_bot);
+}
+
+#[tokio::test]
+async fn test_pr取得_reviewの不正な時刻を失敗として返す() {
+    // Given
+    struct Runner;
+    #[async_trait::async_trait]
+    impl GhCommandRunner for Runner {
+        async fn output(&self, args: &[&str], _: &str) -> GhCommandOutput {
+            GhCommandOutput::Success(if args[0..2] == ["pr", "view"] {
+                r#"{"number":42,"url":"url","state":"OPEN","isDraft":false,"title":"title","body":""}"#
+            } else if args[1].ends_with("/reviews") {
+                r#"[[{"user":{"login":"alice","type":"User"},"body":"review","submitted_at":"invalid"}]]"#
+            } else { "[]" }.into())
+        }
+    }
+    // When
+    let result = GitHubGitHostGateway::with_runner(Arc::new(Runner))
+        .fetch_pull_request("/repo", 42)
+        .await;
+    // Then
+    assert!(
+        matches!(result, Err(GitHostError::External(message)) if message.contains("Invalid GitHub timestamp"))
+    );
+}

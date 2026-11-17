@@ -261,12 +261,14 @@ impl StateSubscriptionUsecase {
             return;
         }
         let mut refresh_external = false;
+        let mut changed = false;
         match signal {
             ReadSignal::Change(change) => {
                 if !target.affected_by(&change.source) {
                     return;
                 }
                 refresh_external = adds_external_information(target, &change.source);
+                changed = true;
             }
             ReadSignal::Periodic => {
                 let requirements = self.required_watches(target, None);
@@ -280,19 +282,24 @@ impl StateSubscriptionUsecase {
                 }
                 refresh_external = target.external_information();
             }
-            ReadSignal::Lagged => {}
+            ReadSignal::Lagged => changed = true,
         }
         loop {
             use tokio::sync::broadcast::error::TryRecvError;
             match changes.try_recv() {
-                Ok(change) => refresh_external |= adds_external_information(target, &change.source),
-                Err(TryRecvError::Lagged(_)) => continue,
+                Ok(change) => {
+                    refresh_external |= adds_external_information(target, &change.source);
+                    changed |= target.affected_by(&change.source);
+                }
+                Err(TryRecvError::Lagged(_)) => changed = true,
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }
         }
         let reads = self.reads.as_ref().expect("subscription reads");
         let refresh = if refresh_external {
             reads.refresh_external(target).await
+        } else if changed {
+            reads.refresh_changed(target).await
         } else {
             Ok(())
         };

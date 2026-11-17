@@ -35,6 +35,7 @@ impl StateSubscriptionRead for StateSubscriptionReads {
                 | T::ProviderHookHealth
                 | T::WorkspaceState(..)
                 | T::RepositoryGroupState(_)
+                | T::CheckLog(..)
         ) {
             return crate::common::telemetry::observe_result_async(
                 self.0.read(target),
@@ -62,6 +63,9 @@ impl StateSubscriptionRead for StateSubscriptionReads {
     }
     async fn refresh_external(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
         self.0.refresh_external_blocking(target).await
+    }
+    async fn refresh_changed(&self, target: &SubscriptionTarget) -> Result<(), StateReadError> {
+        self.0.refresh_changed(target).await
     }
     fn acquire_external(&self, target: &SubscriptionTarget) {
         self.0.acquire_external(target);
