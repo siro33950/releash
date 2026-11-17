@@ -918,9 +918,12 @@ extension AppModelTests {
       state.daemonInfo.release = "1.0.0"
     }
     let model = try await testModel(http)
-    try await eventually { model.providerUsage.count == 1 && model.daemonInfo != nil }
-    XCTAssertEqual(model.providerUsage[0].windows[0].usedPercent, 81)
-    XCTAssertEqual(model.hookHealth.warnings.items[0].reason, "hook missing")
+    try await eventually {
+      model.providerUsage.count == 1 && model.daemonInfo != nil
+        && !model.hookHealth.warnings.items.isEmpty
+    }
+    XCTAssertEqual(try XCTUnwrap(model.providerUsage.first?.windows.first).usedPercent, 81)
+    XCTAssertEqual(try XCTUnwrap(model.hookHealth.warnings.items.first).reason, "hook missing")
     XCTAssertEqual(model.hookHealth.readErrors, ["record unreadable"])
     XCTAssertEqual(model.daemonInfo?.release, "1.0.0")
     await model.stop()
