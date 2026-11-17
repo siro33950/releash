@@ -37,6 +37,14 @@ message CommandRequest {
     GitCreateBranchRequest git_create_branch = 77;
     GitStageRequest git_stage = 78;
     GitUnstageRequest git_unstage = 80;
+    GitCommitRequest git_commit = 208;
+    GitPushRequest git_push = 209;
+    GitPullRequest git_pull = 210;
+    GitSyncRequest git_sync = 211;
+    GitFetchRequest git_fetch = 212;
+    GitDiscardRequest git_discard = 213;
+    GitContinueOperationRequest git_continue_operation = 214;
+    GitAbortOperationRequest git_abort_operation = 215;
     KillTerminalSurfaceRequest kill_terminal_surface = 82;
 
     OpenAgentSessionRequest open_agent_session = 97;
@@ -104,6 +112,14 @@ message CommandResult {
     Unit git_create_branch = 77;
     Unit git_stage = 78;
     Unit git_unstage = 80;
+    Unit git_commit = 208;
+    Unit git_push = 209;
+    Unit git_pull = 210;
+    Unit git_sync = 211;
+    Unit git_fetch = 212;
+    Unit git_discard = 213;
+    Unit git_continue_operation = 214;
+    Unit git_abort_operation = 215;
     Unit kill_terminal_surface = 82;
 
     Unit open_agent_session = 97;
@@ -1106,6 +1122,86 @@ message GitUnstageRequest {
   optional Liststring paths = 2 [json_name = "paths", (json_required) = true];
 }
 
+// stage 済みの変更を、メッセージを付けて commit にする。署名は git の設定に従う。
+// stage 済みの変更が無いとき、メッセージが空のとき、merge か rebase の途中のときは受け付けない。
+message GitCommitRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+  // commit メッセージ。
+  string message = 2;
+  // commit の後に続ける操作。
+  // commit を作った後にこの操作が失敗したときは、code が `GIT_COMMIT_FOLLOW_UP_FAILED` の失敗を返す。commit は残っている。
+  GitCommitFollowUp follow_up = 3;
+}
+
+// commit の後に続ける操作。
+enum GitCommitFollowUp {
+  GIT_COMMIT_FOLLOW_UP_UNSPECIFIED = 0;
+  // commit だけを行う。
+  GIT_COMMIT_FOLLOW_UP_NONE = 1 [(json_enum_name) = "none"];
+  // commit の後に `GitPush` と同じ Push を行う。
+  GIT_COMMIT_FOLLOW_UP_PUSH = 2 [(json_enum_name) = "push"];
+  // commit の後に `GitSync` と同じ Sync を行う。
+  GIT_COMMIT_FOLLOW_UP_SYNC = 3 [(json_enum_name) = "sync"];
+}
+
+// ブランチの commit を upstream に送る。
+// upstream が無いブランチでは、origin に同じ名前のブランチを作って送り、それを upstream にする。
+// merge か rebase の途中のときは受け付けない。
+message GitPushRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+  // true のとき、upstream を `--force-with-lease` で上書きして送る。
+  bool force_with_lease = 2;
+}
+
+// upstream の commit をブランチに取り込む。取り込み方は git の設定に従う。
+// conflict で止まったときは失敗を返し、worktree は merge か rebase の途中になる。
+message GitPullRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+}
+
+// `GitPull` と同じ Pull の後に、`GitPush` と同じ Push を行う。Pull が失敗したら Push しない。
+message GitSyncRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+}
+
+// upstream がある remote の状態を取得する。upstream が無いブランチでは origin の状態を取得する。
+// worktree のファイルとブランチの commit は変えない。
+message GitFetchRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+}
+
+// ファイルの、まだ stage していない変更を破棄する。stage 済みの変更は残す。
+// git が追跡しているファイルは index の内容に戻し、git が追跡していないファイルは OS のゴミ箱に移す。
+message GitDiscardRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+  // 破棄するファイル。worktree からの相対 path。1 件以上で、どれも、まだ stage していない変更があるファイルである。
+  repeated string paths = 2;
+}
+
+// 進行中の merge か rebase を先へ進める。続行が commit を作るときは、メッセージの commit を作る。
+// conflict が残っているとき、merge か rebase の途中でないときは受け付けない。
+// 続行が commit を作るのにメッセージが空のときも受け付けない。
+// rebase が次の commit の conflict で止まったときは失敗を返し、worktree は rebase の途中のままになる。
+message GitContinueOperationRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+  // 続行で作る commit のメッセージ。続行が commit を作らないときは見ない。
+  string message = 2;
+}
+
+// 進行中の merge か rebase を中止し、ブランチと worktree のファイルを、始める前の状態に戻す。
+// merge か rebase の途中でないときは受け付けない。
+message GitAbortOperationRequest {
+  // worktree のディレクトリの絶対 path。
+  string worktree_path = 1;
+}
+
 message KillTerminalSurfaceRequest {
   optional TerminalSurfaceOwnerV1 owner = 1 [json_name = "owner", (json_required) = true];
 }
@@ -1770,9 +1866,6 @@ service ClientService {
   rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc DeleteNotionConfig(DeleteNotionConfigRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc GetOrSpawnTerminalSurface(GetOrSpawnTerminalSurfaceRequest) returns (GetOrSpawnTerminalV1) { option (scope) = SCOPE_OPERATOR; }
-  rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc GitStage(GitStageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
-  rpc GitUnstage(GitUnstageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc KillTerminalSurface(KillTerminalSurfaceRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenAgentSession(OpenAgentSessionRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
   rpc OpenFacetInEditor(OpenFacetInEditorRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
@@ -1817,6 +1910,22 @@ service ClientService {
   rpc InstallCli(InstallCliRequest) returns (InstallCliResponse) { option (scope) = SCOPE_OPERATOR; }
   rpc CheckLoginRegistration(CheckLoginRegistrationRequest) returns (LoginRegistrationResult) { option (scope) = SCOPE_OPERATOR; }
   rpc GetServerInfo(Unit) returns (ServerInfo) { option (scope) = SCOPE_OPERATOR; option (scope) = SCOPE_HOOK; }
+}
+
+// Git の操作。期限と再試行の値は `ClientService` の service option に従う。
+// 操作の結果の状態は、`ClientService` の購読で届く。
+service GitService {
+  rpc GitCreateBranch(GitCreateBranchRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitStage(GitStageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitUnstage(GitUnstageRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitCommit(GitCommitRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitPush(GitPushRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitPull(GitPullRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitSync(GitSyncRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitFetch(GitFetchRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitDiscard(GitDiscardRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitContinueOperation(GitContinueOperationRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
+  rpc GitAbortOperation(GitAbortOperationRequest) returns (Unit) { option (scope) = SCOPE_OPERATOR; }
 }
 
 message ServerInfo {
@@ -2002,7 +2111,129 @@ message StatePayload {
     ExecutionOverviewDto execution_overview = 76;
     FilteredFilesSnapshot filtered_files = 77;
     ThreadExcerptsSnapshot thread_excerpts = 78;
+    SourceControlSnapshot source_control = 81;
   }
+}
+// worktree の Source Control の状態。購読の対象 `source-control` で届く。
+// 購読の引数は、worktree の path。続けて `search=<検索語>` を渡すと、`conflicts`、`staged`、`unstaged` を、
+// ファイル名に検索語を含む行に絞る。数と、操作を受け付けるかは、絞り込む前の全部から決まる。
+message SourceControlSnapshot {
+  // 変更したファイルの数。`workspaces` の `dirty_count` と同じ走査結果から出る。
+  uint32 changed_file_count = 1;
+  // ブランチ名。rebase の途中は、rebase しているブランチの名前。
+  string branch = 2;
+  // ブランチの状態。
+  oneof branch_state {
+    // upstream がある。
+    SourceControlTracking tracking = 3;
+    // upstream が無い。
+    SourceControlUnpublished unpublished = 4;
+    // merge か rebase の途中である。
+    SourceControlOperation operation = 5;
+  }
+  // conflict しているファイル。path の順に並ぶ。
+  repeated SourceControlConflict conflicts = 6;
+  // stage 済みの変更。path の順に並ぶ。
+  repeated SourceControlChange staged = 7;
+  // まだ stage していない変更。path の順に並ぶ。同じファイルが `staged` にもあることがある。
+  repeated SourceControlChange unstaged = 8;
+  // `GitCommit` を受け付けるか。stage 済みの変更があり、merge か rebase の途中でないとき true。
+  bool can_commit = 9;
+  // `unstaged` の全部を `GitDiscard` に渡したときに起きること。
+  SourceControlDiscardSummary discard_all = 10;
+}
+// upstream との差。
+message SourceControlTracking {
+  // upstream の名前。remote の名前を先頭に付けた、`origin/feature/thread-ui` の形。
+  string upstream = 1;
+  // 先行の commit 数。ブランチにあり、upstream に無い commit の数。
+  uint32 ahead = 2;
+  // 遅れの commit 数。upstream にあり、ブランチに無い commit の数。
+  uint32 behind = 3;
+  // commit を 1 つ作った後の、先行の commit 数。
+  uint32 ahead_after_commit = 4;
+}
+message SourceControlUnpublished {
+  // origin のどのブランチにも無い commit の数。
+  uint32 unpushed_commits = 1;
+}
+// 進行中の merge か rebase。
+message SourceControlOperation {
+  oneof kind {
+    SourceControlMerge merge = 1;
+    SourceControlRebase rebase = 2;
+  }
+  // 続行で作る commit のメッセージ。続行が commit を作らないとき
+  // （rebase が `break` か、`exec` の失敗で止まっているとき）は無い。
+  optional string message = 3;
+  // conflict しているファイルの数。絞り込む前の数。
+  uint32 conflict_count = 4;
+  // `GitContinueOperation` を受け付けるか。conflict が残っていないとき true。
+  bool can_continue = 5;
+}
+message SourceControlMerge {}
+message SourceControlRebase {
+  // rebase の先。ブランチ名。ブランチ名を求められないときは commit の短い ID。
+  string onto = 1;
+  // 適用している commit が、何番目か。1 から数える。
+  uint32 step = 2;
+  // rebase で適用する commit の数。
+  uint32 total = 3;
+}
+// 変更の一覧の 1 行。ある区画での、1 ファイルの変更。
+message SourceControlChange {
+  // worktree からの相対 path。
+  string path = 1;
+  // ファイル名。
+  string name = 2;
+  // ファイルがあるディレクトリ。worktree からの相対 path。worktree の直下は空。
+  string directory = 3;
+  SourceControlChangeKind kind = 4;
+  // この区画の変更で追加した行数。git が追跡していないファイルは、全部の行を数える。
+  uint32 additions = 5;
+  // この区画の変更で削除した行数。
+  uint32 deletions = 6;
+}
+enum SourceControlChangeKind {
+  SOURCE_CONTROL_CHANGE_KIND_UNSPECIFIED = 0;
+  // 中身を変えた。
+  SOURCE_CONTROL_CHANGE_KIND_MODIFIED = 1 [(json_enum_name) = "modified"];
+  // 新しく足して stage した。
+  SOURCE_CONTROL_CHANGE_KIND_ADDED = 2 [(json_enum_name) = "added"];
+  // 消した。
+  SOURCE_CONTROL_CHANGE_KIND_DELETED = 3 [(json_enum_name) = "deleted"];
+  // git が追跡していない。
+  SOURCE_CONTROL_CHANGE_KIND_UNTRACKED = 4 [(json_enum_name) = "untracked"];
+}
+// conflict しているファイル。
+message SourceControlConflict {
+  // worktree からの相対 path。
+  string path = 1;
+  // ファイル名。
+  string name = 2;
+  // ファイルがあるディレクトリ。worktree からの相対 path。worktree の直下は空。
+  string directory = 3;
+  SourceControlConflictKind kind = 4;
+}
+// conflict の種類。git の status が出す区別と同じ。
+enum SourceControlConflictKind {
+  SOURCE_CONTROL_CONFLICT_KIND_UNSPECIFIED = 0;
+  SOURCE_CONTROL_CONFLICT_KIND_BOTH_MODIFIED = 1 [(json_enum_name) = "both_modified"];
+  SOURCE_CONTROL_CONFLICT_KIND_BOTH_ADDED = 2 [(json_enum_name) = "both_added"];
+  SOURCE_CONTROL_CONFLICT_KIND_BOTH_DELETED = 3 [(json_enum_name) = "both_deleted"];
+  SOURCE_CONTROL_CONFLICT_KIND_ADDED_BY_US = 4 [(json_enum_name) = "added_by_us"];
+  SOURCE_CONTROL_CONFLICT_KIND_ADDED_BY_THEM = 5 [(json_enum_name) = "added_by_them"];
+  SOURCE_CONTROL_CONFLICT_KIND_DELETED_BY_US = 6 [(json_enum_name) = "deleted_by_us"];
+  SOURCE_CONTROL_CONFLICT_KIND_DELETED_BY_THEM = 7 [(json_enum_name) = "deleted_by_them"];
+}
+// `unstaged` の全部を破棄したときに起きること。
+message SourceControlDiscardSummary {
+  // 消える追加の行数の合計。index の内容に戻すファイルの分だけを数える。
+  uint32 additions = 1;
+  // 消える削除の行数の合計。index の内容に戻すファイルの分だけを数える。
+  uint32 deletions = 2;
+  // OS のゴミ箱に移すファイルの数。
+  uint32 trashed_files = 3;
 }
 message FileThreadsSnapshot {
   ListReviewThreadDto threads = 1;

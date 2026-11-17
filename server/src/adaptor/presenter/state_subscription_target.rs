@@ -95,6 +95,11 @@ impl SubscriptionTarget {
                 Some(parse_search(search)?),
             )),
             ("worktree-bases", [path]) => Ok(Self::WorktreeBases((*path).into())),
+            ("source-control", [path]) => Ok(Self::SourceControl((*path).into(), None)),
+            ("source-control", [path, search]) => Ok(Self::SourceControl(
+                (*path).into(),
+                Some(parse_search(search)?),
+            )),
             ("issues", [path]) => Ok(Self::Issues((*path).into())),
             ("issues", [path, filters @ ..]) => {
                 let mut filter = crate::domain::git_host::IssueFilter::default();
@@ -247,6 +252,12 @@ impl SubscriptionTarget {
                     .collect(),
             ),
             Self::WorktreeBases(p) => ("worktree-bases", vec![p.clone()]),
+            Self::SourceControl(p, search) => (
+                "source-control",
+                std::iter::once(p.clone())
+                    .chain(search.iter().map(format_search))
+                    .collect(),
+            ),
             Self::Issues(p) => ("issues", vec![p.clone()]),
             Self::FilteredIssues(p, filter) => {
                 let mut args = vec![p.clone()];

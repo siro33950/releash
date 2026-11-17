@@ -30,6 +30,7 @@ impl From<&crate::usecase::repository_error::UsecaseError> for Failure {
             E::Session(error) => Failure::from(error),
             E::Repository(error) => Failure::from(error),
             E::Rule(_) => Failure::Business(BusinessFailure::Other),
+            E::AfterCommit(error) => Failure::from(error.as_ref()),
         }
     }
 }

@@ -594,3 +594,83 @@ extension WorkbenchTests {
     XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 10), .completed, app.debugDescription)
   }
 }
+
+extension WorkbenchTests {
+  // B-006: Source Control の主要経路を実サーバと実 Git で確認する。
+  @MainActor func testSourceControlStagesAndCommitsFile() async throws {
+    // Given
+    try await fixture.startServer()
+    let repository = try await fixture.repository("source-control-repository")
+    let git = URL(fileURLWithPath: "/usr/bin/git")
+    for setting in [
+      ["config", "user.name", "Acceptance"],
+      ["config", "user.email", "acceptance@example.invalid"],
+      ["config", "commit.gpgsign", "false"],
+    ] {
+      try fixture.process(git, setting, at: repository)
+    }
+    let origin = fixture.directory.appendingPathComponent("origin.git")
+    try fixture.process(git, ["init", "--bare", origin.path])
+    try fixture.process(git, ["remote", "add", "origin", origin.path], at: repository)
+    try fixture.process(git, ["push", "-u", "origin", "main"], at: repository)
+    try "source control acceptance\n".write(
+      to: repository.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+    launch()
+    app.buttons["worktree:main"].firstMatch.click()
+    let sourceControl = app.checkBoxes["Source Control"]
+    XCTAssertTrue(sourceControl.waitForExistence(timeout: 10), app.debugDescription)
+    sourceControl.click()
+    let file = app.buttons["file.txt"].firstMatch
+    XCTAssertTrue(file.waitForExistence(timeout: 30), app.debugDescription)
+
+    // When
+    app.staticTexts["U"].firstMatch.click()
+    // Then
+    XCTAssertTrue(app.staticTexts["file-path"].waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertEqual(app.staticTexts["file-path"].value as? String, "file.txt")
+    app.checkBoxes["Source Control"].click()
+    XCTAssertTrue(file.waitForExistence(timeout: 10), app.debugDescription)
+
+    // When
+    file.hover()
+    app.buttons["stage"].click()
+
+    // Then
+    let staged = app.staticTexts["STAGED CHANGES"].firstMatch
+    XCTAssertTrue(staged.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertEqual(
+      String(
+        decoding: try fixture.process(git, ["diff", "--cached", "--name-only"], at: repository),
+        as: UTF8.self
+      ).trimmingCharacters(in: .whitespacesAndNewlines), "file.txt")
+    XCTAssertEqual(
+      String(
+        decoding: try fixture.process(git, ["diff", "--name-only"], at: repository), as: UTF8.self),
+      "")
+
+    // When
+    let message = app.textViews.firstMatch
+    XCTAssertTrue(message.waitForExistence(timeout: 10), app.debugDescription)
+    message.click()
+    message.typeText("Source Control acceptance")
+    app.buttons["Commit"].click()
+
+    // Then
+    let clean = app.staticTexts["Worktree に変更はありません"]
+    XCTAssertTrue(clean.waitForExistence(timeout: 10), app.debugDescription)
+    XCTAssertFalse(file.exists, app.debugDescription)
+    XCTAssertEqual(message.value as? String, "")
+    XCTAssertTrue(app.staticTexts["↑ 1"].exists, app.debugDescription)
+    XCTAssertEqual(
+      String(
+        decoding: try fixture.process(git, ["log", "-1", "--format=%B"], at: repository),
+        as: UTF8.self
+      )
+      .trimmingCharacters(in: .whitespacesAndNewlines), "Source Control acceptance")
+    XCTAssertEqual(
+      String(
+        decoding: try fixture.process(git, ["show", "HEAD:file.txt"], at: repository), as: UTF8.self
+      ),
+      "source control acceptance\n")
+  }
+}

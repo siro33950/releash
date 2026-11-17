@@ -105,12 +105,12 @@ fn generate_client_protocol() {
             code.push_str(&names);
         }
     }
-    let service = descriptors
+    let services: Vec<_> = descriptors
         .file
         .iter()
+        .filter(|file| file.package() == "releash.client.v1")
         .flat_map(|file| &file.service)
-        .find(|service| service.name() == "ClientService")
-        .expect("ClientService");
+        .collect();
     let pool = prost_reflect::DescriptorPool::decode(
         std::fs::read(directory.join("client_descriptor.bin"))
             .unwrap()
@@ -120,9 +120,6 @@ fn generate_client_protocol() {
     let scope_extension = pool
         .get_extension_by_name("releash.client.v1.scope")
         .expect("scope option");
-    let reflected_service = pool
-        .get_service_by_name("releash.client.v1.ClientService")
-        .unwrap();
     let scope_enum = pool
         .get_enum_by_name("releash.client.v1.Scope")
         .expect("Scope enum");
@@ -133,7 +130,18 @@ fn generate_client_protocol() {
     let mut scopes = String::from(
         "pub(crate) fn method_scopes(method: &str) -> Option<&'static [crate::adaptor::presenter::client::Scope]> { match method {\n",
     );
-    for method in reflected_service.methods() {
+    // 認証は URL の末尾のメソッド名で scope を引く。メソッド名は service をまたいで重複させない。
+    let mut scoped_methods = std::collections::HashSet::new();
+    for method in pool
+        .services()
+        .filter(|service| service.package_name() == "releash.client.v1")
+        .flat_map(|service| service.methods().collect::<Vec<_>>())
+    {
+        assert!(
+            scoped_methods.insert(method.name().to_owned()),
+            "{} is defined by more than one service",
+            method.name()
+        );
         let value = method
             .options()
             .get_extension(&scope_extension)
@@ -180,32 +188,40 @@ fn generate_client_protocol() {
     }
     scopes.push_str("_ => None, } }\n");
     std::fs::write(directory.join("client_scopes.rs"), scopes).expect("write method scopes");
-    let mut handlers = String::from("impl rpc::ClientService for ClientApiDeps {\n");
+    let mut handlers = String::new();
     let mut calls = String::from("pub fn call(client: &rpc::ClientServiceClient<connectrpc::client::HttpClient>, command: wire::command_request::Command) -> futures_util::future::BoxFuture<'_ , Result<wire::command_result::Command, connectrpc::ConnectError>> { match command {\n");
     let commands = messages
         .iter()
         .find(|message| message.name() == "CommandRequest")
         .unwrap();
-    for method in &service.method {
-        let Some(field) = commands
-            .field
-            .iter()
-            .find(|field| field.type_name() == method.input_type() && field.oneof_index.is_some())
-        else {
-            continue;
-        };
-        if method.server_streaming() {
-            continue;
+    for service in &services {
+        let service_name = service.name();
+        handlers.push_str(&format!("impl rpc::{service_name} for ClientApiDeps {{\n"));
+        for method in &service.method {
+            let Some(field) = commands.field.iter().find(|field| {
+                field.type_name() == method.input_type() && field.oneof_index.is_some()
+            }) else {
+                continue;
+            };
+            if method.server_streaming() {
+                continue;
+            }
+            let name = field.name();
+            let variant = method.name();
+            let input = method.input_type().rsplit('.').next().unwrap();
+            let output = method.output_type().rsplit('.').next().unwrap();
+            handlers.push_str(&format!("async fn {name}<'a>(&'a self, _ctx: connectrpc::RequestContext, request: connectrpc::ServiceRequest<'_, rpc::{input}>) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::{output}> + Send + use<'a>> {{ let args = to_wire(&request.to_owned_message())?; let result = self.execute(_ctx.deadline(), wire::command_request::Command::{variant}(args)).await?; match result {{ wire::command_result::Command::{variant}(result) => Ok(connectrpc::Response::new(to_rpc::<rpc::{output}>(&result)?)), _ => Err(crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::new(\"Mismatched command result\"))) }} }}\n"));
+            if service_name == "ClientService" {
+                calls.push_str(&format!("wire::command_request::Command::{variant}(args) => Box::pin(async move {{ let result = client.{name}(to_rpc(&args)?).await?; Ok(wire::command_result::Command::{variant}(to_wire(&result.into_owned())?)) }}),\n"));
+            } else {
+                calls.push_str(&format!("wire::command_request::Command::{variant}(args) => Box::pin(async move {{ let service = rpc::{service_name}Client::new(connectrpc::client::HttpClient::plaintext_http2_only(), client.config().clone()); let result = service.{name}(to_rpc(&args)?).await?; Ok(wire::command_result::Command::{variant}(to_wire(&result.into_owned())?)) }}),\n"));
+            }
         }
-        let name = field.name();
-        let variant = method.name();
-        let input = method.input_type().rsplit('.').next().unwrap();
-        let output = method.output_type().rsplit('.').next().unwrap();
-        handlers.push_str(&format!("async fn {name}<'a>(&'a self, _ctx: connectrpc::RequestContext, request: connectrpc::ServiceRequest<'_, rpc::{input}>) -> connectrpc::ServiceResult<impl connectrpc::Encodable<rpc::{output}> + Send + use<'a>> {{ let args = to_wire(&request.to_owned_message())?; let result = self.execute(_ctx.deadline(), wire::command_request::Command::{variant}(args)).await?; match result {{ wire::command_result::Command::{variant}(result) => Ok(connectrpc::Response::new(to_rpc::<rpc::{output}>(&result)?)), _ => Err(crate::adaptor::presenter::connect::classified_error(crate::adaptor::presenter::error::AppError::new(\"Mismatched command result\"))) }} }}\n"));
-        calls.push_str(&format!("wire::command_request::Command::{variant}(args) => Box::pin(async move {{ let result = client.{name}(to_rpc(&args)?).await?; Ok(wire::command_result::Command::{variant}(to_wire(&result.into_owned())?)) }}),\n"));
+        if service_name == "ClientService" {
+            handlers.push_str(include_str!("src/adaptor/controller/api/client_service.rs"));
+        }
+        handlers.push_str("}\n");
     }
-    handlers.push_str(include_str!("src/adaptor/controller/api/client_service.rs"));
-    handlers.push_str("}\n");
     calls.push_str("} }\n");
     std::fs::write(directory.join("client_service.rs"), handlers).expect("write service handlers");
     std::fs::write(directory.join("client_calls.rs"), calls).expect("write native calls");

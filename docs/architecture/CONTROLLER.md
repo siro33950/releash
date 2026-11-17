@@ -6,7 +6,7 @@
 - 外からのきっかけ（転送の要求、時刻・起動、OS の通知）を Usecase の引数に変えて Usecase を呼ぶことのみ。きっかけの種類で入口の部品を分けない。きっかけを生む駆動部（Web サーバ、タイマー、OS の通知）は infrastructure に置く
 - 業務ロジックを書かない（Usecase を呼ぶだけ。QueryService や Repository を controller から直接呼ばない）
 - **受理判定を controller で書かない**: 「この状態でこの操作を受理してよいか」の判断は domain の集約が答える（[DOMAIN.md](./DOMAIN.md) モデルが実行を担う）。controller が状態型を独自解釈してゲートを設けると、同じ判断が層をまたいで二重化し、domain 側の不変条件が効かなくなる
-- クライアントからの呼び出しと購読の入口は、Connect の ClientService（`controller/api/client*.rs` と `controller/client/`）である。契約は `proto/client.proto`
+- クライアントからの呼び出しと購読の入口は、Connect の service（`controller/api/client*.rs` と `controller/client/`）である。Git の操作は GitService、それ以外の呼び出しと購読は ClientService が受ける。契約は `proto/client.proto`
 
 入口が増えても業務手順は複製しない。
 
@@ -20,7 +20,7 @@
 
 期限・取り消し・同時実行の制限・優先度・ログと計測は、common の包みを入口の手前に掛けて足す。handler の中に書かない。
 
-## Connect（ClientService）
+## Connect（ClientService と GitService）
 
 ドメインごとに `controller/client/<domain>/` に登録関数を用意し、`client/dispatch.rs` がそれらをまとめる。Main にコマンド名を列挙しない。
 

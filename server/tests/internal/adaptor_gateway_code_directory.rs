@@ -20,6 +20,7 @@ fn test_直下一覧_git状態と除外を含みgitを隠す() {
             path: "src/file.rs".into(),
             index_status: "none".into(),
             worktree_status: "modified".into(),
+            conflict: None,
         },
     ];
     let (app, _, _) = crate::adaptor_controller_client_workflow_mod::tests::make_read_only_app();

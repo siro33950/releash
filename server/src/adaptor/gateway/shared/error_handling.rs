@@ -29,3 +29,17 @@ impl From<std::path::StripPrefixError> for GitError {
         GitError::External(e.to_string())
     }
 }
+
+impl From<crate::infrastructure::process::output::ProcessError> for GitError {
+    fn from(error: crate::infrastructure::process::output::ProcessError) -> Self {
+        use crate::infrastructure::process::output::ProcessError;
+        match error {
+            ProcessError::Io(error) => error.into(),
+            ProcessError::Stopped(error) => error.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "error_handling_test.rs"]
+mod error_handling_tests;

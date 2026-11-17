@@ -1,4 +1,5 @@
 use crate::adaptor::presenter::connect::ConnectFailure;
+use crate::usecase::repository_error::UsecaseError;
 use serde::ser::SerializeStruct;
 use serde::Serialize;
 
@@ -156,6 +157,18 @@ impl From<CodeUsecaseError> for AppError {
             _ => AppError::Internal(message),
         };
         result.with_status(kind)
+    }
+}
+
+/// AfterCommit は中身の失敗の分類と文を保ち、GIT_COMMIT_FOLLOW_UP_FAILED の code を付ける。
+impl From<UsecaseError> for AppError {
+    fn from(e: UsecaseError) -> Self {
+        match e {
+            UsecaseError::AfterCommit(error) => {
+                AppError::from(*error).with_code("GIT_COMMIT_FOLLOW_UP_FAILED")
+            }
+            e => AppError::from_failure(e),
+        }
     }
 }
 

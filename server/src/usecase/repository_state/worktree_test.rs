@@ -83,6 +83,7 @@ impl RepositoryScanner for FakeScanner {
                 path: value,
                 index_status: "none".to_string(),
                 worktree_status: "modified".to_string(),
+                conflict: None,
             }],
             dirty_count: 1,
         })

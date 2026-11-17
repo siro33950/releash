@@ -94,6 +94,7 @@ pub fn payload(value: &StateValue) -> Result<wire::StatePayload, connectrpc::Con
                 removed: Vec::new(), delta: false, order: entries.iter().map(|entry| entry.path.clone()).collect(),
             }),
             StateValue::FilteredFiles(files) => wire::state_payload::Value::FilteredFiles(filtered_files(files)),
+            StateValue::SourceControl(status, lines) => wire::state_payload::Value::SourceControl(source_control(status, lines)),
             StateValue::FileTab(value) => wire::state_payload::Value::FileTab(wire::FileTabView {
                 view: Some(crate::adaptor::presenter::client::value(value.view.clone()).map_err(crate::adaptor::presenter::connect::command_error)?),
                 patch: value.patch.clone(),
@@ -403,3 +404,111 @@ fn archived_history_item(
 #[cfg(test)]
 #[path = "state_subscription_wire_test.rs"]
 pub(crate) mod state_subscription_wire_tests;
+
+fn source_control(
+    status: &crate::domain::git::WorktreeStatus,
+    lines: &crate::domain::git::LineChanges,
+) -> wire::SourceControlSnapshot {
+    use crate::domain::git::{BranchState, OperationKind};
+    use wire::source_control_snapshot::BranchState as State;
+    let branch_state = match &status.branch().state {
+        BranchState::Tracking(value) => State::Tracking(wire::SourceControlTracking {
+            upstream: value.upstream.clone(),
+            ahead: value.ahead,
+            behind: value.behind,
+            ahead_after_commit: value.ahead_after_commit(),
+        }),
+        BranchState::Unpublished { unpushed } => {
+            State::Unpublished(wire::SourceControlUnpublished {
+                unpushed_commits: *unpushed,
+            })
+        }
+        BranchState::Operating(value) => State::Operation(wire::SourceControlOperation {
+            kind: Some(match &value.kind {
+                OperationKind::Merge => {
+                    wire::source_control_operation::Kind::Merge(wire::SourceControlMerge {})
+                }
+                OperationKind::Rebase(value) => {
+                    wire::source_control_operation::Kind::Rebase(wire::SourceControlRebase {
+                        onto: value.onto.clone(),
+                        step: value.step,
+                        total: value.total,
+                    })
+                }
+            }),
+            message: value.message.clone(),
+            conflict_count: status.conflict_count() as u32,
+            can_continue: status.ensure_can_continue().is_ok(),
+        }),
+    };
+    let discard: crate::domain::git::DiscardSummary = status.discard_summary(lines);
+    wire::SourceControlSnapshot {
+        branch: status.branch().name.clone(),
+        branch_state: Some(branch_state),
+        changed_file_count: status.changed_file_count() as u32,
+        conflicts: status
+            .conflicts()
+            .into_iter()
+            .map(|file: &crate::domain::git::ConflictedFile| {
+                use crate::domain::git::ConflictKind as C;
+                use wire::SourceControlConflictKind as W;
+                let (name, directory) = source_control_path(&file.path);
+                wire::SourceControlConflict {
+                    path: file.path.clone(),
+                    name,
+                    directory,
+                    kind: match file.kind {
+                        C::BothModified => W::BothModified,
+                        C::BothAdded => W::BothAdded,
+                        C::BothDeleted => W::BothDeleted,
+                        C::AddedByUs => W::AddedByUs,
+                        C::AddedByThem => W::AddedByThem,
+                        C::DeletedByUs => W::DeletedByUs,
+                        C::DeletedByThem => W::DeletedByThem,
+                    } as i32,
+                }
+            })
+            .collect(),
+        staged: status
+            .staged()
+            .into_iter()
+            .map(|file| source_control_change(file, lines.staged_lines(&file.path)))
+            .collect(),
+        unstaged: status
+            .unstaged()
+            .into_iter()
+            .map(|file| source_control_change(file, lines.unstaged_lines(&file.path)))
+            .collect(),
+        can_commit: status.ensure_can_commit().is_ok(),
+        discard_all: Some(wire::SourceControlDiscardSummary {
+            additions: discard.lines.additions,
+            deletions: discard.lines.deletions,
+            trashed_files: discard.trashed_files as u32,
+        }),
+    }
+}
+fn source_control_path(path: &str) -> (String, String) {
+    let (directory, name) = path.rsplit_once('/').unwrap_or(("", path));
+    (name.into(), directory.into())
+}
+fn source_control_change(
+    file: &crate::domain::git::FileChange,
+    lines: crate::domain::git::LineCount,
+) -> wire::SourceControlChange {
+    use crate::domain::git::ChangeKind as C;
+    use wire::SourceControlChangeKind as W;
+    let (name, directory) = source_control_path(&file.path);
+    wire::SourceControlChange {
+        path: file.path.clone(),
+        name,
+        directory,
+        kind: match file.kind {
+            C::Modified => W::Modified,
+            C::Added => W::Added,
+            C::Deleted => W::Deleted,
+            C::Untracked => W::Untracked,
+        } as i32,
+        additions: lines.additions,
+        deletions: lines.deletions,
+    }
+}

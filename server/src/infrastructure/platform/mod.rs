@@ -6,3 +6,6 @@ pub(crate) mod installation;
 pub(crate) mod data_dir;
 
 pub(crate) mod data_home_lock;
+
+#[cfg(target_os = "macos")]
+pub(crate) mod trash;

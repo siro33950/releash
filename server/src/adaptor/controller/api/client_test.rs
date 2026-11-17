@@ -211,7 +211,7 @@ mod restored_memory_tests {
             }),
         );
         let deps = crate::test_support::client_api_deps(Arc::new(dispatch));
-        let request = Request::post("/releash.client.v1.ClientService/GitStage")
+        let request = Request::post("/releash.client.v1.GitService/GitStage")
             .header("content-type", "application/json")
             .header("connect-protocol-version", "1")
             .header("connect-timeout-ms", "1000")

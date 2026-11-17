@@ -270,6 +270,7 @@ mod tests {
             path: path.to_string(),
             index_status: index_status.to_string(),
             worktree_status: worktree_status.to_string(),
+            conflict: None,
         }
     }
 
@@ -322,6 +323,24 @@ mod tests {
             Arc::new(FakeSnapshotProvider::new(snapshots)),
             Arc::new(code),
         )
+    }
+
+    #[test]
+    fn test_走査結果_同じsnapshotの変更数と競合を返す() {
+        // Given
+        let mut snapshot = snapshot_with_single_status(7, "a", "modified", "modified");
+        snapshot.dirty_count = 4;
+        snapshot.status[0].conflict =
+            Some(crate::usecase::repository_dto::ConflictKindDto::BothModified);
+        let usecase = usecase_with_code(vec![snapshot], FakeReviewCode::new());
+        // When
+        let scan = usecase.status_scan("/repo").unwrap();
+        // Then
+        assert_eq!(scan.dirty_count, 4);
+        assert_eq!(
+            scan.status[0].conflict,
+            Some(crate::domain::git::ConflictKind::BothModified)
+        );
     }
 
     #[test]

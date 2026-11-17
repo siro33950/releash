@@ -41,6 +41,8 @@ pub enum SubscriptionTarget {
         crate::domain::code::value_objects::file_list::FileFilter,
     ),
     FileTab(String, String, ReviewBase),
+    /// worktree の Git の状態。検索語があれば、変更の一覧を、ファイル名が検索語を含む行に絞る。
+    SourceControl(String, Option<crate::domain::search_term::SearchTerm>),
     FileThreads(String, String),
     /// worktree の Thread の一覧。差分の比較の基準と、解決済みでも対象の行の差分を添える Thread の ID を持つ。
     ReviewThreads(String, ReviewBase, Vec<String>),
@@ -93,7 +95,7 @@ impl SubscriptionTarget {
                     StateChangeSource::Worktree(path.clone()),
                 ),
             ],
-            Self::FilteredFiles(path, _) => vec![
+            Self::FilteredFiles(path, _) | Self::SourceControl(path, _) => vec![
                 WatchRequirement::Git(path.clone()),
                 WatchRequirement::Files(path.clone(), StateChangeSource::Worktree(path.clone())),
             ],
@@ -212,6 +214,7 @@ impl SubscriptionTarget {
                 | Self::WorktreeBases(p)
                 | Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
+                | Self::SourceControl(p, _)
                 | Self::FileTab(p, _, _)
                 | Self::ReviewThreads(p, ..)
                 | Self::ReleashBase(p) => paths.contains(p),
@@ -226,6 +229,7 @@ impl SubscriptionTarget {
                 | Self::NodeArtifact(_) => true,
                 Self::Directory(p, _)
                 | Self::FilteredFiles(p, _)
+                | Self::SourceControl(p, _)
                 | Self::FileTab(p, _, _)
                 | Self::ReviewThreads(p, ..)
                 | Self::NodeDetail(p, _)

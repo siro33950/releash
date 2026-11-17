@@ -155,6 +155,7 @@ final class PaneOpenAcceptanceTests: XCTestCase {
     _ = try await client.saveWorkspaceState(request: save, headers: model.headers).result.get()
     model.selectWorktree(repo.path)
     try await eventually { model.layoutLoaded && model.panes.controller.allPaneIds.count == 2 }
+    try await eventually { model.providers.contains { $0.displayName == "Claude" } }
     model.panes.controller.focusPane(try XCTUnwrap(model.panes.controller.allPaneIds.first))
     let host = await ViewHarness(WorkspacePaneView(model: model))
     defer { host.close() }

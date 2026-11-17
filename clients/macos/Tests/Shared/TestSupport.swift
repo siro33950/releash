@@ -68,6 +68,10 @@ final class TestHTTPClient: HTTPClientInterface {
     var deferCreation = false
     var deferSave = false
     var pendingSave: (@Sendable (HTTPResponse) -> Void)?
+    var deferGitCommit = false
+    var pendingGitCommit: (@Sendable (HTTPResponse) -> Void)?
+    var deferGitPush = false
+    var pendingGitPush: (@Sendable (HTTPResponse) -> Void)?
     var deferredTerminalMethod: String?
     var pendingTerminal: (@Sendable (HTTPResponse) -> Void)?
   }
@@ -108,6 +112,14 @@ final class TestHTTPClient: HTTPClientInterface {
             error: ConnectError(
               code: failureCode, message: "\(method) failed", details: detail.map { [$0] } ?? []),
             tracingInfo: nil))
+        return Cancelable(cancel: {})
+      }
+      if method == "GitCommit", state.withLock({ $0.deferGitCommit }) {
+        state.withLock { $0.pendingGitCommit = onResponse }
+        return Cancelable(cancel: {})
+      }
+      if method == "GitPush", state.withLock({ $0.deferGitPush }) {
+        state.withLock { $0.pendingGitPush = onResponse }
         return Cancelable(cancel: {})
       }
       if state.withLock({ $0.deferredTerminalMethod == method }) {

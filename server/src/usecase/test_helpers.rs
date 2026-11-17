@@ -35,10 +35,27 @@ use parking_lot::Mutex;
 
 pub type WorktreeCreation = (String, String, bool, Option<String>);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitCall {
+    Lines,
+    Commit(String),
+    Push(crate::domain::git::Push),
+    Pull,
+    Fetch,
+    Restore(Vec<String>),
+    Trash(Vec<String>),
+    Continue(crate::domain::git::Continuation),
+    Abort(crate::domain::git::OperationKind),
+}
+
 /// 委譲・順序・変換を検証するための記録付き手書き fake。
 /// 1 つの構造体で repository ドメインの全 trait を実装する。
 #[derive(Default)]
 pub struct FakeRepo {
+    pub source_branch: Option<crate::domain::git::WorktreeBranch>,
+    pub source_files: Vec<crate::domain::git::FileStatus>,
+    pub git_calls: Mutex<Vec<GitCall>>,
+    pub git_failure: Option<&'static str>,
     pub current_branch: String,
     pub default_branch: Option<String>,
     pub origin_url: Option<String>,
@@ -113,7 +130,70 @@ impl WorktreeExecutionArchiver for FakeRepo {
     }
 }
 
+impl FakeRepo {
+    fn record_git(&self, name: &str, call: GitCall) -> Result<(), GitError> {
+        self.git_calls.lock().push(call);
+        if self.git_failure == Some(name) {
+            Err(GitError::External(format!("{name} failed")))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl GitService for FakeRepo {
+    fn worktree_branch(
+        &self,
+        _worktree: &str,
+    ) -> Result<crate::domain::git::WorktreeBranch, GitError> {
+        if self.git_failure == Some("branch") {
+            return Err(GitError::External("branch failed".into()));
+        }
+        Ok(self
+            .source_branch
+            .clone()
+            .expect("Source Control branch fixture"))
+    }
+    fn line_changes(&self, _worktree: &str) -> Result<crate::domain::git::LineChanges, GitError> {
+        self.record_git("lines", GitCall::Lines)?;
+        Ok(Default::default())
+    }
+    fn commit(
+        &self,
+        _worktree: &str,
+        message: &crate::domain::git::CommitMessage,
+    ) -> Result<(), GitError> {
+        self.record_git("commit", GitCall::Commit(message.as_str().into()))
+    }
+    fn push(&self, _worktree: &str, push: crate::domain::git::Push) -> Result<(), GitError> {
+        self.record_git("push", GitCall::Push(push))
+    }
+    fn pull(&self, _worktree: &str) -> Result<(), GitError> {
+        self.record_git("pull", GitCall::Pull)
+    }
+    fn fetch(&self, _worktree: &str) -> Result<(), GitError> {
+        self.record_git("fetch", GitCall::Fetch)
+    }
+    fn restore_worktree_files(&self, _worktree: &str, paths: &[String]) -> Result<(), GitError> {
+        self.record_git("restore", GitCall::Restore(paths.to_vec()))
+    }
+    fn trash_files(&self, _worktree: &str, paths: &[String]) -> Result<(), GitError> {
+        self.record_git("trash", GitCall::Trash(paths.to_vec()))
+    }
+    fn continue_operation(
+        &self,
+        _worktree: &str,
+        continuation: &crate::domain::git::Continuation,
+    ) -> Result<(), GitError> {
+        self.record_git("continue", GitCall::Continue(continuation.clone()))
+    }
+    fn abort_operation(
+        &self,
+        _worktree: &str,
+        operation: &crate::domain::git::OperationKind,
+    ) -> Result<(), GitError> {
+        self.record_git("abort", GitCall::Abort(operation.clone()))
+    }
     fn list_branches(&self, _repo_path: &str) -> Result<Vec<Branch>, GitError> {
         Ok(self.branches.clone())
     }
@@ -136,8 +216,8 @@ impl GitService for FakeRepo {
 
     fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
         Ok(RepositoryStatusScan {
-            status: Vec::new(),
-            dirty_count: 0,
+            status: self.source_files.clone(),
+            dirty_count: self.source_files.len(),
         })
     }
 

@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use crate::domain::git::{
-    worktree_path as derive_worktree_path, Branch, GitError, GitService, RepoLocator,
-    RepositoryStatusScan, Worktree, WorktreeTerminalGateway,
+    worktree_path as derive_worktree_path, Branch, CommitMessage, GitError, GitService,
+    RepoLocator, RepositoryStatusScan, Worktree, WorktreeStatus, WorktreeTerminalGateway,
 };
 use crate::domain::path::to_canonical_forward_slash;
 
@@ -117,6 +117,123 @@ impl GitUsecase {
         repo_path: &str,
     ) -> Result<RepositoryStatusScan, UsecaseError> {
         Ok(self.git.status_scan(repo_path)?)
+    }
+
+    // ── worktree の Git の状態（読み取り） ──
+
+    /// 変更の走査結果に、ブランチの状態を合わせて、worktree の Git の状態を返す。
+    pub fn worktree_status(
+        &self,
+        worktree: &str,
+        scan: RepositoryStatusScan,
+    ) -> Result<WorktreeStatus, UsecaseError> {
+        let branch = self.git.worktree_branch(worktree)?;
+        Ok(WorktreeStatus::new(branch, scan))
+    }
+
+    /// 変更の行数を返す。面の表示にだけ使う。操作を受け付けるかを決めるときは読まない。
+    pub fn line_changes(
+        &self,
+        worktree: &str,
+    ) -> Result<crate::domain::git::LineChanges, UsecaseError> {
+        Ok(self.git.line_changes(worktree)?)
+    }
+
+    /// worktree を今走査して、Git の状態を返す。操作を受け付けるかは、この状態で決める。
+    fn current_worktree_status(&self, worktree: &str) -> Result<WorktreeStatus, UsecaseError> {
+        let scan = self.git.status_scan(worktree)?;
+        self.worktree_status(worktree, scan)
+    }
+
+    // ── commit・push・pull・fetch（書き込み） ──
+
+    /// stage 済みの変更を、メッセージを付けて commit にする。
+    pub fn commit(&self, worktree: &str, message: &str) -> Result<(), UsecaseError> {
+        let message = CommitMessage::new(message)?;
+        self.current_worktree_status(worktree)?
+            .ensure_can_commit()?;
+        self.git.commit(worktree, &message)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
+    }
+
+    /// commit の後に Push する。commit が失敗したら Push しない。
+    /// Push が失敗したときは、commit を作った後の失敗（`UsecaseError::AfterCommit`）を返す。
+    pub fn commit_and_push(&self, worktree: &str, message: &str) -> Result<(), UsecaseError> {
+        self.commit(worktree, message)?;
+        self.push(worktree, false)
+            .map_err(UsecaseError::after_commit)
+    }
+
+    /// commit の後に Sync する。commit が失敗したら Sync しない。
+    /// Sync が失敗したときは、commit を作った後の失敗（`UsecaseError::AfterCommit`）を返す。
+    pub fn commit_and_sync(&self, worktree: &str, message: &str) -> Result<(), UsecaseError> {
+        self.commit(worktree, message)?;
+        self.sync(worktree).map_err(UsecaseError::after_commit)
+    }
+
+    /// ブランチの commit を送る。送り先と送り方は worktree の Git の状態が決める。
+    pub fn push(&self, worktree: &str, force_with_lease: bool) -> Result<(), UsecaseError> {
+        let push = self
+            .current_worktree_status(worktree)?
+            .push_plan(force_with_lease)?;
+        self.git.push(worktree, push)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
+    }
+
+    /// upstream の commit をブランチに取り込む。
+    pub fn pull(&self, worktree: &str) -> Result<(), UsecaseError> {
+        self.git.pull(worktree)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
+    }
+
+    /// Pull の後に Push する。Pull が失敗したら Push しない。
+    pub fn sync(&self, worktree: &str) -> Result<(), UsecaseError> {
+        self.pull(worktree)?;
+        self.push(worktree, false)
+    }
+
+    /// remote の状態を取得する。
+    pub fn fetch(&self, worktree: &str) -> Result<(), UsecaseError> {
+        self.git.fetch(worktree)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
+    }
+
+    // ── 破棄（書き込み） ──
+
+    /// 指定したファイルの、まだ stage していない変更を破棄する。破棄のしかたは worktree の Git の状態が決める。
+    pub fn discard(&self, worktree: &str, paths: &[String]) -> Result<(), UsecaseError> {
+        let plan: crate::domain::git::DiscardPlan = self
+            .current_worktree_status(worktree)?
+            .discard_plan(paths)?;
+        self.git.restore_worktree_files(worktree, &plan.restore)?;
+        self.git.trash_files(worktree, &plan.trash)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
+    }
+
+    // ── merge・rebase の続行と中止（書き込み） ──
+
+    /// 進行中の merge か rebase を先へ進める。受け付けるかと続け方は、worktree の Git の状態が決める。
+    pub fn continue_operation(&self, worktree: &str, message: &str) -> Result<(), UsecaseError> {
+        let continuation = self
+            .current_worktree_status(worktree)?
+            .continuation(message)?;
+        self.git.continue_operation(worktree, &continuation)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
+    }
+
+    /// 進行中の merge か rebase を中止する。
+    pub fn abort_operation(&self, worktree: &str) -> Result<(), UsecaseError> {
+        let status = self.current_worktree_status(worktree)?;
+        let operation = status.ensure_can_abort()?;
+        self.git.abort_operation(worktree, operation)?;
+        self.notify_repository_changed(worktree);
+        Ok(())
     }
 
     // ── origin（読み取り） ──

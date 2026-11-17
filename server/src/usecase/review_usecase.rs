@@ -183,6 +183,18 @@ impl ReviewUsecase {
             .directory_entries(worktree, directory, &snapshot.status)
     }
 
+    /// ファイル一覧と変更の数が使っている、worktree の変更の走査結果を返す。
+    pub fn status_scan(
+        &self,
+        worktree: &str,
+    ) -> Result<crate::domain::git::RepositoryStatusScan, CodeUsecaseError> {
+        let snapshot = self.snapshot(worktree)?;
+        Ok(crate::domain::git::RepositoryStatusScan {
+            status: snapshot.status.iter().cloned().map(Into::into).collect(),
+            dirty_count: snapshot.dirty_count,
+        })
+    }
+
     /// worktree の git の状態を読み、条件で絞り込んだファイル一覧を返す。
     pub fn filtered_files(
         &self,

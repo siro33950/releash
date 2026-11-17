@@ -21,3 +21,5 @@ pub(crate) mod file_watcher;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_helpers;
+
+pub(crate) mod source_control;

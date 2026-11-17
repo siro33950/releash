@@ -58,6 +58,11 @@ pub enum StateValue {
     Directory(Vec<crate::usecase::directory_query::DirectoryEntryDto>),
     FilteredFiles(crate::domain::code::value_objects::file_list::FilteredFiles),
     FileTab(crate::usecase::code_dto::FileTabViewDto),
+    /// worktree の Git の状態と、表示に使う変更の行数。
+    SourceControl(
+        crate::domain::git::WorktreeStatus,
+        crate::domain::git::LineChanges,
+    ),
     FileThreads(Vec<crate::domain::comment::Thread>),
     ReviewThreads(Vec<crate::domain::comment::Thread>),
     /// Thread と、その対象の行の差分。差分を読めなかった Thread は、その失敗を持つ。
