@@ -52,8 +52,8 @@ message CommandRequest {
     OpenInEditorRequest open_in_editor = 100;
     OpenWorkflowInEditorRequest open_workflow_in_editor = 101;
     OpenWorkflowDirectoryInEditorRequest open_workflow_directory_in_editor = 207;
-    CreatePullRequestRequest create_pull_request = 208;
-    PostPullRequestCommentRequest post_pull_request_comment = 209;
+    CreatePullRequestRequest create_pull_request = 216;
+    PostPullRequestCommentRequest post_pull_request_comment = 217;
     RefreshProviderAvailabilityRequest refresh_provider_availability = 105;
     RemoveRepoPathRequest remove_repo_path = 106;
     RemoveWorktreeRequest remove_worktree = 107;
@@ -129,8 +129,8 @@ message CommandResult {
     Unit open_in_editor = 100;
     Unit open_workflow_in_editor = 101;
     Unit open_workflow_directory_in_editor = 207;
-    Unit create_pull_request = 208;
-    Unit post_pull_request_comment = 209;
+    Unit create_pull_request = 216;
+    Unit post_pull_request_comment = 217;
     Unit refresh_provider_availability = 105;
     ResultBool remove_repo_path = 106;
     Unit remove_worktree = 107;
@@ -2205,9 +2205,9 @@ message StatePayload {
     NotionTasksSnapshot notion_tasks = 60;
     NotionLabelOptionsSnapshot notion_label_options = 61;
     WorktreeBasesSnapshot worktree_bases = 79;
-    PullRequestSnapshot pull_request = 81;
-    PullRequestBasesSnapshot pull_request_bases = 82;
-    CheckLogSnapshot check_log = 83;
+    PullRequestSnapshot pull_request = 84;
+    PullRequestBasesSnapshot pull_request_bases = 85;
+    CheckLogSnapshot check_log = 86;
 
     NullableWorkspaceStateDto workspace_state = 17;
     ListReviewThreadDto review_threads = 32;

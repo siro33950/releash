@@ -1,5 +1,8 @@
 use super::*;
-use crate::domain::git::{Branch, RepositoryStatusScan, Worktree};
+use crate::domain::git::{
+    Branch, CommitMessage, Continuation, LineChanges, OperationKind, Push, RepositoryStatusScan,
+    Worktree, WorktreeBranch,
+};
 use crate::domain::git_host::*;
 use crate::usecase::git_host::test_helpers::{FakeIssueCache, FakePrCache};
 use std::sync::Mutex;
@@ -30,6 +33,40 @@ impl GitService for Git {
         panic!("unused")
     }
     fn status_scan(&self, _repo_path: &str) -> Result<RepositoryStatusScan, GitError> {
+        panic!("unused")
+    }
+    fn worktree_branch(&self, _worktree: &str) -> Result<WorktreeBranch, GitError> {
+        panic!("unused")
+    }
+    fn line_changes(&self, _worktree: &str) -> Result<LineChanges, GitError> {
+        panic!("unused")
+    }
+    fn commit(&self, _worktree: &str, _message: &CommitMessage) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn push(&self, _worktree: &str, _push: Push) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn pull(&self, _worktree: &str) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn fetch(&self, _worktree: &str) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn restore_worktree_files(&self, _worktree: &str, _paths: &[String]) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn trash_files(&self, _worktree: &str, _paths: &[String]) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn continue_operation(
+        &self,
+        _worktree: &str,
+        _continuation: &Continuation,
+    ) -> Result<(), GitError> {
+        panic!("unused")
+    }
+    fn abort_operation(&self, _worktree: &str, _operation: &OperationKind) -> Result<(), GitError> {
         panic!("unused")
     }
     fn origin_url(&self, _repo_path: &str) -> Result<Option<String>, GitError> {
