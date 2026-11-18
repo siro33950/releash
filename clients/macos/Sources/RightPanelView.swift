@@ -83,7 +83,7 @@ struct RightPanelView: View {
         Spacer(minLength: 0)
       }
     }
-    .frame(maxHeight: .infinity)
+    .frame(maxHeight: .infinity, alignment: .top)
   }
 }
 
