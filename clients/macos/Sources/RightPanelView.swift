@@ -60,30 +60,31 @@ struct RightPanelView: View {
       .padding(.horizontal, UIStyle.spacing)
       .frame(height: UIStyle.tabBarHeight)
       Divider()
-      if expanded, selected == .roots, let path = model.selectedWorktree {
-        RootListView(model: model, path: path).id(path)
-      } else if expanded, selected == .files, let path = model.selectedWorktree {
-        FileWorkspaceView(model: model, worktree: path).id(path)
-      } else if expanded, selected == .sourceControl, let path = model.selectedWorktree {
-        SourceControlView(model: model, worktree: path) { file in
-          model.filePanes.openFile(file, base: "head")
-          if let pane = model.filePanes.controller.focusedPaneId,
-            let tab = model.filePanes.controller.selectedTab(inPane: pane)
-          {
-            model.filePanes.setFilePresentation(tab.id, mode: "diff", base: "head")
-          }
-          model.filesFocused = true
-          selected = .files
-        }.id(path)
-      } else if expanded, selected == .pullRequest, let path = model.selectedWorktree {
-        PullRequestPanel(model: model, worktree: path).id(path)
-      } else if expanded, selected == .threads, let path = model.selectedWorktree {
-        ThreadPanelView(model: model, worktree: path).id(path)
-      } else {
-        Spacer(minLength: 0)
+      Group {
+        if expanded, selected == .roots, let path = model.selectedWorktree {
+          RootListView(model: model, path: path).id(path)
+        } else if expanded, selected == .files, let path = model.selectedWorktree {
+          FileWorkspaceView(model: model, worktree: path).id(path)
+        } else if expanded, selected == .sourceControl, let path = model.selectedWorktree {
+          SourceControlView(model: model, worktree: path) { file in
+            model.filePanes.openFile(file, base: "head")
+            if let pane = model.filePanes.controller.focusedPaneId,
+              let tab = model.filePanes.controller.selectedTab(inPane: pane)
+            {
+              model.filePanes.setFilePresentation(tab.id, mode: "diff", base: "head")
+            }
+            model.filesFocused = true
+            selected = .files
+          }.id(path)
+        } else if expanded, selected == .pullRequest, let path = model.selectedWorktree {
+          PullRequestPanel(model: model, worktree: path).id(path)
+        } else if expanded, selected == .threads, let path = model.selectedWorktree {
+          ThreadPanelView(model: model, worktree: path).id(path)
+        }
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .frame(maxHeight: .infinity, alignment: .top)
+    .frame(maxHeight: .infinity)
   }
 }
 
