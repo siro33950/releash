@@ -60,6 +60,63 @@ final class FileTabPaneTests: XCTestCase {
     }
   }
 
+  @MainActor func test_返信_選び直しても送信中は再送できず成功後は下書きが消える() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let tab = try pane(model)
+    let draft = model.filePanes.fileDraft(tab.tabID)
+    func selectedPane() -> FileTabPane {
+      FileTabPane(
+        model: model, tabID: tab.tabID, path: tab.path, worktree: tab.worktree, draft: draft)
+    }
+    let send = ["kind": "reply", "id": "t", "content": "送信"]
+    selectedPane().action(["kind": "editReply", "id": "t", "content": "送信"])
+    selectedPane().action(send)
+    // When
+    selectedPane().action(send)
+    try await eventually { draft.sendingReplies.isEmpty }
+    // Then
+    XCTAssertEqual(http.requests("AppendReviewComment").count, 1)
+    let restored = selectedPane().bridgePayload(.init(), .init(), colorScheme: .light)
+    XCTAssertNil((try XCTUnwrap(restored["replies"] as? [String: String]))["t"])
+    await model.stop()
+  }
+
+  @MainActor func test_返信_送信中に編集して元に戻した本文を保ち空入力で消す() {
+    // Given
+    let draft = FileThreadDraft()
+    draft.editReply("t", content: "本文")
+    XCTAssertTrue(draft.beginReply("t"))
+    // When
+    draft.editReply("t", content: "別の本文")
+    draft.editReply("t", content: "本文")
+    // Then
+    XCTAssertFalse(draft.finishReply("t", accepted: true))
+    XCTAssertEqual(draft.replies["t"], "本文")
+    // When
+    draft.editReply("t", content: "")
+    // Then
+    XCTAssertNil(draft.replies["t"])
+  }
+
+  @MainActor func test_返信_送信中に編集しても成功を通知し新しい本文を保つ() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    var accepted: Bool?
+    view.action(["kind": "editReply", "id": "t", "content": "送信"])
+    view.action(["kind": "reply", "id": "t", "content": "送信"]) { accepted = $0 }
+    // When
+    view.action(["kind": "editReply", "id": "t", "content": "次の返信"])
+    try await eventually { accepted != nil }
+    // Then
+    XCTAssertEqual(accepted, true)
+    XCTAssertEqual(view.draft.replies["t"], "次の返信")
+    await model.stop()
+  }
+
   @MainActor func test_返信_未接続でも失敗を通知する() throws {
     // Given
     let model = AppModel()

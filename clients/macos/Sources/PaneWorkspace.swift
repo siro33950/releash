@@ -19,14 +19,18 @@ import SwiftUI
   private var nextTerminalNumber = 1
   private var restoring = false
 
+  /// ファイルタブの表示位置と下書き。タブと pane の終了通知を受けるこの型が、閉じたタブの状態を破棄する。
   @ObservationIgnored private var fileDrafts: [TabID: FileThreadDraft] = [:]
 
+  /// 同じタブを選び直したときは、閉じるまで同じ下書きを返す。
   func fileDraft(_ id: TabID) -> FileThreadDraft {
     if let draft = fileDrafts[id] { return draft }
     let draft = FileThreadDraft()
     fileDrafts[id] = draft
     return draft
   }
+
+  static func forFiles() -> PaneWorkspace { PaneWorkspace(contentViewLifecycle: .recreateOnSwitch) }
 
   init(contentViewLifecycle: ContentViewLifecycle = .keepAllAlive) {
     for id in controller.allTabIds { controller.closeTab(id) }

@@ -45,13 +45,23 @@ async function bridge(now = Date.now()) {
     },
     bundle: true, write: false, format: 'iife',
   });
+  const observers = new Set();
+  const timers = [];
+  const document = Object.assign(new Element(), {
+    getElementById: (id) => elements[id], createElement: (name) => new Element(name),
+  });
   vm.runInNewContext(compiled.outputFiles[0].text, {
-    window, document: { getElementById: (id) => elements[id], createElement: (name) => new Element(name) },
+    window, document,
     Date: class extends Date { static now() { return now; } },
-    ResizeObserver: class { constructor(callback) { this.observe = callback; } disconnect() {} },
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; }
+      observe() { observers.add(this); this.callback(); }
+      disconnect() { observers.delete(this); }
+    },
+    setTimeout(callback) { timers.push(callback); return timers.length; },
     TextEncoder, TextDecoder, console, queueMicrotask: (callback) => callback(),
   });
-  return { window, messages, instances, elements, renderer: () => instances.at(-1) };
+  return { window, document, messages, instances, elements, observers, timers, renderer: () => instances.at(-1) };
 }
 
 const payload = () => ({
@@ -193,6 +203,31 @@ test('accepting a reply preserves text edited while the request was pending', as
   ui.window.releashRender({ ...payload(), threads: [{ ...thread }] });
   assert.equal(annotation().children.find((child) => child.tagName === 'textarea').value, 'new draft');
 });
+
+for (const recreated of [false, true]) {
+  test(`送信完了の再描画が新しい返信入力を上書きしない（再生成 ${recreated}）`, async () => {
+    // Given
+    const ui = await bridge();
+    const thread = { id: 't', line: 1, comments: [] };
+    const next = { ...payload(), threads: [thread], replies: { t: 'sent' } };
+    const sending = { ...next, sendingReplies: ['t'] };
+    ui.window.releashRender(recreated ? sending : next);
+    const input = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
+    let request;
+    if (!recreated) {
+      input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
+      request = ui.messages.at(-1);
+      ui.window.releashRender(sending);
+    }
+    input.value = 'new draft';
+    input.oninput();
+    // When
+    if (request) ui.window.releashReplyAccepted(request.id, request.requestID);
+    ui.window.releashRender({ ...next, replies: {}, sendingReplies: [] });
+    // Then
+    assert.equal(input.value, 'new draft');
+  });
+}
 
 test('thread ranges and line selection use the accent color from the app', async () => {
   const ui = await bridge();
@@ -399,22 +434,111 @@ test('返信は長押しと送信中の連打を防ぎ失敗後に再送でき�
   assert.equal(input.value, 'reply');
   input.onkeydown(key);
   assert.equal(count(), 2);
+  const retry = ui.messages.at(-1);
   ui.window.releashReplyAccepted(request.id, request.requestID, true);
+  assert.equal(input.value, 'reply');
+  ui.window.releashReplyAccepted(retry.id, retry.requestID, true);
   assert.equal(input.value, '');
 });
 
-test('a recreated viewer restores scroll and an unsent reply', async () => {
+test('寸法が揃った通知で保存位置を復元し監視を終える', async () => {
+  // Given
+  const ui = await bridge();
+  ui.elements.content.offsetHeight = 0;
+  ui.elements.viewport.scrollTop = 0;
+  // When
+  ui.window.releashRender({ ...payload(), scrollTop: 85 });
+  // Then
+  assert.equal(ui.elements.viewport.scrollTop, 0);
+  assert.equal(ui.observers.size, 1);
+  // When
+  ui.elements.content.offsetHeight = 2000;
+  for (const observer of ui.observers) observer.callback();
+  // Then
+  assert.equal(ui.elements.viewport.scrollTop, 85);
+  assert.equal(ui.observers.size, 0);
+});
+
+test('スクロール中の通知をまとめて最後の位置を送る', async () => {
+  // Given
+  const ui = await bridge();
+  // When
+  for (const top of [10, 20, 30]) {
+    ui.elements.viewport.scrollTop = top;
+    ui.elements.viewport.onscroll();
+  }
+  for (const timer of ui.timers) timer();
+  // Then
+  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.top), [10, 30]);
+});
+
+test('再生成したviewerが保存したスクロール位置を復元する', async () => {
+  // Given
+  const ui = await bridge();
+  // When
+  ui.window.releashRender({ ...payload(), scrollTop: 85 });
+  // Then
+  assert.equal(ui.elements.viewport.scrollTop, 85);
+});
+
+test('再生成したviewerが返信を復元する', async () => {
+  // Given
   const ui = await bridge();
   const thread = { id: 'open', line: 2, comments: [] };
-  ui.window.releashRender({ ...payload(), threads: [thread], scrollTop: 85, replies: { open: 'draft' } });
-  const card = ui.renderer().options.renderAnnotation({ metadata: thread });
-  assert.equal(card.children.find(element => element.tagName === 'textarea').value, 'draft');
-  assert.equal(ui.elements.viewport.scrollTop, 85);
-  ui.elements.viewport.scrollTop = 120;
-  ui.elements.viewport.onscroll();
-  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'scroll', top: 120 });
-  const reply = card.children.find(element => element.tagName === 'textarea');
+  // When
+  ui.window.releashRender({ ...payload(), threads: [thread], replies: { open: 'draft' } });
+  const reply = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
+  // Then
+  assert.equal(reply.value, 'draft');
+});
+
+test('返信の編集を通知する', async () => {
+  // Given
+  const ui = await bridge();
+  const thread = { id: 'open', line: 2, comments: [] };
+  ui.window.releashRender({ ...payload(), threads: [thread] });
+  const reply = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
+  // When
   reply.value = 'updated';
   reply.oninput();
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'editReply', id: 'open', content: 'updated' });
+});
+
+test('作り直したviewerは送信中の返信を再送しない', async () => {
+  // Given
+  const ui = await bridge();
+  const thread = { id: 'open', line: 2, comments: [] };
+  const next = { ...payload(), threads: [thread], replies: { open: 'draft' }, sendingReplies: ['open'] };
+  ui.window.releashRender(next);
+  const reply = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
+  // When
+  reply.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
+  // Then
+  assert.equal(ui.messages.some(m => m.kind === 'reply'), false);
+});
+
+test('作り直したviewerは送信完了後の下書きを反映する', async () => {
+  // Given
+  const ui = await bridge();
+  const thread = { id: 'open', line: 2, comments: [] };
+  const next = { ...payload(), threads: [thread], replies: { open: 'draft' }, sendingReplies: ['open'] };
+  ui.window.releashRender(next);
+  const reply = ui.renderer().options.renderAnnotation({ metadata: thread }).children[1];
+  // When
+  ui.window.releashRender({ ...next, replies: {}, sendingReplies: [] });
+  // Then
+  assert.equal(reply.value, '');
+});
+
+test('非表示になった時点の位置を最後のscrollイベントより先に送る', async () => {
+  // Given
+  const ui = await bridge();
+  ui.elements.viewport.scrollTop = 85;
+  // When
+  ui.document.hidden = true;
+  ui.document.onvisibilitychange();
+  ui.elements.viewport.onscrollend();
+  // Then
+  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.top), [85]);
 });

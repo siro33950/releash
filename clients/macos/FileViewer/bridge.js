@@ -15,7 +15,7 @@ let diffMetadata;
 const replies = new Map();
 const pendingReplies = new Map();
 const replyInputs = new Map();
-let replyVersion = 0;
+let nextRequestID = 0;
 let composerContent = '';
 const expanded = new Set();
 const markdown = new MarkdownIt({ html: false });
@@ -26,16 +26,35 @@ const relativeTime = (timestamp) => {
   }
   return 'たった今';
 };
-window.releashReplyAccepted = (id, version, accepted = true) => {
-  if (pendingReplies.get(id) === version) pendingReplies.delete(id);
-  if (!accepted) return;
-  if (replies.get(id)?.version !== version) return;
+window.releashReplyAccepted = (id, requestID, clear = true) => {
+  const pending = pendingReplies.get(id);
+  if (!pending || pending.requestID !== requestID) return;
+  pendingReplies.delete(id);
+  if (!clear || pending.edited) return;
   replies.delete(id);
   const input = replyInputs.get(id);
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
-viewport.addEventListener('scroll', () => send({ kind: 'scroll', top: viewport.scrollTop }));
+let scrollTimer;
+let lastScrollTop;
+const publishScroll = () => {
+  if (lastScrollTop === viewport.scrollTop) return;
+  lastScrollTop = viewport.scrollTop;
+  send({ kind: 'scroll', top: lastScrollTop });
+};
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) publishScroll();
+});
+viewport.addEventListener('scrollend', publishScroll);
+viewport.addEventListener('scroll', () => {
+  if (scrollTimer) return;
+  publishScroll();
+  scrollTimer = setTimeout(() => {
+    publishScroll();
+    scrollTimer = undefined;
+  }, 100);
+});
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -162,20 +181,22 @@ function annotation({ metadata: thread }) {
     const input = document.createElement('textarea');
     input.setAttribute('aria-label', 'Threadへの返信');
     input.placeholder = '返信を書く…';
-    input.value = replies.get(thread.id)?.content ?? '';
+    input.value = replies.get(thread.id) ?? '';
     replyInputs.set(thread.id, input);
     input.oninput = () => {
-      replies.set(thread.id, { content: input.value, version: ++replyVersion });
+      const pending = pendingReplies.get(thread.id);
+      if (pending) pending.edited = true;
+      replies.set(thread.id, input.value);
       send({ kind: 'editReply', id: thread.id, content: input.value });
     };
     input.onkeydown = (event) => {
       if (event.key !== 'Enter' || !event.metaKey || event.isComposing || event.repeat) return;
       event.preventDefault();
-      if (!input.value.trim() || pendingReplies.has(thread.id)) return;
-      if (replies.get(thread.id)?.content !== input.value) input.oninput();
-      const draft = replies.get(thread.id);
-      pendingReplies.set(thread.id, draft.version);
-      send({ kind: 'reply', id: thread.id, content: draft.content, requestID: draft.version });
+      if (!input.value.trim() || payload.sendingReplies?.includes(thread.id) || pendingReplies.has(thread.id)) return;
+      if (replies.get(thread.id) !== input.value) input.oninput();
+      const requestID = ++nextRequestID;
+      pendingReplies.set(thread.id, { requestID, edited: false });
+      send({ kind: 'reply', id: thread.id, content: input.value, requestID });
     };
     element.append(input);
     if (thread.canResolve) element.append(button('解決にする', () => send({ kind: 'resolve', id: thread.id })));
@@ -185,9 +206,19 @@ function annotation({ metadata: thread }) {
 window.releashRender = (next) => {
   const firstRender = !payload;
   if (firstRender) {
+    for (const id of next.sendingReplies ?? []) pendingReplies.set(id, { edited: false });
     for (const [id, content] of Object.entries(next.replies ?? {})) {
-      replies.set(id, { content, version: ++replyVersion });
+      replies.set(id, content);
     }
+  }
+  for (const [id, pending] of pendingReplies) {
+    if (pending.requestID !== undefined || next.sendingReplies?.includes(id)) continue;
+    pendingReplies.delete(id);
+    if (pending.edited) continue;
+    const value = next.replies?.[id] ?? '';
+    replies.set(id, value);
+    const input = replyInputs.get(id);
+    if (input) input.value = value;
   }
   const sourceChanged = !payload || ['path', 'original', 'modified', 'patch'].some((key) => payload[key] !== next[key]);
   if (sourceChanged) {

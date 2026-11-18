@@ -29,11 +29,16 @@ struct FileTabPane: View {
         case .textDiff(let text):
           FileWebView(
             payload: bridgePayload(text, value, colorScheme: colorScheme), model: model,
-            onAction: { message, accepted in action(message, onReplyCompleted: accepted) }
+            onAction: { message, complete in
+              action(message) { accepted in
+                guard let id = message["id"] as? String else { return }
+                complete(accepted && draft.replies[id] == nil)
+              }
+            }
           )
           .accessibilityIdentifier("file-content")
         case .image(let image):
-          ScrollView([.horizontal, .vertical]) {
+          FileImageScrollView(draft: draft) {
             HStack {
               ForEach(
                 Array(imageURLs(image, initialMode: value.initialMode).enumerated()), id: \.offset
@@ -61,7 +66,10 @@ struct FileTabPane: View {
         if case .fileThreads(let value) = payload.value { threads = value }
       }
     }
-    .onDisappear { unsubscribe() }
+    .onDisappear {
+      draft.selection = nil
+      unsubscribe()
+    }
     .onChange(of: base) { _, _ in
       if subscription != nil { subscribe() }
     }
@@ -185,6 +193,7 @@ struct FileTabPane: View {
   ) -> [String: Any] {
     var result: [String: Any] = [
       "scrollTop": draft.scrollTop, "replies": draft.replies,
+      "sendingReplies": Array(draft.sendingReplies.keys),
       "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
@@ -242,7 +251,7 @@ struct FileTabPane: View {
     if kind == "editReply", let id = message["id"] as? String,
       let content = message["content"] as? String
     {
-      draft.replies[id] = content.isEmpty ? nil : content
+      draft.editReply(id, content: content)
       return
     }
     guard let client = model.client else {
@@ -269,6 +278,10 @@ struct FileTabPane: View {
       return
     }
     guard let id = message["id"] as? String else { return }
+    if kind == "reply", !draft.beginReply(id) {
+      onReplyCompleted(false)
+      return
+    }
     model.perform {
       switch kind {
       case "reply":
@@ -279,9 +292,10 @@ struct FileTabPane: View {
         do {
           _ = try await client.appendReviewComment(request: request, headers: model.headers).result
             .get()
-          if draft.replies[id] == request.content { draft.replies[id] = nil }
+          _ = draft.finishReply(id, accepted: true)
           onReplyCompleted(true)
         } catch {
+          _ = draft.finishReply(id, accepted: false)
           onReplyCompleted(false)
           throw error
         }
@@ -335,6 +349,33 @@ struct FileDisplaySettings: DynamicProperty {
   @AppStorage("diffFull") var full = false
 }
 
+private struct FileImageScrollView<Content: View>: View {
+  let draft: FileThreadDraft
+  @State private var restored = false
+  @State private var position = ScrollPosition()
+  let content: Content
+
+  init(draft: FileThreadDraft, @ViewBuilder content: () -> Content) {
+    self.draft = draft
+    self.content = content()
+  }
+
+  var body: some View {
+    ScrollView([.horizontal, .vertical]) { content }
+      .scrollPosition($position)
+      .onScrollGeometryChange(for: CGPoint.self) {
+        $0.contentOffset
+      } action: { _, offset in
+        if restored {
+          draft.imageOffset = offset
+        } else {
+          restored = true
+          position.scrollTo(point: draft.imageOffset)
+        }
+      }
+  }
+}
+
 struct FileLineSelection: Equatable {
   var line: UInt32
   var endLine: UInt32
@@ -365,6 +406,27 @@ struct FileLineSelection: Equatable {
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
   @ObservationIgnored var scrollTop = 0.0
+  @ObservationIgnored var imageOffset = CGPoint.zero
+  private(set) var sendingReplies: [String: Bool] = [:]
+
+  func editReply(_ id: String, content: String) {
+    replies[id] = content.isEmpty ? nil : content
+    if sendingReplies[id] == false { sendingReplies[id] = true }
+  }
+
+  func beginReply(_ id: String) -> Bool {
+    guard sendingReplies[id] == nil else { return false }
+    sendingReplies[id] = false
+    return true
+  }
+
+  func finishReply(_ id: String, accepted: Bool) -> Bool {
+    let edited = sendingReplies.removeValue(forKey: id)
+    guard accepted, edited == false else { return false }
+    replies[id] = nil
+    return true
+  }
+
   @ObservationIgnored var replies: [String: String] = [:]
   @ObservationIgnored var content = ""
 }
@@ -403,15 +465,6 @@ struct FileWebView: NSViewRepresentable {
     context.coordinator.render()
   }
   static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) {
-    if coordinator.ready {
-      let save = coordinator.onAction
-      web.callAsyncJavaScript(
-        "return document.getElementById('viewport').scrollTop", arguments: [:], in: nil,
-        in: coordinator.world
-      ) { result in
-        if case .success(let top) = result { save(["kind": "scroll", "top": top]) { _ in } }
-      }
-    }
     web.configuration.userContentController.removeScriptMessageHandler(
       forName: "fileViewer", contentWorld: coordinator.world)
   }

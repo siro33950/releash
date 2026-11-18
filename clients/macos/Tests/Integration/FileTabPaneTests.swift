@@ -369,8 +369,17 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     try await wait(web, "\(creation) && \(reply)")
     _ = try await js(
       web,
-      "for (const [field, value] of [[\(creation),'未送信'],[\(reply),'返信の下書き']]) { field.value=value; field.dispatchEvent(new Event('input',{bubbles:true})); } document.querySelector('#viewport').scrollTop=85;"
+      """
+      for (const [field, value] of [[\(creation), '未送信'], [\(reply), '返信の下書き']]) {
+        field.value = value;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      const viewport = document.querySelector('#viewport');
+      viewport.addEventListener('scrollend', () => window.scrollFinished = true, { once: true });
+      viewport.scrollTop = 85;
+      """
     )
+    try await wait(web, "window.scrollFinished")
     let offset = try await js(web, "return document.querySelector('#viewport').scrollTop;") as? Int
     XCTAssertGreaterThan(try XCTUnwrap(offset), 0)
     // When
@@ -385,6 +394,61 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
       selected,
       "\(creation)?.value === '未送信' && \(reply)?.value === '返信の下書き' && document.querySelector('#viewport').scrollTop === \(try XCTUnwrap(offset))"
     )
+  }
+
+  func test_ファイルタブ_選び直すと画像の表示位置を復元する() async throws {
+    // Given
+    let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
+    let bitmap = try XCTUnwrap(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 2400, bitsPerSample: 8,
+        samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0))
+    var image = Releash_Client_V1_StatePayload()
+    let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+    image.fileTab.view.image.modifiedURL = "data:image/png;base64," + png.base64EncodedString()
+    let args = ["/repo", path, "head"]
+    try http.publish(image, target: "file-tab", args: args)
+    try await press(host, "ファイル")
+    let root = try XCTUnwrap(host.contentView)
+    func imageScroll() -> NSScrollView? {
+      views(root, NSScrollView.self).first {
+        !$0.isHiddenOrHasHiddenAncestor && ($0.documentView?.frame.height ?? 0) >= 2000
+      }
+    }
+    try await eventually { imageScroll() != nil }
+    let scroll = try XCTUnwrap(imageScroll())
+    scroll.contentView.scroll(to: CGPoint(x: 0, y: 180))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    try await eventually { scroll.contentView.bounds.origin.y == 180 }
+    // When
+    try await press(host, "other.rs")
+    try await selectedPath("other.rs", in: host)
+    try await press(host, path)
+    // Then
+    try await eventually { imageScroll()?.contentView.bounds.origin.y == 180 }
+  }
+
+  func test_ファイルタブ_選び直すと作成前の行選択を捨てる() async throws {
+    // Given
+    let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
+    try http.publish(
+      snapshot("one\ntwo\nthree\nfour", mode: "file"), target: "file-tab",
+      args: ["/repo", path, "head"])
+    try await press(host, "ファイル")
+    let web = try await viewer(host)
+    try await wait(web, "all('[data-line]').length > 0")
+    try await selectLines(web)
+    try await eventually { self.findElement(host, name: "Thread作成") != nil }
+    // When
+    try await press(host, "other.rs")
+    try await selectedPath("other.rs", in: host)
+    try await press(host, path)
+    try await selectedPath(path, in: host)
+    // Then
+    let selected = try await viewer(host)
+    try await wait(selected, "all('[data-line]').length > 0")
+    XCTAssertNil(findElement(host, name: "Thread作成"))
   }
 
   func test_ファイルタブ_B006_再購読の内容が届くまで読み込み中を表示する() async throws {
