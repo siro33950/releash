@@ -36,7 +36,16 @@ window.releashReplyAccepted = (id, requestID, accepted = true) => {
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
-viewport.addEventListener('scroll', () => send({ kind: 'scroll', top: viewport.scrollTop }));
+let savedTop;
+let appliedTop;
+let layout;
+viewport.addEventListener('scroll', () => {
+  if (savedTop !== undefined && viewport.scrollTop !== appliedTop) {
+    savedTop = undefined;
+    layout?.disconnect();
+  }
+  if (savedTop === undefined) send({ kind: 'scroll', top: viewport.scrollTop });
+});
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -207,6 +216,7 @@ window.releashRender = (next) => {
     clearSelection();
     diffMetadata = undefined;
   }
+  const threadsArrived = payload?.threadsReady === false && next.threadsReady;
   const baseChanged = payload?.base !== next.base;
   if (!next.composer || !payload?.composer || next.composer.id !== payload.composer.id) composerContent = next.composer?.content ?? '';
   const openIDs = new Set(next.threads.filter((thread) => !thread.resolved).map((thread) => thread.id));
@@ -242,10 +252,14 @@ window.releashRender = (next) => {
   } else {
     renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
   }
-  if (firstRender && next.scrollTop) {
-    const layout = new ResizeObserver(() => {
+  if (firstRender && next.scrollTop) savedTop = next.scrollTop;
+  if ((firstRender || threadsArrived) && savedTop !== undefined) {
+    layout?.disconnect();
+    layout = new ResizeObserver(() => {
       if (!content.offsetHeight || !viewport.clientHeight) return;
-      viewport.scrollTop = next.scrollTop;
+      viewport.scrollTop = savedTop;
+      appliedTop = viewport.scrollTop;
+      if (next.threadsReady !== false) savedTop = undefined;
       layout.disconnect();
     });
     layout.observe(content);

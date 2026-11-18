@@ -12,7 +12,7 @@ struct FileTabPane: View {
   @Environment(\.colorScheme) private var colorScheme
   var settings = FileDisplaySettings()
   @State var value: Releash_Client_V1_FileTabView?
-  @State var threads = Releash_Client_V1_FileThreadsSnapshot()
+  @State var threads: Releash_Client_V1_FileThreadsSnapshot?
   @State private var subscription: UUID?
   @State private var threadSubscription: UUID?
   @State var draft = FileThreadDraft()
@@ -55,7 +55,7 @@ struct FileTabPane: View {
     .onAppear {
       guard isSelected else { return }
       draft = model.filePanes.fileDraft(tabID)
-      threads = .init()
+      threads = nil
       subscribe()
       threadSubscription = model.subscribe("file-threads", [worktree, path]) { payload in
         if case .fileThreads(let value) = payload.value { threads = value }
@@ -194,7 +194,8 @@ struct FileTabPane: View {
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
       "style": settings.style, "full": settings.full, "dark": colorScheme == .dark,
       "accent": Self.accentHex(colorScheme),
-      "threads": threads.threads.items.compactMap { thread -> [String: Any]? in
+      "threadsReady": threads != nil,
+      "threads": (threads?.threads.items ?? []).compactMap { thread -> [String: Any]? in
         guard thread.target.hasLineNumber else { return nil }
         var annotation: [String: Any] = [
           "id": thread.id, "line": thread.target.lineNumber,

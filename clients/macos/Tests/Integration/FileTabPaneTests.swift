@@ -481,4 +481,80 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
       try await Task.sleep(for: .milliseconds(20))
     }
   }
+
+  func test_ファイルタブ_選び直すと作成前の行選択を捨てる() async throws {
+    // Given
+    let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
+    let value = snapshot("one\ntwo\nthree\nfour", mode: "file")
+    try await press(host, "ファイル")
+    try await expectStarts(http, in: host, paths: [path])
+    try http.publish(value, target: "file-tab", args: ["/repo", path, "head"])
+    let web = try await viewer(host)
+    try await wait(web, "all('[data-line]').length > 0")
+    try await selectLines(web)
+    try await eventually { self.findElement(host, name: "Thread作成") != nil }
+    // When
+    try await press(host, "other.rs")
+    try await selectedPath("other.rs", in: host)
+    try await press(host, path)
+    try await selectedPath(path, in: host)
+    // Then
+    try http.publish(value, target: "file-tab", args: ["/repo", path, "head"])
+    let selected = try await viewer(host)
+    try await wait(selected, "all('[data-line]').length > 0")
+    XCTAssertNil(findElement(host, name: "Thread作成"))
+  }
+
+  func test_ファイルタブ_別の面に移って戻ると選択中の購読だけを再開する() async throws {
+    // Given
+    let (http, _, host) = try await filesPanel(fileLayout(["hidden.rs", path]))
+    try await press(host, "ファイル")
+    try await expectStarts(http, in: host, paths: [path])
+    let started = subscriptions(http)
+    // When
+    try await press(host, "Node")
+    // Then
+    try await eventually {
+      let stopped = http.requests("StopStateSubscription").compactMap {
+        try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
+          .subscriptionID
+      }
+      return Set(started.map(\.subscriptionID)).isSubset(of: Set(stopped))
+    }
+    try await press(host, "ファイル")
+    try await expectStarts(http, in: host, paths: [path], after: started.count)
+    XCTAssertEqual(subscriptions(http).count - started.count, 2)
+  }
+
+  func test_ファイルタブ_比較元を変えると読み込み中を経て新しい内容を表示する() async throws {
+    // Given
+    let (http, _, host) = try await filesPanel(fileLayout(["hidden.rs", path], mode: "diff"))
+    try await press(host, "ファイル")
+    try await expectStarts(http, in: host, paths: [path])
+    let started = subscriptions(http)
+    let original = try XCTUnwrap(started.first { $0.target == "file-tab" })
+    // When
+    try await press(host, "base と比較")
+    // Then
+    try await eventually {
+      http.requests("StopStateSubscription").contains {
+        (try? Releash_Client_V1_StopStateSubscriptionRequest(serializedBytes: $0.message ?? Data())
+          .subscriptionID) == original.subscriptionID
+      }
+    }
+    try await eventually {
+      self.subscriptions(http).dropFirst(started.count).contains {
+        $0.target == "file-tab" && $0.args == ["/repo", self.path, "branch-base"]
+      }
+    }
+    try await eventually {
+      self.findElement(host, name: "", role: kAXProgressIndicatorRole as String) != nil
+    }
+    XCTAssertNil(findElement(host, name: "100 bytes"))
+    var payload = Releash_Client_V1_StatePayload()
+    payload.fileTab.view.binary.modifiedSize = 234
+    try http.publish(payload, target: "file-tab", args: ["/repo", path, "branch-base"])
+    try await eventually { self.findElement(host, name: "234 bytes") != nil }
+    XCTAssertEqual(subscriptions(http).count - started.count, 1)
+  }
 }

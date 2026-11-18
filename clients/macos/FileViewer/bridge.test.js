@@ -528,3 +528,31 @@ test('作り直したviewerは送信完了後の下書きを反映する', async
   // Then
   assert.equal(reply.value, '');
 });
+
+for (const userScrolled of [false, true]) {
+  test(userScrolled ? 'Thread 到着前に利用者が移動した位置を保つ' : 'Thread 到着後に保存位置まで戻す', async () => {
+    // Given
+    const ui = await bridge();
+    const viewport = ui.elements.viewport;
+    let limit = 40;
+    let top = 0;
+    Object.defineProperty(viewport, 'scrollTop', {
+      get: () => top,
+      set: value => { top = Math.min(value, limit); },
+    });
+    ui.window.releashRender({ ...payload(), threadsReady: false, scrollTop: 85 });
+    assert.equal(top, 40);
+    viewport.onscroll();
+    if (userScrolled) {
+      viewport.scrollTop = 20;
+      viewport.onscroll();
+    }
+    // When
+    limit = 100;
+    ui.window.releashRender({ ...payload(), threadsReady: true, scrollTop: top, threads: [{ id: 'late', line: 1 }] });
+    for (const observer of ui.observers) observer.callback();
+    // Then
+    assert.equal(top, userScrolled ? 20 : 85);
+    assert.equal(ui.observers.size, 0);
+  });
+}
