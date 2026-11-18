@@ -26,35 +26,17 @@ const relativeTime = (timestamp) => {
   }
   return 'たった今';
 };
-window.releashReplyAccepted = (id, requestID, clear = true) => {
+window.releashReplyAccepted = (id, requestID, accepted = true) => {
   const pending = pendingReplies.get(id);
   if (!pending || pending.requestID !== requestID) return;
   pendingReplies.delete(id);
-  if (!clear || pending.edited) return;
+  if (!accepted || pending.edited) return;
   replies.delete(id);
   const input = replyInputs.get(id);
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
-let scrollTimer;
-let lastScrollTop;
-const publishScroll = () => {
-  if (lastScrollTop === viewport.scrollTop) return;
-  lastScrollTop = viewport.scrollTop;
-  send({ kind: 'scroll', top: lastScrollTop });
-};
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) publishScroll();
-});
-viewport.addEventListener('scrollend', publishScroll);
-viewport.addEventListener('scroll', () => {
-  if (scrollTimer) return;
-  publishScroll();
-  scrollTimer = setTimeout(() => {
-    publishScroll();
-    scrollTimer = undefined;
-  }, 100);
-});
+viewport.addEventListener('scroll', () => send({ kind: 'scroll', top: viewport.scrollTop }));
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -206,13 +188,13 @@ function annotation({ metadata: thread }) {
 window.releashRender = (next) => {
   const firstRender = !payload;
   if (firstRender) {
-    for (const id of next.sendingReplies ?? []) pendingReplies.set(id, { edited: false });
+    for (const id of next.sendingReplies ?? []) pendingReplies.set(id, { requestID: null, edited: false });
     for (const [id, content] of Object.entries(next.replies ?? {})) {
       replies.set(id, content);
     }
   }
   for (const [id, pending] of pendingReplies) {
-    if (pending.requestID !== undefined || next.sendingReplies?.includes(id)) continue;
+    if (pending.requestID !== null || next.sendingReplies?.includes(id)) continue;
     pendingReplies.delete(id);
     if (pending.edited) continue;
     const value = next.replies?.[id] ?? '';

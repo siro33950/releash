@@ -46,7 +46,6 @@ async function bridge(now = Date.now()) {
     bundle: true, write: false, format: 'iife',
   });
   const observers = new Set();
-  const timers = [];
   const document = Object.assign(new Element(), {
     getElementById: (id) => elements[id], createElement: (name) => new Element(name),
   });
@@ -58,10 +57,9 @@ async function bridge(now = Date.now()) {
       observe() { observers.add(this); this.callback(); }
       disconnect() { observers.delete(this); }
     },
-    setTimeout(callback) { timers.push(callback); return timers.length; },
     TextEncoder, TextDecoder, console, queueMicrotask: (callback) => callback(),
   });
-  return { window, document, messages, instances, elements, observers, timers, renderer: () => instances.at(-1) };
+  return { window, document, messages, instances, elements, observers, renderer: () => instances.at(-1) };
 }
 
 const payload = () => ({
@@ -413,6 +411,7 @@ test('注釈DOMを再利用した再描画後も受理した返信欄を空に�
   ui.window.releashReplyAccepted(request.id, request.requestID);
   // Then
   assert.equal(input.value, '');
+  assert.equal(ui.messages.at(-1), request);
 });
 
 test('返信は長押しと送信中の連打を防ぎ失敗後に再送できる', async () => {
@@ -459,17 +458,16 @@ test('寸法が揃った通知で保存位置を復元し監視を終える', as
   assert.equal(ui.observers.size, 0);
 });
 
-test('スクロール中の通知をまとめて最後の位置を送る', async () => {
+test('scroll のたびにその時点の位置を送る', async () => {
   // Given
   const ui = await bridge();
   // When
-  for (const top of [10, 20, 30]) {
+  for (const top of [10, 20, 20, 30]) {
     ui.elements.viewport.scrollTop = top;
     ui.elements.viewport.onscroll();
   }
-  for (const timer of ui.timers) timer();
   // Then
-  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.top), [10, 30]);
+  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.top), [10, 20, 20, 30]);
 });
 
 test('再生成したviewerが保存したスクロール位置を復元する', async () => {
@@ -529,16 +527,4 @@ test('作り直したviewerは送信完了後の下書きを反映する', async
   ui.window.releashRender({ ...next, replies: {}, sendingReplies: [] });
   // Then
   assert.equal(reply.value, '');
-});
-
-test('非表示になった時点の位置を最後のscrollイベントより先に送る', async () => {
-  // Given
-  const ui = await bridge();
-  ui.elements.viewport.scrollTop = 85;
-  // When
-  ui.document.hidden = true;
-  ui.document.onvisibilitychange();
-  ui.elements.viewport.onscrollend();
-  // Then
-  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.top), [85]);
 });

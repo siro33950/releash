@@ -91,8 +91,9 @@ final class FileTabPaneTests: XCTestCase {
     // When
     draft.editReply("t", content: "別の本文")
     draft.editReply("t", content: "本文")
+    draft.finishReply("t", accepted: true)
     // Then
-    XCTAssertFalse(draft.finishReply("t", accepted: true))
+    XCTAssertTrue(draft.sendingReplies.isEmpty)
     XCTAssertEqual(draft.replies["t"], "本文")
     // When
     draft.editReply("t", content: "")
@@ -100,7 +101,7 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertNil(draft.replies["t"])
   }
 
-  @MainActor func test_返信_送信中に編集しても成功を通知し新しい本文を保つ() async throws {
+  @MainActor func test_返信_送信中に編集すると送信成功を通知し新しい本文を保つ() async throws {
     // Given
     let http = TestHTTPClient()
     let model = try await testModel(http)
@@ -199,6 +200,7 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertEqual(added.side.value, .additions)
     XCTAssertEqual(added.lineNumber, 4)
     http.state.withLock { $0.failedMethod = "AppendReviewComment" }
+    view.action(["kind": "editReply", "id": "thread", "content": "failure"])
     var replyResult: Bool?
     view.action(["kind": "reply", "id": "thread", "content": "failure"]) { accepted in
       replyResult = accepted
@@ -208,6 +210,15 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(model.failure).contains("AppendReviewComment failed"))
     XCTAssertEqual(acceptedReplies, 1)
     XCTAssertEqual(replyResult, false)
+    XCTAssertTrue(view.draft.sendingReplies.isEmpty)
+    XCTAssertEqual(view.draft.replies["thread"], "failure")
+    // When
+    http.state.withLock { $0.failedMethod = nil }
+    replyResult = nil
+    view.action(["kind": "reply", "id": "thread", "content": "failure"]) { replyResult = $0 }
+    // Then
+    try await eventually { replyResult == true }
+    XCTAssertNil(view.draft.replies["thread"])
     await model.stop()
   }
 

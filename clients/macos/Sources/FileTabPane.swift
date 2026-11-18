@@ -29,12 +29,7 @@ struct FileTabPane: View {
         case .textDiff(let text):
           FileWebView(
             payload: bridgePayload(text, value, colorScheme: colorScheme), model: model,
-            onAction: { message, complete in
-              action(message) { accepted in
-                guard let id = message["id"] as? String else { return }
-                complete(accepted && draft.replies[id] == nil)
-              }
-            }
+            onAction: action
           )
           .accessibilityIdentifier("file-content")
         case .image(let image):
@@ -292,10 +287,10 @@ struct FileTabPane: View {
         do {
           _ = try await client.appendReviewComment(request: request, headers: model.headers).result
             .get()
-          _ = draft.finishReply(id, accepted: true)
+          draft.finishReply(id, accepted: true)
           onReplyCompleted(true)
         } catch {
-          _ = draft.finishReply(id, accepted: false)
+          draft.finishReply(id, accepted: false)
           onReplyCompleted(false)
           throw error
         }
@@ -407,24 +402,27 @@ struct FileLineSelection: Equatable {
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
   @ObservationIgnored var scrollTop = 0.0
   @ObservationIgnored var imageOffset = CGPoint.zero
-  private(set) var sendingReplies: [String: Bool] = [:]
+  enum ReplyEditState {
+    case unedited
+    case edited
+  }
+
+  private(set) var sendingReplies: [String: ReplyEditState] = [:]
 
   func editReply(_ id: String, content: String) {
     replies[id] = content.isEmpty ? nil : content
-    if sendingReplies[id] == false { sendingReplies[id] = true }
+    if sendingReplies[id] == .unedited { sendingReplies[id] = .edited }
   }
 
   func beginReply(_ id: String) -> Bool {
     guard sendingReplies[id] == nil else { return false }
-    sendingReplies[id] = false
+    sendingReplies[id] = .unedited
     return true
   }
 
-  func finishReply(_ id: String, accepted: Bool) -> Bool {
-    let edited = sendingReplies.removeValue(forKey: id)
-    guard accepted, edited == false else { return false }
-    replies[id] = nil
-    return true
+  func finishReply(_ id: String, accepted: Bool) {
+    let editState = sendingReplies.removeValue(forKey: id)
+    if accepted, editState == .unedited { replies[id] = nil }
   }
 
   @ObservationIgnored var replies: [String: String] = [:]
