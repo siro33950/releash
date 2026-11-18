@@ -35,6 +35,7 @@ window.releashReplyAccepted = (id, version, accepted = true) => {
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
+viewport.addEventListener('scroll', () => send({ kind: 'scroll', top: viewport.scrollTop }));
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -126,7 +127,7 @@ function composer(thread) {
   const cancel = button('キャンセル', () => send({ kind: 'cancelCreate' }));
   cancel.disabled = thread.sending;
   element.append(input, cancel, create);
-  queueMicrotask(() => input.focus());
+  queueMicrotask(() => input.focus({ preventScroll: true }));
   return element;
 }
 function annotation({ metadata: thread }) {
@@ -163,7 +164,10 @@ function annotation({ metadata: thread }) {
     input.placeholder = '返信を書く…';
     input.value = replies.get(thread.id)?.content ?? '';
     replyInputs.set(thread.id, input);
-    input.oninput = () => replies.set(thread.id, { content: input.value, version: ++replyVersion });
+    input.oninput = () => {
+      replies.set(thread.id, { content: input.value, version: ++replyVersion });
+      send({ kind: 'editReply', id: thread.id, content: input.value });
+    };
     input.onkeydown = (event) => {
       if (event.key !== 'Enter' || !event.metaKey || event.isComposing || event.repeat) return;
       event.preventDefault();
@@ -179,6 +183,12 @@ function annotation({ metadata: thread }) {
   return element;
 }
 window.releashRender = (next) => {
+  const firstRender = !payload;
+  if (firstRender) {
+    for (const [id, content] of Object.entries(next.replies ?? {})) {
+      replies.set(id, { content, version: ++replyVersion });
+    }
+  }
   const sourceChanged = !payload || ['path', 'original', 'modified', 'patch'].some((key) => payload[key] !== next[key]);
   if (sourceChanged) {
     clearSelection();
@@ -218,6 +228,14 @@ window.releashRender = (next) => {
     renderer.render({ fileContainer: container, fileDiff: diffMetadata ??= metadata(next), lineAnnotations });
   } else {
     renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
+  }
+  if (firstRender && next.scrollTop) {
+    const layout = new ResizeObserver(() => {
+      if (!content.offsetHeight || !viewport.clientHeight) return;
+      viewport.scrollTop = next.scrollTop;
+      layout.disconnect();
+    });
+    layout.observe(content);
   }
 };
 send({ kind: 'ready' });

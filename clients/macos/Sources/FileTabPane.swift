@@ -49,14 +49,13 @@ struct FileTabPane: View {
           }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       } else {
-        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        FileLoadingIndicator().frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
-    .onChange(of: isSelected, initial: true) { _, selected in
-      guard selected else {
-        unsubscribe()
-        return
-      }
+    .onAppear {
+      guard isSelected else { return }
+      draft = model.filePanes.fileDraft(tabID)
+      threads = .init()
       subscribe()
       threadSubscription = model.subscribe("file-threads", [worktree, path]) { payload in
         if case .fileThreads(let value) = payload.value { threads = value }
@@ -64,7 +63,7 @@ struct FileTabPane: View {
     }
     .onDisappear { unsubscribe() }
     .onChange(of: base) { _, _ in
-      if isSelected { subscribe() }
+      if subscription != nil { subscribe() }
     }
   }
   var toolbar: some View {
@@ -130,6 +129,7 @@ struct FileTabPane: View {
     threadSubscription = nil
   }
   func subscribe() {
+    value = nil
     if let subscription { model.unsubscribe(subscription) }
     subscription = model.subscribe("file-tab", [worktree, path, base]) { payload in
       guard case .fileTab(let received) = payload.value else { return }
@@ -184,6 +184,7 @@ struct FileTabPane: View {
     colorScheme: ColorScheme
   ) -> [String: Any] {
     var result: [String: Any] = [
+      "scrollTop": draft.scrollTop, "replies": draft.replies,
       "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
@@ -234,6 +235,16 @@ struct FileTabPane: View {
   }
   func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
     guard let kind = message["kind"] as? String else { return }
+    if kind == "scroll", let offset = message["top"] as? Double {
+      draft.scrollTop = offset
+      return
+    }
+    if kind == "editReply", let id = message["id"] as? String,
+      let content = message["content"] as? String
+    {
+      draft.replies[id] = content.isEmpty ? nil : content
+      return
+    }
     guard let client = model.client else {
       if kind == "reply" { onReplyCompleted(false) }
       return
@@ -268,6 +279,7 @@ struct FileTabPane: View {
         do {
           _ = try await client.appendReviewComment(request: request, headers: model.headers).result
             .get()
+          if draft.replies[id] == request.content { draft.replies[id] = nil }
           onReplyCompleted(true)
         } catch {
           onReplyCompleted(false)
@@ -352,6 +364,8 @@ struct FileLineSelection: Equatable {
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
+  @ObservationIgnored var scrollTop = 0.0
+  @ObservationIgnored var replies: [String: String] = [:]
   @ObservationIgnored var content = ""
 }
 
@@ -389,6 +403,15 @@ struct FileWebView: NSViewRepresentable {
     context.coordinator.render()
   }
   static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) {
+    if coordinator.ready {
+      let save = coordinator.onAction
+      web.callAsyncJavaScript(
+        "return document.getElementById('viewport').scrollTop", arguments: [:], in: nil,
+        in: coordinator.world
+      ) { result in
+        if case .success(let top) = result { save(["kind": "scroll", "top": top]) { _ in } }
+      }
+    }
     web.configuration.userContentController.removeScriptMessageHandler(
       forName: "fileViewer", contentWorld: coordinator.world)
   }
@@ -473,4 +496,17 @@ struct IconChoice<Value: Hashable>: View {
     }
     .accessibilityElement(children: .contain)
   }
+}
+
+private struct FileLoadingIndicator: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSProgressIndicator {
+    let indicator = NSProgressIndicator()
+    indicator.style = .spinning
+    indicator.setAccessibilityRole(.progressIndicator)
+    indicator.setAccessibilityLabel("読み込み中")
+    indicator.startAnimation(nil)
+    return indicator
+  }
+
+  func updateNSView(_ indicator: NSProgressIndicator, context: Context) {}
 }

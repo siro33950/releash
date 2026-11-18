@@ -12,6 +12,41 @@ import XCTest
 
 @MainActor final class InlineThreadAcceptanceTests: IntegrationTestCase, FileViewerAcceptanceFixture
 {
+  private func icons(_ expression: String) -> String {
+    """
+    (() => {
+    const header = (author, body, otherBody, time) => {
+      for (const name of all('[slot] *').filter(e => visible(e) && e.textContent.trim() === author)) {
+        let comment = name.parentElement;
+        while (comment && !comment.innerText.includes(body)) comment = comment.parentElement;
+        if (!comment || comment.innerText.includes(otherBody)) continue;
+        let heading = name.parentElement;
+        while (heading && heading !== comment) {
+          if (heading.innerText.includes(time) && !heading.innerText.includes(body)) return {heading, name};
+          heading = heading.parentElement;
+        }
+      }
+    };
+    const besideName = (icon, name) => {
+      const a = icon.getBoundingClientRect(), b = name.getBoundingClientRect();
+      return visible(icon) && a.width > 0 && a.height > 0 && a.right <= b.left + 1 && a.top < b.bottom && a.bottom > b.top;
+    };
+    const humanIcon = () => {
+      const h = header('siro33950', '先の本文', '後の本文', '25 分前');
+      return h && all('*', h.heading).some(e =>
+        e.textContent.trim().toLowerCase() === Array.from(h.name.textContent.trim())[0].toLowerCase()
+        && besideName(e, h.name));
+    };
+    const agentIcon = () => {
+      const h = header('Codex', '後の本文', '先の本文', '3 分前');
+      return h && all('svg, img, [role=img]', h.heading).some(e =>
+        e.textContent.trim().toLowerCase() !== Array.from(h.name.textContent.trim())[0].toLowerCase() && besideName(e, h.name));
+    };
+    return \(expression);
+    })()
+    """
+  }
+
   private let path = "acceptance.rs"
   private let firstBody = "先の本文"
   private let secondBody = "後の本文"
@@ -126,7 +161,7 @@ import XCTest
       )
       try await check(
         web,
-        "humanIcon()"
+        icons("humanIcon()")
       )
       try await check(
         web,
@@ -136,7 +171,7 @@ import XCTest
         web,
         "!all('[slot]').filter(visible).some(e => /(?:^|[^0-9])[23](?![0-9])/.test(e.innerText.replaceAll('3 分前', '')))"
       )
-      try await check(web, "agentIcon()")
+      try await check(web, icons("agentIcon()"))
       try await check(web, "input()?.placeholder === '返信を書く…' && button('解決にする')")
       try await check(
         web,
@@ -238,7 +273,7 @@ import XCTest
         web,
         "all('strong').some(e => visible(e) && e.textContent === '先の本文') && text().includes('25 分前') && text().includes('3 分前') && text().includes('Codex') && text().includes('acceptance-model')"
       )
-      try await check(web, "humanIcon() && agentIcon()")
+      try await check(web, icons("humanIcon() && agentIcon()"))
       // When
       try await click(web, "隠す")
       // Then
@@ -305,7 +340,7 @@ import XCTest
     try await check(
       web,
       "text().includes('Codex') && text().includes('3 分前') && !text().includes('acceptance-model')")
-    try await check(web, "agentIcon()")
+    try await check(web, icons("agentIcon()"))
   }
   func test_本文画像_B018_B019_両方の面に画像が出る() async throws {
     // Given

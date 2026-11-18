@@ -27,7 +27,7 @@ import SwiftProtobuf
   ///
   /// 配置（分割、各領域のタブ、選択中のタブ、各タブの File 表示か Diff 表示かと比較の基準）は、
   /// worktree ごとに `fileLayoutDefaults` へ保存する。このアプリが所有し、サーバへは送らない。
-  var filePanes = PaneWorkspace()
+  var filePanes = PaneWorkspace(contentViewLifecycle: .recreateOnSwitch)
   /// ファイルタブの領域の配置を保存する UserDefaults。
   var fileLayoutDefaults: UserDefaults = .standard
   var filesFocused = false
@@ -668,12 +668,12 @@ import SwiftProtobuf
   }
   /// `filePanes` を、worktree に保存された配置で作り直す。保存が無いか読めなければ、空の配置にする。
   func restoreFilePaneLayout(_ worktree: String) {
-    let restored = PaneWorkspace()
+    let restored = PaneWorkspace(contentViewLifecycle: .recreateOnSwitch)
     if let data = fileLayoutDefaults.data(forKey: "filePaneLayout:" + worktree) {
       do {
         try restored.restore(JSONDecoder().decode(PaneLayout.self, from: data))
       } catch {
-        filePanes = PaneWorkspace()
+        filePanes = PaneWorkspace(contentViewLifecycle: .recreateOnSwitch)
         return
       }
     }

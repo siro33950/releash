@@ -664,7 +664,7 @@ func testWorkflowSettings(_ http: TestHTTPClient) {
   }
 }
 
-private final class InlineThreadWindow: NSPanel {
+private final class FileViewerWindow: NSPanel {
   override var occlusionState: NSWindow.OcclusionState { .visible }
   override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
     frameRect
@@ -689,33 +689,7 @@ extension FileViewerAcceptanceFixture {
     const button = label => all('button').find(e => visible(e) && e.textContent.trim() === label);
     const input = () => all('textarea').find(visible);
     const text = () => all('body, [slot]').filter(visible).map(e => e.innerText).join('\\n');
-    const header = (author, body, otherBody, time) => {
-      for (const name of all('[slot] *').filter(e => visible(e) && e.textContent.trim() === author)) {
-        let comment = name.parentElement;
-        while (comment && !comment.innerText.includes(body)) comment = comment.parentElement;
-        if (!comment || comment.innerText.includes(otherBody)) continue;
-        let heading = name.parentElement;
-        while (heading && heading !== comment) {
-          if (heading.innerText.includes(time) && !heading.innerText.includes(body)) return {heading, name};
-          heading = heading.parentElement;
-        }
-      }
-    };
-    const besideName = (icon, name) => {
-      const a = icon.getBoundingClientRect(), b = name.getBoundingClientRect();
-      return visible(icon) && a.width > 0 && a.height > 0 && a.right <= b.left + 1 && a.top < b.bottom && a.bottom > b.top;
-    };
-    const humanIcon = () => {
-      const h = header('siro33950', '先の本文', '後の本文', '25 分前');
-      return h && all('*', h.heading).some(e =>
-        e.textContent.trim().toLowerCase() === Array.from(h.name.textContent.trim())[0].toLowerCase()
-        && besideName(e, h.name));
-    };
-    const agentIcon = () => {
-      const h = header('Codex', '後の本文', '先の本文', '3 分前');
-      return h && all('svg, img, [role=img]', h.heading).some(e =>
-        e.textContent.trim().toLowerCase() !== Array.from(h.name.textContent.trim())[0].toLowerCase() && besideName(e, h.name));
-    };
+
 
     """
   }
@@ -735,7 +709,7 @@ extension FileViewerAcceptanceFixture {
       "return JSON.stringify({url:location.href,body:document.body?.innerHTML,shadows:all('*').filter(e=>e.shadowRoot).map(e=>e.shadowRoot.innerHTML.replaceAll(/<svg.*?<[/]svg>/gs,''))}).slice(0,4000);"
     )
     XCTFail("表示条件を満たしません: \(expression), DOM=\(snapshot ?? "unavailable")")
-    throw NSError(domain: "InlineThreadAcceptance", code: 1)
+    throw NSError(domain: "FileViewerAcceptance", code: 1)
   }
 
   func check(
@@ -772,11 +746,11 @@ extension FileViewerAcceptanceFixture {
   }
 
   func window<V: View>(_ view: V) -> NSWindow {
-    let window = InlineThreadWindow(
+    let window = FileViewerWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
       styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
-    window.title = "InlineThreadAcceptance-" + UUID().uuidString
+    window.title = "FileViewerAcceptance-" + UUID().uuidString
     let content = NSHostingView(rootView: view)
     content.sizingOptions = []
     window.contentView = content
@@ -791,7 +765,9 @@ extension FileViewerAcceptanceFixture {
     return window
   }
 
-  func findElement(_ host: NSWindow, name: String, exact: Bool = true) -> AXUIElement? {
+  func findElement(_ host: NSWindow, name: String, exact: Bool = true, role: String? = nil)
+    -> AXUIElement?
+  {
     func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
       var value: CFTypeRef?
       guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
@@ -804,6 +780,7 @@ extension FileViewerAcceptanceFixture {
       for child in attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
         if let result = find(child) { return result }
       }
+      if let role { return attribute(element, kAXRoleAttribute) as? String == role ? element : nil }
       if attribute(element, kAXIdentifierAttribute) as? String == name { return element }
       for key in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
         if let text = attribute(element, key) as? String,

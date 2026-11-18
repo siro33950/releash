@@ -8,10 +8,12 @@ class Element {
   constructor(tagName) { this.tagName = tagName; }
   children = [];
   attributes = {};
+  offsetHeight = 2000;
+  clientHeight = 700;
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
-  addEventListener() {}
+  addEventListener(type, handler) { this['on' + type] = handler; }
   focus() { this.focused = true; }
 }
 
@@ -46,6 +48,7 @@ async function bridge(now = Date.now()) {
   vm.runInNewContext(compiled.outputFiles[0].text, {
     window, document: { getElementById: (id) => elements[id], createElement: (name) => new Element(name) },
     Date: class extends Date { static now() { return now; } },
+    ResizeObserver: class { constructor(callback) { this.observe = callback; } disconnect() {} },
     TextEncoder, TextDecoder, console, queueMicrotask: (callback) => callback(),
   });
   return { window, messages, instances, elements, renderer: () => instances.at(-1) };
@@ -398,4 +401,20 @@ test('返信は長押しと送信中の連打を防ぎ失敗後に再送でき�
   assert.equal(count(), 2);
   ui.window.releashReplyAccepted(request.id, request.requestID, true);
   assert.equal(input.value, '');
+});
+
+test('a recreated viewer restores scroll and an unsent reply', async () => {
+  const ui = await bridge();
+  const thread = { id: 'open', line: 2, comments: [] };
+  ui.window.releashRender({ ...payload(), threads: [thread], scrollTop: 85, replies: { open: 'draft' } });
+  const card = ui.renderer().options.renderAnnotation({ metadata: thread });
+  assert.equal(card.children.find(element => element.tagName === 'textarea').value, 'draft');
+  assert.equal(ui.elements.viewport.scrollTop, 85);
+  ui.elements.viewport.scrollTop = 120;
+  ui.elements.viewport.onscroll();
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'scroll', top: 120 });
+  const reply = card.children.find(element => element.tagName === 'textarea');
+  reply.value = 'updated';
+  reply.oninput();
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'editReply', id: 'open', content: 'updated' });
 });

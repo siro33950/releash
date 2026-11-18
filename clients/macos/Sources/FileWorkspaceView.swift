@@ -42,6 +42,7 @@ struct FileWorkspaceView: View {
             model: model, tabID: tab.id, path: path, worktree: worktree,
             isSelected: model.filePanes.controller.selectedTab(inPane: pane)?.id == tab.id
           )
+          .transition(.identity)
           .id("\(worktree):\(tab.id):\(path)")
         }
       } emptyPane: { _ in
