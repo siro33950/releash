@@ -8,6 +8,7 @@ struct FileTabPane: View {
   let tabID: TabID
   let path: String
   let worktree: String
+  var isSelected = true
   @Environment(\.colorScheme) private var colorScheme
   var settings = FileDisplaySettings()
   @State var value: Releash_Client_V1_FileTabView?
@@ -51,17 +52,20 @@ struct FileTabPane: View {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
-    .onAppear {
+    .onChange(of: isSelected, initial: true) { _, selected in
+      guard selected else {
+        unsubscribe()
+        return
+      }
       subscribe()
       threadSubscription = model.subscribe("file-threads", [worktree, path]) { payload in
         if case .fileThreads(let value) = payload.value { threads = value }
       }
     }
-    .onDisappear {
-      if let subscription { model.unsubscribe(subscription) }
-      if let threadSubscription { model.unsubscribe(threadSubscription) }
+    .onDisappear { unsubscribe() }
+    .onChange(of: base) { _, _ in
+      if isSelected { subscribe() }
     }
-    .onChange(of: base) { _, _ in subscribe() }
   }
   var toolbar: some View {
     HStack(spacing: 4) {
@@ -119,9 +123,14 @@ struct FileTabPane: View {
     }
     return hex
   }
+  private func unsubscribe() {
+    if let subscription { model.unsubscribe(subscription) }
+    if let threadSubscription { model.unsubscribe(threadSubscription) }
+    subscription = nil
+    threadSubscription = nil
+  }
   func subscribe() {
     if let subscription { model.unsubscribe(subscription) }
-    value = nil
     subscription = model.subscribe("file-tab", [worktree, path, base]) { payload in
       guard case .fileTab(let received) = payload.value else { return }
       value = received
