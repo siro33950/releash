@@ -62,7 +62,7 @@ final class SettingsProvidersTests: XCTestCase {
       ["Bearer operator-test"])
     XCTAssertEqual(state.snapshot?.providers.items.first?.effectiveExecutable, "/custom/claude")
     XCTAssertEqual(state.executables["claude"], "/custom/claude")
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     var payload = Releash_Client_V1_StatePayload()
     payload.providerAvailability = testProviderAvailability()
@@ -146,7 +146,7 @@ final class SettingsProvidersTests: XCTestCase {
       default: await state.refresh(model: model)
       }
       // Then
-      XCTAssertEqual(state.failure, "\(method) failed")
+      XCTAssertEqual(model.failure, "\(method) failed")
       XCTAssertEqual(state.snapshot, saved)
       XCTAssertEqual(state.executables["claude"], "/custom/claude")
       XCTAssertTrue(state.saving.isEmpty)
@@ -157,9 +157,10 @@ final class SettingsProvidersTests: XCTestCase {
     XCTAssertEqual(empty.executable, "")
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     await state.refresh(model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     state.unsubscribe(model)
     await model.stop()
   }
@@ -172,19 +173,19 @@ final class SettingsProvidersTests: XCTestCase {
     // When
     await state.updateExecutable("claude", model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     state.snapshot = testProviderAvailability()
     state.executables["claude"] = "/custom/claude"
     await state.updateExecutable("claude", model: model)
     await state.updateExecutable("unknown", model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     state.executables["claude"] = "draft"
     await state.updateExecutable("claude", model: model)
     // Then
-    XCTAssertEqual(state.failure, "サーバに接続されていません")
+    XCTAssertEqual(model.failure, "サーバに接続されていません")
     XCTAssertEqual(state.executables["claude"], "/custom/claude")
     XCTAssertTrue(state.saving.isEmpty)
   }
@@ -280,7 +281,7 @@ final class SettingsProvidersTests: XCTestCase {
       XCTAssertEqual(request.executable, "/draft/codex")
       XCTAssertEqual(state.executables["claude"], "/new/claude")
       XCTAssertEqual(state.executables["codex"], "")
-      XCTAssertEqual(state.failure, rejected ? "UpdateProviderExecutable failed" : nil)
+      XCTAssertEqual(model.failure, rejected ? "UpdateProviderExecutable failed" : nil)
       XCTAssertTrue(state.saving.isEmpty)
       if !rejected {
         // When

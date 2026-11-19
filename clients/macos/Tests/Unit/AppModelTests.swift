@@ -93,7 +93,7 @@ final class AppModelTests: XCTestCase {
       }
       // Then
       try await eventually { model.failure == "\(method) failed" }
-      model.dismissFailure()
+      model.failure = nil
     }
     http.state.withLock { $0.failedMethod = "GitCreateBranch" }
     do {
@@ -162,7 +162,21 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.layout, input)
     XCTAssertFalse(model.layoutLoaded)
   }
-  @MainActor func test_配置復元エラー_閉じた継続失敗を抑え新規と解消後の再発を表示する() {
+  @MainActor func test_通知_同じ文言は一つにまとめ一定時間で消える() async throws {
+    // Given
+    let model = AppModel()
+    model.noticeDuration = .milliseconds(100)
+    // When
+    model.failure = "first"
+    model.failure = "second"
+    model.failure = "first"
+    // Then
+    XCTAssertEqual(model.notices.map(\.message), ["second", "first"])
+    XCTAssertEqual(model.failure, "first")
+    try await eventually { model.notices.isEmpty }
+  }
+
+  @MainActor func test_配置復元エラー_知らせた継続失敗を再び知らせず新規と解消後の再発を知らせる() {
     // Given
     let model = AppModel()
     model.selectWorktree("/repo")
@@ -173,7 +187,7 @@ final class AppModelTests: XCTestCase {
     // Then
     XCTAssertEqual(model.failure, "first\nsecond")
     // When
-    model.dismissFailure()
+    model.failure = nil
     state.value.readFailures.reverse()
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
@@ -184,7 +198,7 @@ final class AppModelTests: XCTestCase {
     // Then
     XCTAssertEqual(model.failure, "third")
     // When
-    model.dismissFailure()
+    model.failure = nil
     state.value.readFailures = workspaceFailures(["second"])
     model.receiveWorkspaceState(state, path: "/repo")
     // Then
@@ -195,7 +209,7 @@ final class AppModelTests: XCTestCase {
     // Then
     XCTAssertEqual(model.failure, "first")
     // When
-    model.dismissFailure()
+    model.failure = nil
     model.deselectWorktree("/repo")
     model.selectWorktree("/other")
     model.receiveWorkspaceState(state, path: "/repo")
@@ -207,7 +221,7 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.failure, "first\nsecond")
   }
 
-  @MainActor func test_配置復元エラー_診断文言が変わっても参照の閉じた状態を維持する() {
+  @MainActor func test_配置復元エラー_診断文言が変わっても同じ参照は再び知らせない() {
     // Given
     let model = AppModel()
     model.selectWorktree("/repo")
@@ -217,7 +231,7 @@ final class AppModelTests: XCTestCase {
     first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
     state.value.readFailures = [first]
     model.receiveWorkspaceState(state, path: "/repo")
-    model.dismissFailure()
+    model.failure = nil
     // When
     first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
     state.value.readFailures = [first]
@@ -232,7 +246,7 @@ final class AppModelTests: XCTestCase {
     // Then
     XCTAssertEqual(model.failure, second.message)
     // When
-    model.dismissFailure()
+    model.failure = nil
     state.value.readFailures = [second]
     model.receiveWorkspaceState(state, path: "/repo")
     first.message = "StorageAccessRequired correlation_id=\(UUID().uuidString)"
@@ -242,7 +256,7 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.failure, first.message)
   }
 
-  @MainActor func test_配置復元エラー_表示中に解消してから閉じても再発を表示する() {
+  @MainActor func test_配置復元エラー_解消してから再発すると知らせる() {
     for remaining in [[], ["second"]] {
       // Given
       let model = AppModel()
@@ -253,7 +267,7 @@ final class AppModelTests: XCTestCase {
       // When
       state.value.readFailures = workspaceFailures(remaining)
       model.receiveWorkspaceState(state, path: "/repo")
-      model.dismissFailure()
+      model.failure = nil
       model.receiveWorkspaceState(state, path: "/repo")
       // Then
       XCTAssertNil(model.failure)
@@ -265,7 +279,7 @@ final class AppModelTests: XCTestCase {
     }
   }
 
-  @MainActor func test_復元エラーと同文言の操作失敗_閉じる解消と切替で由来を取り違えない() {
+  @MainActor func test_復元エラーと同文言の操作失敗_解消と切替で操作失敗の通知を消さない() {
     for switchWorkspace in [false, true] {
       let model = AppModel()
       model.selectWorktree("/repo")
@@ -277,10 +291,10 @@ final class AppModelTests: XCTestCase {
         model.selectWorktree("/other")
         XCTAssertEqual(model.failure, "same failure")
       } else {
-        model.dismissFailure()
+        model.failure = nil
         state.value.readFailures = workspaceFailures(["same failure", "new failure"])
         model.receiveWorkspaceState(state, path: "/repo")
-        XCTAssertEqual(model.failure, "new failure\nsame failure")
+        XCTAssertEqual(model.failure, "new failure")
         model.failure = "same failure"
         state.value.readFailures = workspaceFailures([])
         model.receiveWorkspaceState(state, path: "/repo")

@@ -15,12 +15,6 @@ struct SourceControlView: View {
   @State private var initialMessage: String?
   @State private var isFirstSnapshot = true
   @State private var busy = false
-  private var operationFailure: String? {
-    get { model.sourceControlDrafts[worktree, default: .init()].operationFailure }
-    nonmutating set {
-      model.sourceControlDrafts[worktree, default: .init()].operationFailure = newValue
-    }
-  }
   @State private var forceConfirmation = false
   @State private var discardConfirmation = false
   @State private var discardPaths: [String] = []
@@ -86,7 +80,6 @@ struct SourceControlView: View {
           }.menuStyle(.button).fixedSize().disabled(busy)
         }
       }
-      if let operationFailure { Text(operationFailure).foregroundStyle(.red) }
       Divider()
       ScrollView {
         VStack(alignment: .leading, spacing: 12) {
@@ -258,10 +251,9 @@ struct SourceControlView: View {
   ) {
     guard let client = model.gitClient else { return }
     busy = true
-    operationFailure = nil
     model.perform {
       defer { busy = false }
-      do { try await action(client) } catch { operationFailure = model.failureMessage(error) }
+      try await action(client)
     }
   }
   private func commit(_ followUp: Releash_Client_V1_GitCommitFollowUp) {

@@ -44,7 +44,7 @@ final class SettingsWorkflowsTests: IntegrationTestCase {
     try await host.press("settings-open-workflows-directory")
     // Then
     try await eventuallyView(host) { host.texts().contains("OpenWorkflowDirectoryInEditor failed") }
-    XCTAssertNotNil(host.element("settings-workflows-failure"))
+    XCTAssertNotNil(host.element("snackbar"))
     model.connected = false
     try await eventuallyView(host) {
       host.element("settings-open-workflows-directory")?.enabled == false
@@ -95,7 +95,7 @@ final class SettingsWorkflowsTests: IntegrationTestCase {
     http.state.withLock { $0.failedMethod = "OpenWorkflowInEditor" }
     try await host.press("settings-open-workflow-in-editor")
     // Then
-    try await eventuallyView(host) { host.texts().contains("OpenWorkflowInEditor failed") }
+    try await eventually { model.failure == "OpenWorkflowInEditor failed" }
     // When
     var payload = Releash_Client_V1_StatePayload()
     payload.workflow = http.state.withLock { $0.workflowDetails["01_author-spec"]! }
@@ -132,7 +132,7 @@ final class SettingsWorkflowsTests: IntegrationTestCase {
     http.state.withLock { $0.failedMethod = "OpenFacetInEditor" }
     try await host.press("settings-open-facet-in-editor")
     // Then
-    try await eventuallyView(host) { host.texts().contains("OpenFacetInEditor failed") }
+    try await eventually { model.failure == "OpenFacetInEditor failed" }
     // When
     payload = .init()
     payload.facets = http.state.withLock { $0.facets["policy"]! }

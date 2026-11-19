@@ -82,7 +82,7 @@ final class SettingsGeneralTests: XCTestCase {
     XCTAssertEqual(state.editor?.selected, "")
     XCTAssertEqual(state.workflow?.approvalAutoApprove, false)
     XCTAssertEqual(state.command, "")
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     var payload = Releash_Client_V1_StatePayload()
     payload.terminalStartupCommand.value = "server command"
@@ -125,7 +125,7 @@ final class SettingsGeneralTests: XCTestCase {
     try await eventually { state.terminalCommand == "saved" }
     state.command = "command A"
     await state.updateCommand(model: model)
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     XCTAssertTrue(state.saving.isEmpty)
     // When
     state.command = "command B"
@@ -161,7 +161,7 @@ final class SettingsGeneralTests: XCTestCase {
         await state.updateCommand(model: model)
       }
       // Then
-      XCTAssertEqual(state.failure, "\(method) failed")
+      XCTAssertEqual(model.failure, "\(method) failed")
       XCTAssertEqual(state.editor?.selected, "")
       XCTAssertEqual(state.workflow?.approvalAutoApprove, false)
       XCTAssertEqual(state.command, "saved")
@@ -169,9 +169,10 @@ final class SettingsGeneralTests: XCTestCase {
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     await state.updateApproval(true, model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     state.unsubscribe(model)
     await model.stop()
   }
@@ -184,18 +185,18 @@ final class SettingsGeneralTests: XCTestCase {
     state.command = "draft"
     await state.updateCommand(model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     state.terminalCommand = "saved"
     state.command = "saved"
     await state.updateCommand(model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     state.command = "draft"
     await state.updateCommand(model: model)
     // Then
-    XCTAssertEqual(state.failure, "サーバに接続されていません")
+    XCTAssertEqual(model.failure, "サーバに接続されていません")
     XCTAssertEqual(state.command, "saved")
   }
 

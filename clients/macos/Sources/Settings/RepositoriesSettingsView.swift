@@ -162,12 +162,6 @@ struct RepositorySettingsView: View {
             Text("ディスク上のRepositoryは削除されません。")
           }
       }
-      if let failure = state.failure {
-        Section {
-          Text(failure).foregroundStyle(.secondary)
-            .accessibilityIdentifier("settings-repository-failure")
-        }
-      }
     }
     .formStyle(.grouped)
     .disabled(!model.connected || state.saving.contains(.repository))
@@ -187,7 +181,6 @@ struct RepositorySettingsView: View {
   var databaseID = "" { didSet { if databaseID != oldValue { validation = nil } } }
   var mapping = Releash_Client_V1_PropertyMappingView()
   var validation: Releash_Client_V1_NotionValidationResultView?
-  var failure: String?
   var saving: Set<Field> = []
   @ObservationIgnored private var subscriptions: [UUID] = []
 

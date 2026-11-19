@@ -108,12 +108,6 @@ struct SystemSettingsView: View {
         .disabled(!model.connected || state.settings == nil || state.saving.contains(.crash))
         .accessibilityIdentifier("settings-crash-reporting")
       }
-      if let failure = state.failure {
-        Section {
-          Text(failure).foregroundStyle(.secondary)
-            .accessibilityIdentifier("settings-system-failure")
-        }
-      }
     }
     .formStyle(.grouped)
     .onAppear {
@@ -144,7 +138,6 @@ struct SystemSettingsView: View {
   var cliResult: Releash_Client_V1_InstallCliResponse?
   var loginRegistration: Releash_Client_V1_LoginRegistrationResult?
   var requiresApproval = false
-  var failure: String?
   var saving: Set<Field> = []
   @ObservationIgnored var loginItemStatus: () -> SMAppService.Status = {
     SMAppService.mainApp.status

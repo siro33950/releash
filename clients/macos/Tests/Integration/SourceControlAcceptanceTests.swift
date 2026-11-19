@@ -714,11 +714,11 @@ final class SourceControlAcceptanceTests: IntegrationTestCase {
     // When
     try await menu(host, selecting: "Push")
     // Then
-    try await eventuallyView(host) { host.texts().contains { $0.contains("GitPush failed") } }
+    try await eventually { model.failure?.contains("GitPush failed") == true }
     await model.stop()
   }
 
-  @MainActor func test_SourceControl_ファイル面でpushが失敗しても戻ると理由が出る() async throws {
+  @MainActor func test_SourceControl_ファイル面でpushが失敗しても理由を知らせる() async throws {
     // Given
     let snapshot = Releash_Client_V1_SourceControlSnapshot.with {
       $0.branch = "main"
@@ -740,20 +740,8 @@ final class SourceControlAcceptanceTests: IntegrationTestCase {
       HTTPResponse(
         code: .internalError, headers: [:], message: nil, trailers: [:],
         error: ConnectError(code: .internalError, message: "GitPush failed"), tracingInfo: nil))
-    await host.refresh()
-    try await host.press("right-panel:sourceControl")
-    try await eventually {
-      http.state.withLock {
-        $0.subscriptions.filter { $0.target == "source-control" && $0.args == ["/repo"] }.count == 2
-      }
-    }
-    try http.publish(
-      .with { $0.sourceControl = snapshot }, target: "source-control", args: ["/repo"])
     // Then
-    try await eventuallyView(host) {
-      host.element("bridge.js") != nil && host.texts().contains { $0.contains("GitPush failed") }
-    }
-    XCTAssertNil(model.failure)
+    try await eventually { model.failure?.contains("GitPush failed") == true }
     await model.stop()
   }
 
@@ -1221,7 +1209,7 @@ final class SourceControlAcceptanceTests: IntegrationTestCase {
     try http.publish(.with { $0.sourceControl = snapshot }, target: "source-control")
     try await eventuallyView(host) {
       host.element("3 commit 中 3 つ目") != nil && host.element("next.js") != nil
-        && host.texts().contains { $0.contains("GitContinueOperation failed") }
+        && model.failure?.contains("GitContinueOperation failed") == true
     }
     try assertGroup(
       "CONFLICTS", contains: ["1"], excluding: ["main への rebase の途中です"], in: windowElement(host))
@@ -1475,7 +1463,7 @@ final class SourceControlAcceptanceTests: IntegrationTestCase {
         tracingInfo: nil))
     // Then
     try await eventuallyView(host) {
-      host.texts().contains("Pull conflict") && self.messageEditor(content)?.isEditable == true
+      model.failure == "Pull conflict" && self.messageEditor(content)?.isEditable == true
     }
     XCTAssertEqual(messageEditor(content)?.string, "merge message")
     await model.stop()
@@ -1550,7 +1538,7 @@ final class SourceControlAcceptanceTests: IntegrationTestCase {
       let content = try XCTUnwrap(host.window.contentView)
       let expectedMessage = code == "GIT_COMMIT_FOLLOW_UP_FAILED" ? "" : "commit message"
       try await eventuallyView(host) {
-        host.texts().contains("Push rejected") && self.messageEditor(content)?.isEditable == true
+        model.failure == "Push rejected" && self.messageEditor(content)?.isEditable == true
           && self.messageEditor(content)?.string == expectedMessage
       }
       XCTAssertEqual(messageEditor(content)?.string, expectedMessage)

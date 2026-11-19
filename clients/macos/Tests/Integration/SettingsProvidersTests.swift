@@ -63,12 +63,13 @@ final class SettingsProvidersTests: IntegrationTestCase {
     try submit(host)
     // Then
     try await eventuallyView(host) {
-      host.element("UpdateProviderExecutable failed") != nil
+      model.failure == "UpdateProviderExecutable failed"
         && host.element("settings-provider-executable-claude")?.value == "/custom/claude"
     }
     XCTAssertEqual(http.requests("UpdateProviderExecutable").count, 1)
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     try await focusExecutable(host)
     try await host.setTextField("/new/claude")
     try submit(host)
@@ -82,7 +83,7 @@ final class SettingsProvidersTests: IntegrationTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-provider-executable-claude")?.value == "/new/claude"
-        && host.element("settings-provider-failure") == nil
+        && model.failure == nil
     }
     host.close()
     // When
@@ -110,11 +111,12 @@ final class SettingsProvidersTests: IntegrationTestCase {
     try await host.press("settings-provider-reset-claude")
     // Then
     try await eventuallyView(host) {
-      host.element("ResetProviderExecutable failed") != nil
+      model.failure == "ResetProviderExecutable failed"
         && host.element("settings-provider-executable-claude")?.value == "/custom/claude"
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     try await host.press("settings-provider-reset-claude")
     try await eventually { http.requests("ResetProviderExecutable").count == 2 }
     var payload = Releash_Client_V1_StatePayload()
@@ -127,19 +129,20 @@ final class SettingsProvidersTests: IntegrationTestCase {
     try await eventuallyView(host) {
       host.element("settings-provider-executable-claude")?.value == ""
         && host.element("settings-provider-reset-claude")?.enabled == false
-        && host.element("settings-provider-failure") == nil
+        && model.failure == nil
     }
     // When
     http.state.withLock { $0.failedMethod = "RefreshProviderAvailability" }
     try await host.press("settings-provider-refresh")
     // Then
     try await eventuallyView(host) {
-      host.element("RefreshProviderAvailability failed") != nil
+      model.failure == "RefreshProviderAvailability failed"
         && host.element("settings-provider-refresh")?.enabled == true
     }
     XCTAssertEqual(http.requests("RefreshProviderAvailability").count, 1)
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     try await host.press("settings-provider-refresh")
     try await eventually { http.requests("RefreshProviderAvailability").count == 2 }
     payload.providerAvailability.providers.items[1].available = true
@@ -147,7 +150,7 @@ final class SettingsProvidersTests: IntegrationTestCase {
     try http.publish(payload, target: "provider-availability")
     // Then
     try await eventuallyView(host) {
-      host.element("/bin/codex") != nil && host.element("settings-provider-failure") == nil
+      host.element("/bin/codex") != nil && model.failure == nil
     }
     await model.stop()
   }
@@ -313,7 +316,7 @@ final class SettingsProvidersTests: IntegrationTestCase {
     try submit(host)
     // Then
     try await eventuallyView(host) {
-      host.element("UpdateProviderExecutable failed") != nil
+      model.failure == "UpdateProviderExecutable failed"
         && host.element("settings-provider-executable-codex")?.value == ""
     }
     let request = try Releash_Client_V1_UpdateProviderExecutableRequest(

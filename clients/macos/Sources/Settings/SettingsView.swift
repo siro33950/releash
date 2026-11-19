@@ -57,6 +57,7 @@ struct SettingsView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .frame(width: UIStyle.settingsWidth, height: UIStyle.settingsHeight)
+    .snackbar(model)
   }
 }
 

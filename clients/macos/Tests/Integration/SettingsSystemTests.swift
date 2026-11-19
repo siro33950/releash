@@ -162,12 +162,13 @@ final class SettingsSystemTests: IntegrationTestCase {
       try await host.press(id)
       // Then
       try await eventuallyView(host) {
-        host.texts().contains("\(method) failed") && host.element(id)?.value == saved
+        model.failure == "\(method) failed" && host.element(id)?.value == saved
       }
       XCTAssertEqual(http.requests(method).count, 1)
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     try await host.press("settings-crash-reporting")
     try await eventually { http.requests("UpdateCrashReporting").count == 2 }
     var payload = Releash_Client_V1_StatePayload()
@@ -177,7 +178,7 @@ final class SettingsSystemTests: IntegrationTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-crash-reporting")?.value == "1"
-        && host.element("settings-system-failure") == nil
+        && model.failure == nil
     }
     await model.stop()
   }
@@ -240,7 +241,7 @@ final class SettingsSystemTests: IntegrationTestCase {
     http.state.withLock { $0.failedMethod = "InstallCli" }
     try await host.press("settings-install-cli")
     // Then
-    try await eventuallyView(host) { host.texts().contains("InstallCli failed") }
+    try await eventuallyView(host) { model.failure == "InstallCli failed" }
     XCTAssertFalse(host.texts().contains("CLIを設置しました"))
     XCTAssertFalse(host.texts().contains("CLIは設置済みです"))
     await model.stop()

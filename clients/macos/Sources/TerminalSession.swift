@@ -13,7 +13,6 @@ import SwiftTerm
   var hasForegroundProcess: Bool?
   var exited = false
   var failure: String?
-  var dropFailure: String?
   @ObservationIgnored private weak var model: AppModel?
   @ObservationIgnored private var subscriber: UUID?
   @ObservationIgnored private var attachment: String?
@@ -189,10 +188,7 @@ import SwiftTerm
     request.owner = owner
     request.paths.items = paths
     let names = paths.joined(separator: ", ")
-    let report = { [weak self] (message: String) in
-      guard let self else { return }
-      dropFailure = [dropFailure, message].compactMap { $0 }.joined(separator: "\n")
-    }
+    let report = { [weak self] (message: String) in self?.model?.failure = message }
     enqueue(
       attachment,
       onDiscard: {
