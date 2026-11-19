@@ -61,12 +61,6 @@ struct ProvidersSettingsView: View {
         .disabled(!model.connected || state.snapshot == nil || !state.saving.isEmpty)
         .accessibilityIdentifier("settings-provider-refresh")
       }
-      if let failure = state.failure {
-        Section {
-          Text(failure).foregroundStyle(.secondary)
-            .accessibilityIdentifier("settings-provider-failure")
-        }
-      }
     }
     .formStyle(.grouped)
     .onAppear { state.subscribe(model) }
@@ -92,7 +86,6 @@ struct ProvidersSettingsView: View {
   }
   var snapshot: Releash_Client_V1_ProviderAvailabilitySnapshotResponse?
   var executables: [String: String] = [:]
-  var failure: String?
   var saving: Set<Field> = []
   @ObservationIgnored private var subscription: UUID?
 

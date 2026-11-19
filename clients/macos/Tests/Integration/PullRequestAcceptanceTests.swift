@@ -276,7 +276,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
 
   @MainActor func test_B007_選んだbaseと入力内容で作成を要求しできたPRに替わる() async throws {
     // Given
-    try await withPanel { http, _, host in
+    try await withPanel { http, model, host in
       try await creationForm(http, host)
       try await edit("Title", text: "New PR title", host)
       try await edit("Description（任意）", text: "New PR description", host)
@@ -299,7 +299,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
 
   @MainActor func test_B008_draftで作成を要求しDraftアイコンを表示する() async throws {
     // Given
-    try await withPanel { http, _, host in
+    try await withPanel { http, model, host in
       try await creationForm(http, host)
       try await edit("Title", text: "Draft PR", host)
       try await host.press("draft で作る")
@@ -590,7 +590,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
 
   @MainActor func test_B033_Comment投稿を拒まれると理由が出て文が残る() async throws {
     // Given
-    try await withPanel { http, _, host in
+    try await withPanel { http, model, host in
       try await show(pullRequest(), http, host)
       try await edit("Comment", text: "retained comment", host)
       http.state.withLock { $0.deferredTerminalMethod = "PostPullRequestComment" }
@@ -598,14 +598,14 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
       try await pressButton("Comment", host)
       try await reject(http, reason: "GitHub refused comment")
       // Then
-      try await eventuallyView(host) { host.element("GitHub refused comment") != nil }
+      try await eventually { model.failure == "GitHub refused comment" }
       XCTAssertEqual(try value("Comment", host, editable: true), "retained comment")
     }
   }
 
   @MainActor func test_B009_originに無いブランチはPRもpushも作らず入力を保つ() async throws {
     // Given
-    try await withDaemon(github: true, existingPR: false) { fixture, _, host in
+    try await withDaemon(github: true, existingPR: false) { fixture, model, host in
       try await host.press("PR")
       try await eventuallyView(host) { host.element("PR を作成") != nil }
       try await edit("Title", text: "Retained title", host)
@@ -613,9 +613,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
       // When
       try await pressButton("PR を作成", host)
       // Then
-      try await eventuallyView(host) {
-        host.texts().contains { $0.localizedCaseInsensitiveContains("push") }
-      }
+      try await eventually { model.failure?.localizedCaseInsensitiveContains("push") == true }
       XCTAssertEqual(try value("Title", host, editable: true), "Retained title")
       XCTAssertEqual(try value("Description（任意）", host, editable: true), "Retained description")
       let prs =
@@ -631,7 +629,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
 
   @MainActor func test_B011_B012_GitHub以外の実リポジトリでは作成欄が出て作成は失敗する() async throws {
     // Given
-    try await withDaemon(github: false, existingPR: false) { _, _, host in
+    try await withDaemon(github: false, existingPR: false) { _, model, host in
       // When
       try await host.press("PR")
       // Then
@@ -644,9 +642,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
       // When
       try await pressButton("PR を作成", host)
       // Then
-      try await eventuallyView(host) {
-        host.texts().contains { $0.contains("GitHub") && $0 != "Non GitHub PR" }
-      }
+      try await eventually { model.failure?.contains("GitHub") == true }
     }
   }
 
@@ -826,7 +822,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
 
   @MainActor private func assertCreationFailure(_ reason: String) async throws {
     // Given
-    try await withPanel { http, _, host in
+    try await withPanel { http, model, host in
       try await creationForm(http, host)
       try await edit("Title", text: "Retained title", host)
       try await edit("Description（任意）", text: "Retained description", host)
@@ -835,7 +831,7 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
       try await pressButton("PR を作成", host)
       try await reject(http, reason: reason)
       // Then
-      try await eventuallyView(host) { host.element(reason) != nil }
+      try await eventually { model.failure == reason }
       XCTAssertEqual(try value("Title", host, editable: true), "Retained title")
       XCTAssertEqual(try value("Description（任意）", host, editable: true), "Retained description")
     }

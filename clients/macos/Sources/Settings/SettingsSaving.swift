@@ -2,7 +2,6 @@ import Connect
 
 @MainActor protocol SettingsSaving: AnyObject {
   associatedtype Field: Hashable
-  var failure: String? { get set }
   var saving: Set<Field> { get set }
 }
 
@@ -12,7 +11,6 @@ extension SettingsSaving {
     operation: (any Releash_Client_V1_ClientServiceClientInterface, Headers) async throws -> Void
   ) async {
     guard saving.insert(field).inserted else { return }
-    failure = nil
     defer {
       saving.remove(field)
       cleanup()
@@ -23,7 +21,7 @@ extension SettingsSaving {
       }
       try await operation(client, model.headers)
     } catch {
-      failure = model.failureMessage(error)
+      model.failure = model.failureMessage(error)
     }
   }
 }

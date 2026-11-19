@@ -185,7 +185,7 @@ final class SettingsRepositoriesTests: XCTestCase {
     try http.publish(payload, target: "releash-base", args: ["/repo"])
     // Then
     try await eventually { state.base?.hasValue == false }
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     state.unsubscribe(model)
     await model.stop()
   }
@@ -218,7 +218,7 @@ final class SettingsRepositoriesTests: XCTestCase {
       // Then
       XCTAssertEqual(state.validationMessage, message)
       XCTAssertEqual(state.validation?.properties.items.first?.name, "Name")
-      XCTAssertNil(state.failure)
+      XCTAssertNil(model.failure)
     }
     let request = try Releash_Client_V1_ValidateNotionConfigRequest(
       serializedBytes: XCTUnwrap(http.requests("ValidateNotionConfig").last?.message))
@@ -320,7 +320,7 @@ final class SettingsRepositoriesTests: XCTestCase {
       state.mapping.title = "Title A"
       await state.validateNotion(model: model)
       await state.saveNotion(model: model)
-      XCTAssertNil(state.failure)
+      XCTAssertNil(model.failure)
       XCTAssertTrue(state.saving.isEmpty)
       let request = try Releash_Client_V1_SaveNotionConfigRequest(
         serializedBytes: XCTUnwrap(http.requests("SaveNotionConfig").last?.message))
@@ -411,7 +411,7 @@ final class SettingsRepositoriesTests: XCTestCase {
       default: await state.validateNotion(model: model)
       }
       // Then
-      XCTAssertEqual(state.failure, "\(method) failed")
+      XCTAssertEqual(model.failure, "\(method) failed")
       XCTAssertEqual(state.base?.value, "main")
       XCTAssertEqual(state.notion?.value.apiToken, "saved-token")
       if method == "SaveNotionConfig" || method == "DeleteNotionConfig" {
@@ -424,9 +424,10 @@ final class SettingsRepositoriesTests: XCTestCase {
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     await state.updateBase("develop", model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     state.unsubscribe(model)
     await model.stop()
   }
@@ -472,7 +473,7 @@ final class SettingsRepositoriesTests: XCTestCase {
     // When
     await state.saveNotion(model: model)
     // Then
-    XCTAssertEqual(state.failure, "サーバに接続されていません")
+    XCTAssertEqual(model.failure, "サーバに接続されていません")
     XCTAssertEqual(state.apiToken, "")
     XCTAssertTrue(state.saving.isEmpty)
   }

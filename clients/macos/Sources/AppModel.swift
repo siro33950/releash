@@ -9,7 +9,6 @@ import SwiftProtobuf
   let updater = AppUpdater()
   struct SourceControlDraft {
     var message = ""
-    var operationFailure: String?
     var operation: Releash_Client_V1_SourceControlOperation?
   }
   var sourceControlDrafts: [String: SourceControlDraft] = [:]
@@ -33,22 +32,30 @@ import SwiftProtobuf
   var fileLayoutDefaults: UserDefaults = .standard
   var filesFocused = false
   var focusedPanes: PaneWorkspace { filesFocused ? filePanes : panes }
-  private enum Failure {
-    case operation(String)
-    case workspace([String: String])
-
-    var message: String {
-      switch self {
-      case .operation(let message): return message
-      case .workspace(let errors): return Set(errors.values).sorted().joined(separator: "\n")
-      }
+  struct Notice: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+  }
+  private(set) var notices: [Notice] = []
+  @ObservationIgnored var noticeDuration: Duration = .seconds(4)
+  @ObservationIgnored var hoveredNotice: UUID?
+  private var workspaceReadErrors: Set<String> = []
+  var failure: String? {
+    get { notices.last?.message }
+    set {
+      if let newValue { notify(newValue) } else { notices = [] }
     }
   }
-  private var workspaceReadErrors: [String: Bool] = [:]
-  private var displayedFailure: Failure?
-  var failure: String? {
-    get { displayedFailure?.message }
-    set { displayedFailure = newValue.map(Failure.operation) }
+  private func notify(_ message: String) {
+    let notice = Notice(message: message)
+    notices.removeAll { $0.message == message }
+    notices.append(notice)
+    let duration = noticeDuration
+    Task { [weak self] in
+      try? await Task.sleep(for: duration)
+      while self?.hoveredNotice == notice.id { try? await Task.sleep(for: duration) }
+      self?.notices.removeAll { $0.id == notice.id }
+    }
   }
   var connectionFailure: String?
   var connected = false
@@ -445,20 +452,6 @@ import SwiftProtobuf
   func perform(_ operation: @escaping @MainActor () async throws -> Void) {
     Task { do { try await operation() } catch { failure = failureMessage(error) } }
   }
-  func dismissFailure() {
-    if case .workspace(let errors) = displayedFailure {
-      for error in errors.keys where workspaceReadErrors[error] != nil {
-        workspaceReadErrors[error] = true
-      }
-    }
-    displayedFailure = nil
-  }
-
-  private func resetWorkspaceReadErrors() {
-    if case .workspace = displayedFailure { displayedFailure = nil }
-    workspaceReadErrors = [:]
-  }
-
   private func updateSelectedBranch() {
     guard let path = selectedWorktree else {
       selectedBranch = nil
@@ -473,7 +466,7 @@ import SwiftProtobuf
     guard selectedWorktree != path || !layoutLoaded else { return }
     if let id = workspaceSubscription { unsubscribe(id) }
     stopTerminals()
-    resetWorkspaceReadErrors()
+    workspaceReadErrors = []
     selectedWorktree = path
     restoreFilePaneLayout(path)
     filesFocused = false
@@ -491,7 +484,7 @@ import SwiftProtobuf
     if let id = workspaceSubscription { unsubscribe(id) }
     workspaceSubscription = nil
     stopTerminals()
-    resetWorkspaceReadErrors()
+    workspaceReadErrors = []
     selectedWorktree = nil
     layoutLoaded = false
     layout = .empty()
@@ -502,15 +495,9 @@ import SwiftProtobuf
     let errors = Dictionary(
       (value.hasValue ? value.value.readFailures : []).map { ($0.referenceID, $0.message) },
       uniquingKeysWith: { _, latest in latest })
-    let hasNewError = errors.keys.contains { workspaceReadErrors[$0] == nil }
-    workspaceReadErrors = Dictionary(
-      uniqueKeysWithValues: errors.keys.map {
-        ($0, workspaceReadErrors[$0] ?? false)
-      })
-    if hasNewError {
-      let visible = errors.filter { workspaceReadErrors[$0.key] == false }
-      if !visible.isEmpty { displayedFailure = .workspace(visible) }
-    }
+    let newErrors = errors.filter { !workspaceReadErrors.contains($0.key) }
+    workspaceReadErrors = Set(errors.keys)
+    if !newErrors.isEmpty { failure = Set(newErrors.values).sorted().joined(separator: "\n") }
     let previous = layoutLoaded ? layout : nil
     var received = previous ?? .empty()
     var unset = false

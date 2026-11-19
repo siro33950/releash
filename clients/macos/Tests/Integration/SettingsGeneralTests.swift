@@ -67,12 +67,14 @@ final class SettingsGeneralTests: IntegrationTestCase {
     try await host.press("settings-approval-automation")
     // Then
     try await eventuallyView(host) {
-      host.texts().contains("UpdateWorkflowConfig failed")
+      model.failure == "UpdateWorkflowConfig failed"
         && host.element("settings-approval-automation")?.value == "0"
+        && host.element("settings-approval-automation")?.enabled == true
     }
     XCTAssertEqual(http.requests("UpdateWorkflowConfig").count, 1)
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     try await host.press("settings-approval-automation")
     try await eventually { http.requests("UpdateWorkflowConfig").count == 2 }
     var payload = Releash_Client_V1_StatePayload()
@@ -81,7 +83,7 @@ final class SettingsGeneralTests: IntegrationTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-approval-automation")?.value == "1"
-        && host.element("settings-save-failure") == nil
+        && model.failure == nil
     }
     await model.stop()
   }
@@ -116,7 +118,7 @@ final class SettingsGeneralTests: IntegrationTestCase {
     host.window.sendEvent(enter)
     // Then
     try await eventuallyView(host) {
-      host.texts().contains("UpdateTerminalStartupCommand failed")
+      model.failure == "UpdateTerminalStartupCommand failed"
         && host.element("settings-terminal-command")?.value == "saved"
     }
     XCTAssertEqual(http.requests("UpdateTerminalStartupCommand").count, 1)

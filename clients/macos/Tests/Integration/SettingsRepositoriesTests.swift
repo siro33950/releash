@@ -188,11 +188,12 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     XCTAssertTrue(titles.contains("自動（mainまたはmaster）"))
     // Then
     try await eventuallyView(host) {
-      host.texts().contains("SetReleashBase failed")
+      model.failure == "SetReleashBase failed"
         && host.element("settings-base-branch")?.value == "main"
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     _ = try await choosePicker(host, "settings-base-branch", "自動（mainまたはmaster）")
     try await eventually { http.requests("SetReleashBase").count == 2 }
     var payload = Releash_Client_V1_StatePayload()
@@ -201,7 +202,7 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     // Then
     try await eventuallyView(host) {
       host.element("settings-base-branch")?.value == "自動（mainまたはmaster）"
-        && host.element("settings-repository-failure") == nil
+        && model.failure == nil
     }
     await model.stop()
   }
@@ -258,7 +259,7 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     try await host.press("settings-notion-save")
     // Then
     try await eventuallyView(host) {
-      host.texts().contains("SaveNotionConfig failed")
+      model.failure == "SaveNotionConfig failed"
         && host.element("settings-notion-database")?.value == "saved-database"
         && host.element("settings-notion-save") == nil
     }
@@ -270,6 +271,7 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     XCTAssertEqual(saved.propertyMapping.branchPrefix, "feat/")
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     try await host.press("settings-notion-delete")
     try await eventually { http.requests("DeleteNotionConfig").count == 1 }
     var payload = Releash_Client_V1_StatePayload()

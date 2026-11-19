@@ -9,12 +9,6 @@ struct TerminalPane: View {
       if let failure = session.failure {
         Text(failure).foregroundStyle(.red).textSelection(.enabled)
       }
-      if let failure = session.dropFailure {
-        HStack {
-          Text(failure).foregroundStyle(.red).textSelection(.enabled)
-          Button("閉じる") { session.dropFailure = nil }
-        }
-      }
       TerminalDisplay(session: session, focused: focused)
     }
   }

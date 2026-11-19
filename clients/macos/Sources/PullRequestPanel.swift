@@ -14,14 +14,12 @@ struct PullRequestPanel: View {
   @State private var draft = false
   @State private var creatingFor: UInt64?
   @State private var comments: [UInt64: String] = [:]
-  @State private var error: String?
   @State private var busy = false
   @State private var passedExpanded = false
   @State private var skippedExpanded = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: UIStyle.spacing) {
-      if let error { Text(error).foregroundStyle(.red) }
       if snapshot.hasReadError { Text(snapshot.readError).foregroundStyle(.red) }
       switch snapshot.branchPullRequest {
       case .absent: creation
@@ -275,14 +273,13 @@ struct PullRequestPanel: View {
     request.base = base
     request.draft = draft
     busy = true
-    error = nil
     Task { @MainActor in
       defer { busy = false }
       do {
         _ = try await client.createPullRequest(request: request, headers: model.headers).result
           .get()
         creatingFor = nil
-      } catch { self.error = model.failureMessage(error) }
+      } catch { model.failure = model.failureMessage(error) }
     }
   }
 
@@ -294,14 +291,13 @@ struct PullRequestPanel: View {
     request.number = number
     request.body = sent
     busy = true
-    error = nil
     Task { @MainActor in
       defer { busy = false }
       do {
         _ = try await client.postPullRequestComment(request: request, headers: model.headers).result
           .get()
         if comments[number] == sent { comments[number] = nil }
-      } catch { self.error = model.failureMessage(error) }
+      } catch { model.failure = model.failureMessage(error) }
     }
   }
 

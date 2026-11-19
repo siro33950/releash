@@ -177,15 +177,7 @@ struct RootView: View {
       Color(nsColor: .underPageBackgroundColor),
       in: RoundedRectangle(cornerRadius: UIStyle.windowCornerRadius)
     )
-    .alert(
-      "操作に失敗しました",
-      isPresented: Binding(
-        get: { model.failure != nil }, set: { if !$0 { model.dismissFailure() } })
-    ) {
-      Button("閉じる") { model.dismissFailure() }
-    } message: {
-      Text(model.failure ?? "")
-    }
+    .snackbar(model)
   }
 }
 

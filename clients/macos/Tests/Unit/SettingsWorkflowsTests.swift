@@ -104,16 +104,18 @@ final class SettingsWorkflowsTests: XCTestCase {
       default: await state.openDirectory(model)
       }
       // Then
-      XCTAssertEqual(state.failure, "\(method) failed")
+      XCTAssertEqual(model.failure, "\(method) failed")
       XCTAssertTrue(state.saving.isEmpty)
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     await state.openDirectory(model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     await model.stop()
-    await state.openDirectory(AppModel())
-    XCTAssertEqual(state.failure, "サーバに接続されていません")
+    let disconnected = AppModel()
+    await state.openDirectory(disconnected)
+    XCTAssertEqual(disconnected.failure, "サーバに接続されていません")
   }
 }

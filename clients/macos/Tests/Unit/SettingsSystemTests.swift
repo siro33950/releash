@@ -99,7 +99,7 @@ final class SettingsSystemTests: XCTestCase {
       XCTAssertEqual(http.requests(method).count, 2)
       XCTAssertEqual(http.requests(method).last?.headers["authorization"], ["Bearer operator-test"])
     }
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     // When
     var payload = Releash_Client_V1_StatePayload()
     payload.desktopSettings = .with {
@@ -144,7 +144,7 @@ final class SettingsSystemTests: XCTestCase {
       default: await state.checkLoginRegistration("/Applications/Releash.app", model: model)
       }
       // Then
-      XCTAssertEqual(state.failure, "\(method) failed")
+      XCTAssertEqual(model.failure, "\(method) failed")
       XCTAssertEqual(state.settings, saved)
       XCTAssertNil(state.cliResult)
       XCTAssertNil(state.loginRegistration)
@@ -152,9 +152,10 @@ final class SettingsSystemTests: XCTestCase {
     }
     // When
     http.state.withLock { $0.failedMethod = nil }
+    model.failure = nil
     await state.updateCrashReporting(true, model: model)
     // Then
-    XCTAssertNil(state.failure)
+    XCTAssertNil(model.failure)
     state.unsubscribe(model)
     await model.stop()
   }
@@ -185,7 +186,7 @@ final class SettingsSystemTests: XCTestCase {
     // When
     await state.checkLoginRegistration(nil, model: model)
     // Then
-    XCTAssertEqual(state.failure, "アプリの実行ファイルのパスを取得できません")
+    XCTAssertEqual(model.failure, "アプリの実行ファイルのパスを取得できません")
     XCTAssertEqual(http.requests("CheckLoginRegistration").count, 3)
     await model.stop()
   }
@@ -217,7 +218,7 @@ final class SettingsSystemTests: XCTestCase {
       // Then
       XCTAssertEqual(state.cliResult?.status, status)
       XCTAssertEqual(state.cliResult?.path, "/usr/local/bin/releash")
-      XCTAssertNil(state.failure)
+      XCTAssertNil(model.failure)
       XCTAssertTrue(state.saving.isEmpty)
       XCTAssertEqual(
         http.requests("InstallCli").last?.headers["authorization"], ["Bearer operator-test"])
@@ -228,10 +229,11 @@ final class SettingsSystemTests: XCTestCase {
   @MainActor func test_System未接続_変更を送らず理由を表示する() async {
     // Given
     let state = SystemSettingsState()
+    let model = AppModel()
     // When
-    await state.updateAutoLaunch(true, model: AppModel())
+    await state.updateAutoLaunch(true, model: model)
     // Then
-    XCTAssertEqual(state.failure, "サーバに接続されていません")
+    XCTAssertEqual(model.failure, "サーバに接続されていません")
     XCTAssertNil(state.settings)
     XCTAssertTrue(state.saving.isEmpty)
   }

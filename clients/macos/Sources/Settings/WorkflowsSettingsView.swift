@@ -70,7 +70,6 @@ struct WorkflowsSettingsView: View {
         .accessibilityIdentifier("settings-open-workflows-directory")
         DiagnosticCounts(summary: state.diagnostics.total, includesInfo: true)
           .foregroundStyle(.secondary)
-        WorkflowSettingsFailure(failure: state.failure)
       }
       .padding()
       .navigationDestination(for: WorkflowSettingsRoute.self) { route in
@@ -120,7 +119,6 @@ private struct WorkflowSettingsDetail: View {
             }
           }
         }
-        WorkflowSettingsFailure(failure: state.failure)
       }
       .formStyle(.grouped)
     }
@@ -172,7 +170,6 @@ private struct FacetSettingsDetail: View {
             .accessibilityIdentifier("settings-facet-usage-\(usage.workflowName)-\(usage.nodeName)")
           }
         }
-        WorkflowSettingsFailure(failure: state.failure)
       }
       .formStyle(.grouped)
     }
@@ -291,23 +288,12 @@ private struct WorkflowDiagnostics: View {
   }
 }
 
-private struct WorkflowSettingsFailure: View {
-  let failure: String?
-  var body: some View {
-    if let failure {
-      Text(failure).foregroundStyle(.secondary)
-        .accessibilityIdentifier("settings-workflows-failure")
-    }
-  }
-}
-
 @Observable @MainActor final class WorkflowsSettingsState: SettingsSaving {
   enum Field { case workflow, facet, directory }
   var workflows = Releash_Client_V1_ListWorkflowSummaryDto()
   var workflow: Releash_Client_V1_NullableWorkflowDto?
   var facets = Releash_Client_V1_ListFacetSummaryDto()
   var diagnostics = Releash_Client_V1_DiagnosticReport()
-  var failure: String?
   var saving: Set<Field> = []
   @ObservationIgnored private var subscriptions: [UUID] = []
   @ObservationIgnored private var workflowSubscription: UUID?

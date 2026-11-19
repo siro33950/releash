@@ -68,12 +68,6 @@ struct GeneralSettingsView: View {
         .disabled(!model.connected || state.workflow == nil || state.saving.contains(.approval))
         .accessibilityIdentifier("settings-approval-automation")
       }
-      if let failure = state.failure {
-        Section {
-          Text(failure).foregroundStyle(.secondary)
-            .accessibilityIdentifier("settings-save-failure")
-        }
-      }
     }
     .formStyle(.grouped)
     .onAppear { state.subscribe(model) }
@@ -94,7 +88,6 @@ struct GeneralSettingsView: View {
   var workflow: Releash_Client_V1_WorkflowSection?
   var terminalCommand: String?
   var command = ""
-  var failure: String?
   var saving: Set<Field> = []
   @ObservationIgnored private var subscriptions: [UUID] = []
 

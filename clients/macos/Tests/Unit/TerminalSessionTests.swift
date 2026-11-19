@@ -12,6 +12,7 @@ final class TerminalSessionTests: XCTestCase {
     let model = try await testModel(http)
     let paths = ["/tmp/日本語 file.txt", "/tmp/a'b;$file"]
     for agent in [false, true] {
+      model.failure = nil
       let session = model.terminal(path: "/repo", id: agent ? "agent" : "shell", agent: agent)
       XCTAssertFalse(session.writePaths(paths))
       try await eventually { session.hasForegroundProcess != nil }
@@ -41,12 +42,12 @@ final class TerminalSessionTests: XCTestCase {
       XCTAssertFalse(session.writePaths([]))
       XCTAssertTrue(session.writePaths(["/tmp/stale"]))
       session.disconnect()
-      try await eventually { session.dropFailure?.contains("/tmp/stale") == true }
+      try await eventually { model.notices.contains { $0.message.contains("/tmp/stale") } }
       XCTAssertFalse(session.writePaths(paths))
       var event = Releash_Client_V1_TerminalEvent()
       event.snapshot.isExited = true
       session.receive(event)
-      XCTAssertTrue(session.dropFailure?.contains("/tmp/stale") == true)
+      XCTAssertTrue(model.notices.contains { $0.message.contains("/tmp/stale") })
       XCTAssertFalse(session.writePaths(paths))
       session.stop()
     }
@@ -70,12 +71,12 @@ final class TerminalSessionTests: XCTestCase {
     }
     XCTAssertEqual(http.requests("WritePathsToTerminalSurface").count, 1)
     XCTAssertTrue(session.failure?.contains("WritePathsToTerminalSurface failed") == true)
-    XCTAssertTrue(session.dropFailure?.contains("/tmp/file") == true)
+    XCTAssertTrue(model.notices.contains { $0.message.contains("/tmp/file") })
     let stream = http.state.withLock { $0.streams.last! }
     stream.receiveClose(
       .unavailable, [:], ConnectError(code: .unavailable, message: "disconnected"))
     try await eventually { session.hasForegroundProcess != nil && session.failure == nil }
-    XCTAssertTrue(session.dropFailure?.contains("確認できませんでした") == true)
+    XCTAssertTrue(model.notices.contains { $0.message.contains("確認できませんでした") })
     session.stop()
     await model.stop()
   }
@@ -98,7 +99,7 @@ final class TerminalSessionTests: XCTestCase {
       HTTPResponse(
         code: .ok, headers: ["content-type": ["application/proto"]], message: Data(),
         trailers: [:], error: nil, tracingInfo: .init(httpStatus: 200)))
-    try await eventually { session.dropFailure?.contains("端末が終了") == true }
+    try await eventually { model.notices.contains { $0.message.contains("端末が終了") } }
     XCTAssertTrue(http.requests("WritePathsToTerminalSurface").isEmpty)
     XCTAssertEqual(model.terminalAttachment(path: "/repo", id: "exit-before-drop"), attachment)
     XCTAssertNil(session.failure)
@@ -125,8 +126,8 @@ final class TerminalSessionTests: XCTestCase {
     let current = model.terminalAttachment(path: "/repo", id: "in-flight-drop")
     let pending = try XCTUnwrap(http.state.withLock { $0.pendingTerminal })
     pending(TestHTTPClient.failure("connection changed"))
-    try await eventually { session.dropFailure?.contains("/tmp/in-flight") == true }
-    XCTAssertTrue(session.dropFailure?.contains("確認できませんでした") == true)
+    try await eventually { model.notices.contains { $0.message.contains("/tmp/in-flight") } }
+    XCTAssertTrue(model.notices.contains { $0.message.contains("確認できませんでした") })
     XCTAssertNil(session.failure)
     XCTAssertEqual(model.terminalAttachment(path: "/repo", id: "in-flight-drop"), current)
     XCTAssertEqual(http.requests("WritePathsToTerminalSurface").count, 1)

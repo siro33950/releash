@@ -10,7 +10,6 @@ struct SessionHistoryView: View {
   @State private var count = 20
   @State private var subscription: UUID?
   @State private var busy = false
-  @State private var failure: String?
   @State private var archive = Releash_Client_V1_ListArchivedHistoryItem()
   @State private var archiveSubscription: UUID?
   @State private var search = ""
@@ -28,7 +27,6 @@ struct SessionHistoryView: View {
         )
         .foregroundStyle(.secondary)
       }
-      if let failure { Text(failure).foregroundStyle(.red).textSelection(.enabled) }
       TextField("名前・最初の指示で検索", text: $search)
         .textFieldStyle(.roundedBorder)
         .accessibilityLabel("名前・最初の指示で検索")
@@ -105,6 +103,7 @@ struct SessionHistoryView: View {
       } message: {
         Text("削除した Session は History から消え、復元できません。")
       }
+      .snackbar(model)
   }
 
   private func sessionRow(_ session: Releash_Client_V1_ArchivedSessionHistoryItem, id: String)
@@ -214,7 +213,6 @@ struct SessionHistoryView: View {
   func perform(_ action: @escaping () async throws -> Releash_Client_V1_SessionSelection?) {
     guard !busy else { return }
     busy = true
-    failure = nil
     Task {
       defer { busy = false }
       do {
@@ -222,7 +220,7 @@ struct SessionHistoryView: View {
           model.openSession(selection, path: path)
           dismiss()
         }
-      } catch { failure = model.failureMessage(error) }
+      } catch { model.failure = model.failureMessage(error) }
     }
   }
   func restoreWorkflow(_ id: String) {

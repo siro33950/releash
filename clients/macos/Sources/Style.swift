@@ -38,6 +38,10 @@ enum UIStyle {
   static let iconButtonHeight: CGFloat = 24
   static let collapsedPanelWidth: CGFloat = 36
   static let footerHeight: CGFloat = 24
+  static let snackbarMaximumWidth: CGFloat = 480
+  static let snackbarMaximumHeight: CGFloat = 160
+  static let snackbarShadowRadius: CGFloat = 4
+  static let snackbarLimit = 3
   static let nodeNameMinimumWidth: CGFloat = 140
   static let nodeNameWidth: CGFloat = 240
   static let nodeMetricWidth: CGFloat = 52
