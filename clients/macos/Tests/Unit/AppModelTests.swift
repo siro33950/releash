@@ -176,6 +176,22 @@ final class AppModelTests: XCTestCase {
     try await eventually { model.notices.isEmpty }
   }
 
+  @MainActor func test_通知_マウスを載せている間は消さず離すと消える() async throws {
+    // Given
+    let model = AppModel()
+    model.noticeDuration = .milliseconds(100)
+    model.failure = "hovered"
+    // When
+    model.hoveredNotice = model.notices.first?.id
+    try await Task.sleep(for: .milliseconds(400))
+    // Then
+    XCTAssertEqual(model.failure, "hovered")
+    // When
+    model.hoveredNotice = nil
+    // Then
+    try await eventually { model.notices.isEmpty }
+  }
+
   @MainActor func test_配置復元エラー_知らせた継続失敗を再び知らせず新規と解消後の再発を知らせる() {
     // Given
     let model = AppModel()

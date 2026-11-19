@@ -38,6 +38,7 @@ import SwiftProtobuf
   }
   private(set) var notices: [Notice] = []
   @ObservationIgnored var noticeDuration: Duration = .seconds(4)
+  @ObservationIgnored var hoveredNotice: UUID?
   private var workspaceReadErrors: Set<String> = []
   var failure: String? {
     get { notices.last?.message }
@@ -52,6 +53,7 @@ import SwiftProtobuf
     let duration = noticeDuration
     Task { [weak self] in
       try? await Task.sleep(for: duration)
+      while self?.hoveredNotice == notice.id { try? await Task.sleep(for: duration) }
       self?.notices.removeAll { $0.id == notice.id }
     }
   }
