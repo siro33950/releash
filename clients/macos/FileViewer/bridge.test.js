@@ -24,6 +24,14 @@ async function bridge(now = Date.now()) {
     constructor(options) { this.options = options; instances.push(this); }
     setOptions(options) { this.options = options; }
     render(input) { this.input = input; }
+    getLinePosition(line, side) {
+      this.requested = [line, side];
+      return { top: Math.min(line, 10) * 10 };
+    }
+    getNumericScrollAnchor(top) {
+      const lineNumber = Math.ceil(top / 10);
+      return { lineNumber, top: lineNumber * 10, side: 'deletions' };
+    }
     setSelectedLines() {}
     cleanUp() { this.cleaned = true; }
   }
@@ -446,7 +454,7 @@ test('寸法が揃った通知で保存位置を復元し監視を終える', as
   ui.elements.content.offsetHeight = 0;
   ui.elements.viewport.scrollTop = 0;
   // When
-  ui.window.releashRender({ ...payload(), scrollTop: 85 });
+  ui.window.releashRender({ ...payload(), scrollAnchor: { lineNumber: 9, delta: 5, side: 'deletions' } });
   // Then
   assert.equal(ui.elements.viewport.scrollTop, 0);
   assert.equal(ui.observers.size, 1);
@@ -462,21 +470,46 @@ test('scroll のたびにその時点の位置を送る', async () => {
   // Given
   const ui = await bridge();
   // When
+  ui.window.releashRender({ ...payload(), scrollAnchor: { lineNumber: 1, delta: 0 } });
+  ui.messages.length = 0;
   for (const top of [10, 20, 20, 30]) {
     ui.elements.viewport.scrollTop = top;
     ui.elements.viewport.onscroll();
   }
   // Then
-  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.top), [10, 20, 20, 30]);
+  assert.deepEqual(ui.messages.filter(m => m.kind === 'scroll').map(m => m.anchor.lineNumber), [1, 2, 2, 3]);
 });
 
-test('再生成したviewerが保存したスクロール位置を復元する', async () => {
+test('保存した行の位置を初回に一度だけ適用する', async () => {
   // Given
   const ui = await bridge();
+  const writes = [];
+  Object.defineProperty(ui.elements.viewport, 'scrollTop', {
+    get: () => writes.at(-1) ?? 0,
+    set: value => writes.push(value),
+  });
+  const next = { ...payload(), scrollAnchor: { lineNumber: 9, delta: 5, side: 'deletions' } };
   // When
-  ui.window.releashRender({ ...payload(), scrollTop: 85 });
+  ui.window.releashRender(next);
+  ui.window.releashRender({ ...next, dark: true });
   // Then
-  assert.equal(ui.elements.viewport.scrollTop, 85);
+  assert.deepEqual(writes, [85]);
+});
+
+test('復元待ちの scroll は送らない', async () => {
+  const ui = await bridge();
+  ui.elements.content.offsetHeight = 0;
+  ui.window.releashRender({ ...payload(), scrollAnchor: { lineNumber: 9, delta: 5 } });
+  ui.elements.viewport.scrollTop = 20;
+  ui.elements.viewport.onscroll();
+  assert.equal(ui.messages.filter(m => m.kind === 'scroll').length, 0);
+});
+
+test('末尾に丸めた直後に実際の上端の行を送る', async () => {
+  const ui = await bridge();
+  ui.window.releashRender({ ...payload(), scrollAnchor: { lineNumber: 20, delta: 2, side: 'deletions' } });
+  assert.deepEqual(ui.renderer().requested, [20, 'deletions']);
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'scroll', anchor: { lineNumber: 10, delta: 2, side: 'deletions' } });
 });
 
 test('再生成したviewerが返信を復元する', async () => {
@@ -529,30 +562,22 @@ test('作り直したviewerは送信完了後の下書きを反映する', async
   assert.equal(reply.value, '');
 });
 
-for (const userScrolled of [false, true]) {
-  test(userScrolled ? 'Thread 到着前に利用者が移動した位置を保つ' : 'Thread 到着後に保存位置まで戻す', async () => {
-    // Given
-    const ui = await bridge();
-    const viewport = ui.elements.viewport;
-    let limit = 40;
-    let top = 0;
-    Object.defineProperty(viewport, 'scrollTop', {
-      get: () => top,
-      set: value => { top = Math.min(value, limit); },
-    });
-    ui.window.releashRender({ ...payload(), threadsReady: false, scrollTop: 85 });
-    assert.equal(top, 40);
-    viewport.onscroll();
-    if (userScrolled) {
-      viewport.scrollTop = 20;
-      viewport.onscroll();
-    }
-    // When
-    limit = 100;
-    ui.window.releashRender({ ...payload(), threadsReady: true, scrollTop: top, threads: [{ id: 'late', line: 1 }] });
-    for (const observer of ui.observers) observer.callback();
-    // Then
-    assert.equal(top, userScrolled ? 20 : 85);
-    assert.equal(ui.observers.size, 0);
-  });
-}
+test('差分から消えた行には移動せず表示中の行を送る', async () => {
+  const ui = await bridge();
+  ui.elements.content.offsetHeight = 0;
+  ui.elements.viewport.scrollTop = 12;
+  ui.window.releashRender({ ...payload(), scrollAnchor: { lineNumber: 99, delta: 0 } });
+  ui.renderer().getLinePosition = () => undefined;
+  ui.elements.content.offsetHeight = 2000;
+  [...ui.observers][0].callback();
+  assert.equal(ui.elements.viewport.scrollTop, 12);
+  assert.deepEqual(plain(ui.messages.at(-1).anchor), { lineNumber: 2, delta: 8, side: 'deletions' });
+});
+
+test('上端の行が無い場合は保存位置を解除する', async () => {
+  const ui = await bridge();
+  ui.window.releashRender(payload());
+  ui.renderer().getNumericScrollAnchor = () => undefined;
+  ui.elements.viewport.onscroll();
+  assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'scroll', anchor: null });
+});

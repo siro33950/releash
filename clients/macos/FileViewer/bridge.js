@@ -36,16 +36,14 @@ window.releashReplyAccepted = (id, requestID, accepted = true) => {
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
-let savedTop;
-let appliedTop;
-let layout;
-viewport.addEventListener('scroll', () => {
-  if (savedTop !== undefined && viewport.scrollTop !== appliedTop) {
-    savedTop = undefined;
-    layout?.disconnect();
-  }
-  if (savedTop === undefined) send({ kind: 'scroll', top: viewport.scrollTop });
-});
+let restoring = false;
+function reportScroll() {
+  if (restoring || !renderer) return;
+  const top = viewport.scrollTop;
+  const line = renderer.getNumericScrollAnchor(top);
+  send({ kind: 'scroll', anchor: line ? { lineNumber: line.lineNumber, side: line.side, delta: line.top - top } : null });
+}
+viewport.addEventListener('scroll', reportScroll);
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -216,7 +214,7 @@ window.releashRender = (next) => {
     clearSelection();
     diffMetadata = undefined;
   }
-  const threadsArrived = payload?.threadsReady === false && next.threadsReady;
+  if (firstRender) restoring = !!next.scrollAnchor;
   const baseChanged = payload?.base !== next.base;
   if (!next.composer || !payload?.composer || next.composer.id !== payload.composer.id) composerContent = next.composer?.content ?? '';
   const openIDs = new Set(next.threads.filter((thread) => !thread.resolved).map((thread) => thread.id));
@@ -252,15 +250,15 @@ window.releashRender = (next) => {
   } else {
     renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
   }
-  if (firstRender && next.scrollTop) savedTop = next.scrollTop;
-  if ((firstRender || threadsArrived) && savedTop !== undefined) {
-    layout?.disconnect();
-    layout = new ResizeObserver(() => {
+  if (firstRender && restoring) {
+    const layout = new ResizeObserver(() => {
       if (!content.offsetHeight || !viewport.clientHeight) return;
-      viewport.scrollTop = savedTop;
-      appliedTop = viewport.scrollTop;
-      if (next.threadsReady !== false) savedTop = undefined;
+      const { lineNumber, side, delta } = next.scrollAnchor;
+      const position = renderer.getLinePosition(lineNumber, side);
+      if (position) viewport.scrollTop = position.top - delta;
+      restoring = false;
       layout.disconnect();
+      reportScroll();
     });
     layout.observe(content);
   }

@@ -74,6 +74,8 @@ final class FileWorkspaceAcceptanceTests: IntegrationTestCase {
     payload.fileTab.view.textDiff.original = ""
     payload.fileTab.view.textDiff.modified = "fn main() {}\n"
     try http.publish(payload, target: "file-tab", args: args)
+    try http.publish(
+      .with { $0.fileThreads = .init() }, target: "file-threads", args: ["/repo", name])
   }
 
   @MainActor private func views<T: NSView>(_ view: NSView, of type: T.Type) -> [T] {

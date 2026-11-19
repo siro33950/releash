@@ -367,6 +367,7 @@ final class LucideAcceptanceTests: IntegrationTestCase {
     try await eventually { model.layoutLoaded }
     let host = await ViewHarness(FileWorkspaceView(model: model, worktree: "/icons"))
     defer { host.close() }
+    http.state.withLock { $0.fileThreads[["/icons", "example.txt"]] = .init() }
     model.openFile("example.txt")
     try await eventually {
       http.state.withLock { $0.subscriptions.contains { $0.target == "file-tab" } }

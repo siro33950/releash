@@ -24,7 +24,7 @@ struct FileTabPane: View {
     VStack(spacing: 0) {
       toolbar
       Divider()
-      if let value, let view = value.view.variant {
+      if threads != nil, let value, let view = value.view.variant {
         switch view {
         case .textDiff(let text):
           FileWebView(
@@ -187,14 +187,13 @@ struct FileTabPane: View {
     colorScheme: ColorScheme
   ) -> [String: Any] {
     var result: [String: Any] = [
-      "scrollTop": draft.scrollTop, "replies": draft.replies,
+      "replies": draft.replies,
       "sendingReplies": Array(draft.sendingReplies.keys),
       "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
       "style": settings.style, "full": settings.full, "dark": colorScheme == .dark,
       "accent": Self.accentHex(colorScheme),
-      "threadsReady": threads != nil,
       "threads": (threads?.threads.items ?? []).compactMap { thread -> [String: Any]? in
         guard thread.target.hasLineNumber else { return nil }
         var annotation: [String: Any] = [
@@ -236,12 +235,13 @@ struct FileTabPane: View {
       }
       result["composer"] = composer
     }
+    result["scrollAnchor"] = draft.scrollAnchor
     return result
   }
   func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
     guard let kind = message["kind"] as? String else { return }
-    if kind == "scroll", let offset = message["top"] as? Double {
-      draft.scrollTop = offset
+    if kind == "scroll" {
+      draft.scrollAnchor = message["anchor"] as? [String: Any]
       return
     }
     if kind == "editReply", let id = message["id"] as? String,
@@ -401,7 +401,7 @@ struct FileLineSelection: Equatable {
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
-  @ObservationIgnored var scrollTop = 0.0
+  @ObservationIgnored var scrollAnchor: [String: Any]?
   @ObservationIgnored var imageOffset = CGPoint.zero
   enum ReplyEditState {
     case unedited
