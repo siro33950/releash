@@ -1,12 +1,13 @@
-import { VirtualizedFile, VirtualizedFileDiff, Virtualizer } from '@pierre/diffs';
+import circle_dot from 'lucide-static/icons/circle-dot.svg';
+import circle_check from 'lucide-static/icons/circle-check.svg';
+import chevron_right from 'lucide-static/icons/chevron-right.svg';
+import chevron_down from 'lucide-static/icons/chevron-down.svg';
+import { CodeView } from '@pierre/diffs';
 import MarkdownIt from 'markdown-it';
 import { metadata, renderType } from './metadata.js';
 
 const viewport = document.getElementById('viewport');
-const content = document.getElementById('content');
-let container = document.getElementById('file');
-const virtualizer = new Virtualizer();
-virtualizer.setup(viewport, content);
+let version = 0;
 let renderer;
 let mode;
 let payload;
@@ -17,7 +18,7 @@ const pendingReplies = new Map();
 const replyInputs = new Map();
 let nextRequestID = 0;
 let composerContent = '';
-const expanded = new Set();
+
 const markdown = new MarkdownIt({ html: false });
 const relativeTime = (timestamp) => {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
@@ -36,14 +37,15 @@ window.releashReplyAccepted = (id, requestID, accepted = true) => {
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
-let restoring = false;
+let awaitingRestoreRender = false;
 function reportScroll() {
-  if (restoring || !renderer) return;
-  const top = viewport.scrollTop;
-  const line = renderer.getNumericScrollAnchor(top);
+  if (awaitingRestoreRender) return;
+  const instance = renderer?.getRenderedItems()[0]?.instance;
+  if (!instance) return;
+  const top = renderer.getScrollTop() - renderer.getLocalTopForInstance(instance);
+  const line = instance.getNumericScrollAnchor(top);
   send({ kind: 'scroll', anchor: line ? { lineNumber: line.lineNumber, side: line.side, delta: line.top - top } : null });
 }
-viewport.addEventListener('scroll', reportScroll);
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -142,29 +144,31 @@ function annotation({ metadata: thread }) {
   if (thread.composer) return composer(thread);
   const element = document.createElement('section');
   element.className = 'thread-card';
+  const open = payload.expanded?.includes(thread.id) ?? false;
+  const summary = document.createElement('header');
+  const icon = (src, name, label) => {
+    const image = document.createElement('img');
+    image.src = src;
+    image.alt = label;
+    image.setAttribute('data-icon', name);
+    if (label) image.setAttribute('aria-label', label);
+    return image;
+  };
+  const name = document.createElement('span');
+  name.textContent = thread.resolved ? thread.resolvedBy : thread.comments[0]?.author;
+  const time = document.createElement('time');
+  time.textContent = relativeTime(thread.resolved ? thread.resolvedAt : thread.comments.at(-1)?.createdAt);
+  const count = document.createElement('span');
+  count.textContent = `${thread.comments.length} 件`;
+  const toggle = button('', () => send({ kind: 'expand', id: thread.id, open: !open }));
+  toggle.setAttribute('aria-label', open ? 'Thread を隠す' : 'Thread を表示');
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.append(open ? icon(chevron_down, 'chevron-down', '') : icon(chevron_right, 'chevron-right', ''));
+  summary.append(thread.resolved ? icon(circle_check, 'circle-check', '解決済み') : icon(circle_dot, 'circle-dot', '未解決'), name, time, count, toggle);
+  element.append(summary);
+  if (!open) return element;
   const comments = document.createElement('div');
-  const showComments = () => comments.replaceChildren(...thread.comments.map(commentView));
-  if (thread.resolved) {
-    const summary = document.createElement('header');
-    const label = document.createElement('span');
-    label.textContent = `${thread.resolvedBy} が解決にしました · ${relativeTime(thread.resolvedAt)}`;
-    const toggle = button(expanded.has(thread.id) ? '隠す' : '表示', () => {
-      if (expanded.delete(thread.id)) {
-        comments.replaceChildren();
-        toggle.textContent = '表示';
-      } else {
-        expanded.add(thread.id);
-        showComments();
-        toggle.textContent = '隠す';
-      }
-    });
-    summary.append(label, toggle);
-    element.append(summary);
-    if (expanded.has(thread.id)) showComments();
-  } else {
-    expanded.delete(thread.id);
-    showComments();
-  }
+  comments.append(...thread.comments.map(commentView));
   element.append(comments);
   if (!thread.resolved) {
     const input = document.createElement('textarea');
@@ -195,6 +199,7 @@ function annotation({ metadata: thread }) {
 window.releashRender = (next) => {
   const firstRender = !payload;
   if (firstRender) {
+    awaitingRestoreRender = !!next.scrollAnchor;
     for (const id of next.sendingReplies ?? []) pendingReplies.set(id, { requestID: null, edited: false });
     for (const [id, content] of Object.entries(next.replies ?? {})) {
       replies.set(id, content);
@@ -214,7 +219,6 @@ window.releashRender = (next) => {
     clearSelection();
     diffMetadata = undefined;
   }
-  if (firstRender) restoring = !!next.scrollAnchor;
   const baseChanged = payload?.base !== next.base;
   if (!next.composer || !payload?.composer || next.composer.id !== payload.composer.id) composerContent = next.composer?.content ?? '';
   const openIDs = new Set(next.threads.filter((thread) => !thread.resolved).map((thread) => thread.id));
@@ -225,9 +229,14 @@ window.releashRender = (next) => {
     theme: { dark: 'dark-plus', light: 'light-plus' },
     themeType: next.dark ? 'dark' : 'light',
     disableFileHeader: true,
+    layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
     diffStyle: next.style,
     expandUnchanged: next.full,
     enableLineSelection: true,
+    onPostRender: () => queueMicrotask(() => {
+      awaitingRestoreRender = false;
+      reportScroll();
+    }),
     onLineSelected: selectLines,
     renderAnnotation: annotation,
     unsafeCSS: viewerCSS(next, type),
@@ -235,10 +244,9 @@ window.releashRender = (next) => {
   if (mode !== type || baseChanged) {
     clearSelection();
     renderer?.cleanUp();
-    container = document.createElement('diffs-container');
-    container.id = 'file';
-    content.replaceChildren(container);
-    renderer = type === 'diff' ? new VirtualizedFileDiff(options, virtualizer) : new VirtualizedFile(options, virtualizer);
+    renderer = new CodeView(options);
+    renderer.setup(viewport);
+    renderer.subscribeToScroll(reportScroll);
     mode = type;
   } else renderer.setOptions(options);
   const annotations = [...next.threads];
@@ -246,21 +254,13 @@ window.releashRender = (next) => {
   if (mode === 'diff' && next.patch) {
     // 注釈は範囲の最後の行の下に出す
     const lineAnnotations = annotations.map((thread) => ({ side: thread.endSide ?? thread.side ?? (next.deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line, metadata: thread }));
-    renderer.render({ fileContainer: container, fileDiff: diffMetadata ??= metadata(next), lineAnnotations });
+    renderer.setItems([{ id: next.path, type, version: ++version, fileDiff: diffMetadata ??= metadata(next), annotations: lineAnnotations }]);
   } else {
-    renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
+    renderer.setItems([{ id: next.path, type: 'file', version: ++version, file: { name: next.path, contents: next.modified }, annotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) }]);
   }
-  if (firstRender && restoring) {
-    const layout = new ResizeObserver(() => {
-      if (!content.offsetHeight || !viewport.clientHeight) return;
-      const { lineNumber, side, delta } = next.scrollAnchor;
-      const position = renderer.getLinePosition(lineNumber, side);
-      if (position) viewport.scrollTop = position.top - delta;
-      restoring = false;
-      layout.disconnect();
-      reportScroll();
-    });
-    layout.observe(content);
+  if (firstRender && next.scrollAnchor) {
+    const { lineNumber, side, delta } = next.scrollAnchor;
+    renderer.scrollTo({ type: 'line', id: next.path, lineNumber, side, offset: delta, align: 'start', behavior: 'instant' });
   }
 };
 send({ kind: 'ready' });

@@ -30,9 +30,10 @@ AND そのタブに、そのファイルの Thread が表示される
 
 ## B-005: 選び直したファイルタブの表示の保持
 
-GIVEN 利用者が、あるファイルタブの中身をスクロールし、行に Thread の作成の入力を書きかけ、既にある Thread に返信の入力を書きかけている
+GIVEN 利用者が、あるファイルタブの中身をスクロールし、未解決の Thread を開き、行に Thread の作成の入力を書きかけ、開いた Thread に返信の入力を書きかけている
 WHEN 利用者が、同じ pane の別のファイルタブを選び、続けて元のファイルタブを選び直す
 THEN 元のファイルタブは、選択を外す前のスクロール位置で表示される
+AND 開いていた Thread は、開いた状態で表示される
 AND 書きかけの Thread の作成の入力が残っている
 AND 書きかけの返信の入力が残っている
 
@@ -50,12 +51,93 @@ GIVEN 一つの pane に複数のファイルタブが開いており、選択�
 WHEN 利用者が、同じ pane の別のファイルタブを選ぶ
 THEN アプリは、選択を外れたファイルタブの中身を破棄する
 
+## B-008: Thread の最初の表示
+
+GIVEN ファイルタブのファイルに、未解決の Thread と解決済みの Thread が付いており、そのファイルタブは Diff 表示である
+WHEN 利用者が、そのファイルタブを選ぶ
+THEN どちらの Thread も、Thread が付いた範囲の最後の行の下に、閉じた状態の Thread の行で表示される
+AND 未解決の Thread の行には、`circle-dot` のアイコン、最初の Comment の書き手の名前、最後の Comment を書いた時刻の相対表示、Comment の件数、`chevron-right` のアイコンが、この順に表示される
+AND 解決済みの Thread の行には、`circle-check` のアイコン、解決にした人の名前、解決にした時刻の相対表示、Comment の件数、`chevron-right` のアイコンが、この順に表示される
+AND どちらの Thread も、Comment の本文は表示されない
+AND `circle-dot` は「未解決」、`circle-check` は「解決済み」、`chevron-right` は「Thread を表示」という読み上げのための名前を持つ
+
+## B-009: 未解決の Thread を開く
+
+GIVEN 閉じた状態の、未解決の Thread の行が表示されている
+WHEN 利用者が、その行の `chevron-right` を押す
+THEN Thread の行の下に、その Thread のすべての Comment が古い順に表示される
+AND Comment の下に、返信の入力欄と「解決にする」ボタンが表示される
+AND その行の開閉のアイコンは `chevron-down` に替わり、「Thread を隠す」という読み上げのための名前を持つ
+
+## B-010: 解決済みの Thread を開く
+
+GIVEN 閉じた状態の、解決済みの Thread の行が表示されている
+WHEN 利用者が、その行の `chevron-right` を押す
+THEN Thread の行の下に、その Thread のすべての Comment が古い順に表示される
+AND 返信の入力欄と「解決にする」ボタンは表示されない
+
+## B-011: 開いた Thread を閉じる
+
+GIVEN 開いた Thread が表示されている
+WHEN 利用者が、その Thread の行の `chevron-down` を押す
+THEN その Thread は、Thread の行だけの表示に戻る
+AND その行の開閉のアイコンは `chevron-right` に替わる
+
+## B-012: 作った Thread の表示
+
+GIVEN 利用者が、行を選んで Thread を作るカードを出し、入力欄に文を書いている
+WHEN 利用者が「Thread を作る」を押す
+THEN できた Thread は、開いた状態で表示される
+
+## B-013: 解決にした Thread の表示
+
+GIVEN 開いた状態の、未解決の Thread が表示されている
+WHEN 利用者が「解決にする」を押す
+THEN その Thread は、`circle-check` のアイコンを持つ、閉じた状態の Thread の行に替わる
+
+## B-014: 開いた Thread の高さの上限
+
+GIVEN Comment を並べた高さが、ファイルタブの中身を表示する領域の高さを超える Thread がある
+WHEN 利用者が、その Thread を開く
+THEN 開いた Thread の高さは、ファイルタブの中身を表示する領域の高さの 8 割を超えない
+AND 利用者は、開いた Thread の中をスクロールして、最後の Comment まで読める
+
+## B-015: 開いた Thread より下の行から選び直したときのスクロール位置
+
+GIVEN 利用者が、あるファイルタブで Thread を開き、その Thread より下の行が表示の上端に来る位置まで、中身をスクロールしている
+WHEN 利用者が、同じ pane の別のファイルタブを選び、続けて元のファイルタブを選び直す
+THEN 元のファイルタブは、選択を外す前と同じ行を表示の上端にして表示される
+
+## B-016: 開いた Thread の途中から選び直したときのスクロール位置
+
+GIVEN 利用者が、あるファイルタブで Thread を開き、表示の上端がその開いた Thread の途中に来る位置まで、中身をスクロールしている
+WHEN 利用者が、同じ pane の別のファイルタブを選び、続けて元のファイルタブを選び直す
+THEN 表示の上端は、その開いた Thread の上端から、選択を外す前と同じだけ下にある
+
+## B-017: File 表示での Thread の最初の表示
+
+GIVEN ファイルタブのファイルに、未解決の Thread と解決済みの Thread が付いており、そのファイルタブは File 表示である
+WHEN 利用者が、そのファイルタブを選ぶ
+THEN どちらの Thread も、Thread が付いた範囲の最後の行の下に、閉じた状態の Thread の行で表示される
+
+## B-018: Thread を作るカードの高さの上限
+
+Thread を作るカードが表示されている間、そのカードの高さは、ファイルタブの中身を表示する領域の高さの 8 割を超えない。
+
 ## 要件IDとBehavior IDの対応表
 
 | Requirement ID | Behavior ID |
 | --- | --- |
 | R-001 | B-001, B-002, B-003 |
 | R-002 | B-004 |
-| R-003 | B-005 |
+| R-003 | B-005, B-015, B-016 |
 | R-004 | B-006 |
 | R-005 | B-007 |
+| R-006 | B-008, B-017 |
+| R-007 | B-008 |
+| R-008 | B-008, B-009, B-011 |
+| R-009 | B-009, B-010, B-011 |
+| R-010 | B-008, B-009 |
+| R-011 | B-012 |
+| R-012 | B-013 |
+| R-013 | B-014, B-018 |

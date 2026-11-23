@@ -173,7 +173,7 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     // Given
     let (http, model, host) = try await filesPanel(fileLayout(["hidden.rs", path]))
     model.selectWorktree("/other")
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     try await eventually {
       http.state.withLock {
         $0.subscriptions.contains { $0.target == "directory" && $0.args.first == "/other" }
@@ -194,7 +194,7 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
       second: fileLayout(["right-hidden.rs", "right.rs"]))
     let (http, _, host) = try await filesPanel(layout)
     // When
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     // Then
     try await expectStarts(http, in: host, paths: ["left.rs", "right.rs"])
   }
@@ -202,7 +202,7 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
   func test_ファイルタブ_B002_同じpaneで選択を移すと購読対象が切り替わる() async throws {
     // Given
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     try await expectStarts(http, in: host, paths: [path])
     let started = subscriptions(http)
     // When
@@ -220,7 +220,7 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     let args = ["/repo", path, "head"]
     try http.publish(
       snapshot("one\nold\nthree\nfour\n", mode: "diff"), target: "file-tab", args: args)
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     try await selectedPath("other.rs", in: host)
     var updated = snapshot("one\nupdated-line\nthree\nfour\n", mode: "diff")
     updated.fileTab.patch =
@@ -242,14 +242,14 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     let web = try await viewer(host)
     try await wait(
       web,
-      "all('[data-line]').some(e => visible(e) && e.textContent.includes('updated-line')) && all('[data-line]').some(e => visible(e) && e.textContent.includes('old')) && text().includes('先の本文')"
+      "all('[data-line]').some(e => visible(e) && e.textContent.includes('updated-line')) && all('[data-line]').some(e => visible(e) && e.textContent.includes('old')) && text().includes('Reviewer')"
     )
   }
 
   func test_ファイルタブ_B005_選び直したファイルでスクロール位置とThreadの下書きを保つ() async throws {
     // Given
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     try await eventually {
       self.subscriptions(http).contains { $0.target == "file-tab" && $0.args.contains(self.path) }
     }
@@ -264,8 +264,9 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     try http.publish(threads, target: "file-threads", args: ["/repo", path])
     let web = try await viewer(host)
     try await wait(web, "all('[data-line]').length > 0")
+    try await toggleThread(web)
     try await selectLines(web)
-    try await eventually { self.findElement(host, name: "Thread作成") != nil }
+    try await eventually { self.findElement(host, name: "file-create-thread") != nil }
     try pressCreate(host)
     let creation = "all('textarea').find(e => visible(e) && e.placeholder.startsWith('コメントを書く'))"
     let reply = "all('textarea').find(e => visible(e) && e.placeholder === '返信を書く…')"
@@ -299,13 +300,56 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     )
   }
 
+  func test_ファイルタブ_B015_B016_開いたThreadの下と途中の位置を復元する() async throws {
+    for inside in [false, true] {
+      // Given
+      let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
+      let payload = snapshot((1...180).map { "line-\($0)" }.joined(separator: "\n"), mode: "file")
+      let args = ["/repo", path, "head"]
+      try http.publish(payload, target: "file-tab", args: args)
+      var thread = testReviewThread("scroll")
+      thread.target.filePath = path
+      thread.target.lineNumber = 5
+      thread.target.endLine = 5
+      var threads = Releash_Client_V1_StatePayload()
+      threads.fileThreads.threads.items = [thread]
+      try http.publish(threads, target: "file-threads", args: ["/repo", path])
+      try await press(host, "right-panel:files")
+      let web = try await viewer(host)
+      try await toggleThread(web)
+      try await wait(web, "input()")
+      let anchor =
+        inside ? "input()?.closest('[slot]')" : "all('[data-line=\\\"12\\\"]').find(visible)"
+      let distance = inside ? 35 : 0
+      let position =
+        "\(anchor)?.getBoundingClientRect().top - document.querySelector('#viewport').getBoundingClientRect().top"
+      try await wait(web, anchor)
+      _ = try await js(
+        web,
+        """
+        const viewport = document.querySelector('#viewport');
+        viewport.addEventListener('scroll', () => window.didScroll = true, {once:true});
+        viewport.scrollTop += \(position) + \(distance);
+        """)
+      try await wait(web, "window.didScroll && Math.abs((\(position)) + \(distance)) <= 1")
+      // When
+      try await press(host, "other.rs")
+      try await selectedPath("other.rs", in: host)
+      try await press(host, path)
+      try await selectedPath(path, in: host)
+      // Then
+      let restored = try await viewer(host)
+      try await wait(restored, "input() && Math.abs((\(position)) + \(distance)) <= 1")
+    }
+  }
+
   func test_ファイルタブ_B006_再購読の内容が届くまで読み込み中を表示する() async throws {
     // Given
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
     let threadArgs = ["/repo", path]
     var threads = Releash_Client_V1_StatePayload()
     threads.fileThreads = .init()
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     try await expectStarts(http, in: host, paths: [path])
     try await press(host, "other.rs")
     try await selectedPath("other.rs", in: host)
@@ -316,12 +360,7 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     // When
     try await press(host, path)
     try await selectedPath(path, in: host)
-    try await eventually {
-      Set(
-        self.subscriptions(http).dropFirst(count).filter { $0.args.contains(self.path) }.map(
-          \.target))
-        == ["file-tab", "file-threads"]
-    }
+    try await waitForFileSubscriptions(http, paths: [path], after: count)
     // Then
     try await eventually {
       self.findElement(host, name: "", role: kAXProgressIndicatorRole as String) != nil
@@ -346,7 +385,7 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
     try http.publish(
       snapshot("discarded-line", mode: "file"), target: "file-tab", args: ["/repo", path, "head"])
-    try await press(host, "ファイル")
+    try await press(host, "right-panel:files")
     let containsLine = "all('[data-line]').some(e => e.textContent.includes('discarded-line'))"
     weak var original: WKWebView?
     do {

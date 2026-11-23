@@ -17,6 +17,18 @@ final class FileTabPaneTests: XCTestCase {
       path: "src/file.rs", worktree: "/repo", value: value)
   }
 
+  @MainActor func test_スクロール_上端の行が未取得でも次のviewerに最後の位置を渡す() throws {
+    // Given
+    let view = try pane(AppModel())
+    let anchor: [String: Any] = ["lineNumber": 42, "side": "additions", "delta": 3]
+    view.action(["kind": "scroll", "anchor": anchor])
+    // When
+    view.action(["kind": "scroll", "anchor": NSNull()])
+    let payload = view.bridgePayload(.init(), .init(), colorScheme: .light)
+    // Then
+    XCTAssertEqual(payload["scrollAnchor"] as? NSDictionary, anchor as NSDictionary)
+  }
+
   @MainActor func testThreadAnnotationsRetainSideAndServerResolution() throws {
     for side in [Releash_Client_V1_ReviewLineSideDto.Value.deletions, .additions] {
       var thread = Releash_Client_V1_ReviewThreadDto()

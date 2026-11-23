@@ -12,6 +12,16 @@ import XCTest
 
 @MainActor final class InlineThreadAcceptanceTests: IntegrationTestCase, FileViewerAcceptanceFixture
 {
+  private func hasIcon(_ label: String, _ name: String) -> String {
+    """
+    all('[aria-label="\(label)"]').filter(visible).some(control =>
+      [control, ...control.querySelectorAll('*')].some(e =>
+        visible(e) && (e.classList.contains('lucide-\(name)') ||
+          [e.getAttribute('src'), e.getAttribute('href'), e.getAttribute('data-icon')].some(value =>
+            value && value.split(/[\\/#.]/).includes('\(name)')))))
+    """
+  }
+
   private func icons(_ expression: String) -> String {
     """
     (() => {
@@ -147,12 +157,108 @@ import XCTest
     host.sendEvent(event)
   }
 
+  func test_ファイルタブ_B008_B017_両状態のThreadを範囲の最終行の下に閉じて表示する() async throws {
+    for mode in ["diff", "file"] {
+      // Given
+      var resolved = thread(resolved: true)
+      resolved.id = "resolved"
+      resolved.target.lineNumber = 1
+      resolved.target.endLine = 2
+      resolved.resolve.actor.displayName = "Resolver"
+      // When
+      let (_, _, _, web) = try await file([thread(), resolved], mode: mode)
+      // Then
+      for (label, name, time, line) in [
+        ("未解決", "siro33950", "3 分前", 3), ("解決済み", "Resolver", "1 時間前", 2),
+      ] {
+        let card = "all('[slot]').find(e => visible(e) && e.innerText.includes('\(name)'))"
+        try await wait(web, card)
+        try await check(
+          web,
+          """
+          (() => {
+            const card = \(card), rect = card.getBoundingClientRect();
+            const above = all('[data-line="\(line)"]').filter(visible);
+            const below = all('[data-line="\(line + 1)"]').filter(visible);
+            return above.some(e => e.getBoundingClientRect().bottom <= rect.top + 1)
+              && below.some(e => e.getBoundingClientRect().top >= rect.bottom - 1)
+              && !card.innerText.includes('先の本文') && !card.innerText.includes('後の本文');
+          })()
+          """)
+        if mode == "diff" {
+          try await check(web, hasIcon(label, label == "未解決" ? "circle-dot" : "circle-check"))
+          try await check(web, hasIcon("Thread を表示", "chevron-right"))
+          try await check(
+            web,
+            """
+            (() => {
+              const card = \(card);
+              const status = card.querySelector('[aria-label="\(label)"]');
+              const toggle = card.querySelector('[aria-label="Thread を表示"]');
+              const rangeFor = token => {
+                const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {
+                  const node = walker.currentNode, i = node.data.indexOf(token);
+                  if (i < 0) continue;
+                  const r = document.createRange();
+                  r.setStart(node, i); r.setEnd(node, i + token.length);
+                  const rect = r.getBoundingClientRect();
+                  if (rect.width) return rect;
+                }
+              };
+              const boxes = [status?.getBoundingClientRect(), rangeFor('\(name)'), rangeFor('\(time)'),
+                rangeFor('2'), toggle?.getBoundingClientRect()];
+              return boxes.every((r,i) => r && r.width > 0 && (!i || boxes[i-1].right <= r.left + 1));
+            })()
+            """)
+        }
+      }
+    }
+  }
+
+  func test_ファイルタブ_B014_長いThread内を最後のCommentまでスクロールできる() async throws {
+    // Given
+    var value = thread()
+    let comment = value.comments.items[0]
+    value.comments.items = (1...45).map { index in
+      var entry = comment
+      entry.id = "entry-\(index)"
+      entry.content = "Comment-\(index)"
+      entry.createdAt += Double(index)
+      return entry
+    }
+    let (_, _, _, web) = try await file([value])
+    // When
+    try await toggleThread(web)
+    // Then
+    try await wait(web, "text().includes('Comment-45')")
+    try await check(
+      web,
+      """
+      (() => {
+        const card = all('[slot]').find(e => visible(e) && e.innerText.includes('Comment-45'));
+        const last = all('*',card).find(e => e.childElementCount === 0 && e.textContent === 'Comment-45');
+        for (let e = last?.parentElement; e && card.contains(e); e = e.parentElement) {
+          if (!['scroll','auto'].includes(getComputedStyle(e).overflowY) || e.scrollHeight <= e.clientHeight) continue;
+          if (last.getBoundingClientRect().bottom <= e.getBoundingClientRect().bottom) continue;
+          e.scrollTop += last.getBoundingClientRect().bottom - e.getBoundingClientRect().bottom + 1;
+          const bounds = e.getBoundingClientRect(), body = last.getBoundingClientRect();
+          return card.getBoundingClientRect().height <= document.querySelector('#viewport').clientHeight * 0.8 + 1
+            && body.top >= bounds.top - 1 && body.bottom <= bounds.bottom + 1;
+        }
+        return false;
+      })()
+      """)
+  }
+
   func test_行下のカード_B001_B002_B003_B004_B006_B007() async throws {
     for mode in ["diff", "file"] {
       // Given / When
       let (_, _, _, web) = try await file([thread()], mode: mode)
+      try await toggleThread(web)
       try await wait(web, "text().includes('後の本文')")
       // Then
+      try await check(web, hasIcon("Thread を隠す", "chevron-down"))
       try await check(web, "text().indexOf('先の本文') < text().indexOf('後の本文')")
       try await check(web, "text().includes('siro33950') && text().includes('25 分前')")
       try await check(
@@ -169,8 +275,17 @@ import XCTest
       )
       try await check(
         web,
-        "!all('[slot]').filter(visible).some(e => /(?:^|[^0-9])[23](?![0-9])/.test(e.innerText.replaceAll('3 分前', '')))"
-      )
+        """
+        (() => {
+          const article = body => all('*').find(e => visible(e) && e.childElementCount === 0 && e.textContent === body);
+          const first = article('先の本文')?.getBoundingClientRect();
+          const last = article('後の本文')?.getBoundingClientRect();
+          const toggle = all('[aria-label="Thread を隠す"]').find(visible)?.getBoundingClientRect();
+          return first && last && toggle && toggle.bottom <= first.top && first.bottom <= last.top
+            && last.bottom <= input().getBoundingClientRect().top
+            && last.bottom <= button('解決にする').getBoundingClientRect().top;
+        })()
+        """)
       try await check(web, icons("agentIcon()"))
       try await check(web, "input()?.placeholder === '返信を書く…' && button('解決にする')")
       try await check(
@@ -189,6 +304,7 @@ import XCTest
     value.comments.items[0].content = "# 見出し\n\n- 箇条書き\n\n`code` と **強調**"
     // When
     let (_, _, _, web) = try await file([value])
+    try await toggleThread(web)
     try await wait(web, "text().includes('箇条書き')")
     // Then
     try await check(web, "all('h1').some(e => visible(e) && e.textContent === '見出し')")
@@ -203,6 +319,7 @@ import XCTest
     // Given
     var value = thread()
     let (http, _, host, web) = try await file([value])
+    try await toggleThread(web)
     try await wait(web, "input()")
     host.makeFirstResponder(web)
     _ = try await js(
@@ -235,6 +352,7 @@ import XCTest
   func test_解決_B010_解決すると一行へ替わる() async throws {
     // Given
     let (http, _, _, web) = try await file([thread()])
+    try await toggleThread(web)
     // When
     try await click(web, "解決にする")
     try await eventually { http.requests("ResolveReviewThread").count == 1 }
@@ -245,8 +363,12 @@ import XCTest
     resolved.resolve.resolvedAt = Date().timeIntervalSince1970 - 60
     try publish([resolved], http)
     // Then
-    try await wait(web, "button('表示') && !input()")
-    try await check(web, "text().includes('siro33950 が解決にしました · 1 分前') && !text().includes('先の本文')")
+    try await wait(web, "all('[aria-label=\"Thread を表示\"]').find(visible) && !input()")
+    try await check(web, hasIcon("解決済み", "circle-check"))
+    try await check(
+      web,
+      "all('[aria-label=解決済み]').some(visible) && text().includes('1 分前') && !text().includes('先の本文')"
+    )
   }
 
   func test_解決済み_B011_B012_B013_B014_表示と隠すを切り替える() async throws {
@@ -255,18 +377,21 @@ import XCTest
       var value = thread(resolved: true)
       value.comments.items[0].content = "**先の本文**"
       let (_, _, _, web) = try await file([value], mode: mode)
-      try await wait(web, "button('表示')")
+      try await wait(web, "all('[aria-label=\"Thread を表示\"]').some(visible)")
       // Then
       try await check(
-        web, "text().includes('siro33950 が解決にしました · 1 時間前') && !text().includes('先の本文')")
+        web, "text().includes('siro33950') && text().includes('1 時間前') && !text().includes('先の本文')")
       try await check(
         web,
-        "all('[data-line=\"3\"]').filter(visible).some(line => button('表示').getBoundingClientRect().top >= line.getBoundingClientRect().bottom - 1)"
+        "all('[data-line=\"3\"]').filter(visible).some(line => all('[aria-label=\"Thread を表示\"]').find(visible).getBoundingClientRect().top >= line.getBoundingClientRect().bottom - 1)"
       )
       // When
-      try await click(web, "表示")
+      try await toggleThread(web)
       // Then
-      try await wait(web, "button('隠す') && !button('表示') && text().includes('後の本文')")
+      try await wait(
+        web,
+        "all('[aria-label=\"Thread を隠す\"]').find(visible) && !all('[aria-label=\"Thread を表示\"]').find(visible) && text().includes('後の本文')"
+      )
       try await check(
         web, "text().indexOf('先の本文') < text().indexOf('後の本文') && !input() && !button('解決にする')")
       try await check(
@@ -275,19 +400,21 @@ import XCTest
       )
       try await check(web, icons("humanIcon() && agentIcon()"))
       // When
-      try await click(web, "隠す")
+      try await toggleThread(web, label: "Thread を隠す")
       // Then
       try await wait(
-        web, "button('表示') && !button('隠す') && !text().includes('先の本文') && !text().includes('後の本文')"
+        web,
+        "all('[aria-label=\"Thread を表示\"]').find(visible) && !all('[aria-label=\"Thread を隠す\"]').find(visible) && !text().includes('先の本文') && !text().includes('後の本文')"
       )
+      try await check(web, hasIcon("Thread を表示", "chevron-right"))
     }
   }
 
-  func test_作成_B015_B016_B017_行下で作成してキャンセルできる() async throws {
+  func test_作成_B012_B018_作成カードの高さとキャンセルと作成後の開いたThread() async throws {
     // Given
     let (http, _, host, web) = try await file([], mode: "file")
     try await selectLines(web)
-    try await eventually { self.findElement(host, name: "Thread作成") != nil }
+    try await eventually { self.findElement(host, name: "file-create-thread") != nil }
     // When
     try pressCreate(host)
     // Then
@@ -299,6 +426,14 @@ import XCTest
       web,
       "all('[data-line=\"3\"]').filter(visible).some(e => input().getBoundingClientRect().top >= e.getBoundingClientRect().bottom - 1)"
     )
+    let originalFrame = host.frame
+    host.setContentSize(NSSize(width: originalFrame.width, height: 180))
+    try await wait(web, "document.querySelector('#viewport').clientHeight <= 180")
+    try await check(
+      web,
+      "input().closest('section.thread-card').getBoundingClientRect().height <= document.querySelector('#viewport').clientHeight * 0.8 + 1"
+    )
+    host.setFrame(originalFrame, display: true)
     try key(host, code: 0, characters: "a")
     try await wait(web, "input().value === 'a'")
     // When
@@ -311,6 +446,10 @@ import XCTest
     try await wait(web, "input()")
     try key(host, code: 0, characters: "a")
     try await wait(web, "input().value === 'a'")
+    var created = thread()
+    created.comments.items = [created.comments.items[0]]
+    created.comments.items[0].content = "a"
+    http.state.withLock { $0.createdReviewThread = created }
     try await click(web, "Thread を作る")
     try await eventually { http.requests("CreateReviewThread").count == 1 }
     let request = try Releash_Client_V1_CreateReviewThreadRequest(
@@ -319,9 +458,6 @@ import XCTest
     XCTAssertEqual(request.lineNumber, 2)
     XCTAssertEqual(request.endLine, 3)
     XCTAssertEqual(request.content, "a")
-    var created = thread()
-    created.comments.items = [created.comments.items[0]]
-    created.comments.items[0].content = request.content
     try publish([created], http)
     // Then
     try await wait(
@@ -335,6 +471,7 @@ import XCTest
   func test_agent_B024_model未記録でも見出しと本文が出る() async throws {
     // Given / When
     let (_, _, _, web) = try await file([thread(model: false)])
+    try await toggleThread(web)
     try await wait(web, "text().includes('後の本文')")
     // Then
     try await check(
@@ -350,6 +487,7 @@ import XCTest
     value.comments.items[0].content = "![受入画像](\(server.url))"
     // When
     let (_, _, _, web) = try await file([value])
+    try await toggleThread(web)
     // Then
     try await wait(
       web,
@@ -394,6 +532,7 @@ import XCTest
     var value = thread()
     value.comments.items[0].content = "[受入リンク](\(url))"
     let (_, _, _, web) = try await file([value])
+    try await toggleThread(web)
     try await wait(web, "all('a').some(e => visible(e) && e.textContent === '受入リンク')")
     // When
     _ = try await js(web, "all('a').find(e => e.textContent === '受入リンク').click();")
@@ -425,11 +564,12 @@ import XCTest
       """
     // When
     let (http, _, _, web) = try await file([value])
+    try await toggleThread(web)
     try await wait(web, "text().includes('本文の後')")
     try await Task.sleep(for: .seconds(1))
     // Then
     try await check(web, "window.inlineExecuted !== true")
-    try await check(web, "input() && !button('表示')")
+    try await check(web, "input() && !all('[aria-label=\"Thread を表示\"]').find(visible)")
     for method in ["AppendReviewComment", "ResolveReviewThread", "CreateReviewThread"] {
       XCTAssertTrue(http.requests(method).isEmpty, method)
     }

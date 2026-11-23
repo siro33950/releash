@@ -73,14 +73,7 @@ extension FileViewerAcceptanceFixture where Self: XCTestCase {
   )
     async throws
   {
-    let expected = Set(paths.flatMap { ["file-tab/" + $0, "file-threads/" + $0] })
-    func received() -> Set<String> {
-      Set(
-        subscriptions(http).dropFirst(count).map {
-          $0.target + "/" + ($0.args.dropFirst().first ?? "")
-        })
-    }
-    try await eventually { expected.isSubset(of: received()) }
+    try await waitForFileSubscriptions(http, paths: paths, after: count)
     for (index, path) in paths.enumerated() {
       var payload = Releash_Client_V1_StatePayload()
       payload.fileTab.view.binary.modifiedSize = UInt64(count + index + 100)
@@ -89,7 +82,32 @@ extension FileViewerAcceptanceFixture where Self: XCTestCase {
         self.findElement(host, name: "\(count + index + 100) bytes") != nil
       }
     }
-    XCTAssertEqual(received(), expected)
+    XCTAssertEqual(subscriptionKeys(http, after: count), expectedSubscriptionKeys(paths))
+  }
+
+  private func subscriptionKeys(_ http: TestHTTPClient, after count: Int) -> Set<String> {
+    Set(
+      subscriptions(http).dropFirst(count).map {
+        $0.target + "/" + ($0.args.dropFirst().first ?? "")
+      })
+  }
+
+  private func expectedSubscriptionKeys(_ paths: [String]) -> Set<String> {
+    Set(paths.flatMap { ["file-tab/" + $0, "file-threads/" + $0] })
+  }
+
+  func waitForFileSubscriptions(_ http: TestHTTPClient, paths: [String], after count: Int = 0)
+    async throws
+  {
+    let expected = expectedSubscriptionKeys(paths)
+    try await eventually { expected.isSubset(of: self.subscriptionKeys(http, after: count)) }
+  }
+
+  func toggleThread(_ web: WKWebView, label: String = "Thread を表示") async throws {
+    let toggle =
+      "all('[aria-label]').find(e => visible(e) && e.getAttribute('aria-label') === '\(label)')"
+    try await wait(web, toggle)
+    _ = try await js(web, "\(toggle).click();")
   }
 
   func snapshot(_ modified: String, mode: String) -> Releash_Client_V1_StatePayload {

@@ -56,6 +56,7 @@ final class TestHTTPClient: HTTPClientInterface {
     var fileTabs: [[String]: Releash_Client_V1_FileTabView] = [:]
     var fileThreads: [[String]: Releash_Client_V1_FileThreadsSnapshot] = [:]
     var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
+    var createdReviewThread = Releash_Client_V1_ReviewThreadDto()
     var reviewThreads: [String: Releash_Client_V1_ListReviewThreadDto] = [:]
     /// Thread の ID ごとの、対象の行の差分。`review-threads` の購読で Thread に添えて配信する。
     var threadLines: [String: [Releash_Client_V1_ThreadDiffLine]] = [:]
@@ -304,6 +305,8 @@ final class TestHTTPClient: HTTPClientInterface {
         var result = Releash_Client_V1_ResultString()
         result.value = "workflow-execution"
         response = try result.serializedData()
+      } else if method == "CreateReviewThread" {
+        response = try state.withLock { try $0.createdReviewThread.serializedData() }
       } else if method == "ValidateNotionConfig" {
         response = try state.withLock { try $0.notionValidation.serializedData() }
       } else if method == "CheckLoginRegistration" {
@@ -804,7 +807,7 @@ extension FileViewerAcceptanceFixture {
   func pressCreate(_ host: NSWindow) throws {
     XCTAssertEqual(
       AXUIElementPerformAction(
-        try XCTUnwrap(findElement(host, name: "Thread作成")), kAXPressAction as CFString),
+        try XCTUnwrap(findElement(host, name: "file-create-thread")), kAXPressAction as CFString),
       .success)
   }
 

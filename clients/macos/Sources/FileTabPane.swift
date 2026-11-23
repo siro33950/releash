@@ -235,13 +235,18 @@ struct FileTabPane: View {
       }
       result["composer"] = composer
     }
+    result["expanded"] = Array(draft.expanded)
     result["scrollAnchor"] = draft.scrollAnchor
     return result
   }
   func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
     guard let kind = message["kind"] as? String else { return }
     if kind == "scroll" {
-      draft.scrollAnchor = message["anchor"] as? [String: Any]
+      if let anchor = message["anchor"] as? [String: Any] { draft.scrollAnchor = anchor }
+      return
+    }
+    if kind == "expand", let id = message["id"] as? String, let open = message["open"] as? Bool {
+      if open { draft.expanded.insert(id) } else { draft.expanded.remove(id) }
       return
     }
     if kind == "editReply", let id = message["id"] as? String,
@@ -303,6 +308,7 @@ struct FileTabPane: View {
         request.summary = "ファイルタブで解決"
         _ = try await client.resolveReviewThread(request: request, headers: model.headers).result
           .get()
+        draft.expanded.remove(id)
       default: break
       }
     }
@@ -334,7 +340,9 @@ struct FileTabPane: View {
     draft.sending = true
     model.perform {
       defer { draft.sending = false }
-      _ = try await client.createReviewThread(request: request, headers: model.headers).result.get()
+      let thread = try await client.createReviewThread(request: request, headers: model.headers)
+        .result.get()
+      draft.expanded.insert(thread.id)
       if draft.id == id { draft.line = nil }
     }
   }
@@ -401,6 +409,7 @@ struct FileLineSelection: Equatable {
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
+  var expanded: Set<String> = []
   @ObservationIgnored var scrollAnchor: [String: Any]?
   @ObservationIgnored var imageOffset = CGPoint.zero
   enum ReplyEditState {
