@@ -183,9 +183,10 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     try await eventuallyView(host) { host.element("settings-base-branch")?.enabled == true }
     // When
     http.state.withLock { $0.failedMethod = "SetReleashBase" }
-    let titles = try await choosePicker(host, "settings-base-branch", "develop")
-    XCTAssertTrue(titles.contains("main"))
-    XCTAssertTrue(titles.contains("自動（mainまたはmaster）"))
+    try await host.menu("settings-base-branch", selecting: "develop") { titles in
+      XCTAssertTrue(titles.contains("main"))
+      XCTAssertTrue(titles.contains("自動（mainまたはmaster）"))
+    }
     // Then
     try await eventuallyView(host) {
       model.failure == "SetReleashBase failed"
@@ -194,7 +195,7 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     // When
     http.state.withLock { $0.failedMethod = nil }
     model.failure = nil
-    _ = try await choosePicker(host, "settings-base-branch", "自動（mainまたはmaster）")
+    try await host.menu("settings-base-branch", selecting: "自動（mainまたはmaster）") { _ in }
     try await eventually { http.requests("SetReleashBase").count == 2 }
     var payload = Releash_Client_V1_StatePayload()
     payload.releashBase = .init()
@@ -244,14 +245,15 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
       host.texts().contains("接続に成功しました") && host.element("settings-notion-save") != nil
     }
     // When
-    let titles = try await choosePicker(host, "settings-notion-title", "Status (status)")
-    XCTAssertTrue(titles.contains("Name (title)"))
+    try await host.menu("settings-notion-title", selecting: "Status (status)") { titles in
+      XCTAssertTrue(titles.contains("Name (title)"))
+    }
     try await eventuallyView(host) {
       host.element("settings-notion-title")?.value == "Status (status)"
     }
     try await eventuallyView(host) { host.element("settings-notion-label-Status") != nil }
     try await host.press("settings-notion-label-Status")
-    _ = try await choosePicker(host, "settings-notion-branch", "Name (title)")
+    try await host.menu("settings-notion-branch", selecting: "Name (title)") { _ in }
     try await eventuallyView(host) {
       host.element("settings-notion-branch")?.value == "Name (title)"
     }
@@ -314,7 +316,7 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     try await host.setTextField("draft-database")
     try await host.press("settings-notion-validate")
     try await eventuallyView(host) { host.element("settings-notion-save") != nil }
-    _ = try await choosePicker(host, "settings-notion-title", "Name (title)")
+    try await host.menu("settings-notion-title", selecting: "Name (title)") { _ in }
     // When
     try await host.press("General")
     try await host.press("Repositories")
@@ -334,55 +336,5 @@ final class SettingsRepositoriesTests: IntegrationTestCase {
     XCTAssertEqual(request.databaseID, "draft-database")
     XCTAssertEqual(request.propertyMapping.title, "Name")
     await model.stop()
-  }
-
-  @MainActor private func choosePicker(_ host: ViewHarness, _ identifier: String, _ choice: String)
-    async throws -> [String]
-  {
-    func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-      var value: CFTypeRef?
-      AXUIElementCopyAttributeValue(element, name as CFString, &value)
-      return value
-    }
-    func menuItems(_ element: AXUIElement) -> [AXUIElement] {
-      let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
-      return (attribute(element, kAXRoleAttribute) as? String == kAXMenuItemRole ? [element] : [])
-        + children.flatMap(menuItems)
-    }
-    var titles: [String] = []
-    var finished = false
-    var selected = false
-    let deadline = ContinuousClock.now + .seconds(5)
-    let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
-      let done = MainActor.assumeIsolated {
-        guard !finished else { return true }
-        let items = menuItems(
-          AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier))
-        titles = items.compactMap { attribute($0, kAXTitleAttribute) as? String }
-        if let item = items.first(where: { attribute($0, kAXTitleAttribute) as? String == choice })
-        {
-          finished = true
-          selected = AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
-        } else if ContinuousClock.now >= deadline {
-          finished = true
-          if let escape = NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-            windowNumber: host.window.windowNumber, context: nil, characters: "\u{1b}",
-            charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)
-          {
-            NSApp.postEvent(escape, atStart: true)
-          }
-        }
-        return finished
-      }
-      if done { timer.invalidate() }
-    }
-    RunLoop.main.add(timer, forMode: .common)
-    RunLoop.main.add(timer, forMode: .eventTracking)
-    defer { timer.invalidate() }
-    try await host.press(identifier)
-    try await eventually { finished }
-    XCTAssertTrue(selected, titles.joined(separator: ", "))
-    return titles
   }
 }

@@ -65,13 +65,14 @@ final class SessionHistoryViewTests: IntegrationTestCase {
     let host = try await history(model, http: http, archive: archive, now: now, calendar: calendar)
     defer { host.close() }
     // Then
-    try await eventuallyView(host) { host.element("development-v4") != nil }
-    for title in [
+    let titles = [
       "ARCHIVE 済み", "PROVIDER の履歴", "このディレクトリで provider が残した Session",
       "Thread 面を GitHub の Conversation の見せ方にする", "Workflow", "完了", "中止", "昨日 18:42",
       "Source Control 面の Commit メニューに Push を足したい",
-    ] {
-      XCTAssertTrue(host.texts().contains { $0.contains(title) }, title)
+    ]
+    try await eventuallyView(host) {
+      host.element("development-v4") != nil
+        && titles.allSatisfy { title in host.texts().contains { $0.contains(title) } }
     }
     for (title, expected) in [
       ("ARCHIVE 済み", ["4"]),

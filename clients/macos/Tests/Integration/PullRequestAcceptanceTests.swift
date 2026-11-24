@@ -46,6 +46,13 @@ final class PullRequestAcceptanceTests: IntegrationTestCase {
       // When
       try await show(pr, http, host)
       // Then
+      try await eventuallyView(host) {
+        guard let input = lookup("pr-comment", host, editable: true),
+          let value = attribute(input, "AXFrame")
+        else { return false }
+        var rect = CGRect.zero
+        return AXValueGetValue(value as! AXValue, .cgRect, &rect) && rect.height > 48
+      }
       let count = try frame("失敗 1", host)
       let log = try frame("ログを開く", host)
       let author = try frame("Reviewer", host)
