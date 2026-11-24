@@ -13,10 +13,7 @@ final class FileTabLifecycleTests: IntegrationTestCase, FileViewerAcceptanceFixt
 
   func test_ファイルタブ_差分で自動展開した区間の行を選び直して上端に復元する() async throws {
     // Given
-    let defaults = UserDefaults.standard
-    let previous = defaults.object(forKey: "diffFull")
-    defaults.set(false, forKey: "diffFull")
-    defer { defaults.set(previous, forKey: "diffFull") }
+    disableFullDiff()
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path], mode: "diff"))
     host.setContentSize(NSSize(width: 560, height: 480))
     let prefix = (1...80).map { "line-\($0)\n" }.joined()

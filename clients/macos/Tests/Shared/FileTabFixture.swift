@@ -8,6 +8,14 @@ import XCTest
 @testable import Releash
 
 extension FileViewerAcceptanceFixture where Self: XCTestCase {
+  func disableFullDiff() {
+    let previous = UserDefaults.standard.object(forKey: "diffFull")
+    UserDefaults.standard.set(false, forKey: "diffFull")
+    addTeardownBlock { @MainActor in
+      UserDefaults.standard.set(previous, forKey: "diffFull")
+    }
+  }
+
   func press(_ host: NSWindow, _ name: String) async throws {
     try await eventually { self.findElement(host, name: name) != nil }
     let target = try XCTUnwrap(findElement(host, name: name))

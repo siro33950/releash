@@ -758,3 +758,70 @@ for (const [line, lineRenderable, expected] of [
     assert.deepEqual(ui.renderer().expansions, expected);
   });
 }
+
+for (const [source, fields, expansion] of [
+  ['作成カード', { composer: { line: 5, endLine: 8, endSide: 'deletions' } }, [1, 'up', 5]],
+  ['保存行', { scrollAnchor: { lineNumber: 2, side: 'deletions', delta: -3 } }, [0, 'up', 4]],
+]) {
+  for (const [mode, full] of [['diff', false], ['diff', true], ['file', false]]) {
+    test(source + 'だけがある ' + mode + ' 全文=' + full + ' の区間展開', async () => {
+      // Given
+      const ui = await bridge();
+      ui.window.releashRender({ ...foldedDiff([]), ...fields, mode, full });
+      const view = ui.renderer();
+      // When
+      view.options.onPostRender();
+      // Then
+      const expands = mode === 'diff' && !full;
+      assert.deepEqual(view.expansions, expands ? [expansion] : []);
+      if (fields.scrollAnchor && expands) {
+        const target = { type: 'line', id: 'file.rs', lineNumber: 2, side: 'deletions', offset: -3, align: 'start', behavior: 'instant' };
+        assert.deepEqual(plain(view.requests), [target, target]);
+      }
+    });
+  }
+}
+
+test('前の描画の通知は現在の展開と位置復元に干渉しない', async () => {
+  // Given
+  const ui = await bridge();
+  const next = { ...foldedDiff([{ line: 3 }]), scrollAnchor: { lineNumber: 8, side: 'additions', delta: -2 } };
+  ui.window.releashRender(next);
+  const stale = ui.renderer().options.onPostRender;
+  ui.window.releashRender({ ...next, base: 'branch-base' });
+  const view = ui.renderer();
+  // When
+  stale();
+  // Then
+  assert.deepEqual(view.expansions, []);
+  assert.deepEqual(view.requests, []);
+  assert.equal(ui.messages.some(m => m.kind === 'scroll'), false);
+  // When
+  view.options.onPostRender();
+  // Then
+  assert.deepEqual(plain(view.requests), [{ type: 'line', id: 'file.rs', lineNumber: 8, side: 'additions', offset: -2, align: 'start', behavior: 'instant' }]);
+  assert.equal(ui.messages.some(m => m.kind === 'scroll'), false);
+  // When
+  view.options.onPostRender();
+  // Then
+  assert.equal(ui.messages.at(-1).kind, 'scroll');
+});
+
+test('描画対象がまだないときは次の描画で区間を展開する', async () => {
+  // Given
+  const ui = await bridge();
+  ui.window.releashRender(foldedDiff([{ line: 3 }]));
+  const view = ui.renderer();
+  const items = view.getRenderedItems();
+  view.getRenderedItems = () => [];
+  // When
+  view.options.onPostRender();
+  // Then
+  assert.deepEqual(view.expansions, []);
+  assert.equal(ui.messages.some(m => m.kind === 'scroll'), false);
+  // When
+  view.getRenderedItems = () => items;
+  view.options.onPostRender();
+  // Then
+  assert.deepEqual(view.expansions, [[0, 'up', 4]]);
+});

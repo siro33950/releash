@@ -343,6 +343,83 @@ final class FileTabSubscriptionAcceptanceTests: IntegrationTestCase, FileViewerA
     }
   }
 
+  private func manuallyExpandedDiff() async throws -> (NSWindow, WKWebView) {
+    disableFullDiff()
+    let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path], mode: "diff"))
+    host.setContentSize(NSSize(width: 560, height: 480))
+    let prefix = (1...80).map { "line-\($0)\n" }.joined()
+    var diff = snapshot(prefix + "new\n", mode: "diff")
+    diff.fileTab.view.textDiff.original = prefix + "old\n"
+    diff.fileTab.patch = "--- a/acceptance.rs\n+++ b/acceptance.rs\n@@ -81 +81 @@\n-old\n+new\n"
+    try http.publish(diff, target: "file-tab", args: ["/repo", path, "head"])
+    try await press(host, "right-panel:files")
+    let web = try await viewer(host)
+    let expand = "all('[data-expand-button]').find(visible)"
+    try await wait(web, "\(expand) && !all('[data-line=\"3\"]').some(visible)")
+    _ = try await js(web, "\(expand).click();")
+    try await wait(web, "all('[data-line=\"3\"]').some(visible)")
+    return (host, web)
+  }
+
+  private func reselectFile(in host: NSWindow) async throws -> WKWebView {
+    try await press(host, "other.rs")
+    try await selectedPath("other.rs", in: host)
+    try await press(host, path)
+    try await selectedPath(path, in: host)
+    let web = try await viewer(host)
+    try await wait(web, "document.querySelector('#viewport')")
+    return web
+  }
+
+  func test_ファイルタブ_B020_手動で展開した行を選び直したときに上端へ戻す() async throws {
+    // Given
+    let (host, web) = try await manuallyExpandedDiff()
+    let offset =
+      "all('[data-line=\"12\"]').find(visible)?.getBoundingClientRect().top - document.querySelector('#viewport').getBoundingClientRect().top"
+    try await wait(web, "Number.isFinite(\(offset))")
+    _ = try await js(
+      web,
+      """
+      const viewport = document.querySelector('#viewport');
+      viewport.addEventListener('scroll', () => window.didScroll = true, {once: true});
+      viewport.scrollTop += \(offset);
+      """)
+    try await wait(web, "window.didScroll && Math.abs(\(offset)) <= 1")
+    // When
+    let restored = try await reselectFile(in: host)
+    // Then
+    try await wait(restored, "Math.abs(\(offset)) <= 1")
+  }
+
+  func test_ファイルタブ_B021_手動で展開した行の下に作成カードと下書きが戻る() async throws {
+    // Given
+    let (host, web) = try await manuallyExpandedDiff()
+    try await selectLines(web)
+    try await eventually { self.findElement(host, name: "file-create-thread") != nil }
+    try pressCreate(host)
+    try await wait(web, "input()")
+    _ = try await js(
+      web,
+      """
+      input().value = '書きかけ';
+      input().dispatchEvent(new Event('input', {bubbles: true}));
+      """)
+    // When
+    let restored = try await reselectFile(in: host)
+    // Then
+    try await wait(
+      restored,
+      """
+      (() => {
+        const field = input();
+        if (field?.value !== '書きかけ') return false;
+        const card = field.closest('[slot]').getBoundingClientRect();
+        return all('[data-line="3"]').filter(visible).some(e => e.getBoundingClientRect().bottom <= card.top + 1)
+          && all('[data-line="4"]').filter(visible).some(e => e.getBoundingClientRect().top >= card.bottom - 1);
+      })()
+      """)
+  }
+
   func test_ファイルタブ_B006_再購読の内容が届くまで読み込み中を表示する() async throws {
     // Given
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))

@@ -225,10 +225,7 @@ import XCTest
 
   func test_ファイルタブ_Issue2162_B019_折りたたまれた範囲の最終行の下に閉じたThreadが出る() async throws {
     // Given
-    let defaults = UserDefaults.standard
-    let previous = defaults.object(forKey: "diffFull")
-    defaults.set(false, forKey: "diffFull")
-    defer { defaults.set(previous, forKey: "diffFull") }
+    disableFullDiff()
     var open = thread()
     open.target.lineNumber = 3
     open.target.endLine = 5

@@ -221,11 +221,10 @@ function annotation({ metadata: thread }) {
 function threadAnchor(thread, deleted) {
   return { side: thread.endSide ?? thread.side ?? (deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line };
 }
-function expandThreadRegions(instance) {
+function expandRegions(instance, anchors) {
   let expanded = false;
   const { hunks, additionLines } = diffMetadata;
-  for (const thread of payload.threads) {
-    const { side, lineNumber: line } = threadAnchor(thread, payload.deleted);
+  for (const { side, lineNumber: line } of anchors) {
     for (let index = 0; index <= hunks.length; index++) {
       const hunk = hunks[index];
       const additionEnd = (hunk?.additionLineIndex ?? additionLines.length) + 1;
@@ -272,7 +271,10 @@ window.releashRender = (next) => {
   payload = next;
   const type = renderType(next);
   const renderVersion = version + 1;
-  let needsExpansion = type === 'diff' && !next.full && next.threads.length > 0;
+  const annotations = [...next.threads];
+  if (next.composer) annotations.push({ ...next.composer, composer: true });
+  const lineAnnotations = annotations.map((thread) => ({ ...threadAnchor(thread, next.deleted), metadata: thread }));
+  let needsExpansion = type === 'diff' && !next.full && (lineAnnotations.length > 0 || !!restoreAnchor);
   const options = {
     theme: { dark: 'dark-plus', light: 'light-plus' },
     themeType: next.dark ? 'dark' : 'light',
@@ -287,7 +289,7 @@ window.releashRender = (next) => {
         const instance = renderer.getRenderedItems()[0]?.instance;
         if (!instance) return;
         needsExpansion = false;
-        if (expandThreadRegions(instance) && restoreAnchor) {
+        if (expandRegions(instance, restoreAnchor ? [...lineAnnotations, restoreAnchor] : lineAnnotations) && restoreAnchor) {
           restoreScroll();
           return;
         }
@@ -307,14 +309,11 @@ window.releashRender = (next) => {
     renderer.subscribeToScroll(reportScroll);
     mode = type;
   } else renderer.setOptions(options);
-  const annotations = [...next.threads];
-  if (next.composer) annotations.push({ ...next.composer, composer: true });
   if (mode === 'diff' && next.patch) {
     // 注釈は範囲の最後の行の下に出す
-    const lineAnnotations = annotations.map((thread) => ({ ...threadAnchor(thread, next.deleted), metadata: thread }));
     renderer.setItems([{ id: next.path, type, version: ++version, fileDiff: diffMetadata ??= metadata(next), annotations: lineAnnotations }]);
   } else {
-    renderer.setItems([{ id: next.path, type: 'file', version: ++version, file: { name: next.path, contents: next.modified }, annotations: annotations.map((thread) => ({ lineNumber: threadAnchor(thread, next.deleted).lineNumber, metadata: thread })) }]);
+    renderer.setItems([{ id: next.path, type: 'file', version: ++version, file: { name: next.path, contents: next.modified }, annotations: lineAnnotations.map(({ lineNumber, metadata }) => ({ lineNumber, metadata })) }]);
   }
   if (firstRender && restoreAnchor) restoreScroll();
 };
