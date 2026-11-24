@@ -141,6 +141,27 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertEqual(results, [false])
   }
 
+  @MainActor func test_解決_RPCが失敗するとThreadを開いたままにする() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let tab = try pane(model)
+    var thread = testReviewThread("thread")
+    thread.target.lineNumber = 1
+    let view = FileTabPane(
+      model: model, tabID: tab.tabID, path: tab.path, worktree: tab.worktree,
+      threads: .with { $0.threads.items = [thread] })
+    view.action(["kind": "expand", "id": "thread", "open": true])
+    http.state.withLock { $0.failedMethod = "ResolveReviewThread" }
+    // When
+    view.action(["kind": "resolve", "id": "thread"])
+    try await eventually { model.failure?.contains("ResolveReviewThread failed") == true }
+    // Then
+    let payload = view.bridgePayload(.init(), .init(), colorScheme: .light)
+    XCTAssertEqual(payload["expanded"] as? [String], ["thread"])
+    await model.stop()
+  }
+
   @MainActor func testFileActionsSendTargetAndThreadInputAndReportRPCFailure() async throws {
     let http = TestHTTPClient()
     let model = try await testModel(http)

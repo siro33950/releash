@@ -89,7 +89,10 @@ import XCTest
     return value
   }
 
-  private func file(_ threads: [Releash_Client_V1_ReviewThreadDto], mode: String = "diff")
+  private func file(
+    _ threads: [Releash_Client_V1_ReviewThreadDto], mode: String = "diff",
+    unchangedLines: Int = 0
+  )
     async throws -> (TestHTTPClient, AppModel, NSWindow, WKWebView)
   {
     let http = TestHTTPClient()
@@ -114,10 +117,13 @@ import XCTest
     var payload = Releash_Client_V1_StatePayload()
     payload.fileTab.initialMode = mode
     payload.fileTab.view.textDiff.path = path
-    payload.fileTab.view.textDiff.original = "one\nold\nthree\nfour\n"
-    payload.fileTab.view.textDiff.modified = "one\nnew\nthree\nfour\n"
+    let prefix = (0..<unchangedLines).map { "prefix-\($0)\n" }.joined()
+    let suffix = (0..<unchangedLines).map { "suffix-\($0)\n" }.joined()
+    payload.fileTab.view.textDiff.original = prefix + "one\nold\nthree\nfour\n" + suffix
+    payload.fileTab.view.textDiff.modified = prefix + "one\nnew\nthree\nfour\n" + suffix
+    let start = unchangedLines + 1
     payload.fileTab.patch =
-      "--- a/acceptance.rs\n+++ b/acceptance.rs\n@@ -1,4 +1,4 @@\n one\n-old\n+new\n three\n four\n"
+      "--- a/acceptance.rs\n+++ b/acceptance.rs\n@@ -\(start),4 +\(start),4 @@\n one\n-old\n+new\n three\n four\n"
     try http.publish(payload, target: "file-tab")
     try publish(threads, http)
     try await eventually { self.views(host.contentView!, WKWebView.self).count == 1 }
@@ -157,10 +163,11 @@ import XCTest
     host.sendEvent(event)
   }
 
-  func test_ファイルタブ_B008_B017_両状態のThreadを範囲の最終行の下に閉じて表示する() async throws {
+  func test_ファイルタブ_Issue2162_B008_B017_両状態のThreadを範囲の最終行の下に閉じて表示する() async throws {
     for mode in ["diff", "file"] {
       // Given
       var resolved = thread(resolved: true)
+      resolved.comments.items.removeLast()
       resolved.id = "resolved"
       resolved.target.lineNumber = 1
       resolved.target.endLine = 2
@@ -168,8 +175,8 @@ import XCTest
       // When
       let (_, _, _, web) = try await file([thread(), resolved], mode: mode)
       // Then
-      for (label, name, time, line) in [
-        ("未解決", "siro33950", "3 分前", 3), ("解決済み", "Resolver", "1 時間前", 2),
+      for (label, name, time, count, line) in [
+        ("未解決", "siro33950", "3 分前", 2, 3), ("解決済み", "Resolver", "1 時間前", 1, 2),
       ] {
         let card = "all('[slot]').find(e => visible(e) && e.innerText.includes('\(name)'))"
         try await wait(web, card)
@@ -207,7 +214,7 @@ import XCTest
                 }
               };
               const boxes = [status?.getBoundingClientRect(), rangeFor('\(name)'), rangeFor('\(time)'),
-                rangeFor('2'), toggle?.getBoundingClientRect()];
+                rangeFor('\(count) 件'), toggle?.getBoundingClientRect()];
               return boxes.every((r,i) => r && r.width > 0 && (!i || boxes[i-1].right <= r.left + 1));
             })()
             """)
@@ -216,7 +223,39 @@ import XCTest
     }
   }
 
-  func test_ファイルタブ_B014_長いThread内を最後のCommentまでスクロールできる() async throws {
+  func test_ファイルタブ_Issue2162_B019_折りたたまれた範囲の最終行の下に閉じたThreadが出る() async throws {
+    // Given
+    let defaults = UserDefaults.standard
+    let previous = defaults.object(forKey: "diffFull")
+    defaults.set(false, forKey: "diffFull")
+    defer { defaults.set(previous, forKey: "diffFull") }
+    var open = thread()
+    open.target.lineNumber = 3
+    open.target.endLine = 5
+    var resolved = thread(resolved: true)
+    resolved.id = "resolved"
+    resolved.target.lineNumber = 34
+    resolved.target.endLine = 36
+
+    // When
+    let (_, _, _, web) = try await file([open, resolved], unchangedLines: 20)
+
+    // Then
+    for (label, line) in [("未解決", 5), ("解決済み", 36)] {
+      try await wait(
+        web,
+        """
+        (() => {
+          const card = all('[slot]').find(e => visible(e) && e.querySelector('[aria-label="\(label)"]'));
+          if (!card || !card.querySelector('[aria-label="Thread を表示"]') || card.innerText.includes('先の本文')) return false;
+          const rect = card.getBoundingClientRect();
+          return all('[data-line="\(line)"]').filter(visible).some(e => e.getBoundingClientRect().bottom <= rect.top + 1);
+        })()
+        """)
+    }
+  }
+
+  func test_ファイルタブ_Issue2162_B014_長いThread内を最後のCommentまでスクロールできる() async throws {
     // Given
     var value = thread()
     let comment = value.comments.items[0]
@@ -251,7 +290,7 @@ import XCTest
       """)
   }
 
-  func test_行下のカード_B001_B002_B003_B004_B006_B007() async throws {
+  func test_行下のカード_Issue2127_B001_B002_B003_B004_B006_B007_Issue2162_B009() async throws {
     for mode in ["diff", "file"] {
       // Given / When
       let (_, _, _, web) = try await file([thread()], mode: mode)
@@ -298,7 +337,7 @@ import XCTest
     }
   }
 
-  func test_本文_B005_Markdownとして整形する() async throws {
+  func test_本文_Issue2127_B005_Markdownとして整形する() async throws {
     // Given
     var value = thread()
     value.comments.items[0].content = "# 見出し\n\n- 箇条書き\n\n`code` と **強調**"
@@ -315,7 +354,7 @@ import XCTest
       web, "!text().includes('**強調**') && !text().includes('# 見出し') && !text().includes('`code`')")
   }
 
-  func test_返信_B008_B009_修飾キーで送信と改行を分ける() async throws {
+  func test_返信_Issue2127_B008_B009_修飾キーで送信と改行を分ける() async throws {
     // Given
     var value = thread()
     let (http, _, host, web) = try await file([value])
@@ -349,7 +388,7 @@ import XCTest
     try await check(web, "text().lastIndexOf('返信') > text().indexOf('後の本文')")
   }
 
-  func test_解決_B010_解決すると一行へ替わる() async throws {
+  func test_解決_Issue2127_B010_Issue2162_B013_解決すると一行へ替わる() async throws {
     // Given
     let (http, _, _, web) = try await file([thread()])
     try await toggleThread(web)
@@ -363,7 +402,10 @@ import XCTest
     resolved.resolve.resolvedAt = Date().timeIntervalSince1970 - 60
     try publish([resolved], http)
     // Then
-    try await wait(web, "all('[aria-label=\"Thread を表示\"]').find(visible) && !input()")
+    try await wait(
+      web,
+      "all('[aria-label=\"Thread を表示\"]').find(visible) && all('[aria-label=解決済み]').some(visible) && !input()"
+    )
     try await check(web, hasIcon("解決済み", "circle-check"))
     try await check(
       web,
@@ -371,7 +413,7 @@ import XCTest
     )
   }
 
-  func test_解決済み_B011_B012_B013_B014_表示と隠すを切り替える() async throws {
+  func test_解決済み_Issue2127_B011_B012_B013_B014_Issue2162_B010_B011_表示と隠すを切り替える() async throws {
     for mode in ["diff", "file"] {
       // Given / When
       var value = thread(resolved: true)
@@ -410,7 +452,9 @@ import XCTest
     }
   }
 
-  func test_作成_B012_B018_作成カードの高さとキャンセルと作成後の開いたThread() async throws {
+  func test_作成_Issue2127_B015_B016_B017_Issue2162_B012_B018_作成カードの高さとキャンセルと作成後の開いたThread()
+    async throws
+  {
     // Given
     let (http, _, host, web) = try await file([], mode: "file")
     try await selectLines(web)
@@ -468,7 +512,7 @@ import XCTest
     )
   }
 
-  func test_agent_B024_model未記録でも見出しと本文が出る() async throws {
+  func test_agent_Issue2127_B024_model未記録でも見出しと本文が出る() async throws {
     // Given / When
     let (_, _, _, web) = try await file([thread(model: false)])
     try await toggleThread(web)
@@ -479,7 +523,7 @@ import XCTest
       "text().includes('Codex') && text().includes('3 分前') && !text().includes('acceptance-model')")
     try await check(web, icons("agentIcon()"))
   }
-  func test_本文画像_B018_B019_両方の面に画像が出る() async throws {
+  func test_本文画像_Issue2127_B018_B019_両方の面に画像が出る() async throws {
     // Given
     let server = try InlineImageServer()
     defer { server.stop() }
@@ -519,7 +563,7 @@ import XCTest
     }
   }
 
-  func test_本文リンク_B020_ファイルタブから既定ブラウザへ渡す() async throws {
+  func test_本文リンク_Issue2127_B020_ファイルタブから既定ブラウザへ渡す() async throws {
     // Given
     let original = try XCTUnwrap(
       class_getInstanceMethod(NSWorkspace.self, #selector(NSWorkspace.open(_:))))
@@ -540,7 +584,7 @@ import XCTest
     try await eventually { InlineOpenedURLs.values.withLock { $0.map(\.absoluteString) == [url] } }
   }
 
-  func test_HTML_B022_B023_両方の面でscriptが操作を起こさない() async throws {
+  func test_HTML_Issue2127_B022_B023_両方の面でscriptが操作を起こさない() async throws {
     // Given
     var value = thread()
     value.comments.items[0].content = """
@@ -579,7 +623,7 @@ import XCTest
     try await eventually { self.findElement(host, name: "本文の後", exact: false) != nil }
     try await Task.sleep(for: .seconds(1))
     // Then
-    XCTAssertNotNil(findElement(host, name: "thread:inline"))
+    try await eventually { self.findElement(host, name: "thread-resolve:inline") != nil }
     XCTAssertNil(findElement(host, name: "thread-resolved:inline"))
     for method in ["AppendReviewComment", "ResolveReviewThread", "CreateReviewThread"] {
       XCTAssertTrue(panelHTTP.requests(method).isEmpty, method)

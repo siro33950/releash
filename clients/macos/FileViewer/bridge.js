@@ -12,6 +12,7 @@ let renderer;
 let mode;
 let payload;
 let selected;
+let focusThreadID;
 let diffMetadata;
 const replies = new Map();
 const pendingReplies = new Map();
@@ -40,10 +41,20 @@ const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(ac
 let awaitingRestoreRender = false;
 function reportScroll() {
   if (awaitingRestoreRender) return;
-  const instance = renderer?.getRenderedItems()[0]?.instance;
-  if (!instance) return;
+  const rendered = renderer?.getRenderedItems()[0];
+  if (!rendered) return;
+  const { instance, item } = rendered;
   const top = renderer.getScrollTop() - renderer.getLocalTopForInstance(instance);
-  const line = instance.getNumericScrollAnchor(top);
+  let line = instance.getNumericScrollAnchor(top);
+  if (!line) {
+    for (const { lineNumber, side } of item.annotations) {
+      const position = instance.getLinePosition(lineNumber, side);
+      if (position && position.top < top && top < position.top + position.height &&
+          (!line || position.top > line.top)) {
+        line = { lineNumber, side, top: position.top };
+      }
+    }
+  }
   send({ kind: 'scroll', anchor: line ? { lineNumber: line.lineNumber, side: line.side, delta: line.top - top } : null });
 }
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
@@ -160,7 +171,14 @@ function annotation({ metadata: thread }) {
   time.textContent = relativeTime(thread.resolved ? thread.resolvedAt : thread.comments.at(-1)?.createdAt);
   const count = document.createElement('span');
   count.textContent = `${thread.comments.length} 件`;
-  const toggle = button('', () => send({ kind: 'expand', id: thread.id, open: !open }));
+  const toggle = button('', () => {
+    focusThreadID = thread.id;
+    send({ kind: 'expand', id: thread.id, open: !open });
+  });
+  if (focusThreadID === thread.id) {
+    focusThreadID = undefined;
+    queueMicrotask(() => toggle.focus({ preventScroll: true }));
+  }
   toggle.setAttribute('aria-label', open ? 'Thread を隠す' : 'Thread を表示');
   toggle.setAttribute('aria-expanded', String(open));
   toggle.append(open ? icon(chevron_down, 'chevron-down', '') : icon(chevron_right, 'chevron-right', ''));
@@ -195,6 +213,28 @@ function annotation({ metadata: thread }) {
     if (thread.canResolve) element.append(button('解決にする', () => send({ kind: 'resolve', id: thread.id })));
   }
   return element;
+}
+function expandThreadRegions() {
+  if (mode !== 'diff' || payload.full || !payload.threads.length) return;
+  const instance = renderer.getRenderedItems()[0]?.instance;
+  if (!instance || !diffMetadata) return;
+  const { hunks, additionLines } = diffMetadata;
+  for (const thread of payload.threads) {
+    const deletion = (thread.endSide ?? thread.side ?? (payload.deleted ? 'deletions' : 'additions')) === 'deletions';
+    const line = thread.endLine ?? thread.line;
+    for (let index = 0; index <= hunks.length; index++) {
+      const hunk = hunks[index];
+      const additionEnd = (hunk?.additionLineIndex ?? additionLines.length) + 1;
+      const end = deletion ? (hunk?.deletionLineIndex ?? diffMetadata.deletionLines.length) + 1 : additionEnd;
+      const last = hunks.at(-1);
+      const count = hunk?.collapsedBefore ?? (last ? additionLines.length - last.additionLineIndex - last.additionCount : 0);
+      if (line >= end) continue;
+      if (line >= end - count && !instance.isLineRenderable(additionEnd - (end - line))) {
+        instance.expandHunk(index, 'up', count);
+      }
+      break;
+    }
+  }
 }
 window.releashRender = (next) => {
   const firstRender = !payload;
@@ -234,6 +274,7 @@ window.releashRender = (next) => {
     expandUnchanged: next.full,
     enableLineSelection: true,
     onPostRender: () => queueMicrotask(() => {
+      expandThreadRegions();
       awaitingRestoreRender = false;
       reportScroll();
     }),

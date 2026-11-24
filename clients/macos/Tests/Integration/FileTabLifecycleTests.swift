@@ -11,6 +11,49 @@ import XCTest
 final class FileTabLifecycleTests: IntegrationTestCase, FileViewerAcceptanceFixture {
   private let path = "acceptance.rs"
 
+  func test_ファイルタブ_最終行の二つ目のThread内の位置を選び直して復元する() async throws {
+    // Given
+    let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
+    host.setContentSize(NSSize(width: 560, height: 480))
+    try http.publish(
+      snapshot("last", mode: "file"), target: "file-tab", args: ["/repo", path, "head"])
+    var threads = Releash_Client_V1_StatePayload()
+    threads.fileThreads.threads.items = (1...12).map { index in
+      var thread = testReviewThread("thread-\(index)")
+      thread.target.filePath = path
+      thread.target.lineNumber = 1
+      thread.target.endLine = 1
+      thread.comments.items[0].content = String(repeating: "段落\n\n", count: 20)
+      return thread
+    }
+    try http.publish(threads, target: "file-threads", args: ["/repo", path])
+    try await press(host, "right-panel:files")
+    let web = try await viewer(host)
+    let cards = "all('[aria-expanded=true]').map(e => e.closest('section'))"
+    try await toggleThread(web)
+    try await wait(web, "\(cards).length === 1")
+    try await toggleThread(web)
+    try await wait(web, "\(cards).length === 2")
+    let position =
+      "\(cards)[1]?.getBoundingClientRect().top - document.querySelector('#viewport').getBoundingClientRect().top"
+    _ = try await js(
+      web,
+      """
+      const viewport = document.querySelector('#viewport');
+      viewport.addEventListener('scroll', () => window.didScroll = true, {once: true});
+      viewport.scrollTop += (\(position)) + 35;
+      """)
+    try await wait(web, "window.didScroll && Math.abs((\(position)) + 35) <= 1")
+    // When
+    try await press(host, "other.rs")
+    try await selectedPath("other.rs", in: host)
+    try await press(host, path)
+    try await selectedPath(path, in: host)
+    // Then
+    let restored = try await viewer(host)
+    try await wait(restored, "\(cards).length === 2 && Math.abs((\(position)) + 35) <= 1")
+  }
+
   func test_ファイルタブ_選び直すと画像の表示位置を復元する() async throws {
     // Given
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))

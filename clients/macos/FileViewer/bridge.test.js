@@ -8,12 +8,8 @@ class Element {
   constructor(tagName) { this.tagName = tagName; }
   children = [];
   attributes = {};
-  offsetHeight = 2000;
-  clientHeight = 700;
   append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = value; }
-  addEventListener(type, handler) { this['on' + type] = handler; }
   focus() { this.focused = true; }
 }
 
@@ -24,6 +20,10 @@ async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity } 
     constructor(options) { this.options = options; instances.push(this); }
     setOptions(options) { this.options = options; }
     requests = [];
+    expansions = [];
+    expandHunk(...args) { this.expansions.push(args); }
+    isLineRenderable() { return false; }
+    getLinePosition(lineNumber) { return { top: lineNumber * 10, height: 10 }; }
     renderedEnd = 100;
     top = initialTop;
     setup() {}
@@ -36,7 +36,7 @@ async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity } 
     }
     getScrollTop() { return this.top; }
     getLocalTopForInstance() { return 10; }
-    getRenderedItems() { return [{ instance: this }]; }
+    getRenderedItems() { return [{ instance: this, item: this.input }]; }
     getNumericScrollAnchor(top) {
       if (top > this.renderedEnd) return;
       const lineNumber = Math.ceil(top / 10);
@@ -45,7 +45,7 @@ async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity } 
     setSelectedLines() {}
     cleanUp() { this.cleaned = true; }
   }
-  const elements = Object.fromEntries(['viewport', 'content', 'file'].map((id) => [id, new Element()]));
+  const elements = { viewport: new Element() };
   const window = {
     testDiffs: {
       CodeView: Renderer,
@@ -69,7 +69,7 @@ async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity } 
     Date: class extends Date { static now() { return now; } },
     TextEncoder, TextDecoder, console, queueMicrotask: (callback) => callback(),
   });
-  return { window, document, messages, instances, elements, renderer: () => instances.at(-1) };
+  return { window, messages, renderer: () => instances.at(-1) };
 }
 
 const payload = () => ({
@@ -198,13 +198,13 @@ test('threads show comments, collapse resolved threads and send reply and resolv
 test('changing comparisons recreates the renderer and clears the selection', async () => {
   // Given
   const ui = await bridge();
-  // When
   for (const base of ['head', 'branch-base', 'head']) {
     const previous = ui.renderer();
+    // When
     if (previous) previous.options.onLineSelected({ start: 1, end: 1 });
     ui.window.releashRender({ ...payload(), base });
+    // Then
     if (previous) {
-      // Then
       assert.equal(previous.cleaned, true);
       assert.notEqual(ui.renderer(), previous);
       assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select' });
@@ -518,27 +518,32 @@ test('返信は長押しと送信中の連打を防ぎ失敗後に再送でき�
 });
 
 for (const side of ['additions', 'deletions']) {
-  test(`保存した ${side} の行を一度だけ復元し、末尾で制限された位置を送る`, async () => {
-    // Given
-    const ui = await bridge();
-    const previous = await bridge();
-    previous.window.releashRender(payload());
-    const original = previous.renderer();
-    original.side = side;
-    original.renderedEnd = 220;
-    original.top = 208;
-    original.scroll();
-    const next = { ...payload(), scrollAnchor: previous.messages.at(-1).anchor };
-    // When
-    ui.window.releashRender(next);
-    const view = ui.renderer();
-    view.side = side;
-    view.options.onPostRender();
-    ui.window.releashRender({ ...next, dark: true });
-    // Then
-    assert.deepEqual(plain(view.requests), [{ type: 'line', id: next.path, lineNumber: 20, side, offset: 2, align: 'start', behavior: 'instant' }]);
-    assert.deepEqual(plain(ui.messages.at(-1).anchor), { lineNumber: 10, side, delta: 4 });
-  });
+  for (const { top, lineNumber, offset, restored } of [
+    { top: 32, lineNumber: 3, offset: 8, restored: { lineNumber: 3, delta: 8 } },
+    { top: 208, lineNumber: 20, offset: 2, restored: { lineNumber: 10, delta: 4 } },
+  ]) {
+    test(`保存した ${side} の ${lineNumber} 行目を一度だけ復元し、表示位置を通知する`, async () => {
+      // Given
+      const ui = await bridge();
+      const previous = await bridge();
+      previous.window.releashRender(payload());
+      const original = previous.renderer();
+      original.side = side;
+      original.renderedEnd = 220;
+      original.top = top;
+      original.scroll();
+      const next = { ...payload(), scrollAnchor: previous.messages.at(-1).anchor };
+      // When
+      ui.window.releashRender(next);
+      const view = ui.renderer();
+      view.side = side;
+      view.options.onPostRender();
+      ui.window.releashRender({ ...next, dark: true });
+      // Then
+      assert.deepEqual(plain(view.requests), [{ type: 'line', id: next.path, lineNumber, side, offset, align: 'start', behavior: 'instant' }]);
+      assert.deepEqual(plain(ui.messages.at(-1).anchor), { ...restored, side });
+    });
+  }
 }
 
 test('差分から消えた行を復元しようとすると現在の表示位置を保存する', async () => {
@@ -591,7 +596,6 @@ test('描画範囲を越えて移動した後、描画が終わってから新�
   const view = ui.renderer();
   view.top = 32;
   view.scroll();
-  const saved = plain(ui.messages.at(-1).anchor);
   ui.messages.length = 0;
   view.top = 253;
   // When
@@ -602,11 +606,6 @@ test('描画範囲を越えて移動した後、描画が終わってから新�
   view.options.onPostRender();
   // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'scroll', anchor: null });
-  // When
-  const recreated = await bridge();
-  recreated.window.releashRender({ ...payload(), scrollAnchor: saved });
-  // Then
-  assert.equal(recreated.renderer().requests[0].lineNumber, 3);
   // When
   view.renderedEnd = 300;
   view.options.onPostRender();
@@ -662,3 +661,52 @@ test('作り直したviewerは送信完了後の下書きを反映する', async
   // Then
   assert.equal(reply.value, '');
 });
+
+test('操作したThreadの開閉ボタンだけにフォーカスを戻す', async () => {
+  // Given
+  const ui = await bridge();
+  const threads = ['first', 'second'].map(id => ({ id, line: 1, comments: [] }));
+  const toggle = thread => ui.renderer().options.renderAnnotation({ metadata: thread }).children[0].children.at(-1);
+  ui.window.releashRender({ ...payload(), threads });
+  // When
+  toggle(threads[1]).onclick();
+  ui.window.releashRender({ ...payload(), threads, expanded: ['second'] });
+  const buttons = threads.map(toggle);
+  // Then
+  assert.equal(buttons[0].focused, undefined);
+  assert.equal(buttons[1].focused, true);
+});
+
+for (const mode of ['diff', 'file']) {
+  test(mode + 'で最終行の注釈内に移動すると負の差分を送る', async () => {
+    // Given
+    const ui = await bridge();
+    ui.window.releashRender({ ...payload(), mode, threads: [{ id: 'last', line: 2, comments: [] }] });
+    const view = ui.renderer();
+    view.renderedEnd = 20;
+    view.side = mode === 'diff' ? 'additions' : undefined;
+    view.getLinePosition = () => ({ top: 20, height: 150 });
+    // When
+    view.top = 95;
+    view.scroll();
+    // Then
+    assert.deepEqual(plain(ui.messages.at(-1).anchor),
+      plain({ lineNumber: 2, side: view.side, delta: -65 }));
+  });
+}
+
+for (const [mode, full, expected] of [['diff', false, [[0, 'up', 4], [1, 'up', 5]]], ['file', false, []], ['diff', true, []]]) {
+  test(mode + ' 全文=' + full + ' でThreadの範囲末尾に応じて未変更行を展開する', async () => {
+    // Given
+    const ui = await bridge();
+    const original = 'x\n'.repeat(10);
+    const next = { ...payload(), mode, full, original, modified: 'x\n'.repeat(4) + 'y\n' + 'x\n'.repeat(5),
+      patch: '--- a/file.rs\n+++ b/file.rs\n@@ -5 +5 @@\n-x\n+y\n',
+      threads: [{ line: 1, endLine: 3, side: 'deletions' }, { line: 8, resolved: true }] };
+    // When
+    ui.window.releashRender(next);
+    ui.renderer().options.onPostRender();
+    // Then
+    assert.deepEqual(ui.renderer().expansions, expected);
+  });
+}
