@@ -10,10 +10,10 @@ class Element {
   attributes = {};
   append(...children) { this.children.push(...children); }
   setAttribute(name, value) { this.attributes[name] = value; }
-  focus() { this.focused = true; }
+  focus(...args) { this.focusArgs = args; }
 }
 
-async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity } = {}) {
+async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity, lineRenderable = false } = {}) {
   const instances = [];
   const messages = [];
   class Renderer {
@@ -22,7 +22,7 @@ async function bridge(now = Date.now(), { initialTop = 0, lastLine = Infinity } 
     requests = [];
     expansions = [];
     expandHunk(...args) { this.expansions.push(args); }
-    isLineRenderable() { return false; }
+    isLineRenderable() { return lineRenderable; }
     getLinePosition(lineNumber) { return { top: lineNumber * 10, height: 10 }; }
     renderedEnd = 100;
     top = initialTop;
@@ -364,7 +364,7 @@ test('作成カードは範囲末尾に出て入力を保ち作成とキャン�
   // When
   let card = render();
   // Then
-  assert.equal(card.children[0].focused, true);
+  assert.deepEqual(plain(card.children[0].focusArgs), [{ preventScroll: true }]);
   assert.equal(card.children[2].disabled, true);
   // When
   card.children[0].value = 'draft'; card.children[0].oninput();
@@ -673,8 +673,8 @@ test('操作したThreadの開閉ボタンだけにフォーカスを戻す', as
   ui.window.releashRender({ ...payload(), threads, expanded: ['second'] });
   const buttons = threads.map(toggle);
   // Then
-  assert.equal(buttons[0].focused, undefined);
-  assert.equal(buttons[1].focused, true);
+  assert.equal(buttons[0].focusArgs, undefined);
+  assert.deepEqual(plain(buttons[1].focusArgs), [{ preventScroll: true }]);
 });
 
 for (const mode of ['diff', 'file']) {
@@ -695,16 +695,64 @@ for (const mode of ['diff', 'file']) {
   });
 }
 
+function foldedDiff(threads) {
+  return { ...payload(), original: 'x\n'.repeat(10), modified: 'x\n'.repeat(4) + 'y\n' + 'x\n'.repeat(5),
+    patch: '--- a/file.rs\n+++ b/file.rs\n@@ -5 +5 @@\n-x\n+y\n',
+    threads };
+}
+
 for (const [mode, full, expected] of [['diff', false, [[0, 'up', 4], [1, 'up', 5]]], ['file', false, []], ['diff', true, []]]) {
   test(mode + ' 全文=' + full + ' でThreadの範囲末尾に応じて未変更行を展開する', async () => {
     // Given
     const ui = await bridge();
-    const original = 'x\n'.repeat(10);
-    const next = { ...payload(), mode, full, original, modified: 'x\n'.repeat(4) + 'y\n' + 'x\n'.repeat(5),
-      patch: '--- a/file.rs\n+++ b/file.rs\n@@ -5 +5 @@\n-x\n+y\n',
-      threads: [{ line: 1, endLine: 3, side: 'deletions' }, { line: 8, resolved: true }] };
+    const next = { ...foldedDiff([{ line: 1, endLine: 3, side: 'deletions' }, { line: 8, resolved: true }]), mode, full };
     // When
     ui.window.releashRender(next);
+    ui.renderer().options.onPostRender();
+    // Then
+    assert.deepEqual(ui.renderer().expansions, expected);
+  });
+}
+
+test('スクロールで再描画してもThreadの区間を再展開しない', async () => {
+  // Given
+  const ui = await bridge();
+  ui.window.releashRender(foldedDiff([{ line: 3 }]));
+  const view = ui.renderer();
+  view.options.onPostRender();
+  // When
+  view.options.onPostRender();
+  // Then
+  assert.deepEqual(view.expansions, [[0, 'up', 4]]);
+});
+
+test('復元中の自動展開後に同じ行とずれを指定し、次の描画後に位置を通知する', async () => {
+  // Given
+  const ui = await bridge();
+  const scrollAnchor = { lineNumber: 2, side: 'additions', delta: -3 };
+  ui.window.releashRender({ ...foldedDiff([{ line: 3 }]), scrollAnchor });
+  const view = ui.renderer();
+  const target = { type: 'line', id: 'file.rs', lineNumber: 2, side: 'additions', offset: -3, align: 'start', behavior: 'instant' };
+  // When
+  view.options.onPostRender();
+  view.scroll();
+  // Then
+  assert.deepEqual(plain(view.requests), [target, target]);
+  assert.equal(ui.messages.some(m => m.kind === 'scroll'), false);
+  // When
+  view.options.onPostRender();
+  // Then
+  assert.equal(ui.messages.at(-1).kind, 'scroll');
+});
+
+for (const [line, lineRenderable, expected] of [
+  [1, false, [[0, 'up', 4]]], [4, false, [[0, 'up', 4]]], [5, false, []], [3, true, []],
+]) {
+  test('折りたたみ境界の行 ' + line + ' 表示済み=' + lineRenderable, async () => {
+    // Given
+    const ui = await bridge(undefined, { lineRenderable });
+    ui.window.releashRender(foldedDiff([{ line }]));
+    // When
     ui.renderer().options.onPostRender();
     // Then
     assert.deepEqual(ui.renderer().expansions, expected);

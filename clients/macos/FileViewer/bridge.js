@@ -38,9 +38,13 @@ window.releashReplyAccepted = (id, requestID, accepted = true) => {
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
-let awaitingRestoreRender = false;
+let restoreAnchor;
+function restoreScroll() {
+  const { lineNumber, side, delta } = restoreAnchor;
+  renderer.scrollTo({ type: 'line', id: payload.path, lineNumber, side, offset: delta, align: 'start', behavior: 'instant' });
+}
 function reportScroll() {
-  if (awaitingRestoreRender) return;
+  if (restoreAnchor) return;
   const rendered = renderer?.getRenderedItems()[0];
   if (!rendered) return;
   const { instance, item } = rendered;
@@ -214,32 +218,34 @@ function annotation({ metadata: thread }) {
   }
   return element;
 }
-function expandThreadRegions() {
-  if (mode !== 'diff' || payload.full || !payload.threads.length) return;
-  const instance = renderer.getRenderedItems()[0]?.instance;
-  if (!instance || !diffMetadata) return;
+function threadAnchor(thread, deleted) {
+  return { side: thread.endSide ?? thread.side ?? (deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line };
+}
+function expandThreadRegions(instance) {
+  let expanded = false;
   const { hunks, additionLines } = diffMetadata;
   for (const thread of payload.threads) {
-    const deletion = (thread.endSide ?? thread.side ?? (payload.deleted ? 'deletions' : 'additions')) === 'deletions';
-    const line = thread.endLine ?? thread.line;
+    const { side, lineNumber: line } = threadAnchor(thread, payload.deleted);
     for (let index = 0; index <= hunks.length; index++) {
       const hunk = hunks[index];
       const additionEnd = (hunk?.additionLineIndex ?? additionLines.length) + 1;
-      const end = deletion ? (hunk?.deletionLineIndex ?? diffMetadata.deletionLines.length) + 1 : additionEnd;
+      const end = side === 'deletions' ? (hunk?.deletionLineIndex ?? diffMetadata.deletionLines.length) + 1 : additionEnd;
       const last = hunks.at(-1);
       const count = hunk?.collapsedBefore ?? (last ? additionLines.length - last.additionLineIndex - last.additionCount : 0);
       if (line >= end) continue;
       if (line >= end - count && !instance.isLineRenderable(additionEnd - (end - line))) {
         instance.expandHunk(index, 'up', count);
+        expanded = true;
       }
       break;
     }
   }
+  return expanded;
 }
 window.releashRender = (next) => {
   const firstRender = !payload;
   if (firstRender) {
-    awaitingRestoreRender = !!next.scrollAnchor;
+    restoreAnchor = next.scrollAnchor;
     for (const id of next.sendingReplies ?? []) pendingReplies.set(id, { requestID: null, edited: false });
     for (const [id, content] of Object.entries(next.replies ?? {})) {
       replies.set(id, content);
@@ -265,6 +271,8 @@ window.releashRender = (next) => {
   for (const id of replyInputs.keys()) if (!openIDs.has(id)) replyInputs.delete(id);
   payload = next;
   const type = renderType(next);
+  const renderVersion = version + 1;
+  let needsExpansion = type === 'diff' && !next.full && next.threads.length > 0;
   const options = {
     theme: { dark: 'dark-plus', light: 'light-plus' },
     themeType: next.dark ? 'dark' : 'light',
@@ -274,8 +282,17 @@ window.releashRender = (next) => {
     expandUnchanged: next.full,
     enableLineSelection: true,
     onPostRender: () => queueMicrotask(() => {
-      expandThreadRegions();
-      awaitingRestoreRender = false;
+      if (version !== renderVersion) return;
+      if (needsExpansion) {
+        const instance = renderer.getRenderedItems()[0]?.instance;
+        if (!instance) return;
+        needsExpansion = false;
+        if (expandThreadRegions(instance) && restoreAnchor) {
+          restoreScroll();
+          return;
+        }
+      }
+      restoreAnchor = undefined;
       reportScroll();
     }),
     onLineSelected: selectLines,
@@ -294,14 +311,11 @@ window.releashRender = (next) => {
   if (next.composer) annotations.push({ ...next.composer, composer: true });
   if (mode === 'diff' && next.patch) {
     // 注釈は範囲の最後の行の下に出す
-    const lineAnnotations = annotations.map((thread) => ({ side: thread.endSide ?? thread.side ?? (next.deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line, metadata: thread }));
+    const lineAnnotations = annotations.map((thread) => ({ ...threadAnchor(thread, next.deleted), metadata: thread }));
     renderer.setItems([{ id: next.path, type, version: ++version, fileDiff: diffMetadata ??= metadata(next), annotations: lineAnnotations }]);
   } else {
-    renderer.setItems([{ id: next.path, type: 'file', version: ++version, file: { name: next.path, contents: next.modified }, annotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) }]);
+    renderer.setItems([{ id: next.path, type: 'file', version: ++version, file: { name: next.path, contents: next.modified }, annotations: annotations.map((thread) => ({ lineNumber: threadAnchor(thread, next.deleted).lineNumber, metadata: thread })) }]);
   }
-  if (firstRender && next.scrollAnchor) {
-    const { lineNumber, side, delta } = next.scrollAnchor;
-    renderer.scrollTo({ type: 'line', id: next.path, lineNumber, side, offset: delta, align: 'start', behavior: 'instant' });
-  }
+  if (firstRender && restoreAnchor) restoreScroll();
 };
 send({ kind: 'ready' });

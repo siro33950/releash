@@ -249,7 +249,10 @@ import XCTest
           const card = all('[slot]').find(e => visible(e) && e.querySelector('[aria-label="\(label)"]'));
           if (!card || !card.querySelector('[aria-label="Thread を表示"]') || card.innerText.includes('先の本文')) return false;
           const rect = card.getBoundingClientRect();
-          return all('[data-line="\(line)"]').filter(visible).some(e => e.getBoundingClientRect().bottom <= rect.top + 1);
+          const above = all('[data-line="\(line)"]').filter(visible);
+          const below = all('[data-line="\(line + 1)"]').filter(visible);
+          return above.some(e => e.getBoundingClientRect().bottom <= rect.top + 1)
+            && below.some(e => e.getBoundingClientRect().top >= rect.bottom - 1);
         })()
         """)
     }

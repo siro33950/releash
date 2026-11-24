@@ -11,6 +11,51 @@ import XCTest
 final class FileTabLifecycleTests: IntegrationTestCase, FileViewerAcceptanceFixture {
   private let path = "acceptance.rs"
 
+  func test_ファイルタブ_差分で自動展開した区間の行を選び直して上端に復元する() async throws {
+    // Given
+    let defaults = UserDefaults.standard
+    let previous = defaults.object(forKey: "diffFull")
+    defaults.set(false, forKey: "diffFull")
+    defer { defaults.set(previous, forKey: "diffFull") }
+    let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path], mode: "diff"))
+    host.setContentSize(NSSize(width: 560, height: 480))
+    let prefix = (1...80).map { "line-\($0)\n" }.joined()
+    var diff = snapshot(prefix + "new\n", mode: "diff")
+    diff.fileTab.view.textDiff.original = prefix + "old\n"
+    diff.fileTab.patch = "--- a/acceptance.rs\n+++ b/acceptance.rs\n@@ -81 +81 @@\n-old\n+new\n"
+    try http.publish(diff, target: "file-tab", args: ["/repo", path, "head"])
+    var thread = testReviewThread("prefix")
+    thread.target.filePath = path
+    thread.target.lineNumber = 5
+    thread.target.endLine = 5
+    thread.target.side.value = .additions
+    var threads = Releash_Client_V1_StatePayload()
+    threads.fileThreads.threads.items = [thread]
+    try http.publish(threads, target: "file-threads", args: ["/repo", path])
+    try await press(host, "right-panel:files")
+    let web = try await viewer(host)
+    let row = "all('[data-line=\"12\"]').find(visible)"
+    let offset =
+      "\(row)?.getBoundingClientRect().top - document.querySelector('#viewport').getBoundingClientRect().top"
+    try await wait(web, "\(row) && all('[aria-expanded=false]').some(visible)")
+    _ = try await js(
+      web,
+      """
+      const viewport = document.querySelector('#viewport');
+      viewport.addEventListener('scroll', () => window.didScroll = true, {once: true});
+      viewport.scrollTop += \(offset);
+      """)
+    try await wait(web, "window.didScroll && Math.abs(\(offset)) <= 1")
+    // When
+    try await press(host, "other.rs")
+    try await selectedPath("other.rs", in: host)
+    try await press(host, path)
+    try await selectedPath(path, in: host)
+    // Then
+    let restored = try await viewer(host)
+    try await wait(restored, "\(row) && Math.abs(\(offset)) <= 1")
+  }
+
   func test_ファイルタブ_最終行の二つ目のThread内の位置を選び直して復元する() async throws {
     // Given
     let (http, _, host) = try await filesPanel(fileLayout(["other.rs", path]))
