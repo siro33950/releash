@@ -87,6 +87,7 @@ test('display choices and system theme reach the renderer, including File and Di
   // When
   ui.window.releashRender(next);
   for (const [style, full, dark] of [['unified', true, true], ['split', false, false]]) {
+    // When
     ui.window.releashRender({ ...next, style, full, dark });
     // Then
     assert.equal(ui.renderer().options.diffStyle, style);
@@ -95,13 +96,19 @@ test('display choices and system theme reach the renderer, including File and Di
     assert.equal(ui.renderer().options.themeType, dark ? 'dark' : 'light');
     assert.equal(ui.renderer().input.fileDiff.deletionLines.join(''), next.original);
   }
+  // Then
   assert.equal(ui.renderer().input.type, 'diff');
+  // Given
   const diff = ui.renderer();
+  // When
   ui.window.releashRender({ ...next, mode: 'file', threads: [{ id: 't', line: 2, comments: [] }] });
+  // Then
   assert.equal(diff.cleaned, true);
   assert.equal(ui.renderer().input.file.contents, next.modified);
   assert.equal(ui.renderer().input.annotations[0].lineNumber, 2);
+  // When
   ui.window.releashRender(next);
+  // Then
   assert.equal(ui.renderer().input.fileDiff.deletionLines.join(''), next.original);
 });
 
@@ -112,21 +119,32 @@ test('selecting lines reports the normalized range and clears when the selection
   // When
   ui.window.releashRender(next);
   for (const side of ['deletions', 'additions']) {
+    // When
     ui.renderer().options.onLineSelected({ start: 2, end: 2, side, endSide: side });
     // Then
     assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select', line: 2, endLine: 2, side, endSide: side });
+    // When
     ui.window.releashRender({ ...next, threads: [{ id: side, line: 2, side, comments: [] }] });
     const annotation = ui.renderer().input.annotations[0];
+    // Then
     assert.equal(annotation.side, side);
     assert.equal(annotation.lineNumber, 2);
   }
+  // When
   ui.renderer().options.onLineSelected({ start: 4, end: 2, side: 'deletions', endSide: 'additions' });
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select', line: 2, endLine: 4, side: 'additions', endSide: 'deletions' });
+  // When
   ui.renderer().options.onLineSelected(null);
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select' });
+  // When
   ui.renderer().options.onLineSelected({ start: 1, end: 1 });
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select', line: 1, endLine: 1 });
+  // When
   ui.window.releashRender({ ...next, modified: 'changed\n' });
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'select' });
 });
 
@@ -142,24 +160,38 @@ test('threads show comments, collapse resolved threads and send reply and resolv
   // Then
   assert.equal(open.children[1].children[0].children[0].children[1].textContent, 'human');
   assert.equal(open.children[1].children[0].children[1].innerHTML, '<p>selected deleted line</p>\n');
+  // Given
   const input = open.children.find((element) => element.attributes['aria-label'] === 'Threadへの返信');
+  // When
   input.value = 'reply body';
   input.onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'reply', id: 't1', content: 'reply body', requestID: 1 });
+  // Given
   const replied = { ...thread, comments: [...thread.comments, { author: 'human', content: 'reply body' }] };
+  // When
   ui.window.releashRender({ ...payload(), expanded: [replied.id], threads: [replied] });
   const refreshed = render(ui.renderer().input.annotations[0]);
+  // Then
   assert.equal(refreshed.children[1].children[1].children[1].innerHTML, '<p>reply body</p>\n');
+  // When
   open.children.find((element) => element.textContent === '解決にする').onclick();
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'resolve', id: 't1' });
+  // When
   ui.window.releashRender({ ...payload(), threads: [{ ...thread, resolved: true }] });
   const resolved = render(ui.renderer().input.annotations[0]);
+  // Then
   assert.equal(resolved.children.length, 1);
   const toggle = resolved.children[0].children.at(-1);
   assert.equal(toggle.attributes['aria-label'], 'Thread を表示');
+  // When
   toggle.onclick();
+  // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'expand', id: thread.id, open: true });
+  // When
   ui.window.releashRender({ ...payload(), expanded: [thread.id], threads: [thread] });
+  // Then
   assert.equal(render({ metadata: { ...thread, canResolve: false } }).children.some((e) => e.textContent === '解決にする'), false);
 });
 
@@ -196,13 +228,19 @@ test('reply drafts survive subscription updates and failed sends, and clear only
   const refreshed = render();
   // Then
   assert.equal(input(refreshed).value, 'unsent reply');
+  // When
   input(refreshed).onkeydown({ key: 'Enter', metaKey: true, preventDefault() {} });
   const request = ui.messages.at(-1);
   ui.window.releashRender({ ...payload(), expanded: [thread.id], threads: [{ ...thread }] });
+  // Then
   assert.equal(input(render()).value, 'unsent reply');
+  // When
   ui.window.releashReplyAccepted(request.id, request.requestID);
+  // Then
   assert.equal(input(render()).value, '');
+  // When
   ui.window.releashRender({ ...payload(), expanded: [thread.id], threads: [{ ...thread }] });
+  // Then
   assert.equal(input(render()).value, '');
 });
 
@@ -223,7 +261,9 @@ test('accepting a reply preserves text edited while the request was pending', as
   ui.window.releashReplyAccepted(request.id, request.requestID);
   // Then
   assert.equal(input.value, 'new draft');
+  // When
   ui.window.releashRender({ ...payload(), expanded: [thread.id], threads: [{ ...thread }] });
+  // Then
   assert.equal(annotation().children.find((child) => child.tagName === 'textarea').value, 'new draft');
 });
 
@@ -271,7 +311,9 @@ test('thread ranges and line selection use the accent color from the app', async
   assert.ok(css.includes('[data-unified] [data-alt-line="5"]'), css);
   assert.ok(css.includes('[data-deletions] [data-line="5"]'), css);
   assert.equal(css.split('color-mix').length, 2, css);
+  // When
   ui.window.releashRender({ ...next, mode: 'file', threads: [{ id: 'f', line: 7, endLine: 9, comments: [] }] });
+  // Then
   assert.equal(ui.renderer().input.annotations[0].lineNumber, 9);
   assert.equal(ui.renderer().options.unsafeCSS, ':host{--diffs-bg-selection-override:#112233;--diffs-bg-selection-number-override:#112233}\n[data-line="7"],[data-line="8"],[data-line="9"]{box-shadow:inset 3px 0 #112233;background-color:color-mix(in srgb,var(--diffs-bg) 85%,#112233);}');
 });
@@ -319,7 +361,9 @@ test('作成カードは範囲末尾に出て入力を保ち作成とキャン�
   // Then
   assert.equal(ui.renderer().input.annotations[0].lineNumber, 2);
   assert.equal(ui.renderer().input.annotations[0].side, 'deletions');
+  // When
   let card = render();
+  // Then
   assert.equal(card.children[0].focused, true);
   assert.equal(card.children[2].disabled, true);
   // When
@@ -446,19 +490,30 @@ test('返信は長押しと送信中の連打を防ぎ失敗後に再送でき�
   input.onkeydown({ ...key, repeat: true });
   // Then
   assert.equal(count(), 0);
+  // When
   input.onkeydown(key);
   const request = ui.messages.at(-1);
   input = render().children.find((child) => child.tagName === 'textarea');
   input.onkeydown(key);
+  // Then
   assert.equal(count(), 1);
+  // When
   ui.window.releashReplyAccepted(request.id, request.requestID, false);
+  // Then
   assert.equal(input.value, 'reply');
+  // When
   input.onkeydown(key);
+  // Then
   assert.equal(count(), 2);
+  // Given
   const retry = ui.messages.at(-1);
+  // When
   ui.window.releashReplyAccepted(request.id, request.requestID, true);
+  // Then
   assert.equal(input.value, 'reply');
+  // When
   ui.window.releashReplyAccepted(retry.id, retry.requestID, true);
+  // Then
   assert.equal(input.value, '');
 });
 
@@ -547,8 +602,10 @@ test('描画範囲を越えて移動した後、描画が終わってから新�
   view.options.onPostRender();
   // Then
   assert.deepEqual(plain(ui.messages.at(-1)), { kind: 'scroll', anchor: null });
+  // When
   const recreated = await bridge();
   recreated.window.releashRender({ ...payload(), scrollAnchor: saved });
+  // Then
   assert.equal(recreated.renderer().requests[0].lineNumber, 3);
   // When
   view.renderedEnd = 300;
