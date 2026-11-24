@@ -12,14 +12,23 @@ import XCTest
 
 @MainActor final class InlineThreadAcceptanceTests: IntegrationTestCase, FileViewerAcceptanceFixture
 {
-  private func hasIcon(_ label: String, _ name: String) -> String {
-    """
-    all('[aria-label="\(label)"]').filter(visible).some(control =>
-      [control, ...control.querySelectorAll('*')].some(e =>
-        visible(e) && (e.classList.contains('lucide-\(name)') ||
-          [e.getAttribute('src'), e.getAttribute('href'), e.getAttribute('data-icon')].some(value =>
-            value && value.split(/[\\/#.]/).includes('\(name)')))))
-    """
+  private func hasIcon(_ label: String, _ name: String) throws -> String {
+    let svg = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .appendingPathComponent("../../FileViewer/node_modules/lucide-static/icons/\(name).svg")
+    let expected = try Data(contentsOf: svg).base64EncodedString()
+    return """
+      all('[aria-label="\(label)"]').filter(visible).some(control =>
+        [control, ...control.querySelectorAll('img')].some(image => {
+          if (!image.matches('img') || !visible(image)) return false;
+          const src = image.getAttribute('src') ?? '';
+          const comma = src.indexOf(',');
+          const header = src.slice(0, comma);
+          if (!header.startsWith('data:image/svg+xml') || comma < 0) return false;
+          const payload = src.slice(comma + 1);
+          return (header.endsWith(';base64') ? payload : btoa(decodeURIComponent(payload))) === '\(expected)';
+        }))
+      """
   }
 
   private func icons(_ expression: String) -> String {
