@@ -17,6 +17,18 @@ final class FileTabPaneTests: XCTestCase {
       path: "src/file.rs", worktree: "/repo", value: value)
   }
 
+  @MainActor func test_スクロール_上端の行が未取得でも次のviewerに最後の位置を渡す() throws {
+    // Given
+    let view = try pane(AppModel())
+    let anchor: [String: Any] = ["lineNumber": 42, "side": "additions", "delta": 3]
+    view.action(["kind": "scroll", "anchor": anchor])
+    // When
+    view.action(["kind": "scroll", "anchor": NSNull()])
+    let payload = view.bridgePayload(.init(), .init(), colorScheme: .light)
+    // Then
+    XCTAssertEqual(payload["scrollAnchor"] as? NSDictionary, anchor as NSDictionary)
+  }
+
   @MainActor func testThreadAnnotationsRetainSideAndServerResolution() throws {
     for side in [Releash_Client_V1_ReviewLineSideDto.Value.deletions, .additions] {
       var thread = Releash_Client_V1_ReviewThreadDto()
@@ -60,6 +72,64 @@ final class FileTabPaneTests: XCTestCase {
     }
   }
 
+  @MainActor func test_返信_選び直しても送信中は再送できず成功後は下書きが消える() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let tab = try pane(model)
+    let draft = model.filePanes.fileDraft(tab.tabID)
+    func selectedPane() -> FileTabPane {
+      FileTabPane(
+        model: model, tabID: tab.tabID, path: tab.path, worktree: tab.worktree, draft: draft)
+    }
+    let send = ["kind": "reply", "id": "t", "content": "送信"]
+    selectedPane().action(["kind": "editReply", "id": "t", "content": "送信"])
+    selectedPane().action(send)
+    // When
+    selectedPane().action(send)
+    try await eventually { draft.sendingReplies.isEmpty }
+    // Then
+    XCTAssertEqual(http.requests("AppendReviewComment").count, 1)
+    let restored = selectedPane().bridgePayload(.init(), .init(), colorScheme: .light)
+    XCTAssertNil((try XCTUnwrap(restored["replies"] as? [String: String]))["t"])
+    await model.stop()
+  }
+
+  @MainActor func test_返信_送信中に編集して元に戻した本文を保ち空入力で消す() {
+    // Given
+    let draft = FileThreadDraft()
+    draft.editReply("t", content: "本文")
+    XCTAssertTrue(draft.beginReply("t"))
+    // When
+    draft.editReply("t", content: "別の本文")
+    draft.editReply("t", content: "本文")
+    draft.finishReply("t", accepted: true)
+    // Then
+    XCTAssertTrue(draft.sendingReplies.isEmpty)
+    XCTAssertEqual(draft.replies["t"], "本文")
+    // When
+    draft.editReply("t", content: "")
+    // Then
+    XCTAssertNil(draft.replies["t"])
+  }
+
+  @MainActor func test_返信_送信中に編集すると送信成功を通知し新しい本文を保つ() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let view = try pane(model)
+    var accepted: Bool?
+    view.action(["kind": "editReply", "id": "t", "content": "送信"])
+    view.action(["kind": "reply", "id": "t", "content": "送信"]) { accepted = $0 }
+    // When
+    view.action(["kind": "editReply", "id": "t", "content": "次の返信"])
+    try await eventually { accepted != nil }
+    // Then
+    XCTAssertEqual(accepted, true)
+    XCTAssertEqual(view.draft.replies["t"], "次の返信")
+    await model.stop()
+  }
+
   @MainActor func test_返信_未接続でも失敗を通知する() throws {
     // Given
     let model = AppModel()
@@ -69,6 +139,27 @@ final class FileTabPaneTests: XCTestCase {
     view.action(["kind": "reply", "id": "thread", "content": "本文"]) { results.append($0) }
     // Then
     XCTAssertEqual(results, [false])
+  }
+
+  @MainActor func test_解決_RPCが失敗するとThreadを開いたままにする() async throws {
+    // Given
+    let http = TestHTTPClient()
+    let model = try await testModel(http)
+    let tab = try pane(model)
+    var thread = testReviewThread("thread")
+    thread.target.lineNumber = 1
+    let view = FileTabPane(
+      model: model, tabID: tab.tabID, path: tab.path, worktree: tab.worktree,
+      threads: .with { $0.threads.items = [thread] })
+    view.action(["kind": "expand", "id": "thread", "open": true])
+    http.state.withLock { $0.failedMethod = "ResolveReviewThread" }
+    // When
+    view.action(["kind": "resolve", "id": "thread"])
+    try await eventually { model.failure?.contains("ResolveReviewThread failed") == true }
+    // Then
+    let payload = view.bridgePayload(.init(), .init(), colorScheme: .light)
+    XCTAssertEqual(payload["expanded"] as? [String], ["thread"])
+    await model.stop()
   }
 
   @MainActor func testFileActionsSendTargetAndThreadInputAndReportRPCFailure() async throws {
@@ -142,6 +233,7 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertEqual(added.side.value, .additions)
     XCTAssertEqual(added.lineNumber, 4)
     http.state.withLock { $0.failedMethod = "AppendReviewComment" }
+    view.action(["kind": "editReply", "id": "thread", "content": "failure"])
     var replyResult: Bool?
     view.action(["kind": "reply", "id": "thread", "content": "failure"]) { accepted in
       replyResult = accepted
@@ -151,6 +243,15 @@ final class FileTabPaneTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(model.failure).contains("AppendReviewComment failed"))
     XCTAssertEqual(acceptedReplies, 1)
     XCTAssertEqual(replyResult, false)
+    XCTAssertTrue(view.draft.sendingReplies.isEmpty)
+    XCTAssertEqual(view.draft.replies["thread"], "failure")
+    // When
+    http.state.withLock { $0.failedMethod = nil }
+    replyResult = nil
+    view.action(["kind": "reply", "id": "thread", "content": "failure"]) { replyResult = $0 }
+    // Then
+    try await eventually { replyResult == true }
+    XCTAssertNil(view.draft.replies["thread"])
     await model.stop()
   }
 

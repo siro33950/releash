@@ -5,6 +5,7 @@ import Foundation
 import SwiftProtobuf
 import SwiftUI
 import Synchronization
+import WebKit
 import XCTest
 
 @testable import Releash
@@ -52,7 +53,10 @@ final class TestHTTPClient: HTTPClientInterface {
     var terminalReplay = ""
     var artifacts: [String: Releash_Client_V1_WorkflowOutputView] = [:]
     var nodeDetails: [String: Releash_Client_V1_WorkspaceNodeDetailDto] = [:]
+    var fileTabs: [[String]: Releash_Client_V1_FileTabView] = [:]
+    var fileThreads: [[String]: Releash_Client_V1_FileThreadsSnapshot] = [:]
     var sessionTabs: [String: Releash_Client_V1_SessionTabSnapshot] = [:]
+    var createdReviewThread = Releash_Client_V1_ReviewThreadDto()
     var reviewThreads: [String: Releash_Client_V1_ListReviewThreadDto] = [:]
     /// Thread の ID ごとの、対象の行の差分。`review-threads` の購読で Thread に添えて配信する。
     var threadLines: [String: [Releash_Client_V1_ThreadDiffLine]] = [:]
@@ -168,6 +172,13 @@ final class TestHTTPClient: HTTPClientInterface {
             if let value = state.artifacts[subscription.args[0]] {
               payload.workflowOutput.value = value
             }
+          } else if subscription.target == "file-tab", let value = state.fileTabs[subscription.args]
+          {
+            payload.fileTab = value
+          } else if subscription.target == "file-threads",
+            let value = state.fileThreads[subscription.args]
+          {
+            payload.fileThreads = value
           } else if subscription.target == "session-tab" {
             payload.sessionTab = state.sessionTabs[subscription.args[0]] ?? .init()
           } else if subscription.target == "review-threads" {
@@ -294,6 +305,8 @@ final class TestHTTPClient: HTTPClientInterface {
         var result = Releash_Client_V1_ResultString()
         result.value = "workflow-execution"
         response = try result.serializedData()
+      } else if method == "CreateReviewThread" {
+        response = try state.withLock { try $0.createdReviewThread.serializedData() }
       } else if method == "ValidateNotionConfig" {
         response = try state.withLock { try $0.notionValidation.serializedData() }
       } else if method == "CheckLoginRegistration" {
@@ -373,6 +386,10 @@ final class TestHTTPClient: HTTPClientInterface {
       case .diagnostics(let value): state.diagnostics = value
       case .nodeDetail(let value):
         if value.hasValue { state.nodeDetails[value.value.id] = value.value }
+      case .fileTab(let value):
+        if let args { state.fileTabs[args] = value }
+      case .fileThreads(let value):
+        if let args { state.fileThreads[args] = value }
       case .sessionTab(let value):
         if let id = args?.first { state.sessionTabs[id] = value }
       case .threadExcerpts(let value):
@@ -648,4 +665,150 @@ func testWorkflowSettings(_ http: TestHTTPClient) {
       ]
     }
   }
+}
+
+private final class FileViewerWindow: NSPanel {
+  override var occlusionState: NSWindow.OcclusionState { .visible }
+  override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+    frameRect
+  }
+}
+
+@MainActor protocol FileViewerAcceptanceFixture {}
+
+extension FileViewerAcceptanceFixture {
+  func views<T: NSView>(_ root: NSView, _ type: T.Type) -> [T] {
+    (root as? T).map { [$0] } ?? root.subviews.flatMap { views($0, type) }
+  }
+
+  // Shadow DOM を含む表示済みの要素を読み、製品の DOM 構造のクラス名には依存しない。
+  private var dom: String {
+    """
+    const all = (selector, root = document) => [
+      ...root.querySelectorAll(selector),
+      ...[...root.querySelectorAll('*')].flatMap(e => e.shadowRoot ? all(selector, e.shadowRoot) : [])
+    ];
+    const visible = e => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
+    const button = label => all('button').find(e => visible(e) && e.textContent.trim() === label);
+    const input = () => all('textarea').find(visible);
+    const text = () => all('body, [slot]').filter(visible).map(e => e.innerText).join('\\n');
+
+
+    """
+  }
+
+  func js(_ web: WKWebView, _ source: String) async throws -> Any? {
+    try await web.callAsyncJavaScript(dom + source, arguments: [:], in: nil, contentWorld: .page)
+  }
+
+  func wait(_ web: WKWebView, _ expression: String) async throws {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while ContinuousClock.now < deadline {
+      if try await js(web, "return Boolean(\(expression));") as? Bool == true { return }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let snapshot = try? await js(
+      web,
+      "return JSON.stringify({url:location.href,body:document.body?.innerHTML,shadows:all('*').filter(e=>e.shadowRoot).map(e=>e.shadowRoot.innerHTML.replaceAll(/<svg.*?<[/]svg>/gs,''))}).slice(0,4000);"
+    )
+    XCTFail("表示条件を満たしません: \(expression), DOM=\(snapshot ?? "unavailable")")
+    throw NSError(domain: "FileViewerAcceptance", code: 1)
+  }
+
+  func check(
+    _ web: WKWebView, _ expression: String, file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let result = try await js(web, "return Boolean(\(expression));") as? Bool
+    XCTAssertEqual(result, true, expression, file: file, line: line)
+  }
+
+  func selectLines(_ web: WKWebView) async throws {
+    _ = try await js(
+      web,
+      """
+      const start = all('[data-column-number="2"]').find(visible);
+      const end = all('[data-column-number="3"]').find(visible);
+      for (const [type, element] of [['pointerdown', start], ['pointermove', end], ['pointerup', end]]) {
+        const r = element.getBoundingClientRect();
+        element.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, composed: true, pointerId: 1, pointerType: 'mouse',
+          button: 0, buttons: type === 'pointerup' ? 0 : 1,
+          clientX: r.x + r.width / 2, clientY: r.y + r.height / 2
+        }));
+      }
+      """)
+    try await wait(
+      web,
+      "[2, 3].every(line => all('[data-column-number=\"' + line + '\"][data-selected-line]').some(visible))"
+    )
+    try await check(
+      web,
+      "![1, 4].some(line => all('[data-column-number=\"' + line + '\"][data-selected-line]').some(visible))"
+    )
+  }
+
+  func window<V: View>(_ view: V) -> NSWindow {
+    let window = FileViewerWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+      styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.title = "FileViewerAcceptance-" + UUID().uuidString
+    let content = NSHostingView(rootView: view)
+    content.sizingOptions = []
+    window.contentView = content
+    let screens = NSScreen.screens.map(\.frame).reduce(NSRect.zero) { $0.union($1) }
+    window.setFrameOrigin(
+      NSPoint(
+        x: screens.minX - window.frame.width - 100, y: screens.minY - window.frame.height - 100))
+    content.layoutSubtreeIfNeeded()
+    window.orderBack(nil)
+    window.displayIfNeeded()
+    XCTAssertFalse(NSScreen.screens.contains { $0.frame.intersects(window.frame) })
+    return window
+  }
+
+  func findElement(_ host: NSWindow, name: String, exact: Bool = true, role: String? = nil)
+    -> AXUIElement?
+  {
+    func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+      var value: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+        return nil
+      }
+      return value
+    }
+    func find(_ element: AXUIElement) -> AXUIElement? {
+      if attribute(element, kAXRoleAttribute) as? String == "AXWebArea" { return nil }
+      for child in attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+        if let result = find(child) { return result }
+      }
+      if let role { return attribute(element, kAXRoleAttribute) as? String == role ? element : nil }
+      if attribute(element, kAXIdentifierAttribute) as? String == name { return element }
+      for key in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+        if let text = attribute(element, key) as? String,
+          exact ? text == name : text.contains(name)
+        {
+          return element
+        }
+      }
+      return nil
+    }
+    let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+    let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    guard
+      let window = windows.first(where: {
+        attribute($0, kAXTitleAttribute) as? String == host.title
+      })
+    else { return nil }
+    return find(window)
+  }
+
+  func pressCreate(_ host: NSWindow) throws {
+    XCTAssertEqual(
+      AXUIElementPerformAction(
+        try XCTUnwrap(findElement(host, name: "file-create-thread")), kAXPressAction as CFString),
+      .success)
+  }
+
 }

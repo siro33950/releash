@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@pierre/diffs": "1.5.2",
+    "lucide-static": "1.71.0",
     "markdown-it": "15.0.3"
   },
   "devDependencies": {

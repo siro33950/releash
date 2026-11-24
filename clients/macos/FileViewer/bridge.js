@@ -1,23 +1,25 @@
-import { VirtualizedFile, VirtualizedFileDiff, Virtualizer } from '@pierre/diffs';
+import circle_dot from 'lucide-static/icons/circle-dot.svg';
+import circle_check from 'lucide-static/icons/circle-check.svg';
+import chevron_right from 'lucide-static/icons/chevron-right.svg';
+import chevron_down from 'lucide-static/icons/chevron-down.svg';
+import { CodeView } from '@pierre/diffs';
 import MarkdownIt from 'markdown-it';
 import { metadata, renderType } from './metadata.js';
 
 const viewport = document.getElementById('viewport');
-const content = document.getElementById('content');
-let container = document.getElementById('file');
-const virtualizer = new Virtualizer();
-virtualizer.setup(viewport, content);
+let version = 0;
 let renderer;
 let mode;
 let payload;
 let selected;
+let focusThreadID;
 let diffMetadata;
 const replies = new Map();
 const pendingReplies = new Map();
 const replyInputs = new Map();
-let replyVersion = 0;
+let nextRequestID = 0;
 let composerContent = '';
-const expanded = new Set();
+
 const markdown = new MarkdownIt({ html: false });
 const relativeTime = (timestamp) => {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
@@ -26,15 +28,39 @@ const relativeTime = (timestamp) => {
   }
   return 'たった今';
 };
-window.releashReplyAccepted = (id, version, accepted = true) => {
-  if (pendingReplies.get(id) === version) pendingReplies.delete(id);
-  if (!accepted) return;
-  if (replies.get(id)?.version !== version) return;
+window.releashReplyAccepted = (id, requestID, accepted = true) => {
+  const pending = pendingReplies.get(id);
+  if (!pending || pending.requestID !== requestID) return;
+  pendingReplies.delete(id);
+  if (!accepted || pending.edited) return;
   replies.delete(id);
   const input = replyInputs.get(id);
   if (input) input.value = '';
 };
 const send = (action) => window.webkit.messageHandlers.fileViewer.postMessage(action);
+let restoreAnchor;
+function restoreScroll() {
+  const { lineNumber, side, delta } = restoreAnchor;
+  renderer.scrollTo({ type: 'line', id: payload.path, lineNumber, side, offset: delta, align: 'start', behavior: 'instant' });
+}
+function reportScroll() {
+  if (restoreAnchor) return;
+  const rendered = renderer?.getRenderedItems()[0];
+  if (!rendered) return;
+  const { instance, item } = rendered;
+  const top = renderer.getScrollTop() - renderer.getLocalTopForInstance(instance);
+  let line = instance.getNumericScrollAnchor(top);
+  if (!line) {
+    for (const { lineNumber, side } of item.annotations) {
+      const position = instance.getLinePosition(lineNumber, side);
+      if (position && position.top < top && top < position.top + position.height &&
+          (!line || position.top > line.top)) {
+        line = { lineNumber, side, top: position.top };
+      }
+    }
+  }
+  send({ kind: 'scroll', anchor: line ? { lineNumber: line.lineNumber, side: line.side, delta: line.top - top } : null });
+}
 // 行の選択は Swift 側の帯の「Thread作成」が使う。ホバー行へ要素を付け替えるライブラリの gutter は WebKit でスクロール位置を飛ばす（WebKit Bug 286616）ので使わない
 const selectLines = (range) => {
   selected = range;
@@ -126,59 +152,113 @@ function composer(thread) {
   const cancel = button('キャンセル', () => send({ kind: 'cancelCreate' }));
   cancel.disabled = thread.sending;
   element.append(input, cancel, create);
-  queueMicrotask(() => input.focus());
+  queueMicrotask(() => input.focus({ preventScroll: true }));
   return element;
 }
 function annotation({ metadata: thread }) {
   if (thread.composer) return composer(thread);
   const element = document.createElement('section');
   element.className = 'thread-card';
-  const comments = document.createElement('div');
-  const showComments = () => comments.replaceChildren(...thread.comments.map(commentView));
-  if (thread.resolved) {
-    const summary = document.createElement('header');
-    const label = document.createElement('span');
-    label.textContent = `${thread.resolvedBy} が解決にしました · ${relativeTime(thread.resolvedAt)}`;
-    const toggle = button(expanded.has(thread.id) ? '隠す' : '表示', () => {
-      if (expanded.delete(thread.id)) {
-        comments.replaceChildren();
-        toggle.textContent = '表示';
-      } else {
-        expanded.add(thread.id);
-        showComments();
-        toggle.textContent = '隠す';
-      }
-    });
-    summary.append(label, toggle);
-    element.append(summary);
-    if (expanded.has(thread.id)) showComments();
-  } else {
-    expanded.delete(thread.id);
-    showComments();
+  const open = payload.expanded?.includes(thread.id) ?? false;
+  const summary = document.createElement('header');
+  const icon = (src, name, label) => {
+    const image = document.createElement('img');
+    image.src = src;
+    image.alt = label;
+    image.setAttribute('data-icon', name);
+    if (label) image.setAttribute('aria-label', label);
+    return image;
+  };
+  const name = document.createElement('span');
+  name.textContent = thread.resolved ? thread.resolvedBy : thread.comments[0]?.author;
+  const time = document.createElement('time');
+  time.textContent = relativeTime(thread.resolved ? thread.resolvedAt : thread.comments.at(-1)?.createdAt);
+  const count = document.createElement('span');
+  count.textContent = `${thread.comments.length} 件`;
+  const toggle = button('', () => {
+    focusThreadID = thread.id;
+    send({ kind: 'expand', id: thread.id, open: !open });
+  });
+  if (focusThreadID === thread.id) {
+    focusThreadID = undefined;
+    queueMicrotask(() => toggle.focus({ preventScroll: true }));
   }
+  toggle.setAttribute('aria-label', open ? 'Thread を隠す' : 'Thread を表示');
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.append(open ? icon(chevron_down, 'chevron-down', '') : icon(chevron_right, 'chevron-right', ''));
+  summary.append(thread.resolved ? icon(circle_check, 'circle-check', '解決済み') : icon(circle_dot, 'circle-dot', '未解決'), name, time, count, toggle);
+  element.append(summary);
+  if (!open) return element;
+  const comments = document.createElement('div');
+  comments.append(...thread.comments.map(commentView));
   element.append(comments);
   if (!thread.resolved) {
     const input = document.createElement('textarea');
     input.setAttribute('aria-label', 'Threadへの返信');
     input.placeholder = '返信を書く…';
-    input.value = replies.get(thread.id)?.content ?? '';
+    input.value = replies.get(thread.id) ?? '';
     replyInputs.set(thread.id, input);
-    input.oninput = () => replies.set(thread.id, { content: input.value, version: ++replyVersion });
+    input.oninput = () => {
+      const pending = pendingReplies.get(thread.id);
+      if (pending) pending.edited = true;
+      replies.set(thread.id, input.value);
+      send({ kind: 'editReply', id: thread.id, content: input.value });
+    };
     input.onkeydown = (event) => {
       if (event.key !== 'Enter' || !event.metaKey || event.isComposing || event.repeat) return;
       event.preventDefault();
-      if (!input.value.trim() || pendingReplies.has(thread.id)) return;
-      if (replies.get(thread.id)?.content !== input.value) input.oninput();
-      const draft = replies.get(thread.id);
-      pendingReplies.set(thread.id, draft.version);
-      send({ kind: 'reply', id: thread.id, content: draft.content, requestID: draft.version });
+      if (!input.value.trim() || payload.sendingReplies?.includes(thread.id) || pendingReplies.has(thread.id)) return;
+      if (replies.get(thread.id) !== input.value) input.oninput();
+      const requestID = ++nextRequestID;
+      pendingReplies.set(thread.id, { requestID, edited: false });
+      send({ kind: 'reply', id: thread.id, content: input.value, requestID });
     };
     element.append(input);
     if (thread.canResolve) element.append(button('解決にする', () => send({ kind: 'resolve', id: thread.id })));
   }
   return element;
 }
+function threadAnchor(thread, deleted) {
+  return { side: thread.endSide ?? thread.side ?? (deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line };
+}
+function expandRegions(instance, anchors) {
+  let expanded = false;
+  const { hunks, additionLines } = diffMetadata;
+  for (const { side, lineNumber: line } of anchors) {
+    for (let index = 0; index <= hunks.length; index++) {
+      const hunk = hunks[index];
+      const additionEnd = (hunk?.additionLineIndex ?? additionLines.length) + 1;
+      const end = side === 'deletions' ? (hunk?.deletionLineIndex ?? diffMetadata.deletionLines.length) + 1 : additionEnd;
+      const last = hunks.at(-1);
+      const count = hunk?.collapsedBefore ?? (last ? additionLines.length - last.additionLineIndex - last.additionCount : 0);
+      if (line >= end) continue;
+      if (line >= end - count && !instance.isLineRenderable(additionEnd - (end - line))) {
+        instance.expandHunk(index, 'up', count);
+        expanded = true;
+      }
+      break;
+    }
+  }
+  return expanded;
+}
 window.releashRender = (next) => {
+  const firstRender = !payload;
+  if (firstRender) {
+    restoreAnchor = next.scrollAnchor;
+    for (const id of next.sendingReplies ?? []) pendingReplies.set(id, { requestID: null, edited: false });
+    for (const [id, content] of Object.entries(next.replies ?? {})) {
+      replies.set(id, content);
+    }
+  }
+  for (const [id, pending] of pendingReplies) {
+    if (pending.requestID !== null || next.sendingReplies?.includes(id)) continue;
+    pendingReplies.delete(id);
+    if (pending.edited) continue;
+    const value = next.replies?.[id] ?? '';
+    replies.set(id, value);
+    const input = replyInputs.get(id);
+    if (input) input.value = value;
+  }
   const sourceChanged = !payload || ['path', 'original', 'modified', 'patch'].some((key) => payload[key] !== next[key]);
   if (sourceChanged) {
     clearSelection();
@@ -190,13 +270,33 @@ window.releashRender = (next) => {
   for (const id of replyInputs.keys()) if (!openIDs.has(id)) replyInputs.delete(id);
   payload = next;
   const type = renderType(next);
+  const renderVersion = version + 1;
+  const annotations = [...next.threads];
+  if (next.composer) annotations.push({ ...next.composer, composer: true });
+  const lineAnnotations = annotations.map((thread) => ({ ...threadAnchor(thread, next.deleted), metadata: thread }));
+  let needsExpansion = type === 'diff' && !next.full && (lineAnnotations.length > 0 || !!restoreAnchor);
   const options = {
     theme: { dark: 'dark-plus', light: 'light-plus' },
     themeType: next.dark ? 'dark' : 'light',
     disableFileHeader: true,
+    layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
     diffStyle: next.style,
     expandUnchanged: next.full,
     enableLineSelection: true,
+    onPostRender: () => queueMicrotask(() => {
+      if (version !== renderVersion) return;
+      if (needsExpansion) {
+        const instance = renderer.getRenderedItems()[0]?.instance;
+        if (!instance) return;
+        needsExpansion = false;
+        if (expandRegions(instance, restoreAnchor ? [...lineAnnotations, restoreAnchor] : lineAnnotations) && restoreAnchor) {
+          restoreScroll();
+          return;
+        }
+      }
+      restoreAnchor = undefined;
+      reportScroll();
+    }),
     onLineSelected: selectLines,
     renderAnnotation: annotation,
     unsafeCSS: viewerCSS(next, type),
@@ -204,20 +304,17 @@ window.releashRender = (next) => {
   if (mode !== type || baseChanged) {
     clearSelection();
     renderer?.cleanUp();
-    container = document.createElement('diffs-container');
-    container.id = 'file';
-    content.replaceChildren(container);
-    renderer = type === 'diff' ? new VirtualizedFileDiff(options, virtualizer) : new VirtualizedFile(options, virtualizer);
+    renderer = new CodeView(options);
+    renderer.setup(viewport);
+    renderer.subscribeToScroll(reportScroll);
     mode = type;
   } else renderer.setOptions(options);
-  const annotations = [...next.threads];
-  if (next.composer) annotations.push({ ...next.composer, composer: true });
   if (mode === 'diff' && next.patch) {
     // 注釈は範囲の最後の行の下に出す
-    const lineAnnotations = annotations.map((thread) => ({ side: thread.endSide ?? thread.side ?? (next.deleted ? 'deletions' : 'additions'), lineNumber: thread.endLine ?? thread.line, metadata: thread }));
-    renderer.render({ fileContainer: container, fileDiff: diffMetadata ??= metadata(next), lineAnnotations });
+    renderer.setItems([{ id: next.path, type, version: ++version, fileDiff: diffMetadata ??= metadata(next), annotations: lineAnnotations }]);
   } else {
-    renderer.render({ fileContainer: container, file: { name: next.path, contents: next.modified }, lineAnnotations: annotations.map((thread) => ({ lineNumber: thread.endLine ?? thread.line, metadata: thread })) });
+    renderer.setItems([{ id: next.path, type: 'file', version: ++version, file: { name: next.path, contents: next.modified }, annotations: lineAnnotations.map(({ lineNumber, metadata }) => ({ lineNumber, metadata })) }]);
   }
+  if (firstRender && restoreAnchor) restoreScroll();
 };
 send({ kind: 'ready' });

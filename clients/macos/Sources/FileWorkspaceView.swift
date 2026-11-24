@@ -36,10 +36,14 @@ struct FileWorkspaceView: View {
         FileTreeView(model: model, worktree: worktree, filtered: filtering ? snapshot : nil)
       }.frame(minWidth: 180, idealWidth: 260)
     } trailing: {
-      BonsplitView(controller: model.filePanes.controller) { tab, _ in
+      BonsplitView(controller: model.filePanes.controller) { tab, pane in
         if let file = model.filePanes.tab(tab.id), let path = file.filePath {
-          FileTabPane(model: model, tabID: tab.id, path: path, worktree: worktree)
-            .id("\(worktree):\(tab.id):\(path)")
+          FileTabPane(
+            model: model, tabID: tab.id, path: path, worktree: worktree,
+            isSelected: model.filePanes.controller.selectedTab(inPane: pane)?.id == tab.id
+          )
+          .transition(.identity)
+          .id("\(worktree):\(tab.id):\(path)")
         }
       } emptyPane: { _ in
         Color(nsColor: .textBackgroundColor)

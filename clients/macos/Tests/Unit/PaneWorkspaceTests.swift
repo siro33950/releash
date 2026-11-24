@@ -232,6 +232,30 @@ final class PaneWorkspaceTests: XCTestCase {
     }
   }
 
+  @MainActor func test_ファイルタブ_タブとpaneを閉じると各下書きを解放する() throws {
+    // Given
+    let workspace = PaneWorkspace(contentViewLifecycle: .recreateOnSwitch)
+    try workspace.restore(.empty())
+    workspace.openFile("first.rs", base: "head")
+    let first = try XCTUnwrap(workspace.controller.allTabIds.first)
+    let secondPane = try XCTUnwrap(
+      workspace.controller.splitPane(workspace.controller.allPaneIds[0], orientation: .vertical))
+    workspace.controller.focusPane(secondPane)
+    workspace.openFile("second.rs", base: "head")
+    let second = try XCTUnwrap(workspace.controller.selectedTab(inPane: secondPane)).id
+    weak var firstDraft = workspace.fileDraft(first)
+    weak var secondDraft = workspace.fileDraft(second)
+    XCTAssertNotNil(firstDraft)
+    XCTAssertNotNil(secondDraft)
+    // When
+    workspace.controller.closePane(secondPane)
+    // Then
+    XCTAssertNil(secondDraft)
+    XCTAssertNotNil(firstDraft)
+    workspace.controller.closeTab(first)
+    XCTAssertNil(firstDraft)
+  }
+
   @MainActor func test_ファイルタブ_フォーカス領域内だけで再利用し表示を保持する() throws {
     let workspace = PaneWorkspace()
     try workspace.restore(.empty())

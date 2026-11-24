@@ -8,10 +8,11 @@ struct FileTabPane: View {
   let tabID: TabID
   let path: String
   let worktree: String
+  var isSelected = true
   @Environment(\.colorScheme) private var colorScheme
   var settings = FileDisplaySettings()
   @State var value: Releash_Client_V1_FileTabView?
-  @State var threads = Releash_Client_V1_FileThreadsSnapshot()
+  @State var threads: Releash_Client_V1_FileThreadsSnapshot?
   @State private var subscription: UUID?
   @State private var threadSubscription: UUID?
   @State var draft = FileThreadDraft()
@@ -23,16 +24,16 @@ struct FileTabPane: View {
     VStack(spacing: 0) {
       toolbar
       Divider()
-      if let value, let view = value.view.variant {
+      if threads != nil, let value, let view = value.view.variant {
         switch view {
         case .textDiff(let text):
           FileWebView(
             payload: bridgePayload(text, value, colorScheme: colorScheme), model: model,
-            onAction: { message, accepted in action(message, onReplyCompleted: accepted) }
+            onAction: action
           )
           .accessibilityIdentifier("file-content")
         case .image(let image):
-          ScrollView([.horizontal, .vertical]) {
+          FileImageScrollView(draft: draft) {
             HStack {
               ForEach(
                 Array(imageURLs(image, initialMode: value.initialMode).enumerated()), id: \.offset
@@ -48,20 +49,25 @@ struct FileTabPane: View {
           }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       } else {
-        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        FileLoadingIndicator().frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
     .onAppear {
+      guard isSelected else { return }
+      draft = model.filePanes.fileDraft(tabID)
+      threads = nil
       subscribe()
       threadSubscription = model.subscribe("file-threads", [worktree, path]) { payload in
         if case .fileThreads(let value) = payload.value { threads = value }
       }
     }
     .onDisappear {
-      if let subscription { model.unsubscribe(subscription) }
-      if let threadSubscription { model.unsubscribe(threadSubscription) }
+      draft.selection = nil
+      unsubscribe()
     }
-    .onChange(of: base) { _, _ in subscribe() }
+    .onChange(of: base) { _, _ in
+      if subscription != nil { subscribe() }
+    }
   }
   var toolbar: some View {
     HStack(spacing: 4) {
@@ -119,9 +125,15 @@ struct FileTabPane: View {
     }
     return hex
   }
-  func subscribe() {
+  private func unsubscribe() {
     if let subscription { model.unsubscribe(subscription) }
+    if let threadSubscription { model.unsubscribe(threadSubscription) }
+    subscription = nil
+    threadSubscription = nil
+  }
+  func subscribe() {
     value = nil
+    if let subscription { model.unsubscribe(subscription) }
     subscription = model.subscribe("file-tab", [worktree, path, base]) { payload in
       guard case .fileTab(let received) = payload.value else { return }
       value = received
@@ -175,12 +187,14 @@ struct FileTabPane: View {
     colorScheme: ColorScheme
   ) -> [String: Any] {
     var result: [String: Any] = [
+      "replies": draft.replies,
+      "sendingReplies": Array(draft.sendingReplies.keys),
       "path": path, "original": text.original,
       "modified": text.modified,
       "patch": value.patch, "deleted": text.source.value == .deleted, "mode": mode, "base": base,
       "style": settings.style, "full": settings.full, "dark": colorScheme == .dark,
       "accent": Self.accentHex(colorScheme),
-      "threads": threads.threads.items.compactMap { thread -> [String: Any]? in
+      "threads": (threads?.threads.items ?? []).compactMap { thread -> [String: Any]? in
         guard thread.target.hasLineNumber else { return nil }
         var annotation: [String: Any] = [
           "id": thread.id, "line": thread.target.lineNumber,
@@ -221,10 +235,26 @@ struct FileTabPane: View {
       }
       result["composer"] = composer
     }
+    result["expanded"] = Array(draft.expanded)
+    result["scrollAnchor"] = draft.scrollAnchor
     return result
   }
   func action(_ message: [String: Any], onReplyCompleted: @escaping (Bool) -> Void = { _ in }) {
     guard let kind = message["kind"] as? String else { return }
+    if kind == "scroll" {
+      if let anchor = message["anchor"] as? [String: Any] { draft.scrollAnchor = anchor }
+      return
+    }
+    if kind == "expand", let id = message["id"] as? String, let open = message["open"] as? Bool {
+      if open { draft.expanded.insert(id) } else { draft.expanded.remove(id) }
+      return
+    }
+    if kind == "editReply", let id = message["id"] as? String,
+      let content = message["content"] as? String
+    {
+      draft.editReply(id, content: content)
+      return
+    }
     guard let client = model.client else {
       if kind == "reply" { onReplyCompleted(false) }
       return
@@ -249,6 +279,10 @@ struct FileTabPane: View {
       return
     }
     guard let id = message["id"] as? String else { return }
+    if kind == "reply", !draft.beginReply(id) {
+      onReplyCompleted(false)
+      return
+    }
     model.perform {
       switch kind {
       case "reply":
@@ -259,8 +293,10 @@ struct FileTabPane: View {
         do {
           _ = try await client.appendReviewComment(request: request, headers: model.headers).result
             .get()
+          draft.finishReply(id, accepted: true)
           onReplyCompleted(true)
         } catch {
+          draft.finishReply(id, accepted: false)
           onReplyCompleted(false)
           throw error
         }
@@ -272,6 +308,7 @@ struct FileTabPane: View {
         request.summary = "ファイルタブで解決"
         _ = try await client.resolveReviewThread(request: request, headers: model.headers).result
           .get()
+        draft.expanded.remove(id)
       default: break
       }
     }
@@ -303,7 +340,9 @@ struct FileTabPane: View {
     draft.sending = true
     model.perform {
       defer { draft.sending = false }
-      _ = try await client.createReviewThread(request: request, headers: model.headers).result.get()
+      let thread = try await client.createReviewThread(request: request, headers: model.headers)
+        .result.get()
+      draft.expanded.insert(thread.id)
       if draft.id == id { draft.line = nil }
     }
   }
@@ -312,6 +351,33 @@ struct FileTabPane: View {
 struct FileDisplaySettings: DynamicProperty {
   @AppStorage("diffStyle") var style = "split"
   @AppStorage("diffFull") var full = false
+}
+
+private struct FileImageScrollView<Content: View>: View {
+  let draft: FileThreadDraft
+  @State private var restored = false
+  @State private var position = ScrollPosition()
+  let content: Content
+
+  init(draft: FileThreadDraft, @ViewBuilder content: () -> Content) {
+    self.draft = draft
+    self.content = content()
+  }
+
+  var body: some View {
+    ScrollView([.horizontal, .vertical]) { content }
+      .scrollPosition($position)
+      .onScrollGeometryChange(for: CGPoint.self) {
+        $0.contentOffset
+      } action: { _, offset in
+        if restored {
+          draft.imageOffset = offset
+        } else {
+          restored = true
+          position.scrollTo(point: draft.imageOffset)
+        }
+      }
+  }
 }
 
 struct FileLineSelection: Equatable {
@@ -343,6 +409,33 @@ struct FileLineSelection: Equatable {
   var endLine: UInt32?
   var side: Releash_Client_V1_ReviewLineSideDto.Value?
   var endSide: Releash_Client_V1_ReviewLineSideDto.Value?
+  var expanded: Set<String> = []
+  @ObservationIgnored var scrollAnchor: [String: Any]?
+  @ObservationIgnored var imageOffset = CGPoint.zero
+  enum ReplyEditState {
+    case unedited
+    case edited
+  }
+
+  private(set) var sendingReplies: [String: ReplyEditState] = [:]
+
+  func editReply(_ id: String, content: String) {
+    replies[id] = content.isEmpty ? nil : content
+    if sendingReplies[id] == .unedited { sendingReplies[id] = .edited }
+  }
+
+  func beginReply(_ id: String) -> Bool {
+    guard sendingReplies[id] == nil else { return false }
+    sendingReplies[id] = .unedited
+    return true
+  }
+
+  func finishReply(_ id: String, accepted: Bool) {
+    let editState = sendingReplies.removeValue(forKey: id)
+    if accepted, editState == .unedited { replies[id] = nil }
+  }
+
+  @ObservationIgnored var replies: [String: String] = [:]
   @ObservationIgnored var content = ""
 }
 
@@ -464,4 +557,17 @@ struct IconChoice<Value: Hashable>: View {
     }
     .accessibilityElement(children: .contain)
   }
+}
+
+private struct FileLoadingIndicator: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSProgressIndicator {
+    let indicator = NSProgressIndicator()
+    indicator.style = .spinning
+    indicator.setAccessibilityRole(.progressIndicator)
+    indicator.setAccessibilityLabel("読み込み中")
+    indicator.startAnimation(nil)
+    return indicator
+  }
+
+  func updateNSView(_ indicator: NSProgressIndicator, context: Context) {}
 }

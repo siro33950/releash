@@ -19,11 +19,24 @@ import SwiftUI
   private var nextTerminalNumber = 1
   private var restoring = false
 
-  init() {
+  /// ファイルタブの表示位置と下書き。タブと pane の終了通知を受けるこの型が、閉じたタブの状態を破棄する。
+  @ObservationIgnored private var fileDrafts: [TabID: FileThreadDraft] = [:]
+
+  /// 同じタブを選び直したときは、閉じるまで同じ下書きを返す。
+  func fileDraft(_ id: TabID) -> FileThreadDraft {
+    if let draft = fileDrafts[id] { return draft }
+    let draft = FileThreadDraft()
+    fileDrafts[id] = draft
+    return draft
+  }
+
+  static func forFiles() -> PaneWorkspace { PaneWorkspace(contentViewLifecycle: .recreateOnSwitch) }
+
+  init(contentViewLifecycle: ContentViewLifecycle = .keepAllAlive) {
     for id in controller.allTabIds { controller.closeTab(id) }
     controller.delegate = self
     controller.configuration.appearance.showSplitButtons = false
-    controller.configuration.contentViewLifecycle = .keepAllAlive
+    controller.configuration.contentViewLifecycle = contentViewLifecycle
     controller.configuration.appearance.selectedTabIndicatorColor = UIStyle.tabSelection
   }
 
@@ -345,8 +358,14 @@ import SwiftUI
   }
 
   func splitTabBar(_ controller: BonsplitController, didCloseTab id: TabID, fromPane pane: PaneID) {
+    fileDrafts[id] = nil
     tabs.removeValue(forKey: id.id.uuidString)
     pendingSessionTabs = pendingSessionTabs.filter { $0.value != id }
+  }
+
+  func splitTabBar(_ controller: BonsplitController, didClosePane pane: PaneID) {
+    let remaining = Set(controller.allTabIds)
+    fileDrafts = fileDrafts.filter { remaining.contains($0.key) }
   }
 
   func renameNode(_ nodeID: String, title: String) {
