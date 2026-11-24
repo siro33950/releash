@@ -799,6 +799,7 @@ test('前の描画の通知は現在の展開と位置復元に干渉しない',
   // When
   view.options.onPostRender();
   // Then
+  assert.deepEqual(view.expansions, [[0, 'up', 4], [1, 'up', 5]]);
   assert.deepEqual(plain(view.requests), [{ type: 'line', id: 'file.rs', lineNumber: 8, side: 'additions', offset: -2, align: 'start', behavior: 'instant' }]);
   assert.equal(ui.messages.some(m => m.kind === 'scroll'), false);
   // When
