@@ -64,19 +64,24 @@ test('test_公開手順_両チャンネルを直列化しPages失敗を伝播し
   // Given
   const nightly = workflow('nightly');
   const stable = workflow('stable');
-  const publish = workflow('sparkle-publish').jobs.publish.steps;
+  const { jobs } = workflow('sparkle-publish');
+  const publish = jobs.publish.steps;
   // When
-  const deployment = publish.find(step => step.uses?.startsWith('actions/deploy-pages@'));
+  const deployment = jobs.deploy.steps.find(step => step.uses?.startsWith('actions/deploy-pages@'));
   const upload = publish.find(step => step.uses?.startsWith('actions/upload-pages-artifact@'));
   // Then
   assert.equal(upload.with.name, 'github-pages-${{ github.run_attempt }}');
-  assert.equal(deployment.with.artifact_name, upload.with.name);
+  assert.equal(upload.with.name, jobs.publish.outputs.artifact);
+  assert.equal(deployment.with.artifact_name, '${{ needs.publish.outputs.artifact }}');
   assert.deepEqual(nightly.concurrency, stable.concurrency);
   assert.equal(nightly.concurrency['cancel-in-progress'], false);
   assert.ok(nightly.concurrency.group);
-  assert.ok(publish.findIndex(step => step.run?.includes('sparkle-release.cjs publish')) < publish.findIndex(step => step.uses?.startsWith('actions/deploy-pages@')));
-  for (const step of publish) assert.ok(!step['continue-on-error']);
-  assert.ok(!workflow('sparkle-publish').jobs.publish['continue-on-error']);
+  assert.ok(publish.findIndex(step => step.run?.includes('sparkle-release.cjs publish')) < publish.indexOf(upload));
+  assert.equal(jobs.deploy.needs, 'publish');
+  for (const job of [jobs.publish, jobs.deploy]) {
+    assert.ok(!job['continue-on-error']);
+    for (const step of job.steps) assert.ok(!step['continue-on-error']);
+  }
   assert.equal(nightly.jobs.cleanup.if, "needs.publish.result == 'success'");
 });
 
