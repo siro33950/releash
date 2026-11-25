@@ -71,7 +71,8 @@ test('test_公開手順_両チャンネルを直列化しPages失敗を伝播し
   const upload = publish.find(step => step.uses?.startsWith('actions/upload-pages-artifact@'));
   // Then
   assert.equal(upload.with.name, 'github-pages-${{ github.run_attempt }}');
-  assert.equal(deployment.with.artifact_name, upload.with.name);
+  assert.equal(upload.with.name, jobs.publish.outputs.artifact);
+  assert.equal(deployment.with.artifact_name, '${{ needs.publish.outputs.artifact }}');
   assert.deepEqual(nightly.concurrency, stable.concurrency);
   assert.equal(nightly.concurrency['cancel-in-progress'], false);
   assert.ok(nightly.concurrency.group);
